@@ -22,7 +22,12 @@ async function buildServer() {
   // CORS — allow the Vite dev server and any localhost origin
   await fastify.register(cors, {
     origin: (origin, cb) => {
-      if (!origin || origin.includes('localhost') || origin.includes('127.0.0.1')) {
+      if (
+        !origin || 
+        origin.includes('localhost') || 
+        origin.includes('127.0.0.1') || 
+        origin.includes('code-companion-6gp3.onrender.com')
+      ) {
         cb(null, true);
       } else {
         cb(null, false);

@@ -1,0 +1,75 @@
+import type { FastifyInstance } from 'fastify';
+import { ThreadStore } from '../db/ThreadStore.js';
+import { DatabaseManager } from '../db/DatabaseManager.js';
+
+export async function threadsRoute(fastify: FastifyInstance): Promise<void> {
+  const db = DatabaseManager.getInstance();
+  const store = new ThreadStore(db);
+
+  // GET /api/threads
+  fastify.get('/api/threads', async (_req, reply) => {
+    const threads = await store.getAll();
+    const mapped = threads.map((t) => ({
+      id: t.id,
+      title: t.title,
+      projectName: t.project_id ?? null,
+      parentThreadId: t.parent_thread_id ?? undefined,
+      createdAt: t.created_at,
+    }));
+    return reply.send(mapped);
+  });
+
+  // GET /api/threads/:id
+  fastify.get<{ Params: { id: string } }>(
+    '/api/threads/:id',
+    async (req, reply) => {
+      const thread = await store.getById(req.params.id);
+      if (!thread) return reply.status(404).send({ error: 'Thread not found' });
+      return reply.send(thread);
+    }
+  );
+
+  // POST /api/threads
+  fastify.post<{
+    Body: {
+      title?: string;
+      type?: 'planning' | 'execution';
+      project_id?: string;
+      mode?: string;
+    };
+  }>('/api/threads', async (req, reply) => {
+    const thread = await store.create(req.body);
+    return reply.status(201).send(thread);
+  });
+
+  // POST /api/threads/:id/fork
+  fastify.post<{ Params: { id: string } }>(
+    '/api/threads/:id/fork',
+    async (req, reply) => {
+      const parent = await store.getById(req.params.id);
+      if (!parent) return reply.status(404).send({ error: 'Thread not found' });
+      const forked = await store.fork(req.params.id);
+      return reply.status(201).send(forked);
+    }
+  );
+
+  // PATCH /api/threads/:id
+  fastify.patch<{
+    Params: { id: string };
+    Body: { title?: string };
+  }>('/api/threads/:id', async (req, reply) => {
+    const { title } = req.body;
+    if (title) await store.updateTitle(req.params.id, title);
+    const updated = await store.getById(req.params.id);
+    return reply.send(updated);
+  });
+
+  // DELETE /api/threads/:id
+  fastify.delete<{ Params: { id: string } }>(
+    '/api/threads/:id',
+    async (req, reply) => {
+      await store.delete(req.params.id);
+      return reply.status(204).send();
+    }
+  );
+}

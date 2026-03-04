@@ -76,6 +76,7 @@ async function buildServer() {
 }
 
 async function main() {
+  console.log('⚙️  Initializing Phobos Core Systems...');
   const db = DatabaseManager.getInstance(DB_PATH);
   await db.initialize();
   await reconfigureClients();
@@ -105,4 +106,4 @@ async function main() {
   }
 }
 
-main();
+main().catch(err => { console.error("Server failed:", err); process.exit(1); });

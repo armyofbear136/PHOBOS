@@ -119,6 +119,19 @@ CREATE TABLE IF NOT EXISTS model_config (
   updated_at TIMESTAMP NOT NULL DEFAULT now()
 );
 
+-- Knowledge base: coordinator-searchable entries persisted across turns.
+-- Queried before classification (Pass 3D) to inject relevant prior knowledge
+-- into the task context. Indexed on query for fast substring lookup.
+CREATE TABLE IF NOT EXISTS knowledge_base (
+  id         VARCHAR PRIMARY KEY,
+  query      VARCHAR NOT NULL,
+  content    TEXT NOT NULL,
+  source_url VARCHAR,
+  created_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_query ON knowledge_base(query);
+
 -- Workspace files: per-thread file index with AI-maintained notes
 -- Each thread has its own working directory on disk (workspaces/<thread_id>/)
 -- This table is the coordinator's index of what is in that directory.

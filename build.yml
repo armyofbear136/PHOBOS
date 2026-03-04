@@ -1,0 +1,155 @@
+# .github/workflows/build.yml
+# Builds phobos-core for all supported platforms and assembles a release.
+#
+# Triggered by:
+#   - Push to main (builds + uploads artifacts, no release tag)
+#   - A tag push matching v* (builds + creates GitHub Release with all binaries)
+#   - Manual dispatch (workflow_dispatch)
+#
+# Build matrix:
+#   win32-x64     windows-latest
+#   win32-arm64   windows-11-arm  (requires GitHub Team/Enterprise or self-hosted)
+#   darwin-x64    macos-13        (last Intel macOS runner)
+#   darwin-arm64  macos-latest    (Apple Silicon)
+#   linux-x64     ubuntu-latest
+#   linux-arm64   ubuntu-24.04-arm
+
+name: Build All Platforms
+
+on:
+  push:
+    branches: [main]
+    tags:     ['v*']
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Create a GitHub Release'
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label:    win32-x64
+            runner:   windows-latest
+            platform: win32
+            arch:     x64
+            artifact: phobos-win32-x64
+
+          # Windows ARM64 — requires GitHub Team/Enterprise ARM runner.
+          # Comment this block out if not available on your plan.
+          - label:    win32-arm64
+            runner:   windows-11-arm
+            platform: win32
+            arch:     arm64
+            artifact: phobos-win32-arm64
+
+          - label:    darwin-x64
+            runner:   macos-13
+            platform: darwin
+            arch:     x64
+            artifact: phobos-darwin-x64
+
+          - label:    darwin-arm64
+            runner:   macos-latest
+            platform: darwin
+            arch:     arm64
+            artifact: phobos-darwin-arm64
+
+          - label:    linux-x64
+            runner:   ubuntu-latest
+            platform: linux
+            arch:     x64
+            artifact: phobos-linux-x64
+
+          - label:    linux-arm64
+            runner:   ubuntu-24.04-arm
+            platform: linux
+            arch:     arm64
+            artifact: phobos-linux-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # npm ci runs the package's install script which downloads the
+      # correct platform-specific .node prebuilt binary via node-pre-gyp.
+      - name: Install dependencies
+        run: npm ci
+
+      # Run the standard single-platform build.
+      # On the runner, process.platform and process.arch match the target.
+      - name: Build
+        run: node build.js
+
+      # Zip the entire dist/ directory so the artifact preserves
+      # the duckdb/ and tree-sitter/ subdirectory structure.
+      - name: Package dist (Unix)
+        if: matrix.platform != 'win32'
+        run: |
+          cd dist
+          tar -czf ../${{ matrix.artifact }}.tar.gz .
+          cd ..
+
+      - name: Package dist (Windows)
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist\* -DestinationPath ${{ matrix.artifact }}.zip
+
+      - name: Upload artifact (Unix)
+        if: matrix.platform != 'win32'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.tar.gz
+          retention-days: 7
+
+      - name: Upload artifact (Windows)
+        if: matrix.platform == 'win32'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
+          retention-days: 7
+
+  # ── Release job ─────────────────────────────────────────────────────────────
+  # Runs only on tag pushes or manual dispatch with release=true.
+  # Downloads all platform artifacts and attaches them to a GitHub Release.
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: List artifacts
+        run: find release-artifacts -type f | sort
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name:     PHOBOS ${{ github.ref_name }}
+          draft:    false
+          prerelease: false
+          generate_release_notes: true
+          files: release-artifacts/**/*

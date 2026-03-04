@@ -7,12 +7,14 @@ import { DispatchLogStore } from '../db/DispatchLogStore.js';
 import { MessageEventStore } from '../db/MessageEventStore.js';
 import { ChatSummaryStore } from '../db/ChatSummaryStore.js';
 import { ModelConfigStore } from '../db/ModelConfigStore.js';
+import { KnowledgeStore } from '../db/KnowledgeStore.js';
 import { IntentClassifier } from '../ai/IntentClassifier.js';
 import { LoopController } from '../ai/LoopController.js';
 import { ThreadWorkspace } from '../context/ThreadWorkspace.js';
 import { CopilotIndex } from '../context/CopilotIndex.js';
 import { ThinkingStripper } from '../context/ThinkingStripper.js';
 import type { IntentType } from '../ai/IntentClassifier.js';
+import type { ClassificationContext } from '../ai/IntentClassifier.js';
 import { ENGINE_MODEL } from '../ai/clients.js';
 
 export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
@@ -24,6 +26,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   const eventStore = new MessageEventStore(db);
   const summaryStore = new ChatSummaryStore(db);
   const configStore = new ModelConfigStore(db);
+  const knowledgeStore = new KnowledgeStore(db);
   const classifier = new IntentClassifier();
   const stripper = new ThinkingStripper();
 
@@ -206,11 +209,32 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
     };
 
     try {
-      // Classify intent and load context in parallel — they're independent
-      const [intent, docs, workspaceIndex] = await Promise.all([
-        classifier.classify(content),
+      // Load context that doesn't depend on ingestion first
+      const [docs, workspaceIndex] = await Promise.all([
         documentStore.loadContextBundle(thread!.project_id, threadId),
         workspace.renderIndex(threadId),   // cached — no filesystem walk on cache hit
+      ]);
+
+      // Fetch chat summary for classifier context (already available pre-Stage 1)
+      const chatSummaryRow = await summaryStore.get(threadId);
+
+      // Build classification context from available pre-ingestion data.
+      // Stage 1 (full rewrite + file summaries) runs inside LoopController —
+      // here we give the classifier the workspace index and chat summary so
+      // it can resolve ambiguous short messages without a separate ingestion call.
+      const classificationContext: ClassificationContext | undefined =
+        workspaceIndex || chatSummaryRow?.summary
+          ? {
+              rewrittenMessage: fullUserMessage, // raw — Stage 1 hasn't run yet
+              chatSummary: chatSummaryRow?.summary,
+              repoMap: workspaceIndex,
+            }
+          : undefined;
+
+      // Stage 2 (3D): context-aware classification + knowledge search in parallel
+      const [intent, knowledgeResults] = await Promise.all([
+        classifier.classify(content, classificationContext),
+        knowledgeStore.search(fullUserMessage, 5),
       ]);
 
       sendEvent({ type: 'status', content: 'Classifying intent…' });
@@ -294,6 +318,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           conversationHistory: priorHistory,
           repoMap: workspaceIndex,
           loadedFiles: (attached_files ?? []).map((f) => ({ path: f.name, content: f.content })),
+          knowledgeContext: knowledgeResults.length > 0 ? knowledgeResults : undefined,
         }, assistantMsg.id);
 
         const latencyMs = Date.now() - startTime;

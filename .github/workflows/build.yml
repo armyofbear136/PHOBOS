@@ -38,11 +38,11 @@ jobs:
 
           # Windows ARM64 — requires GitHub Team/Enterprise.
           # Remove this block if on the free plan.
-          - label:    win32-arm64
-            runner:   windows-11-arm
-            artifact: phobos-win32-arm64
-            ext:      .exe
-            pack:     zip
+          # - label:    win32-arm64
+          #   runner:   windows-11-arm
+          #   artifact: phobos-win32-arm64
+          #   ext:      .exe
+          #   pack:     zip
 
           - label:    darwin-x64
             runner:   macos-13          # pinned Intel runner — free on all plans

@@ -1,4 +1,4 @@
-import { coordinatorClient, COORDINATOR_MODEL } from './clients.js';
+import { engineClient, ENGINE_MODEL } from './clients.js';
 import type { AttemptResult } from './LoopController.js';
 
 export interface TaskResultSummary {
@@ -54,9 +54,10 @@ export class DeliveryComposer {
       : `Some tasks did not complete. ${taskResults?.filter(r => !r.approved).length ?? 0} of ${taskResults?.length ?? 1} task(s) failed.`;
 
     const prompt =
-      `/no_think Write a concise assistant response summarising what was done. ` +
+      `/no_think Write a concise response summarising the outcome. ` +
       `Write in first person, plain prose, 2-4 sentences max. ` +
-      `Mention what changed, how many tasks ran if more than one, and any failures. ` +
+      `For file changes: mention what changed and any failures. For answers: confirm what was addressed. ` +
+      `Match the tone to the task — technical for code, conversational for questions. ` +
       `Do not use bullet points or headers. Do not repeat the task verbatim.\n\n` +
       `ORIGINAL REQUEST: ${originalUserMessage}\n\n` +
       `TASK AS PLANNED: ${rewrittenTask}\n\n` +
@@ -65,8 +66,8 @@ export class DeliveryComposer {
       `${statusLine}`;
 
     try {
-      const response = await coordinatorClient.chat.completions.create({
-        model: COORDINATOR_MODEL,
+      const response = await engineClient.chat.completions.create({
+        model: ENGINE_MODEL,
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 512,
         temperature: 0.3,

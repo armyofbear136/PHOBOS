@@ -172,10 +172,11 @@ export class ContextIngester {
     }
 
     const rewritePrompt =
-      `/think You are preparing a request for a powerful coding engine. ` +
-      `Rewrite the user's message into a precise, unambiguous engineering task. ` +
+      `/think You are preparing a request for ALLMIND, a powerful AI execution engine. ` +
+      `Rewrite the user's message into a precise, unambiguous task description. ` +
       `Resolve any vague references using the available context (exact function names, ` +
       `file paths, line numbers if relevant). Clarify scope. Note constraints. ` +
+      `Preserve the intent exactly — if it is a question or conversation, keep it as such. ` +
       `Respond with JSON only: {"reformulated":"<improved prompt>","summary":"<one sentence, max 15 words>"}. ` +
       `No preamble, nothing outside the JSON.\n\n` +
       `USER REQUEST: ${userMessage}\n\n` +

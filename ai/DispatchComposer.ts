@@ -127,8 +127,8 @@ export class DispatchComposer {
         `Operation: ${t.operation}\n` +
         (t.targetFile ? `Target file: ${t.targetFile}\n` : '') +
         (t.context ? `\nExtracted context:\n${t.context}\n` : '') +
-        `\nDirective: ${opVerb[t.operation] ?? 'Execute'} the target file NOW using the file tools. ` +
-        `Do not write example code or describe what to do — use the appropriate tool tag (write_file, append_file, insert_lines, replace_lines) and emit the result directly.\n` +
+        `\nDirective: ${opVerb[t.operation] ?? 'Execute'} the task NOW. ` +
+        `For file changes: use the appropriate file tool (write_file, append_file, insert_lines, replace_lines) and emit the result directly. Do not describe what to do — do it.\n` +
         `</current_task>`
       );
     }

@@ -469,7 +469,7 @@ async function handleDirectResponse(
   if (docs.claudeMd) systemParts.push(docs.claudeMd);
   if (docs.projectMd) systemParts.push(`\n\nProject context:\n${docs.projectMd}`);
   if (docs.chatMd) systemParts.push(`\n\nChat rules:\n${docs.chatMd}`);
-  const systemPrompt = systemParts.join('') || 'You are a helpful coding assistant.';
+  const systemPrompt = systemParts.join('') || 'You are PHOBOS, a powerful AI assistant. You help with any task: coding, analysis, writing, conversation, planning, and more. Be direct and precise.';
 
   const messages = [
     ...history
@@ -496,7 +496,7 @@ async function handleDirectResponse(
       const outToken = delta?.content as string | undefined;
       if (thinkToken) {
         thinkingBuf += thinkToken;
-        sendEvent({ type: 'think_token', token: thinkToken });
+        sendEvent({ type: 'think_token', token: thinkToken, source: 'coordinator' });
       }
       if (outToken) {
         outputBuf += outToken;
@@ -515,8 +515,6 @@ async function handleDirectResponse(
       sendEvent({ type: 'thinking_complete', content: thinkingBuf });
       await eventStore.insert(threadId, 'thinking_complete', { type: 'thinking_complete', content: thinkingBuf }, msg.id);
     }
-
-    await eventStore.insert(threadId, 'coordinator', { type: 'coordinator', content: 'Answering directly via coordinator…' }, msg.id);
 
     sendEvent({ type: 'complete', approved: true, bestAttempt: 1 });
     return msg.id;

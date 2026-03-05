@@ -16,13 +16,37 @@ export interface RoleConfig {
 
 /** Hard-coded supported model catalogue per role */
 export const COORDINATOR_MODELS: ModelOption[] = [
-  { id: 'qwen3:8b',       label: 'Qwen3-8B',       contextWindow: 32768,  charsPerToken: 4 },
-  { id: 'llama3.1:8b',    label: 'Llama3.1-8B',    contextWindow: 131072, charsPerToken: 4 },
+  // Local / Ollama
+  { id: 'qwen3:8b',            label: 'Qwen3-8B',            contextWindow: 32768,   charsPerToken: 4 },
+  { id: 'llama3.1:8b',         label: 'Llama3.1-8B',         contextWindow: 131072,  charsPerToken: 4 },
+  { id: 'qwen3:14b',           label: 'Qwen3-14B',           contextWindow: 32768,   charsPerToken: 4 },
+  // OpenAI
+  { id: 'gpt-4o-mini',         label: 'GPT-4o Mini',         contextWindow: 128000,  charsPerToken: 4 },
+  { id: 'gpt-4o',              label: 'GPT-4o',              contextWindow: 128000,  charsPerToken: 4 },
+  // Anthropic
+  { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', contextWindow: 200000, charsPerToken: 4 },
+  { id: 'claude-sonnet-4-6',   label: 'Claude Sonnet 4.6',   contextWindow: 200000,  charsPerToken: 4 },
+  // Google
+  { id: 'gemini-2.0-flash',    label: 'Gemini 2.0 Flash',    contextWindow: 1048576, charsPerToken: 4 },
 ];
 
 export const ENGINE_MODELS: ModelOption[] = [
-  { id: 'qwen3:30b-a3b',     label: 'Qwen3-30B-A3B',    contextWindow: 32768,  charsPerToken: 4 },
-  { id: 'deepseek-r1:70b',   label: 'DeepSeek-R1-70B',  contextWindow: 65536,  charsPerToken: 4 },
+  // Local / Ollama
+  { id: 'qwen3:30b-a3b',        label: 'Qwen3-30B-A3B',       contextWindow: 32768,   charsPerToken: 4 },
+  { id: 'deepseek-r1:70b',      label: 'DeepSeek-R1-70B',     contextWindow: 65536,   charsPerToken: 4 },
+  { id: 'qwen3:32b',            label: 'Qwen3-32B',            contextWindow: 32768,   charsPerToken: 4 },
+  { id: 'llama3.1:70b',         label: 'Llama3.1-70B',        contextWindow: 131072,  charsPerToken: 4 },
+  { id: 'deepseek-r1:32b',      label: 'DeepSeek-R1-32B',     contextWindow: 65536,   charsPerToken: 4 },
+  // OpenAI
+  { id: 'gpt-4o',               label: 'GPT-4o',               contextWindow: 128000,  charsPerToken: 4 },
+  { id: 'o4-mini',              label: 'o4-mini',              contextWindow: 128000,  charsPerToken: 4 },
+  { id: 'o3',                   label: 'o3',                   contextWindow: 200000,  charsPerToken: 4 },
+  // Anthropic
+  { id: 'claude-sonnet-4-6',    label: 'Claude Sonnet 4.6',    contextWindow: 200000,  charsPerToken: 4 },
+  { id: 'claude-opus-4-6',      label: 'Claude Opus 4.6',      contextWindow: 200000,  charsPerToken: 4 },
+  // Google
+  { id: 'gemini-2.5-pro',       label: 'Gemini 2.5 Pro',       contextWindow: 1048576, charsPerToken: 4 },
+  { id: 'gemini-2.0-flash',     label: 'Gemini 2.0 Flash',     contextWindow: 1048576, charsPerToken: 4 },
 ];
 
 const DEFAULT_COORDINATOR: RoleConfig = {

@@ -42,7 +42,7 @@ export interface AttemptResult {
 export type SSEEvent =
   | { type: 'status'; content: string }
   | { type: 'coordinator'; content: string }
-  | { type: 'think_token'; token: string }
+  | { type: 'think_token'; token: string; source?: 'coordinator' | 'engine' }
   | { type: 'output_token'; token: string }
   | { type: 'thinking_complete'; content: string }
   | { type: 'file_panel'; filename: string; language: string; code: string }
@@ -95,9 +95,9 @@ export class LoopController {
     }
   }
 
-  private makeThinkingSender(reply: FastifyReply): (token: string) => void {
+  private makeThinkingSender(reply: FastifyReply, source: 'coordinator' | 'engine' = 'engine'): (token: string) => void {
     return (token: string) => {
-      reply.raw.write(`data: ${JSON.stringify({ type: 'think_token', token })}\n\n`);
+      reply.raw.write(`data: ${JSON.stringify({ type: 'think_token', token, source })}\n\n`);
     };
   }
 
@@ -141,7 +141,8 @@ export class LoopController {
     const syntaxValidator = new SyntaxValidator();
     const buildRunner = new BuildRunner(projectRoot);
     const errorFormatter = new ErrorFormatter();
-    const sendThinking = this.makeThinkingSender(reply);
+    const sendThinking = this.makeThinkingSender(reply, 'coordinator');
+    const sendEngineThinking = this.makeThinkingSender(reply, 'engine');
     const sendStatus = (content: string) => this.sendEvent(reply, { type: 'status', content });
 
     // ── Stage 1: Context Ingestion ─────────────────────────────────────────────
@@ -277,7 +278,7 @@ export class LoopController {
 
         // ── Engine stream ────────────────────────────────────────────────────────
         const attemptResult = await this.runEngineWithInterventions(
-          reply, dispatch, task.prompt, taskId, attempt, sendThinking, assistantMessageId
+          reply, dispatch, task.prompt, taskId, attempt, sendEngineThinking, assistantMessageId
         );
         attemptResult.taskIndex = task.index;
         taskAttempts.push(attemptResult);
@@ -412,7 +413,7 @@ export class LoopController {
         // ── Review ──────────────────────────────────────────────────────────────
         sendStatus(`[${task.index}/${total}] Reviewing…`);
         const changedSummary = writtenFiles.map(r => `${r.tool} ${r.path}`).join('\n');
-        const review = await this.runReviewDispatch(task.prompt, currentOutput, changedSummary, sendThinking);
+        const review = await this.runReviewDispatch(task.prompt, currentOutput, changedSummary, sendThinking);  // coordinator thinking
 
         attemptResult.reviewScore = review.score;
         attemptResult.approved = review.decision === 'APPROVE';

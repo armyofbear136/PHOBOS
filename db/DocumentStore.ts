@@ -1,7 +1,7 @@
 import { DatabaseManager } from './DatabaseManager.js';
 import { randomUUID } from 'crypto';
 
-export type DocType = 'claude_md' | 'project_md' | 'chat_md';
+export type DocType = 'claude_md' | 'project_md' | 'chat_md' | 'phobos_directives';
 
 export interface Document {
   id: string;

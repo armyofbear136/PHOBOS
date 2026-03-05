@@ -4,6 +4,8 @@ import { DatabaseManager } from '../db/DatabaseManager.js';
 
 const DOC_TYPE_MAP: Record<string, DocType> = {
   'claude-md': 'claude_md',
+  'phobos-directives': 'claude_md',
+  'phobos_directives': 'claude_md',
   'project-md': 'project_md',
   'chat-md': 'chat_md',
   // Also accept the underscore variant

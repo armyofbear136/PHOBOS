@@ -24,13 +24,8 @@ jobs:
             artifact: phobos-win32-x64
             pack:     zip
 
-          - label:    darwin-x64
-            runner:   macos-14          # macos-14 = ARM but cross-compiles fine via Rosetta
-            artifact: phobos-darwin-x64 # actual x64 binary built by Node SEA using process.execPath
-            pack:     tar               # NOTE: if you need a true Intel binary, use a self-hosted runner
-
           - label:    darwin-arm64
-            runner:   macos-14          # Apple Silicon (M1/M2/M3) — free on all plans
+            runner:   macos-14
             artifact: phobos-darwin-arm64
             pack:     tar
 
@@ -53,7 +48,19 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        # --foreground-scripts makes node-pre-gyp output visible in CI logs
+        # so we can see exactly what fails (download URL, compilation error, etc.)
+        run: npm ci --foreground-scripts
+
+      # If npm ci failed, dump the npm debug log so the error is visible
+      - name: Show npm error log on failure
+        if: failure()
+        shell: bash
+        run: |
+          LOG=$(npm config get cache)/_logs
+          if [ -d "$LOG" ]; then
+            ls -t "$LOG"/*.log 2>/dev/null | head -1 | xargs cat 2>/dev/null | tail -100
+          fi
 
       - name: Build
         run: node build.js

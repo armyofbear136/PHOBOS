@@ -1,29 +1,22 @@
 # .github/workflows/build.yml
-# Builds phobos-core for all supported platforms and assembles a release.
+# Builds phobos-core for all supported platforms and assembles a GitHub Release.
 #
 # Triggered by:
-#   - Push to main (builds + uploads artifacts, no release tag)
-#   - A tag push matching v* (builds + creates GitHub Release with all binaries)
-#   - Manual dispatch (workflow_dispatch)
+#   - Tag push matching v* (builds all platforms + creates Release)
+#   - Manual dispatch via GitHub UI or: gh workflow run build.yml
 #
-# Build matrix:
-#   win32-x64     windows-latest
-#   win32-arm64   windows-11-arm  (requires GitHub Team/Enterprise or self-hosted)
-#   darwin-x64    macos-13        (last Intel macOS runner)
-#   darwin-arm64  macos-latest    (Apple Silicon)
-#   linux-x64     ubuntu-latest
-#   linux-arm64   ubuntu-24.04-arm
+# To release: git tag v1.0.0 && git push origin v1.0.0
+# To build without releasing: workflow_dispatch (no tag)
 
 name: Build All Platforms
 
 on:
   push:
-    branches: [main]
-    tags:     ['v*']
+    tags: ['v*']          # only tags, NOT branch pushes — prevents infinite loop
   workflow_dispatch:
     inputs:
       release:
-        description: 'Create a GitHub Release'
+        description: 'Create a GitHub Release after build'
         type: boolean
         default: false
 
@@ -31,125 +24,126 @@ jobs:
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.runner }}
+    # Don't cancel other platforms if one fails
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
         include:
           - label:    win32-x64
             runner:   windows-latest
-            platform: win32
-            arch:     x64
             artifact: phobos-win32-x64
+            ext:      .exe
+            pack:     zip
 
-          # Windows ARM64 — requires GitHub Team/Enterprise ARM runner.
-          # Comment this block out if not available on your plan.
+          # Windows ARM64 — requires GitHub Team/Enterprise.
+          # Remove this block if on the free plan.
           - label:    win32-arm64
             runner:   windows-11-arm
-            platform: win32
-            arch:     arm64
             artifact: phobos-win32-arm64
+            ext:      .exe
+            pack:     zip
 
           - label:    darwin-x64
-            runner:   macos-13
-            platform: darwin
-            arch:     x64
+            runner:   macos-13          # pinned Intel runner — free on all plans
             artifact: phobos-darwin-x64
+            ext:      ""
+            pack:     tar
 
           - label:    darwin-arm64
-            runner:   macos-latest
-            platform: darwin
-            arch:     arm64
+            runner:   macos-latest      # Apple Silicon (M1/M2)
             artifact: phobos-darwin-arm64
+            ext:      ""
+            pack:     tar
 
           - label:    linux-x64
             runner:   ubuntu-latest
-            platform: linux
-            arch:     x64
             artifact: phobos-linux-x64
+            ext:      ""
+            pack:     tar
 
           - label:    linux-arm64
             runner:   ubuntu-24.04-arm
-            platform: linux
-            arch:     arm64
             artifact: phobos-linux-arm64
+            ext:      ""
+            pack:     tar
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
 
-      # npm ci runs the package's install script which downloads the
-      # correct platform-specific .node prebuilt binary via node-pre-gyp.
       - name: Install dependencies
         run: npm ci
 
-      # Run the standard single-platform build.
-      # On the runner, process.platform and process.arch match the target.
       - name: Build
         run: node build.js
 
-      # Zip the entire dist/ directory so the artifact preserves
-      # the duckdb/ and tree-sitter/ subdirectory structure.
-      - name: Package dist (Unix)
-        if: matrix.platform != 'win32'
-        run: |
-          cd dist
-          tar -czf ../${{ matrix.artifact }}.tar.gz .
-          cd ..
+      - name: Package (tar)
+        if: matrix.pack == 'tar'
+        run: tar -czf ${{ matrix.artifact }}.tar.gz -C dist .
 
-      - name: Package dist (Windows)
-        if: matrix.platform == 'win32'
+      - name: Package (zip)
+        if: matrix.pack == 'zip'
         shell: pwsh
-        run: |
-          Compress-Archive -Path dist\* -DestinationPath ${{ matrix.artifact }}.zip
+        run: Compress-Archive -Path dist\* -DestinationPath ${{ matrix.artifact }}.zip
 
-      - name: Upload artifact (Unix)
-        if: matrix.platform != 'win32'
+      - name: Upload artifact (tar)
+        if: matrix.pack == 'tar'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.tar.gz
           retention-days: 7
 
-      - name: Upload artifact (Windows)
-        if: matrix.platform == 'win32'
+      - name: Upload artifact (zip)
+        if: matrix.pack == 'zip'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}.zip
           retention-days: 7
 
-  # ── Release job ─────────────────────────────────────────────────────────────
-  # Runs only on tag pushes or manual dispatch with release=true.
-  # Downloads all platform artifacts and attaches them to a GitHub Release.
+  # ── Release ─────────────────────────────────────────────────────────────────
+  # Runs after all build jobs finish (even if some failed).
+  # Attaches whichever artifacts were successfully produced to a GitHub Release.
   release:
     name: Create Release
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
+    # Run when triggered by a tag push, or manual dispatch with release=true.
+    # 'always()' means this job runs even if some build jobs failed/were skipped.
+    if: |
+      always() &&
+      (startsWith(github.ref, 'refs/tags/v') ||
+       (github.event_name == 'workflow_dispatch' && inputs.release))
     permissions:
       contents: write
 
     steps:
-      - name: Download all artifacts
+      - name: Download all available artifacts
         uses: actions/download-artifact@v4
         with:
           path: release-artifacts
+        # continue even if no artifacts were produced (shouldn't happen, but safe)
+        continue-on-error: true
 
       - name: List artifacts
-        run: find release-artifacts -type f | sort
+        run: |
+          echo "Artifacts collected:"
+          find release-artifacts -type f | sort || echo "(none)"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name:     PHOBOS ${{ github.ref_name }}
-          draft:    false
-          prerelease: false
+          tag_name:               ${{ github.ref_name }}
+          name:                   PHOBOS ${{ github.ref_name }}
+          draft:                  false
+          prerelease:             false
           generate_release_notes: true
-          files: release-artifacts/**/*
+          # Glob picks up all .tar.gz and .zip files under release-artifacts/
+          files: release-artifacts/**/*.{tar.gz,zip}
+          fail_on_unmatched_files: false

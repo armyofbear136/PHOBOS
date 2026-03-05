@@ -33,6 +33,7 @@
   "overrides": {
     "duckdb-async": {
       "duckdb": "1.4.4"
-    }
+    },
+    "node-gyp": "^10.3.1"
   }
 }

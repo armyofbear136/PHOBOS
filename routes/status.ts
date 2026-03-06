@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
-import { checkBackendHealth, reconfigureClients, COORDINATOR_MODEL, ENGINE_MODEL } from '../ai/clients.js';
+import { checkBackendHealth, reconfigureClients, COORDINATOR_MODEL, ENGINE_MODEL, COORDINATOR_PROVIDER, ENGINE_PROVIDER } from '../ai/clients.js';
 import { DispatchLogStore } from '../db/DispatchLogStore.js';
 import { DatabaseManager } from '../db/DatabaseManager.js';
-import { ModelConfigStore, COORDINATOR_MODELS, ENGINE_MODELS } from '../db/ModelConfigStore.js';
+import { ModelConfigStore, PROVIDERS, getCoordinatorModels, getEngineModels } from '../db/ModelConfigStore.js';
 
 export async function statusRoute(fastify: FastifyInstance): Promise<void> {
   const db = DatabaseManager.getInstance();
@@ -15,23 +15,29 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
     return reply.send({
       ...health,
       coordinatorModel: COORDINATOR_MODEL,
+      coordinatorProvider: COORDINATOR_PROVIDER,
       engineModel: ENGINE_MODEL,
+      engineProvider: ENGINE_PROVIDER,
       timestamp: new Date().toISOString(),
     });
   });
 
   // GET /api/config/models
-  // Returns current config + the full supported model catalogue for each role.
+  // Returns current config + the full provider+model catalogue.
   fastify.get('/api/config/models', async (_req, reply) => {
     const config = await configStore.getAll();
     return reply.send({
       coordinator: {
         ...config.coordinator,
-        options: COORDINATOR_MODELS,
+        // Models filtered to current provider
+        options: getCoordinatorModels(config.coordinator.provider),
+        // All providers for the provider dropdown
+        providers: PROVIDERS,
       },
       engine: {
         ...config.engine,
-        options: ENGINE_MODELS,
+        options: getEngineModels(config.engine.provider),
+        providers: PROVIDERS,
       },
     });
   });
@@ -40,28 +46,56 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
   // Update coordinator and/or engine config, then hot-swap the live clients.
   fastify.put<{
     Body: {
-      coordinator?: { endpoint?: string; model?: string };
-      engine?: { endpoint?: string; model?: string };
+      coordinator?: { provider?: string; endpoint?: string; model?: string; apiKey?: string };
+      engine?: { provider?: string; endpoint?: string; model?: string; apiKey?: string };
     };
   }>('/api/config/models', async (req, reply) => {
     if (req.body.coordinator) {
       const current = await configStore.getCoordinator();
+      const patch = req.body.coordinator;
+      // If provider changed, auto-update endpoint to provider default
+      const provider = patch.provider ?? current.provider;
+      const providerDef = PROVIDERS.find(p => p.id === provider);
+      const endpoint = patch.endpoint ?? (
+        patch.provider && providerDef ? providerDef.defaultEndpoint : current.endpoint
+      );
       await configStore.setCoordinator({
-        endpoint: req.body.coordinator.endpoint ?? current.endpoint,
-        model:    req.body.coordinator.model    ?? current.model,
+        provider,
+        endpoint,
+        model: patch.model ?? current.model,
+        apiKey: patch.apiKey ?? current.apiKey,
       });
     }
     if (req.body.engine) {
       const current = await configStore.getEngine();
+      const patch = req.body.engine;
+      const provider = patch.provider ?? current.provider;
+      const providerDef = PROVIDERS.find(p => p.id === provider);
+      const endpoint = patch.endpoint ?? (
+        patch.provider && providerDef ? providerDef.defaultEndpoint : current.endpoint
+      );
       await configStore.setEngine({
-        endpoint: req.body.engine.endpoint ?? current.endpoint,
-        model:    req.body.engine.model    ?? current.model,
+        provider,
+        endpoint,
+        model: patch.model ?? current.model,
+        apiKey: patch.apiKey ?? current.apiKey,
       });
     }
-    // Hot-swap live clients immediately — no restart needed
     await reconfigureClients();
     const updated = await configStore.getAll();
-    return reply.send({ ok: true, ...updated });
+    return reply.send({
+      ok: true,
+      coordinator: {
+        ...updated.coordinator,
+        options: getCoordinatorModels(updated.coordinator.provider),
+        providers: PROVIDERS,
+      },
+      engine: {
+        ...updated.engine,
+        options: getEngineModels(updated.engine.provider),
+        providers: PROVIDERS,
+      },
+    });
   });
 
   // GET /api/stats

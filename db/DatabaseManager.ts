@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS files (
 -- Documents (versioned claude.md / project.md / chat.md)
 CREATE TABLE IF NOT EXISTS documents (
   id         VARCHAR PRIMARY KEY,
-  doc_type   VARCHAR NOT NULL CHECK (doc_type IN ('claude_md','project_md','chat_md')),
+  doc_type   VARCHAR NOT NULL CHECK (doc_type IN ('claude_md','project_md','chat_md','phobos_directives','user_directives')),
   project_id VARCHAR,
   content    TEXT NOT NULL DEFAULT '',
   version    INTEGER NOT NULL DEFAULT 1,
@@ -192,7 +192,47 @@ export class DatabaseManager {
   async initialize(): Promise<void> {
     this.db = await Database.Database.create(this.dbPath);
     await this.db.exec(SCHEMA);
+    await this.migrateDocuments();
     console.log(`[DB] Initialized at ${this.dbPath}`);
+  }
+
+  /**
+   * Expands the doc_type CHECK constraint to include phobos_directives and user_directives.
+   * DuckDB does not support ALTER COLUMN for CHECK constraints — we recreate the table
+   * only if the old narrow constraint is still in place (detected by attempting an insert
+   * of the new type and catching the constraint violation).
+   */
+  private async migrateDocuments(): Promise<void> {
+    try {
+      // Probe whether the constraint already allows the new types
+      const conn = await this.db.connect();
+      try {
+        await conn.exec(`INSERT INTO documents (id, doc_type, content, version)
+          VALUES ('__probe__', 'user_directives', '', 0)`);
+        await conn.exec(`DELETE FROM documents WHERE id = '__probe__'`);
+      } catch {
+        // Constraint violation — recreate table with expanded CHECK
+        await conn.exec(`
+          ALTER TABLE documents RENAME TO documents_old;
+          CREATE TABLE documents (
+            id         VARCHAR PRIMARY KEY,
+            doc_type   VARCHAR NOT NULL CHECK (doc_type IN ('claude_md','project_md','chat_md','phobos_directives','user_directives')),
+            project_id VARCHAR,
+            content    TEXT NOT NULL DEFAULT '',
+            version    INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMP NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP NOT NULL DEFAULT now()
+          );
+          INSERT INTO documents SELECT * FROM documents_old;
+          DROP TABLE documents_old;
+        `);
+        console.log('[DB] Migrated documents table: expanded doc_type CHECK constraint');
+      } finally {
+        await conn.close();
+      }
+    } catch (err) {
+      console.warn('[DB] migrateDocuments skipped:', err);
+    }
   }
 
   async query<T = Record<string, unknown>>(

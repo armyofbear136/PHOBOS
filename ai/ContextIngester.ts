@@ -1,6 +1,8 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { coordinatorClient, COORDINATOR_MODEL } from './clients.js';
+import { coordinatorCall, coordinatorStream } from './clients.js';
+
+
 
 /**
  * Stage 1 — Context Ingestion
@@ -60,7 +62,8 @@ export class ContextIngester {
     projectMd: string,
     repoMap: string,
     sendStatus: (content: string) => void,
-    sendThinking: (token: string) => void
+    sendThinking: (token: string) => void,
+    chatSummary?: string
   ): Promise<IngestionResult> {
     const filesToProcess = filenames.slice(0, MAX_FILES_TO_SUMMARISE);
 
@@ -106,21 +109,19 @@ export class ContextIngester {
         .join('\n\n');
 
       const summaryPrompt =
-        `/no_think Summarise each file below. For each file, write ONE sentence (max 20 words) describing: ` +
+        `Summarise each file below. For each file, write ONE sentence (max 20 words) describing: ` +
         `what it does, its key exports or responsibilities, and main dependencies. ` +
         `Respond ONLY with a JSON array: [{"filename":"...","summary":"..."}]. No preamble.\n\n` +
         fileBlocks;
 
       try {
-        const response = await coordinatorClient.chat.completions.create({
-          model: COORDINATOR_MODEL,
+        const raw = await coordinatorCall({
+          systemPrompt: '',
           messages: [{ role: 'user', content: summaryPrompt }],
-          max_tokens: 1024,
+          maxTokens: 1024,
           temperature: 0.1,
-          stream: false,
+          mode: 'no_think',
         });
-
-        const raw = response.choices[0]?.message?.content?.trim() ?? '';
         const jsonMatch = raw.match(/\[[\s\S]*\]/);
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[0]) as Array<{ filename: string; summary: string }>;
@@ -164,6 +165,7 @@ export class ContextIngester {
     sendStatus('Coordinator reviewing request…');
 
     const contextHints: string[] = [];
+    if (chatSummary) contextHints.push(`Conversation summary (prior turns):\n${chatSummary}`);
     if (projectMd) contextHints.push(`Project context:\n${projectMd}`);
     if (repoMap)   contextHints.push(`Workspace index:\n${repoMap}`);
     if (fileSummaries.length > 0) {
@@ -172,7 +174,7 @@ export class ContextIngester {
     }
 
     const rewritePrompt =
-      `/think You are preparing a request for ALLMIND, a powerful AI execution engine. ` +
+      `You are preparing a request for ALLMIND, a powerful AI execution engine. ` +
       `Rewrite the user's message into a precise, unambiguous task description. ` +
       `Resolve any vague references using the available context (exact function names, ` +
       `file paths, line numbers if relevant). Clarify scope. Note constraints. ` +
@@ -186,25 +188,14 @@ export class ContextIngester {
     let coordinatorSummary = 'Sending task to engine.';
 
     try {
-      const stream = await coordinatorClient.chat.completions.create({
-        model: COORDINATOR_MODEL,
+      const stripped = await coordinatorStream({
+        systemPrompt: '',
         messages: [{ role: 'user', content: rewritePrompt }],
-        max_tokens: 768,
+        maxTokens: 768,
         temperature: 0.2,
-        stream: true,
+        mode: 'think',
+        onThinkToken: sendThinking,
       });
-
-      let rawOutput = '';
-      for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta as Record<string, unknown>;
-        const thinkToken = (delta?.reasoning_content ?? delta?.reasoning) as string | undefined;
-        const outToken = delta?.content as string | undefined;
-        if (thinkToken) sendThinking(thinkToken);
-        if (outToken) rawOutput += outToken;
-      }
-
-      // Strip any leaked <think> blocks
-      const stripped = rawOutput.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
       const jsonMatch = stripped.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]) as { reformulated?: string; summary?: string };

@@ -1,8 +1,9 @@
-import { coordinatorClient, COORDINATOR_MODEL } from './clients.js';
+import { coordinatorCall, coordinatorStream } from './clients.js';
 import type { IntentType } from './IntentClassifier.js';
 import type { FileSummary } from './ContextIngester.js';
 import type { Task } from './TaskPlanner.js';
 import type { KnowledgeEntry } from '../db/KnowledgeStore.js';
+
 
 export interface DispatchPackage {
   systemPrompt: string;
@@ -15,8 +16,11 @@ export interface ComposeInput {
   userMessage: string;
   intentType: IntentType;
   claudeMd: string;
+  userDirectivesMd: string;
   projectMd: string;
   chatMd: string;
+  /** Rolling compressed conversation summary from ChatSummaryStore — distinct from chatMd */
+  chatSummary?: string;
   conversationHistory: Array<{ role: string; content: string }>;
   repoMap?: string;
   /** Raw files attached by user (uploaded) — always injected verbatim */
@@ -53,6 +57,7 @@ export class DispatchComposer {
     const parts: string[] = [];
 
     if (input.claudeMd) parts.push(`<claude_md>\n${input.claudeMd}\n</claude_md>`);
+    if (input.userDirectivesMd) parts.push(`<user_directives>\n${input.userDirectivesMd}\n</user_directives>`);
     if (input.projectMd) parts.push(`<project_md>\n${input.projectMd}\n</project_md>`);
     if (input.chatMd) parts.push(`<chat_md>\n${input.chatMd}\n</chat_md>`);
 
@@ -205,34 +210,21 @@ Attempt ${attemptNumber}/3. Address the errors above precisely.
       if (context.projectMd) contextHints.push(`Project context:\n${context.projectMd}`);
       if (context.repoMap)   contextHints.push(`Repo map:\n${context.repoMap}`);
 
-      const stream = await coordinatorClient.chat.completions.create({
-        model: COORDINATOR_MODEL,
-        messages: [
-          {
-            role: 'user',
-            content:
-              `/no_think Reformulate this ${intentType} request. ` +
-              `Respond with JSON only: {"reformulated":"<improved prompt>","summary":"<one sentence max 15 words>"}. ` +
-              `No preamble.\n\n` +
-              `REQUEST: ${userMessage}\n\n` +
-              (contextHints.length > 0 ? contextHints.join('\n\n') : ''),
-          },
-        ],
-        max_tokens: 256,
+      const prompt =
+        `Reformulate this ${intentType} request. ` +
+        `Respond with JSON only: {"reformulated":"<improved prompt>","summary":"<one sentence max 15 words>"}. ` +
+        `No preamble.\n\n` +
+        `REQUEST: ${userMessage}\n\n` +
+        (contextHints.length > 0 ? contextHints.join('\n\n') : '');
+
+      const stripped = await coordinatorStream({
+        systemPrompt: '',
+        messages: [{ role: 'user', content: prompt }],
+        maxTokens: 256,
         temperature: 0.1,
-        stream: true,
+        mode: 'no_think',
+        onThinkToken: sendThinking,
       });
-
-      let rawOutput = '';
-      for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta as Record<string, unknown>;
-        const thinkToken = (delta?.reasoning_content ?? delta?.reasoning) as string | undefined;
-        const outToken = delta?.content as string | undefined;
-        if (thinkToken && sendThinking) sendThinking(thinkToken);
-        if (outToken) rawOutput += outToken;
-      }
-
-      const stripped = rawOutput.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
       const jsonMatch = stripped.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]) as { reformulated: string; summary: string };

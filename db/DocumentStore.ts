@@ -1,7 +1,7 @@
 import { DatabaseManager } from './DatabaseManager.js';
 import { randomUUID } from 'crypto';
 
-export type DocType = 'claude_md' | 'project_md' | 'chat_md' | 'phobos_directives';
+export type DocType = 'claude_md' | 'project_md' | 'chat_md' | 'phobos_directives' | 'user_directives';
 
 export interface Document {
   id: string;
@@ -81,8 +81,9 @@ export class DocumentStore {
   async loadContextBundle(
     projectId?: string | null,
     chatThreadId?: string | null
-  ): Promise<{ claudeMd: string; projectMd: string; chatMd: string }> {
+  ): Promise<{ claudeMd: string; userDirectivesMd: string; projectMd: string; chatMd: string }> {
     const claudeDoc = await this.getLatest('claude_md');
+    const userDirectivesDoc = await this.getLatest('user_directives');
     const projectDoc = projectId
       ? await this.getLatest('project_md', projectId)
       : null;
@@ -92,6 +93,7 @@ export class DocumentStore {
 
     return {
       claudeMd: claudeDoc?.content ?? '',
+      userDirectivesMd: userDirectivesDoc?.content ?? '',
       projectMd: projectDoc?.content ?? '',
       chatMd: chatDoc?.content ?? '',
     };

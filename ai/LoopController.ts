@@ -1,5 +1,5 @@
 import type { FastifyReply } from 'fastify';
-import { engineClient, coordinatorClient, ENGINE_MODEL, COORDINATOR_MODEL } from './clients.js';
+import { engineClient, coordinatorClient, ENGINE_MODEL, COORDINATOR_MODEL, ENGINE_PROVIDER, COORDINATOR_PROVIDER, applyThinkingStrategy, getThinkingStrategy, getThinkingExtraBody, coordinatorStream } from './clients.js';
 import { DispatchComposer, type ComposeInput } from './DispatchComposer.js';
 import { ContextIngester } from './ContextIngester.js';
 import { TaskPlanner } from './TaskPlanner.js';
@@ -44,7 +44,7 @@ export type SSEEvent =
   | { type: 'coordinator'; content: string }
   | { type: 'think_token'; token: string; source?: 'coordinator' | 'engine' }
   | { type: 'output_token'; token: string }
-  | { type: 'thinking_complete'; content: string }
+  | { type: 'thinking_complete'; content: string; source?: 'coordinator' | 'engine' }
   | { type: 'file_panel'; filename: string; language: string; code: string }
   | { type: 'patches_applied'; count: number; files: string[] }
   | { type: 'build_result'; success: boolean; errors?: string }
@@ -53,6 +53,7 @@ export type SSEEvent =
   | { type: 'task_complete'; taskIndex: number; total: number; title: string }
   | { type: 'task_failed'; taskIndex: number; total: number; title: string; reason: string }
   | { type: 'complete'; approved: boolean; bestAttempt: number }
+  | { type: 'thinking_retry'; attempt: number }
   | { type: 'error'; message: string };
 
 interface StreamResult {
@@ -141,7 +142,11 @@ export class LoopController {
     const syntaxValidator = new SyntaxValidator();
     const buildRunner = new BuildRunner(projectRoot);
     const errorFormatter = new ErrorFormatter();
-    const sendThinking = this.makeThinkingSender(reply, 'coordinator');
+    let coordinatorThinkingAccum = '';
+    const sendThinking = (() => {
+      const raw = this.makeThinkingSender(reply, 'coordinator');
+      return (token: string) => { coordinatorThinkingAccum += token; raw(token); };
+    })();
     const sendEngineThinking = this.makeThinkingSender(reply, 'engine');
     const sendStatus = (content: string) => this.sendEvent(reply, { type: 'status', content });
 
@@ -162,7 +167,8 @@ export class LoopController {
       composeInput.projectMd,
       composeInput.repoMap ?? '',
       sendStatus,
-      sendThinking
+      sendThinking,
+      composeInput.chatSummary
     );
 
     // Update composeInput with Stage 1 outputs
@@ -260,6 +266,8 @@ export class LoopController {
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         if (attempt > 1) {
           sendStatus(`[${task.index}/${total}] Retrying — attempt ${attempt}/${maxAttempts}…`);
+          // Tell frontend to seal the current thinking segment — prevents accumulation across attempts
+          this.sendEvent(reply, { type: 'thinking_retry', attempt });
         }
 
         if (this.budgetMonitor.shouldInjectFocus(taskId)) {
@@ -457,6 +465,15 @@ export class LoopController {
       taskResults
     );
 
+    // Persist coordinator thinking accumulated during the loop (planning, review calls)
+    if (coordinatorThinkingAccum && assistantMessageId) {
+      await this.options.persistEvent?.('thinking_complete', {
+        type: 'thinking_complete',
+        content: coordinatorThinkingAccum,
+        source: 'coordinator',
+      }, assistantMessageId).catch(() => {});
+    }
+
     const bestAttempt = allAttempts.length > 0
       ? allAttempts.reduce((best, curr) => curr.reviewScore > best.reviewScore ? curr : best, allAttempts[0])
       : { reviewScore: 1.0, attemptNumber: 1 };
@@ -560,7 +577,7 @@ export class LoopController {
     this.budgetMonitor.recordTokens(taskId, Math.ceil(accumulatedThinking.length / 4));
 
     if (accumulatedThinking) {
-      await this.persistAndSend(reply, { type: 'thinking_complete', content: accumulatedThinking }, assistantMessageId);
+      await this.persistAndSend(reply, { type: 'thinking_complete', content: accumulatedThinking, source: 'engine' }, assistantMessageId);
     }
 
     return {
@@ -596,53 +613,103 @@ export class LoopController {
       abortController.abort();
     });
 
-    const stream = await engineClient.chat.completions.create(
-      {
-        model: ENGINE_MODEL,
-        messages,
-        max_tokens: -1,
-        temperature: 0.4,
-        stream: true,
-      },
-      { signal: abortController.signal }
+    // Apply thinking activation strategy for the current engine model/provider
+    const { messages: thinkMessages, systemPrompt: thinkSystemPrompt } = applyThinkingStrategy(
+      messages.filter(m => m.role !== 'system'),
+      messages.find(m => m.role === 'system')?.content ?? '',
+      ENGINE_PROVIDER,
+      ENGINE_MODEL,
+      'think'
     );
+    const finalMessages = thinkSystemPrompt
+      ? [{ role: 'system' as const, content: thinkSystemPrompt }, ...thinkMessages]
+      : thinkMessages;
+
+    const engineExtraBody = getThinkingExtraBody(ENGINE_PROVIDER, ENGINE_MODEL, 'think');
+    console.log(`[engine:config] provider=${ENGINE_PROVIDER} model=${ENGINE_MODEL} extraBody=${JSON.stringify(engineExtraBody)}`);
+    const engineCallParams = {
+      model: ENGINE_MODEL,
+      messages: finalMessages as Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+      max_tokens: 32768,
+      temperature: 0.4,
+      ...(Object.keys(engineExtraBody).length > 0 ? { extra_body: engineExtraBody } : {}),
+    };
+
+    let stream: Awaited<ReturnType<typeof engineClient.chat.completions.create>>;
+    try {
+      stream = await engineClient.chat.completions.create(
+        { ...engineCallParams, stream: true as const },
+        { signal: abortController.signal }
+      );
+    } catch (createErr: unknown) {
+      // Ollama may reject think:true for certain models — retry without it
+      console.error(`[engine:create:error] ${createErr instanceof Error ? createErr.message : String(createErr)}`);
+      console.log('[engine:create:retry] Retrying without extra_body...');
+      const fallbackParams = { ...engineCallParams };
+      delete (fallbackParams as Record<string, unknown>).extra_body;
+      stream = await engineClient.chat.completions.create(
+        { ...fallbackParams, stream: true as const },
+        { signal: abortController.signal }
+      );
+    }
 
     try {
-      // Track how many bytes we've already emitted for each buffer so we
-      // can delta-emit when using the tag-based <think> path (Llama 3.1 etc.).
       let emittedThinkLen = 0;
       let emittedOutputLen = 0;
+      let _dbgN = 0;
+      const engineStrategy = getThinkingStrategy(ENGINE_PROVIDER, ENGINE_MODEL);
+      console.log(`[engine:strategy] thinkingPath=${engineStrategy.thinkingPath}`);
 
       for await (const chunk of stream) {
         if (streamAborted) break;
 
         const delta = chunk.choices[0]?.delta as Record<string, unknown>;
-        const thinkToken = (delta?.reasoning ?? delta?.reasoning_content) as string | undefined;
-        const outToken = delta?.content as string | undefined;
 
-        if (thinkToken) {
-          // Dedicated reasoning field: DeepSeek-R1, Qwen3 extended thinking.
-          parser.feedThinking(thinkToken);
-          sendThinking(thinkToken);
-        } else if (outToken) {
-          // No dedicated reasoning field — route through StreamParser so models
-          // that embed thinking inside <think>...</think> in delta.content
-          // (e.g. Llama 3.1, Qwen3 without extended thinking API) are handled.
-          // The parser state machine separates thinking from output tokens.
-          parser.feed(outToken);
+        // Log first 3 chunks fully — shows ALL delta keys Ollama actually sends
+        if (_dbgN <= 2) {
+          console.log(`[engine:delta:${_dbgN}] keys=${JSON.stringify(Object.keys(delta ?? {}))}`);
+          console.log(`[engine:delta:${_dbgN}] content=${JSON.stringify(delta?.content)} thinking=${JSON.stringify((delta as any)?.thinking)} reasoning=${JSON.stringify((delta as any)?.reasoning_content ?? (delta as any)?.reasoning)}`);
+        }
+        _dbgN++;
 
-          // Delta-emit any new thinking tokens accumulated since last chunk.
-          const { thinking: thinkBuf, output: outBuf } = parser.getBuffers();
-          const newThink = thinkBuf.slice(emittedThinkLen);
-          if (newThink) {
-            emittedThinkLen = thinkBuf.length;
-            sendThinking(newThink);
+        if (engineStrategy.thinkingPath === 'field') {
+          // Ollama Qwen3: thinking in dedicated field, content in delta.content — fully separate streams
+          const d = delta as Record<string, unknown>;
+          let thinkToken = (d.thinking ?? d.reasoning_content ?? d.reasoning) as string | null | undefined;
+          const outToken = d.content as string | null | undefined;
+
+          if (thinkToken) {
+            // Strip any <think>/<think> wrapper tags some providers inject into the field
+            thinkToken = thinkToken.replace(/<\/?think>/g, '');
+            if (thinkToken) {
+              if (_dbgN <= 3) console.log(`[engine:think:field] ${JSON.stringify(thinkToken.slice(0, 80))}`);
+              // Send directly — do NOT feed parser (would cause double-emit when outToken arrives)
+              sendThinking(thinkToken);
+            }
           }
-          // Delta-emit any new output tokens.
-          const newOut = outBuf.slice(emittedOutputLen);
-          if (newOut) {
-            emittedOutputLen = outBuf.length;
-            reply.raw.write(`data: ${JSON.stringify({ type: 'output_token', token: newOut })}\n\n`);
+          if (outToken) {
+            // Content is clean on field-path providers — no <think> tags in delta.content
+            reply.raw.write(`data: ${JSON.stringify({ type: 'output_token', token: outToken })}\n\n`);
+            emittedOutputLen += outToken.length;
+          }
+        } else {
+          // FastFlowLLM Qwen3 / Llama: everything in delta.content, <think> tags separate it
+          const outToken = delta?.content as string | null | undefined;
+
+          if (outToken != null) {
+            _dbgN++;
+            if (_dbgN <= 3 || outToken.includes('<think') || outToken.includes('</think')) {
+              console.log(`[engine:${_dbgN}] raw=${JSON.stringify(outToken.slice(0, 100))}`);
+            }
+          }
+
+          if (outToken) {
+            parser.feed(outToken);
+            const { thinking: thinkBuf, output: outBuf } = parser.getBuffers();
+            const newThink = thinkBuf.slice(emittedThinkLen);
+            if (newThink) { emittedThinkLen = thinkBuf.length; sendThinking(newThink); }
+            const newOut = outBuf.slice(emittedOutputLen);
+            if (newOut) { emittedOutputLen = outBuf.length; reply.raw.write(`data: ${JSON.stringify({ type: 'output_token', token: newOut })}\n\n`); }
           }
         }
 
@@ -684,43 +751,27 @@ export class LoopController {
     changedSummary: string,
     sendThinking?: (token: string) => void
   ): Promise<{ score: number; decision: 'APPROVE' | 'NEEDS_REVISION' | 'REJECT'; guidance?: string }> {
+    const reviewSystem =
+      'You are a coordinator reviewing whether a coding engine correctly solved a task. ' +
+      'Respond with ONLY a JSON object: {"score":0.0-1.0,"decision":"APPROVE|NEEDS_REVISION|REJECT","guidance":"optional"}. ' +
+      'APPROVE (score >= 0.8) if: the correct target file was modified/created AND the content matches what was requested. ' +
+      'REJECT (score < 0.5) if: the wrong file was created, or the engine wrote example/stub code instead of performing the actual task, or the engine described what to do instead of doing it. ' +
+      'NEEDS_REVISION (0.5-0.8) if: the right file was touched but content is incomplete or incorrect. ' +
+      'No preamble.';
+    const reviewPrompt =
+      `ORIGINAL TASK:\n${originalTask}\n\n` +
+      `CHANGES MADE:\n${changedSummary}\n\n` +
+      `ENGINE OUTPUT (check that tool calls target the correct file with correct content):\n${output.slice(0, 2000)}`;
+
     try {
-      const stream = await coordinatorClient.chat.completions.create({
-        model: COORDINATOR_MODEL,
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You are a coordinator reviewing whether a coding engine correctly solved a task. ' +
-              'Respond with ONLY a JSON object: {"score":0.0-1.0,"decision":"APPROVE|NEEDS_REVISION|REJECT","guidance":"optional"}. ' +
-              'APPROVE (score >= 0.8) if: the correct target file was modified/created AND the content matches what was requested. ' +
-              'REJECT (score < 0.5) if: the wrong file was created, or the engine wrote example/stub code instead of performing the actual task, or the engine described what to do instead of doing it. ' +
-              'NEEDS_REVISION (0.5-0.8) if: the right file was touched but content is incomplete or incorrect. ' +
-              'No preamble.',
-          },
-          {
-            role: 'user',
-            content:
-              `/think ORIGINAL TASK:\n${originalTask}\n\n` +
-              `CHANGES MADE:\n${changedSummary}\n\n` +
-              `ENGINE OUTPUT (check that tool calls target the correct file with correct content):\n${output.slice(0, 2000)}`,
-          },
-        ],
-        max_tokens: 256,
+      const stripped = await coordinatorStream({
+        systemPrompt: reviewSystem,
+        messages: [{ role: 'user', content: reviewPrompt }],
+        maxTokens: 256,
         temperature: 0.1,
-        stream: true,
+        mode: 'think',
+        onThinkToken: sendThinking,
       });
-
-      let rawOutput = '';
-      for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta as Record<string, unknown>;
-        const thinkToken = (delta?.reasoning_content ?? delta?.reasoning) as string | undefined;
-        const outToken = delta?.content as string | undefined;
-        if (thinkToken && sendThinking) sendThinking(thinkToken);
-        if (outToken) rawOutput += outToken;
-      }
-
-      const stripped = rawOutput.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
       const jsonMatch = stripped.match(/\{[\s\S]*\}/);
       const cleaned = jsonMatch ? jsonMatch[0] : stripped;
       const parsed = JSON.parse(cleaned);

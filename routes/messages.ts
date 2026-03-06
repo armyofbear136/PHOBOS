@@ -15,7 +15,7 @@ import { CopilotIndex } from '../context/CopilotIndex.js';
 import { ThinkingStripper } from '../context/ThinkingStripper.js';
 import type { IntentType } from '../ai/IntentClassifier.js';
 import type { ClassificationContext } from '../ai/IntentClassifier.js';
-import { ENGINE_MODEL } from '../ai/clients.js';
+import { ENGINE_MODEL, COORDINATOR_MODEL as COORD_MODEL_REF, COORDINATOR_PROVIDER, getThinkingStrategy } from '../ai/clients.js';
 
 export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   const db = DatabaseManager.getInstance();
@@ -204,7 +204,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
       'Access-Control-Allow-Origin': '*',
     });
 
-    const sendEvent = (data: object): void => {
+    const sendEvent = (data: Record<string, unknown>): void => {
       reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
@@ -238,13 +238,19 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
       ]);
 
       sendEvent({ type: 'status', content: 'Classifying intent…' });
+      sendEvent({
+        type: 'intent_classified',
+        intentType: intent.type,
+        domain: 'inferred',
+        routing: intent.type === 'QUESTION' ? 'ANSWER_DIRECTLY' : 'NEEDS_ALLMIND',
+      });
 
       const history = await messageStore.getContextHistory(threadId, summaryStore);
       const priorHistory = history.slice(0, -1);
 
       // Collect all status events so we can persist them as a single activity event after the turn
       const activityLog: string[] = [];
-      const trackingsendEvent = (data: object): void => {
+      const trackingsendEvent = (data: Record<string, unknown>): void => {
         sendEvent(data);
         if ((data as any).type === 'status') activityLog.push((data as any).content as string);
       };
@@ -313,8 +319,10 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           userMessage: fullUserMessage,
           intentType: intent.type as IntentType,
           claudeMd: docs.claudeMd,
+          userDirectivesMd: docs.userDirectivesMd,
           projectMd: docs.projectMd,
           chatMd: docs.chatMd,
+          chatSummary: chatSummaryRow?.summary,
           conversationHistory: priorHistory,
           repoMap: workspaceIndex,
           loadedFiles: (attached_files ?? []).map((f) => ({ path: f.name, content: f.content })),
@@ -414,7 +422,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
         'Access-Control-Allow-Origin': '*',
       });
 
-      const sendEvent = (data: object): void => {
+      const sendEvent = (data: Record<string, unknown>): void => {
         reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
       };
 
@@ -453,6 +461,14 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   );
 }
 
+
+// No user-message prefix needed — Ollama models use extra_body:{think:true},
+// Llama uses system prompt injection. buildThinkMsg is a no-op kept for call-site compat.
+function buildThinkMsg(msg: string): string {
+  return msg;
+}
+
+
 async function handleDirectResponse(
   threadId: string,
   userMessage: string,
@@ -461,59 +477,152 @@ async function handleDirectResponse(
   history: Array<{ role: string; content: string }>,
   messageStore: MessageStore,
   eventStore: MessageEventStore,
-  sendEvent: (data: object) => void
+  sendEvent: (data: Record<string, unknown>) => void
 ): Promise<string | null> {
-  const { coordinatorClient, COORDINATOR_MODEL } = await import('../ai/clients.js');
+  const { coordinatorClient, COORDINATOR_MODEL, getThinkingStrategy: getStrategy, COORDINATOR_PROVIDER: COORD_PROV } = await import('../ai/clients.js');
 
   const systemParts: string[] = [];
   if (docs.claudeMd) systemParts.push(docs.claudeMd);
   if (docs.projectMd) systemParts.push(`\n\nProject context:\n${docs.projectMd}`);
   if (docs.chatMd) systemParts.push(`\n\nChat rules:\n${docs.chatMd}`);
-  const systemPrompt = systemParts.join('') || 'You are PHOBOS, a powerful AI assistant. You help with any task: coding, analysis, writing, conversation, planning, and more. Be direct and precise.';
 
-  const messages = [
+  const strategy = getStrategy(COORD_PROV, COORDINATOR_MODEL);
+  const baseSystemPrompt = systemParts.join('') || 'You are PHOBOS, a powerful AI assistant. You help with any task: coding, analysis, writing, conversation, planning, and more. Be direct and precise.';
+  const systemPrompt = baseSystemPrompt + strategy.systemSuffix;
+
+  const rawMessages = [
     ...history
       .filter((m) => m.role === 'user' || m.role === 'assistant')
       .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
-    { role: 'user' as const, content: `/think ${userMessage}` },
+    { role: 'user' as const, content: userMessage },
   ];
 
+  // Apply thinking strategy — injects /think prefix for FastFlowLLM Qwen3
+  const { applyThinkingStrategy: applyStrat } = await import('../ai/clients.js');
+  const { messages: stratMessages } = applyStrat(rawMessages, systemPrompt, COORD_PROV, COORDINATOR_MODEL, 'think');
+
+  console.log(`[handleDirect:config] provider=${COORD_PROV} model=${COORDINATOR_MODEL} thinkingPath=${strategy.thinkingPath} systemSuffix=${JSON.stringify(strategy.systemSuffix.slice(0, 40))}`);
+
   try {
-    const stream = await coordinatorClient.chat.completions.create({
-      model: COORDINATOR_MODEL,
-      messages: [{ role: 'system', content: systemPrompt }, ...messages],
-      max_tokens: 8192,
-      temperature: 0.3,
-      stream: true,
-    });
+    const { getThinkingExtraBody: getExtra } = await import('../ai/clients.js');
+    const coordExtraBody = getExtra(COORD_PROV, COORDINATOR_MODEL, 'think');
+    console.log(`[handleDirect:extraBody] ${JSON.stringify(coordExtraBody)}`);
+    const coordMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+      { role: 'system', content: systemPrompt },
+      ...stratMessages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+    ];
+
+    let stream: Awaited<ReturnType<typeof coordinatorClient.chat.completions.create>>;
+    try {
+      stream = await coordinatorClient.chat.completions.create({
+        model: COORDINATOR_MODEL,
+        messages: coordMessages,
+        max_tokens: 8192,
+        temperature: 0.3,
+        stream: true as const,
+        ...(Object.keys(coordExtraBody).length > 0 ? { extra_body: coordExtraBody } : {}),
+      });
+    } catch (streamCreateErr: unknown) {
+      console.error(`[handleDirect:createError] ${streamCreateErr instanceof Error ? streamCreateErr.message : String(streamCreateErr)}`);
+      console.log('[handleDirect:retry] Retrying without extra_body...');
+      stream = await coordinatorClient.chat.completions.create({
+        model: COORDINATOR_MODEL,
+        messages: coordMessages,
+        max_tokens: 8192,
+        temperature: 0.3,
+        stream: true as const,
+      });
+    }
 
     let thinkingBuf = '';
     let outputBuf = '';
+    let inThinkTag = false;
+    let _dbgCount = 0;
 
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta as Record<string, unknown>;
-      const thinkToken = (delta?.reasoning_content ?? delta?.reasoning) as string | undefined;
-      const outToken = delta?.content as string | undefined;
-      if (thinkToken) {
-        thinkingBuf += thinkToken;
-        sendEvent({ type: 'think_token', token: thinkToken, source: 'coordinator' });
-      }
-      if (outToken) {
-        outputBuf += outToken;
-        sendEvent({ type: 'output_token', token: outToken });
+
+      if (strategy.thinkingPath === 'field') {
+        // FastFlowLLM uses delta.reasoning_content; Ollama uses delta.reasoning (confirmed from logs)
+        // FastFlowLLM also wraps reasoning_content with literal <think>...</think> tokens — strip them.
+        const d = delta as Record<string, unknown>;
+        let thinkToken = (d.reasoning_content ?? d.reasoning ?? d.thinking) as string | null | undefined;
+        const outToken = d.content as string | null | undefined;
+        if (thinkToken) {
+          // Strip any <think> / </think> wrapper tags FastFlowLLM injects into the field
+          thinkToken = thinkToken.replace(/<\/?think>/g, '');
+          if (thinkToken) {
+            _dbgCount++;
+            if (_dbgCount <= 3) console.log(`[handleDirect:think:${_dbgCount}] field=${JSON.stringify(thinkToken.slice(0, 80))}`);
+            thinkingBuf += thinkToken;
+            sendEvent({ type: 'think_token', token: thinkToken, source: 'coordinator' });
+          }
+        }
+        if (outToken) {
+          outputBuf += outToken;
+          sendEvent({ type: 'output_token', token: outToken });
+        }
+      } else {
+        // FastFlowLLM Qwen3 / Llama: everything in delta.content, <think> tags separate it
+        const rawContent = delta?.content as string | null | undefined;
+
+        // Debug: log first few tokens
+        if (rawContent != null) {
+          _dbgCount++;
+          if (_dbgCount <= 3 || rawContent.includes('<think') || rawContent.includes('</think')) {
+            console.log(`[handleDirect:${_dbgCount}] raw=${JSON.stringify(rawContent.slice(0, 100))}`);
+          }
+        }
+
+        if (rawContent) {
+          let remaining = rawContent;
+          while (remaining.length > 0) {
+            if (inThinkTag) {
+              const closeIdx = remaining.indexOf('</think>');
+              if (closeIdx === -1) {
+                thinkingBuf += remaining;
+                sendEvent({ type: 'think_token', token: remaining, source: 'coordinator' });
+                remaining = '';
+              } else {
+                const chunk2 = remaining.slice(0, closeIdx);
+                if (chunk2) {
+                  thinkingBuf += chunk2;
+                  sendEvent({ type: 'think_token', token: chunk2, source: 'coordinator' });
+                }
+                inThinkTag = false;
+                remaining = remaining.slice(closeIdx + '</think>'.length);
+              }
+            } else {
+              const openIdx = remaining.indexOf('<think>');
+              if (openIdx === -1) {
+                outputBuf += remaining;
+                sendEvent({ type: 'output_token', token: remaining });
+                remaining = '';
+              } else {
+                const before = remaining.slice(0, openIdx);
+                if (before) {
+                  outputBuf += before;
+                  sendEvent({ type: 'output_token', token: before });
+                }
+                inThinkTag = true;
+                remaining = remaining.slice(openIdx + '<think>'.length);
+              }
+            }
+          }
+        }
       }
     }
 
     const msg = await messageStore.insert({
       thread_id: threadId,
       role: 'assistant',
-      content: outputBuf || thinkingBuf,
+      content: outputBuf.trim() || '(no output)',
       thinking_trace: thinkingBuf || null,
     });
 
     if (thinkingBuf) {
       sendEvent({ type: 'thinking_complete', content: thinkingBuf });
-      await eventStore.insert(threadId, 'thinking_complete', { type: 'thinking_complete', content: thinkingBuf }, msg.id);
+      await eventStore.insert(threadId, 'thinking_complete', { type: 'thinking_complete', content: thinkingBuf, source: 'coordinator' }, msg.id);
     }
 
     sendEvent({ type: 'complete', approved: true, bestAttempt: 1 });
@@ -541,8 +650,6 @@ async function generateAndPersistSummary(
   summaryStore: ChatSummaryStore,
   configStore: ModelConfigStore
 ): Promise<void> {
-  const { coordinatorClient, COORDINATOR_MODEL } = await import('../ai/clients.js');
-
   // Get raw message count for the record
   const allMessages = await messageStore.getByThread(threadId, false);
   const messageCount = allMessages.length;
@@ -565,22 +672,21 @@ async function generateAndPersistSummary(
   const truncated = sourceText.slice(0, inputBudgetChars);
 
   const prompt =
-    `/no_think Produce a structured rolling summary of this conversation thread. ` +
+    `Produce a structured rolling summary of this conversation thread. ` +
     `Write in concise prose. Include: what the user requested, what was done, ` +
     `which files were changed or created, and any important decisions or caveats. ` +
     `Max 800 tokens. Do not include greetings or meta-commentary.\n\n` +
     `---\n${truncated}\n---`;
 
-  const response = await coordinatorClient.chat.completions.create({
-    model: COORDINATOR_MODEL,
+  const { coordinatorCall: coordCallSummary } = await import('../ai/clients.js');
+  const summary = await coordCallSummary({
+    systemPrompt: '',
     messages: [{ role: 'user', content: prompt }],
-    max_tokens: 900,
+    maxTokens: 900,
     temperature: 0.1,
-    stream: false,
+    mode: 'no_think',
   });
-
-  const summary = response.choices[0]?.message?.content?.trim();
-  if (summary) {
+  if (summary && summary.length > 10) {
     await summaryStore.upsert(threadId, summary, messageCount);
   }
 }

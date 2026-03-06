@@ -1,7 +1,8 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { coordinatorClient, COORDINATOR_MODEL } from './clients.js';
+import { coordinatorCall, coordinatorStream } from './clients.js';
 import type { FileSummary } from './ContextIngester.js';
+
 
 /**
  * Stage 3 — Instruction Query & Task Construction
@@ -121,7 +122,7 @@ export class TaskPlanner {
       .join('\n');
 
     const prompt =
-      `/no_think Given this coding task and the available workspace files, ` +
+      `Given this coding task and the available workspace files, ` +
       `list which files need to be read to make an accurate implementation plan. ` +
       `Only include files genuinely needed — not all of them. ` +
       `Respond ONLY with a JSON array of filenames: ["file1.ts","file2.ts"]. ` +
@@ -130,16 +131,13 @@ export class TaskPlanner {
       `AVAILABLE FILES:\n${summaryBlock}`;
 
     try {
-      const response = await coordinatorClient.chat.completions.create({
-        model: COORDINATOR_MODEL,
+      const clean = await coordinatorCall({
+        systemPrompt: '',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 256,
+        maxTokens: 256,
         temperature: 0.1,
-        stream: false,
+        mode: 'no_think',
       });
-
-      const raw = response.choices[0]?.message?.content?.trim() ?? '';
-      const clean = raw.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
       const match = clean.match(/\[[\s\S]*\]/);
       if (match) {
         const files = JSON.parse(match[0]) as string[];
@@ -216,7 +214,7 @@ export class TaskPlanner {
     chunkNote = ''
   ): Promise<string> {
     const prompt =
-      `/think Extract only the information relevant to this task from the file below ${chunkNote}. ` +
+      `Extract only the information relevant to this task from the file below ${chunkNote}. ` +
       `Focus on: function signatures, variable names, line numbers, imports, and constraints ` +
       `that directly affect implementing the task. Be concise — max 300 words. ` +
       `Do not reproduce large code blocks; describe what is there and where.\n\n` +
@@ -225,23 +223,14 @@ export class TaskPlanner {
       `---\n${content.slice(0, PAGE_SIZE_CHARS)}\n---`;
 
     try {
-      let thinking = '';
-      let output = '';
-      const stream = await coordinatorClient.chat.completions.create({
-        model: COORDINATOR_MODEL,
+      const clean = await coordinatorStream({
+        systemPrompt: '',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 512,
+        maxTokens: 512,
         temperature: 0.1,
-        stream: true,
+        mode: 'think',
+        onThinkToken: sendThinking,
       });
-      for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta as Record<string, unknown>;
-        const t = (delta?.reasoning_content ?? delta?.reasoning) as string | undefined;
-        const o = delta?.content as string | undefined;
-        if (t) { thinking += t; sendThinking(t); }
-        if (o) output += o;
-      }
-      const clean = output.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
       return clean || `[${filename}: no relevant content extracted]`;
     } catch (err) {
       console.warn(`[TaskPlanner] Extraction failed for ${filename}:`, err);
@@ -269,7 +258,7 @@ export class TaskPlanner {
       : '';
 
     const prompt =
-      `/think Decompose this coding request into ordered, atomic, file-scoped tasks. ` +
+      `Decompose this coding request into ordered, atomic, file-scoped tasks. ` +
       `Each task targets exactly one file and performs one clear operation. ` +
       `For each task, write a precise prompt the coding engine will execute — ` +
       `include exact function names, line references, and constraints from the context. ` +
@@ -297,23 +286,14 @@ export class TaskPlanner {
       `- If the request only touches one file, produce exactly one task`;
 
     try {
-      let output = '';
-      const stream = await coordinatorClient.chat.completions.create({
-        model: COORDINATOR_MODEL,
+      const clean = await coordinatorStream({
+        systemPrompt: '',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 2048,
+        maxTokens: 2048,
         temperature: 0.2,
-        stream: true,
+        mode: 'think',
+        onThinkToken: sendThinking,
       });
-      for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta as Record<string, unknown>;
-        const t = (delta?.reasoning_content ?? delta?.reasoning) as string | undefined;
-        const o = delta?.content as string | undefined;
-        if (t) sendThinking(t);
-        if (o) output += o;
-      }
-
-      const clean = output.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
       const match = clean.match(/\{[\s\S]*\}/);
       if (match) {
         const parsed = JSON.parse(match[0]) as {

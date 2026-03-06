@@ -1,5 +1,4 @@
-import { coordinatorClient, COORDINATOR_MODEL } from './clients.js';
-import type { FileSummary } from './ContextIngester.js';
+import { coordinatorCall } from './clients.js';
 
 export type IntentType =
   | 'QUESTION'
@@ -15,7 +14,7 @@ export interface ClassifiedIntent {
 
 export interface ClassificationContext {
   rewrittenMessage: string;
-  fileSummaries?: FileSummary[];
+  fileSummaries?: import('./ContextIngester.js').FileSummary[];
   chatSummary?: string;
   repoMap?: string;
 }
@@ -56,38 +55,29 @@ export class IntentClassifier {
         contextParts.push(`<file_context>\n${block}\n</file_context>`);
       }
 
-      const userContent =
-        `/no_think ` +
-        (contextParts.length > 0
-          ? `${contextParts.join('\n\n')}\n\nMessage: ${effectiveMessage}`
-          : effectiveMessage);
+      const userContent = contextParts.length > 0
+        ? `${contextParts.join('\n\n')}\n\nMessage: ${effectiveMessage}`
+        : effectiveMessage;
 
-      const response = await coordinatorClient.chat.completions.create({
-        model: COORDINATOR_MODEL,
-        messages: [
-          { role: 'system', content: CLASSIFIER_SYSTEM },
-          { role: 'user', content: userContent },
-        ],
-        max_tokens: 64,
+      // no_think: fast routing, no chain-of-thought needed.
+      // coordinatorCall applies the right strategy per model (Llama gets system prompt,
+      // Qwen3 gets /no_think prefix, cloud models get nothing).
+      const raw = await coordinatorCall({
+        systemPrompt: CLASSIFIER_SYSTEM,
+        messages: [{ role: 'user', content: userContent }],
+        maxTokens: 64,
         temperature: 0.1,
-        stream: false,
+        mode: 'no_think',
       });
 
-      const raw = response.choices[0]?.message?.content?.trim() ?? '';
       const latency = Date.now() - start;
-
-      try {
-        const jsonMatch = raw.match(/\{[\s\S]*\}/);
-        const cleaned = jsonMatch ? jsonMatch[0] : '';
-        const parsed = JSON.parse(cleaned) as { type: IntentType; confidence: number };
-        console.log(
-          `[IntentClassifier] ${parsed.type} (${latency}ms, confidence=${parsed.confidence}, context=${context ? 'yes' : 'no'})`
-        );
-        return { type: parsed.type, confidence: parsed.confidence };
-      } catch {
-        console.warn('[IntentClassifier] Parse failed, defaulting to QUESTION:', raw);
-        return { type: 'QUESTION', confidence: 0.5 };
-      }
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      const cleaned = jsonMatch ? jsonMatch[0] : '';
+      const parsed = JSON.parse(cleaned) as { type: IntentType; confidence: number };
+      console.log(
+        `[IntentClassifier] ${parsed.type} (${latency}ms, confidence=${parsed.confidence})`
+      );
+      return { type: parsed.type, confidence: parsed.confidence };
     } catch (err) {
       console.error('[IntentClassifier] Coordinator unreachable, using heuristic fallback:', err);
       const lower = userMessage.toLowerCase();
@@ -97,7 +87,6 @@ export class IntentClassifier {
       if (/write|create|modify|refactor|implement|add.*file|edit.*file/.test(lower)) {
         return { type: 'CODE_REQUEST', confidence: 0.6 };
       }
-      // Default to QUESTION — most messages are conversational
       return { type: 'QUESTION', confidence: 0.6 };
     }
   }

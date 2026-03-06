@@ -1,4 +1,4 @@
-import { engineClient, ENGINE_MODEL } from './clients.js';
+import { engineClient, ENGINE_MODEL, coordinatorCall } from './clients.js';
 import type { AttemptResult } from './LoopController.js';
 
 export interface TaskResultSummary {
@@ -54,7 +54,7 @@ export class DeliveryComposer {
       : `Some tasks did not complete. ${taskResults?.filter(r => !r.approved).length ?? 0} of ${taskResults?.length ?? 1} task(s) failed.`;
 
     const prompt =
-      `/no_think Write a concise response summarising the outcome. ` +
+      `Write a concise response summarising the outcome. ` +
       `Write in first person, plain prose, 2-4 sentences max. ` +
       `For file changes: mention what changed and any failures. For answers: confirm what was addressed. ` +
       `Match the tone to the task — technical for code, conversational for questions. ` +
@@ -66,16 +66,36 @@ export class DeliveryComposer {
       `${statusLine}`;
 
     try {
-      const response = await engineClient.chat.completions.create({
+      const stream = await engineClient.chat.completions.create({
         model: ENGINE_MODEL,
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 512,
         temperature: 0.3,
-        stream: false,
+        stream: true as const,
       });
 
-      const raw = response.choices[0]?.message?.content?.trim() ?? '';
-      const clean = raw.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+      let outputBuf = '';
+      let inThink = false;
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta as Record<string, unknown>;
+        // Discard dedicated reasoning fields — we only want the output
+        const outToken = delta?.content as string | undefined;
+        if (!outToken) continue;
+        let remaining = outToken;
+        while (remaining.length > 0) {
+          if (inThink) {
+            const ci = remaining.indexOf('</think>');
+            if (ci === -1) { remaining = ''; }
+            else { inThink = false; remaining = remaining.slice(ci + 8); }
+          } else {
+            const oi = remaining.indexOf('<think>');
+            if (oi === -1) { outputBuf += remaining; remaining = ''; }
+            else { outputBuf += remaining.slice(0, oi); inThink = true; remaining = remaining.slice(oi + 7); }
+          }
+        }
+      }
+
+      const clean = outputBuf.trim();
       if (clean.length > 20) return clean;
     } catch (err) {
       console.warn('[DeliveryComposer] Coordinator call failed, using fallback:', err);

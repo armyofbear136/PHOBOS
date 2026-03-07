@@ -256,8 +256,18 @@ export function applyThinkingStrategy(
   // FastFlowLLM: extra_body activates thinking via server config, no message change.
   if (provider === 'fastflowllm') return { messages, systemPrompt };
 
-  // PHOBOS Local Qwen3: no message prefix needed — Qwen3 thinks by default.
-  if (provider === 'phobos' && model.startsWith('qwen3')) return { messages, systemPrompt };
+  // PHOBOS Local Qwen3: inject /think or /no_think prefix on the first user message.
+  // llama.cpp does not auto-activate thinking — the prefix is required.
+  // --reasoning-format deepseek (set in LlamaServerManager) then routes the
+  // resulting <think> block into delta.reasoning_content (field path).
+  if (provider === 'phobos' && model.startsWith('qwen3')) {
+    const prefix = mode === 'no_think' ? '/no_think\n' : '/think\n';
+    const firstUserIdx = messages.findIndex(m => m.role === 'user');
+    if (firstUserIdx === -1) return { messages, systemPrompt };
+    const patched = messages.slice();
+    patched[firstUserIdx] = { ...patched[firstUserIdx], content: prefix + patched[firstUserIdx].content };
+    return { messages: patched, systemPrompt };
+  }
 
   // System prompt injection for models that need it (Llama on Ollama, PHOBOS Llama, etc.)
   const finalSystem = mode === 'think'

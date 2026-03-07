@@ -88,32 +88,50 @@ export async function startServer(role: 'sayon' | 'allmind', cfg: ServerConfig):
     '--log-disable',
   ];
 
+  // Qwen3 thinking support: --jinja enables the Jinja chat template required
+  // for thinking mode; --reasoning-format deepseek routes <think> blocks into
+  // delta.reasoning_content instead of leaving them raw in delta.content.
+  // Applied to allmind only — sayon runs Llama which uses tag-based thinking.
+  if (role === 'allmind' && spec.modelId.startsWith('qwen3')) {
+    args.push('--jinja', '--reasoning-format', 'deepseek');
+  }
+
   // ── Build environment for GPU device targeting ──────────────────────────
+  // llama.cpp Vulkan device selection:
+  //   GGML_VK_VISIBLE_DEVICES=N   (env var, like CUDA_VISIBLE_DEVICES but for Vulkan)
+  //   --device VulkanN             (CLI flag, selects backend device by name)
+  //
+  // On your system Vulkan enumerates:
+  //   Vulkan0 = NVIDIA GeForce RTX 3080
+  //   Vulkan1 = AMD Radeon(TM) 890M Graphics
+  //
+  // Our internal device indices: NVIDIA GPUs use nvidia-smi index (0, 1, ...),
+  // non-NVIDIA GPUs use 100+ offset (100, 101, ...).
+  // We map these to Vulkan device indices at runtime.
   const env = { ...process.env };
 
   if (cfg.gpuLayers > 0 && cfg.deviceIndex !== undefined) {
-    if (cfg.gpuBackend === 'cuda') {
-      // CUDA: make only the target GPU visible as device 0
-      env.CUDA_VISIBLE_DEVICES = String(cfg.deviceIndex);
-    } else if (cfg.gpuBackend === 'vulkan') {
-      // Vulkan: select device via --gpu-device flag
-      // Device indices 100+ are our offset for non-NVIDIA GPUs.
-      // When running a Vulkan-only build, the iGPU is typically device 0.
-      // If NVIDIA GPUs are hidden (no CUDA env), Vulkan sees only the iGPU.
-      //
-      // Hide NVIDIA from this Vulkan instance so iGPU becomes device 0
-      if (cfg.deviceIndex >= 100) {
-        env.CUDA_VISIBLE_DEVICES = '-1';
-        // AMD iGPU: set HSA compat version for ROCm/Vulkan
-        env.HSA_OVERRIDE_GFX_VERSION = '11.0.0';
-        args.push('--gpu-device', '0');
-      } else {
-        // Vulkan targeting a discrete GPU — use its native Vulkan index
-        args.push('--gpu-device', String(cfg.deviceIndex));
-      }
+    if (cfg.deviceIndex >= 100) {
+      // AMD iGPU as primary — match Ollama's multi-GPU approach:
+      // Ollama sees both Vulkan devices and auto-splits layers across them.
+      // CUDA_VISIBLE_DEVICES=-1 hides the CUDA backend but NOT the Vulkan
+      // view of the NVIDIA GPU, so both GPUs remain available for layer splitting.
+      // HSA_OVERRIDE_GFX_VERSION for AMD RDNA 3.5 iGPU compat.
+      // --device Vulkan1 sets the 890M as the main/primary GPU.
+      env.CUDA_VISIBLE_DEVICES = '-1';
+      env.HSA_OVERRIDE_GFX_VERSION = '11.0.0';
+      // Do NOT set GGML_VK_VISIBLE_DEVICES — let llama-server see all Vulkan
+      // devices so it can split layers across 890M + 3080 like Ollama does.
+      args.push('--device', 'Vulkan1');
+    } else {
+      // NVIDIA discrete GPU as primary
+      env.GGML_VK_VISIBLE_DEVICES = String(cfg.deviceIndex);
+      args.push('--device', 'Vulkan0');
     }
-    // Metal (Apple): single unified GPU, no env needed
+  } else if (cfg.gpuLayers > 0) {
+    // No specific device — let llama-server auto-select
   }
+  // ngl=0 means CPU-only — no device targeting needed
 
   console.log(`[LlamaServerManager] Starting ${role} on :${cfg.port} — ${spec.label} (ngl=${cfg.gpuLayers}, device=${cfg.deviceIndex ?? 'auto'}, backend=${cfg.gpuBackend ?? 'auto'})`);
 

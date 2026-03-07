@@ -3,8 +3,8 @@ import * as net from 'net';
 import { resolveLlamaServerBin, modelPath, getSpec } from './PhobosLocalManager.js';
 
 // ── Ports — permanent wire contract ──────────────────────────────────────────
-export const SAYON_PORT   = 52626;   // coordinator (CPU)
-export const ALLMIND_PORT = 52627;   // engine (GPU or CPU)
+export const SAYON_PORT   = 52626;   // coordinator
+export const ALLMIND_PORT = 52627;   // engine
 
 export interface ServerConfig {
   modelId: string;
@@ -12,6 +12,10 @@ export interface ServerConfig {
   gpuLayers: number;        // 0 = CPU only, 99 = full GPU offload
   contextSize: number;
   threads: number;
+  /** GPU device index from HardwareProfile.gpus[].index */
+  deviceIndex?: number;
+  /** Backend for the target device — determines binary + env vars */
+  gpuBackend?: 'cuda' | 'vulkan' | 'metal';
 }
 
 interface ManagedServer {
@@ -47,8 +51,12 @@ function waitForPort(port: number, timeoutMs = 30_000): Promise<void> {
 export async function startServer(role: 'sayon' | 'allmind', cfg: ServerConfig): Promise<void> {
   const managed = servers[role];
 
-  // Stop existing process if model changed
-  if (managed.process && managed.config.modelId !== cfg.modelId) {
+  // Stop existing process if model or device changed
+  if (managed.process && (
+    managed.config.modelId !== cfg.modelId ||
+    managed.config.deviceIndex !== cfg.deviceIndex ||
+    managed.config.gpuBackend !== cfg.gpuBackend
+  )) {
     await stopServer(role);
   }
 
@@ -58,7 +66,9 @@ export async function startServer(role: 'sayon' | 'allmind', cfg: ServerConfig):
   if (!spec) throw new Error(`Unknown model ID: ${cfg.modelId}`);
 
   const ggufPath = modelPath(spec);
-  const bin      = resolveLlamaServerBin();
+
+  // Resolve the correct binary for the target backend
+  const bin = resolveLlamaServerBin(cfg.gpuBackend);
 
   managed.config = { ...cfg };
   managed.state  = 'starting';
@@ -74,14 +84,41 @@ export async function startServer(role: 'sayon' | 'allmind', cfg: ServerConfig):
     '--ctx-size',     String(cfg.contextSize),
     '--threads',      String(threads),
     '--n-gpu-layers', String(cfg.gpuLayers),
-    '--log-disable',            // suppress llama.cpp verbose output
+    '--log-disable',
   ];
 
-  console.log(`[LlamaServerManager] Starting ${role} on :${cfg.port} — ${spec.label} (ngl=${cfg.gpuLayers})`);
+  // ── Build environment for GPU device targeting ──────────────────────────
+  const env = { ...process.env };
+
+  if (cfg.gpuLayers > 0 && cfg.deviceIndex !== undefined) {
+    if (cfg.gpuBackend === 'cuda') {
+      // CUDA: make only the target GPU visible as device 0
+      env.CUDA_VISIBLE_DEVICES = String(cfg.deviceIndex);
+    } else if (cfg.gpuBackend === 'vulkan') {
+      // Vulkan: select device via --gpu-device flag
+      // Device indices 100+ are our offset for non-NVIDIA GPUs.
+      // When running a Vulkan-only build, the iGPU is typically device 0.
+      // If NVIDIA GPUs are hidden (no CUDA env), Vulkan sees only the iGPU.
+      //
+      // Hide NVIDIA from this Vulkan instance so iGPU becomes device 0
+      if (cfg.deviceIndex >= 100) {
+        env.CUDA_VISIBLE_DEVICES = '-1';
+        // AMD iGPU: set HSA compat version for ROCm/Vulkan
+        env.HSA_OVERRIDE_GFX_VERSION = '11.0.0';
+        args.push('--gpu-device', '0');
+      } else {
+        // Vulkan targeting a discrete GPU — use its native Vulkan index
+        args.push('--gpu-device', String(cfg.deviceIndex));
+      }
+    }
+    // Metal (Apple): single unified GPU, no env needed
+  }
+
+  console.log(`[LlamaServerManager] Starting ${role} on :${cfg.port} — ${spec.label} (ngl=${cfg.gpuLayers}, device=${cfg.deviceIndex ?? 'auto'}, backend=${cfg.gpuBackend ?? 'auto'})`);
 
   const proc = spawn(bin, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env },
+    env,
   });
 
   proc.stderr?.on('data', (data: Buffer) => {
@@ -124,26 +161,44 @@ export async function stopServer(role: 'sayon' | 'allmind'): Promise<void> {
   managed.state   = 'stopped';
 }
 
-export function getServerStatus(): Record<'sayon' | 'allmind', { state: string; modelId: string; port: number; error: string | null }> {
+export function getServerStatus(): Record<'sayon' | 'allmind', {
+  state: string;
+  modelId: string;
+  port: number;
+  error: string | null;
+  deviceIndex?: number;
+  gpuBackend?: string;
+}> {
   return {
-    sayon:   { state: servers.sayon.state,   modelId: servers.sayon.config.modelId,   port: SAYON_PORT,   error: servers.sayon.error },
-    allmind: { state: servers.allmind.state, modelId: servers.allmind.config.modelId, port: ALLMIND_PORT, error: servers.allmind.error },
+    sayon: {
+      state:       servers.sayon.state,
+      modelId:     servers.sayon.config.modelId,
+      port:        SAYON_PORT,
+      error:       servers.sayon.error,
+      deviceIndex: servers.sayon.config.deviceIndex,
+      gpuBackend:  servers.sayon.config.gpuBackend,
+    },
+    allmind: {
+      state:       servers.allmind.state,
+      modelId:     servers.allmind.config.modelId,
+      port:        ALLMIND_PORT,
+      error:       servers.allmind.error,
+      deviceIndex: servers.allmind.config.deviceIndex,
+      gpuBackend:  servers.allmind.config.gpuBackend,
+    },
   };
 }
 
-// Graceful shutdown — called from server.ts SIGINT/SIGTERM handler
 export async function stopAllServers(): Promise<void> {
   await Promise.all([stopServer('sayon'), stopServer('allmind')]);
 }
 
 /**
  * Called by reconfigureClients() whenever model config changes.
- * If either role is on the phobos provider, start or restart the corresponding
- * llama-server with the selected model. If a role switches away from phobos, stop it.
  */
 export async function reconcilePhobosServers(config: {
-  coordinator: { provider: string; model: string };
-  engine:      { provider: string; model: string };
+  coordinator: { provider: string; model: string; deviceIndex?: number; gpuBackend?: string; gpuLayers?: number };
+  engine:      { provider: string; model: string; deviceIndex?: number; gpuBackend?: string; gpuLayers?: number };
 }): Promise<void> {
   const tasks: Promise<void>[] = [];
 
@@ -152,9 +207,11 @@ export async function reconcilePhobosServers(config: {
       startServer('sayon', {
         modelId:     config.coordinator.model,
         port:        SAYON_PORT,
-        gpuLayers:   0,   // coordinator always CPU
+        gpuLayers:   config.coordinator.gpuLayers ?? 0,
         contextSize: 4096,
         threads:     0,
+        deviceIndex: config.coordinator.deviceIndex,
+        gpuBackend:  config.coordinator.gpuBackend as ServerConfig['gpuBackend'],
       }).catch(err => {
         console.error(`[reconcile] sayon start failed: ${err.message}`);
       })
@@ -168,9 +225,11 @@ export async function reconcilePhobosServers(config: {
       startServer('allmind', {
         modelId:     config.engine.model,
         port:        ALLMIND_PORT,
-        gpuLayers:   99,  // engine attempts full GPU offload
+        gpuLayers:   config.engine.gpuLayers ?? 99,
         contextSize: 4096,
         threads:     0,
+        deviceIndex: config.engine.deviceIndex,
+        gpuBackend:  config.engine.gpuBackend as ServerConfig['gpuBackend'],
       }).catch(err => {
         console.error(`[reconcile] allmind start failed: ${err.message}`);
       })

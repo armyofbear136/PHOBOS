@@ -27,6 +27,8 @@ export interface LoopOptions {
   persistEvent?: (eventType: string, payload: object, messageId?: string) => Promise<void>;
   /** Called periodically with buffered think tokens — enables real-time DB persistence */
   onThinkChunk?: (content: string, source: 'coordinator' | 'engine', messageId?: string) => Promise<void>;
+  /** Called when a thinking phase ends (coordinator done, or engine done) — used to close DB segment */
+  onThinkPhaseComplete?: (source: 'coordinator' | 'engine') => Promise<void>;
   /** Called periodically with buffered output tokens — enables real-time DB persistence */
   onOutputChunk?: (content: string, messageId?: string) => Promise<void>;
 }
@@ -480,6 +482,7 @@ export class LoopController {
         content: coordinatorThinkingAccum,
         source: 'coordinator',
       }, assistantMessageId).catch(() => {});
+      await this.options.onThinkPhaseComplete?.('coordinator').catch(() => {});
     }
 
     const bestAttempt = allAttempts.length > 0
@@ -587,6 +590,7 @@ export class LoopController {
     console.log(`[LoopController:engine:thinking_complete] length=${accumulatedThinking.length} msgId=${assistantMessageId?.slice(0,8) ?? 'undefined'}`);
     if (accumulatedThinking) {
       await this.persistAndSend(reply, { type: 'thinking_complete', content: accumulatedThinking, source: 'engine' }, assistantMessageId);
+      await this.options.onThinkPhaseComplete?.('engine').catch(() => {});
     }
 
     return {

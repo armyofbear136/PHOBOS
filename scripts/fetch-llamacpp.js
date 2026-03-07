@@ -355,15 +355,27 @@ const TARGETS = [
     binInZip: 'llama-server',
     outName:  'llama-server-darwin-x64',
   },
+  // Windows — CUDA build (for NVIDIA GPUs)
   {
     platform: 'win32',
     arch:     'x64',
     variants: [
-      { suffix: 'win-vulkan-x64', ext: '.zip' },   // Vulkan — GPU capable, no extra DLLs needed
-      { suffix: 'win-cpu-x64',    ext: '.zip' },   // CPU-only fallback
+      { suffix: 'win-cuda-cu12.2.0-x64', ext: '.zip' },
+      { suffix: 'win-cuda-x64',          ext: '.zip' },
     ],
     binInZip: 'llama-server.exe',
-    outName:  'llama-server-win32-x64.exe',
+    outName:  'llama-server-win32-x64-cuda.exe',
+  },
+  // Windows — Vulkan build (for AMD iGPU, Intel, general fallback)
+  {
+    platform: 'win32',
+    arch:     'x64',
+    variants: [
+      { suffix: 'win-vulkan-x64', ext: '.zip' },
+      { suffix: 'win-cpu-x64',    ext: '.zip' },
+    ],
+    binInZip: 'llama-server.exe',
+    outName:  'llama-server-win32-x64-vulkan.exe',
   },
 ];
 
@@ -430,6 +442,15 @@ async function main() {
   }
 
   fs.rmSync(TMP_DIR, { recursive: true, force: true });
+
+  // Ensure a generic Windows fallback exists (Vulkan works for both NVIDIA and AMD)
+  const genericWin = path.join(BIN_DIR, 'llama-server-win32-x64.exe');
+  const vulkanWin  = path.join(BIN_DIR, 'llama-server-win32-x64-vulkan.exe');
+  if (!fs.existsSync(genericWin) && fs.existsSync(vulkanWin)) {
+    fs.copyFileSync(vulkanWin, genericWin);
+    console.log('  → copied vulkan binary as generic fallback (llama-server-win32-x64.exe)');
+  }
+
   console.log('\nDone. Binaries are in bin/');
   console.log('Commit bin/ to your repo, or add it to your CI pre-build step.');
 }

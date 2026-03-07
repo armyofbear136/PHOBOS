@@ -28,6 +28,12 @@ export interface RoleConfig {
   endpoint: string;
   model: string;
   apiKey?: string;
+  /** GPU device index from HardwareProfile.gpus[].index — undefined = auto/CPU */
+  deviceIndex?: number;
+  /** Backend for the target device — 'cuda' | 'vulkan' | 'metal' */
+  gpuBackend?: string;
+  /** GPU layer count — 0 = CPU, 99 = full offload */
+  gpuLayers?: number;
 }
 
 /** Provider catalogue — shared for both roles */
@@ -44,14 +50,14 @@ export const PROVIDERS: ProviderOption[] = [
     label: 'FastFlowLLM',
     defaultEndpoint: 'http://localhost:52625/v1',
     requiresApiKey: false,
-    thinkingMode: 'system_prompt',  // Llama3.1 on NPU — use system prompt injection
+    thinkingMode: 'system_prompt',
   },
   {
     id: 'ollama',
     label: 'Ollama',
     defaultEndpoint: 'http://localhost:11434/v1',
     requiresApiKey: false,
-    thinkingMode: 'qwen3_prefix',   // Qwen3 /think prefix works here too
+    thinkingMode: 'qwen3_prefix',
   },
   {
     id: 'openai',
@@ -181,7 +187,6 @@ export class ModelConfigStore {
     if (!raw) return DEFAULT_COORDINATOR;
     try {
       const parsed = JSON.parse(raw) as Partial<RoleConfig>;
-      // Migrate old format (no provider field)
       if (!parsed.provider) {
         parsed.provider = parsed.endpoint?.includes('52625') ? 'fastflowllm' : 'ollama';
       }

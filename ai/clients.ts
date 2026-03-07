@@ -43,8 +43,23 @@ export async function reconfigureClients(): Promise<void> {
   console.log(`[clients] ALLMIND: ${engine.provider} / ${engine.endpoint}  (${ENGINE_MODEL})`);
 
   // Start/stop llama-server if either role is on the phobos provider.
-  // Fire-and-forget — server startup is async and may take a few seconds.
-  reconcilePhobosServers({ coordinator, engine }).catch(err => {
+  // Thread device assignment from ModelConfigStore through to LlamaServerManager.
+  reconcilePhobosServers({
+    coordinator: {
+      provider:    coordinator.provider,
+      model:       coordinator.model,
+      deviceIndex: coordinator.deviceIndex,
+      gpuBackend:  coordinator.gpuBackend,
+      gpuLayers:   coordinator.gpuLayers,
+    },
+    engine: {
+      provider:    engine.provider,
+      model:       engine.model,
+      deviceIndex: engine.deviceIndex,
+      gpuBackend:  engine.gpuBackend,
+      gpuLayers:   engine.gpuLayers,
+    },
+  }).catch(err => {
     console.error(`[reconfigureClients] reconcilePhobosServers error: ${err.message}`);
   });
 }
@@ -182,10 +197,6 @@ export function getThinkingStrategy(provider: string, model: string): ThinkingSt
   }
 
   // Llama 3.x — provider-dependent:
-  // FastFlowLLM always exposes thinking in delta.reasoning_content regardless of model.
-  // Ollama llama3.x does NOT have native thinking — no think:true support, no reasoning field.
-  // For Ollama Llama: use system prompt injection + tag path (best-effort, model may ignore it).
-  // For FastFlowLLM Llama: use field path — FastFlowLLM routes all thinking through reasoning_content.
   if (/^llama3[.\-:]/.test(model) || /^llama3\./.test(model)) {
     if (provider === 'fastflowllm') {
       return {
@@ -195,7 +206,6 @@ export function getThinkingStrategy(provider: string, model: string): ThinkingSt
         extraBodyNoThink: {},
       };
     }
-    // Ollama / other: prompt-engineer <think> tags (no native support)
     return {
       systemSuffix:
         '\n\nThink through the problem step by step before answering. ' +
@@ -206,61 +216,59 @@ export function getThinkingStrategy(provider: string, model: string): ThinkingSt
     };
   }
 
-  // Cloud/unknown
-  return { systemSuffix: '', thinkingPath: 'tag', extraBodyThink: {}, extraBodyNoThink: {} };
+  // Cloud providers — no thinking strategy needed
+  return {
+    systemSuffix: '',
+    thinkingPath: 'tag',
+    extraBodyThink: {},
+    extraBodyNoThink: {},
+  };
 }
 
-/**
- * Returns true if the model/provider combination natively emits thinking tokens.
- * Used by the UI to show/hide the SAYON reasoning panel gracefully.
- */
-export function hasNativeThinking(provider: string, model: string): boolean {
+export function isThinkingModel(model: string): boolean {
+  if (/^llama3[.\-:]/.test(model)) return COORDINATOR_PROVIDER === 'fastflowllm';
   if (model.startsWith('qwen3')) return true;
   if (model.startsWith('deepseek-r1')) return true;
-  if (/^llama3[.\-:]/.test(model)) return provider === 'fastflowllm'; // only if FastFlowLLM wraps it
   return false;
 }
 
+export function getThinkingExtraBody(provider: string, model: string, mode: 'think' | 'no_think' | 'none'): Record<string, unknown> {
+  if (mode === 'none') return {};
+  const s = getThinkingStrategy(provider, model);
+  return mode === 'think' ? s.extraBodyThink : s.extraBodyNoThink;
+}
 
-/**
- * Apply thinking strategy to a message array + system prompt before an API call.
- * FastFlowLLM Qwen3: injects /think or /no_think into the last user message.
- * Ollama Qwen3: no message changes needed — think:true in extra_body handles it.
- * Llama: appends thinking instructions to system prompt.
- */
 export function applyThinkingStrategy(
   messages: Array<{ role: string; content: string }>,
   systemPrompt: string,
   provider: string,
   model: string,
-  mode: 'think' | 'no_think' | 'none' = 'think'
-): { messages: Array<{ role: string; content: string }>; systemPrompt: string } {
+  mode: 'think' | 'no_think' | 'none' = 'think',
+): { messages: typeof messages; systemPrompt: string } {
   if (mode === 'none') return { messages, systemPrompt };
+
   const strategy = getThinkingStrategy(provider, model);
 
-  // Llama and FastFlowLLM Qwen3: system prompt injection for thinking mode
-  if (strategy.systemSuffix && mode === 'think') {
-    return { messages, systemPrompt: systemPrompt + strategy.systemSuffix };
-  }
-
-  // no_think mode for FastFlowLLM: no system suffix needed, model just won't be prompted to think
   // Ollama Qwen3 uses extra_body:{think:true/false} — no message change needed.
+  if (provider === 'ollama' && model.startsWith('qwen3')) return { messages, systemPrompt };
+  if (provider === 'ollama' && model.startsWith('deepseek-r1')) return { messages, systemPrompt };
 
-  return { messages, systemPrompt };
-}
+  // FastFlowLLM: extra_body activates thinking via server config, no message change.
+  if (provider === 'fastflowllm') return { messages, systemPrompt };
 
-/**
- * Returns the extra_body fields needed to activate or suppress thinking.
- */
-export function getThinkingExtraBody(provider: string, model: string, mode: 'think' | 'no_think' | 'none' = 'think'): Record<string, unknown> {
-  if (mode === 'none') return {};
-  const strategy = getThinkingStrategy(provider, model);
-  return mode === 'no_think' ? strategy.extraBodyNoThink : strategy.extraBodyThink;
+  // PHOBOS Local Qwen3: no message prefix needed — Qwen3 thinks by default.
+  if (provider === 'phobos' && model.startsWith('qwen3')) return { messages, systemPrompt };
+
+  // System prompt injection for models that need it (Llama on Ollama, PHOBOS Llama, etc.)
+  const finalSystem = mode === 'think'
+    ? systemPrompt + strategy.systemSuffix
+    : systemPrompt;
+
+  return { messages, systemPrompt: finalSystem };
 }
 
 /**
  * Convenience wrapper: apply thinking strategy to a coordinator non-streaming call.
- * Handles both user prefix and system suffix injection transparently.
  */
 export async function coordinatorCall(opts: {
   systemPrompt: string;
@@ -300,7 +308,6 @@ export async function coordinatorCall(opts: {
       stream: true as const,
     });
   } catch (createErr: unknown) {
-    // FastFlowLLM may reject chat_template_kwargs — retry without it
     console.error(`[coordinatorCall:error] ${createErr instanceof Error ? createErr.message : String(createErr)}`);
     console.log('[coordinatorCall:retry] Retrying without extra_body...');
     const { extra_body: _drop, ...fallbackParams } = callParams as Record<string, unknown>;
@@ -322,12 +329,10 @@ export async function coordinatorCall(opts: {
       console.log(`[coordinatorCall:delta:${_callDbgN}] keys=${JSON.stringify(Object.keys(delta ?? {}))} content=${JSON.stringify((delta as any)?.content)} reasoning=${JSON.stringify((delta as any)?.reasoning)}`);
     }
     if (coordStrategy.thinkingPath === 'field') {
-      // FastFlowLLM: delta.reasoning_content; Ollama: delta.reasoning — discard both here, only want output
       const d = delta as Record<string, unknown>;
       const outToken = d.content as string | null | undefined;
       if (outToken) outputBuf += outToken;
     } else {
-      // FastFlowLLM: everything in delta.content, strip <think> tags
       const outToken = delta?.content as string | null | undefined;
       if (outToken) {
         let remaining = outToken;
@@ -351,7 +356,6 @@ export async function coordinatorCall(opts: {
 
 /**
  * Streaming coordinator call with thinking strategy applied.
- * Yields text content tokens; thinking tokens go to onThinkToken callback.
  */
 export async function coordinatorStream(opts: {
   systemPrompt: string;
@@ -410,8 +414,6 @@ export async function coordinatorStream(opts: {
     const delta = chunk.choices[0]?.delta as Record<string, unknown>;
 
     if (strategy.thinkingPath === 'field') {
-      // FastFlowLLM: delta.reasoning_content; Ollama: delta.reasoning — check all field names
-      // FastFlowLLM also sends literal <think>/<think> as tokens inside the field — strip them.
       const d = delta as Record<string, unknown>;
       let thinkToken = (d.reasoning_content ?? d.reasoning ?? d.thinking) as string | null | undefined;
       const outToken = d.content as string | null | undefined;
@@ -421,7 +423,6 @@ export async function coordinatorStream(opts: {
       }
       if (outToken) outputBuf += outToken;
     } else {
-      // FastFlowLLM Qwen3 / Llama: everything in delta.content, <think> tags separate it
       const outToken = delta?.content as string | null | undefined;
       if (outToken) {
         let remaining = outToken;

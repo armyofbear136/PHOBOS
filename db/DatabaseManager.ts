@@ -149,6 +149,26 @@ CREATE TABLE IF NOT EXISTS workspace_files (
   UNIQUE (thread_id, filename)
 );
 
+-- Persists reasoning traces as individually-timestamped segments.
+-- Each coordinator or engine thinking phase produces one row.
+-- Tokens are appended in real time via UPDATE so nothing is lost on crash.
+-- The front end reads this as the single source of truth for the reasoning panel.
+CREATE TABLE IF NOT EXISTS thinking_segments (
+  id           VARCHAR PRIMARY KEY,
+  thread_id    VARCHAR NOT NULL,
+  message_id   VARCHAR NOT NULL,
+  phase        VARCHAR NOT NULL,   -- 'coordinator' | 'engine'
+  content      TEXT    NOT NULL DEFAULT '',
+  token_count  INTEGER NOT NULL DEFAULT 0,
+  seq          INTEGER NOT NULL,   -- order within message
+  started_at   VARCHAR NOT NULL,   -- ISO timestamp — shown as break divider in UI
+  completed_at VARCHAR             -- NULL while streaming
+);
+CREATE INDEX IF NOT EXISTS idx_thinking_segments_thread
+  ON thinking_segments(thread_id, started_at ASC);
+CREATE INDEX IF NOT EXISTS idx_thinking_segments_message
+  ON thinking_segments(message_id, seq ASC);
+
 -- Seed default documents if none exist.
 -- claude.md is intentionally language-agnostic — the user sets their own standards.
 INSERT OR IGNORE INTO documents (id, doc_type, content, version)

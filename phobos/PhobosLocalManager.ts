@@ -15,68 +15,173 @@ export const MODELS_DIR = path.join(os.homedir(), '.phobos', 'models');
 
 // ── Hardware detection ────────────────────────────────────────────────────────
 
+export interface GpuDevice {
+  /** Stable index — CUDA uses nvidia-smi index, others use 100+ offset */
+  index: number;
+  name: string;
+  vramGb: number;
+  /** Backend llama-server should use for this device */
+  backend: 'cuda' | 'vulkan' | 'metal';
+}
+
 export interface HardwareProfile {
   ramGb: number;
   cpuCores: number;
-  gpuVramGb: number;
-  gpuName: string | null;
-  gpuBackend: 'nvidia' | 'apple' | 'none';
+  cpuName: string;
+  gpus: GpuDevice[];
 }
 
-async function detectNvidiaVram(): Promise<{ vramGb: number; name: string } | null> {
+// ── NVIDIA — returns ALL CUDA GPUs via nvidia-smi ────────────────────────────
+
+async function detectNvidiaGpus(): Promise<GpuDevice[]> {
   try {
     const { stdout } = await execFileAsync('nvidia-smi', [
-      '--query-gpu=name,memory.total',
+      '--query-gpu=index,name,memory.total',
       '--format=csv,noheader,nounits',
     ]);
-    const line = stdout.trim().split('\n')[0];
-    if (!line) return null;
-    const parts = line.split(',').map(s => s.trim());
-    const vramMb = parseInt(parts[1], 10);
-    if (isNaN(vramMb)) return null;
-    return { vramGb: Math.floor(vramMb / 1024), name: parts[0] };
+    const gpus: GpuDevice[] = [];
+    for (const line of stdout.trim().split('\n')) {
+      if (!line.trim()) continue;
+      const parts = line.split(',').map(s => s.trim());
+      const idx    = parseInt(parts[0], 10);
+      const name   = parts[1];
+      const vramMb = parseInt(parts[2], 10);
+      if (isNaN(idx) || isNaN(vramMb)) continue;
+      gpus.push({ index: idx, name, vramGb: Math.floor(vramMb / 1024), backend: 'cuda' });
+    }
+    return gpus;
   } catch {
-    return null;
+    return [];
   }
 }
 
-async function detectAppleSilicon(): Promise<{ vramGb: number; name: string } | null> {
-  if (process.platform !== 'darwin') return null;
+// ── AMD / Intel iGPU detection via WMI (Windows) ─────────────────────────────
+// Queries Win32_VideoController for non-NVIDIA adapters.
+// AMD Radeon iGPUs and Intel Arc/UHD/Iris all appear here.
+// We mark AMD as 'vulkan' and Intel as 'vulkan' (SYCL is niche, Vulkan works).
+//
+// NOTE: WMI AdapterRAM is a uint32 — caps at 4 GB for large allocations.
+// For AMD iGPUs with >4 GB dedicated, we fall back to PowerShell
+// Get-CimInstance to read AdapterRAM as uint64.
+
+async function detectNonNvidiaGpus(): Promise<GpuDevice[]> {
+  if (process.platform !== 'win32') return [];
+  try {
+    const { stdout } = await execFileAsync('powershell', [
+      '-NoProfile', '-Command',
+      // Use Get-CimInstance which returns uint64 for AdapterRAM
+      `Get-CimInstance Win32_VideoController ` +
+      `| Where-Object { $_.Name -notmatch 'NVIDIA' -and $_.Name -notmatch 'Microsoft' -and $_.AdapterRAM -gt 0 } ` +
+      `| Select-Object -Property Name,AdapterRAM,VideoProcessor ` +
+      `| ConvertTo-Json -Compress`,
+    ], { timeout: 15_000 });
+    if (!stdout.trim()) return [];
+
+    const raw = JSON.parse(stdout.trim());
+    const items = Array.isArray(raw) ? raw : [raw];
+    const gpus: GpuDevice[] = [];
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      // AdapterRAM is in bytes — CIM returns uint64 as a number (safe up to ~8 PB)
+      const vramBytes = Number(item.AdapterRAM ?? 0);
+      const vramGb    = Math.floor(vramBytes / (1024 ** 3));
+      if (vramGb < 1) continue;
+
+      const name = String(item.Name ?? 'Unknown GPU');
+
+      // Determine backend: AMD → vulkan, Intel → vulkan
+      // (SYCL/oneAPI for Intel is available but requires separate runtime;
+      //  Vulkan works out-of-box with the standard llama-server Vulkan build)
+      gpus.push({
+        index: 100 + i,
+        name,
+        vramGb,
+        backend: 'vulkan',
+      });
+    }
+    return gpus;
+  } catch {
+    return [];
+  }
+}
+
+// ── Linux: non-NVIDIA GPUs via lspci + sysfs ─────────────────────────────────
+
+async function detectLinuxNonNvidiaGpus(): Promise<GpuDevice[]> {
+  if (process.platform !== 'linux') return [];
+  try {
+    const { stdout } = await execFileAsync('lspci', ['-nn']);
+    const gpus: GpuDevice[] = [];
+    let idx = 100;
+    for (const line of stdout.split('\n')) {
+      // Match VGA/3D controllers that are AMD or Intel
+      if (!/VGA|3D|Display/.test(line)) continue;
+      if (/NVIDIA/i.test(line)) continue; // already handled by nvidia-smi
+
+      const isAmd   = /AMD|ATI|Radeon/i.test(line);
+      const isIntel = /Intel/i.test(line);
+      if (!isAmd && !isIntel) continue;
+
+      // Extract a rough name
+      const nameMatch = line.match(/:\s+(.+?)(?:\s+\[|$)/);
+      const name = nameMatch ? nameMatch[1].trim() : (isAmd ? 'AMD GPU' : 'Intel GPU');
+
+      // On Linux, shared memory for iGPUs is hard to query without root.
+      // Report 0 and let the user see it as "shared memory — configure in BIOS".
+      gpus.push({ index: idx++, name, vramGb: 0, backend: 'vulkan' });
+    }
+    return gpus;
+  } catch {
+    return [];
+  }
+}
+
+// ── Apple Silicon ────────────────────────────────────────────────────────────
+
+async function detectAppleSilicon(): Promise<GpuDevice[]> {
+  if (process.platform !== 'darwin') return [];
   try {
     const { stdout } = await execFileAsync('system_profiler', ['SPHardwareDataType']);
     const memMatch  = stdout.match(/Memory:\s+(\d+)\s+GB/i);
     const chipMatch = stdout.match(/Chip:\s+(.+)/i);
-    if (!memMatch) return null;
-    // Unified memory — full pool is available to Metal
-    return {
-      vramGb: parseInt(memMatch[1], 10),
+    if (!memMatch) return [];
+    return [{
+      index: 0,
       name: chipMatch ? chipMatch[1].trim() : 'Apple Silicon',
-    };
+      vramGb: parseInt(memMatch[1], 10),
+      backend: 'metal',
+    }];
   } catch {
-    return null;
+    return [];
   }
 }
+
+// ── Aggregated detection ─────────────────────────────────────────────────────
 
 export async function detectHardware(): Promise<HardwareProfile> {
   const ramGb    = Math.floor(os.totalmem() / (1024 ** 3));
   const cpuCores = os.cpus().length;
+  const cpuName  = os.cpus()[0]?.model?.trim() ?? 'Unknown CPU';
 
-  const nvidia = await detectNvidiaVram();
-  if (nvidia) {
-    return { ramGb, cpuCores, gpuVramGb: nvidia.vramGb, gpuName: nvidia.name, gpuBackend: 'nvidia' };
-  }
+  const [nvidiaGpus, nonNvidiaWin, nonNvidiaLinux, appleGpus] = await Promise.all([
+    detectNvidiaGpus(),
+    detectNonNvidiaGpus(),
+    detectLinuxNonNvidiaGpus(),
+    detectAppleSilicon(),
+  ]);
 
-  const apple = await detectAppleSilicon();
-  if (apple) {
-    return { ramGb, cpuCores, gpuVramGb: apple.vramGb, gpuName: apple.name, gpuBackend: 'apple' };
-  }
+  const gpus = [...nvidiaGpus, ...nonNvidiaWin, ...nonNvidiaLinux, ...appleGpus];
 
-  return { ramGb, cpuCores, gpuVramGb: 0, gpuName: null, gpuBackend: 'none' };
+  return { ramGb, cpuCores, cpuName, gpus };
 }
 
 // ── GGUF model catalogue ──────────────────────────────────────────────────────
 // HuggingFace direct HTTPS — no API key required for public repos.
 // All bartowski quants — consistent quality, reliable CDN.
+//
+// IMPORTANT: bartowski Qwen3 repos use "Qwen_Qwen3-" prefix in both
+// the repo name and the filename.
 
 export interface GGUFSpec {
   /** Logical model name used as phobos provider model ID */
@@ -123,29 +228,38 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
   {
     modelId: 'qwen3-4b-q4',
     label: 'Qwen3 4B Q4',
-    hfRepo: 'bartowski/Qwen3-4B-GGUF',
-    hfFile: 'Qwen3-4B-Q4_K_M.gguf',
+    hfRepo: 'bartowski/Qwen_Qwen3-4B-GGUF',
+    hfFile: 'Qwen_Qwen3-4B-Q4_K_M.gguf',
     sizeBytes: 2_580_000_000,
     ramRequiredGb: 3,
-    contextWindow: 40960,
+    contextWindow: 32768,
   },
   {
     modelId: 'qwen3-8b-q4',
     label: 'Qwen3 8B Q4',
-    hfRepo: 'bartowski/Qwen3-8B-GGUF',
-    hfFile: 'Qwen3-8B-Q4_K_M.gguf',
+    hfRepo: 'bartowski/Qwen_Qwen3-8B-GGUF',
+    hfFile: 'Qwen_Qwen3-8B-Q4_K_M.gguf',
     sizeBytes: 5_190_000_000,
     ramRequiredGb: 6,
-    contextWindow: 40960,
+    contextWindow: 32768,
   },
   {
     modelId: 'qwen3-14b-q4',
     label: 'Qwen3 14B Q4',
-    hfRepo: 'bartowski/Qwen3-14B-GGUF',
-    hfFile: 'Qwen3-14B-Q4_K_M.gguf',
+    hfRepo: 'bartowski/Qwen_Qwen3-14B-GGUF',
+    hfFile: 'Qwen_Qwen3-14B-Q4_K_M.gguf',
     sizeBytes: 9_000_000_000,
     ramRequiredGb: 11,
-    contextWindow: 40960,
+    contextWindow: 32768,
+  },
+  {
+    modelId: 'qwen3-30b-a3b-q4',
+    label: 'Qwen3 30B-A3B Q4',
+    hfRepo: 'bartowski/Qwen_Qwen3-30B-A3B-GGUF',
+    hfFile: 'Qwen_Qwen3-30B-A3B-Q4_K_M.gguf',
+    sizeBytes: 18_400_000_000,
+    ramRequiredGb: 20,
+    contextWindow: 32768,
   },
 ];
 
@@ -160,7 +274,6 @@ export function modelPath(spec: GGUFSpec): string {
 export function isDownloaded(spec: GGUFSpec): boolean {
   const p = modelPath(spec);
   if (!fs.existsSync(p)) return false;
-  // If file is smaller than 90% of expected size, treat as incomplete download
   const stat = fs.statSync(p);
   return stat.size >= spec.sizeBytes * 0.9;
 }
@@ -172,50 +285,78 @@ export function listDownloaded(): GGUFSpec[] {
 // ── Model recommendation ──────────────────────────────────────────────────────
 
 export interface ModelRecommendation {
-  sayon: GGUFSpec;    // coordinator — always CPU
-  allmind: GGUFSpec;  // engine — GPU if available, else CPU
+  sayon: GGUFSpec;
+  allmind: GGUFSpec;
+  /** 'cpu' or a GpuDevice.index */
+  sayonDevice: 'cpu' | number;
+  allmindDevice: 'cpu' | number;
   sayonGpuLayers: number;
   allmindGpuLayers: number;
   reasoning: string;
 }
 
 function selectSayon(ramGb: number): GGUFSpec {
-  // Coordinator must be lightweight and fast. Always CPU.
   if (ramGb >= 16) return GGUF_CATALOGUE.find(s => s.modelId === 'llama3.1-8b-q4')!;
   if (ramGb >= 8)  return GGUF_CATALOGUE.find(s => s.modelId === 'llama3.2-3b-q4')!;
   return GGUF_CATALOGUE.find(s => s.modelId === 'llama3.2-1b-q4')!;
 }
 
-function selectAllmind(vramGb: number, hasGpu: boolean, ramGb: number): { spec: GGUFSpec; gpuLayers: number } {
-  if (hasGpu) {
-    if (vramGb >= 16) return { spec: GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-14b-q4')!, gpuLayers: 99 };
-    if (vramGb >= 8)  return { spec: GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-8b-q4')!,  gpuLayers: 99 };
-    if (vramGb >= 4)  return { spec: GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-4b-q4')!,  gpuLayers: 99 };
-  }
-  // CPU fallback — fit alongside SAYON
-  if (ramGb >= 32) return { spec: GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-8b-q4')!,  gpuLayers: 0 };
-  if (ramGb >= 16) return { spec: GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-4b-q4')!,  gpuLayers: 0 };
-  return { spec: GGUF_CATALOGUE.find(s => s.modelId === 'llama3.2-3b-q4')!, gpuLayers: 0 };
+function selectAllmindSpec(vramGb: number): GGUFSpec {
+  if (vramGb >= 20) return GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-30b-a3b-q4')!;
+  if (vramGb >= 16) return GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-14b-q4')!;
+  if (vramGb >= 8)  return GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-8b-q4')!;
+  if (vramGb >= 4)  return GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-4b-q4')!;
+  return GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-4b-q4')!;
 }
 
 export function buildRecommendation(hw: HardwareProfile): ModelRecommendation {
   const sayon = selectSayon(hw.ramGb);
-  const { spec: allmind, gpuLayers: allmindGpuLayers } = selectAllmind(
-    hw.gpuVramGb,
-    hw.gpuBackend !== 'none',
-    hw.ramGb,
-  );
 
-  const gpuLine = hw.gpuBackend !== 'none'
-    ? `${hw.gpuName} (${hw.gpuVramGb} GB VRAM)`
-    : 'No GPU — CPU fallback';
+  // Sort GPUs by VRAM descending — largest first
+  const gpusByVram = [...hw.gpus].sort((a, b) => b.vramGb - a.vramGb);
+  const bestGpu    = gpusByVram[0] ?? null;
+  const secondGpu  = gpusByVram[1] ?? null;
+
+  // ALLMIND: biggest GPU, or CPU fallback
+  let allmind: GGUFSpec;
+  let allmindDevice: 'cpu' | number;
+  let allmindGpuLayers: number;
+
+  if (bestGpu && bestGpu.vramGb >= 4) {
+    allmind          = selectAllmindSpec(bestGpu.vramGb);
+    allmindDevice    = bestGpu.index;
+    allmindGpuLayers = 99;
+  } else {
+    // CPU fallback
+    if (hw.ramGb >= 32) allmind = GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-8b-q4')!;
+    else if (hw.ramGb >= 16) allmind = GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-4b-q4')!;
+    else allmind = GGUF_CATALOGUE.find(s => s.modelId === 'llama3.2-3b-q4')!;
+    allmindDevice    = 'cpu';
+    allmindGpuLayers = 0;
+  }
+
+  // SAYON: second GPU if available (e.g. iGPU), else CPU
+  let sayonDevice: 'cpu' | number = 'cpu';
+  let sayonGpuLayers = 0;
+  if (secondGpu && secondGpu.vramGb >= 2) {
+    sayonDevice    = secondGpu.index;
+    sayonGpuLayers = 99;
+  }
+
+  // Build reasoning string
+  const gpuLines = hw.gpus.map(g => `${g.name} (${g.vramGb} GB, ${g.backend})`).join(' · ');
+  const gpuStr   = gpuLines || 'No GPU — CPU fallback';
+
+  const deviceName = (d: 'cpu' | number) =>
+    d === 'cpu' ? 'CPU' : (hw.gpus.find(g => g.index === d)?.name ?? `GPU #${d}`);
 
   const reasoning =
-    `System: ${hw.ramGb} GB RAM · ${hw.cpuCores} cores · ${gpuLine}. ` +
-    `SAYON: ${sayon.label} on CPU (${sayon.ramRequiredGb} GB). ` +
-    `ALLMIND: ${allmind.label} ${allmindGpuLayers > 0 ? 'GPU offloaded' : 'CPU'} (${allmind.ramRequiredGb} GB).`;
+    `System: ${hw.ramGb} GB RAM · ${hw.cpuCores} cores · ${hw.cpuName}. ` +
+    `GPUs: ${gpuStr}. ` +
+    `SAYON → ${sayon.label} on ${deviceName(sayonDevice)} (${sayonGpuLayers > 0 ? 'GPU offloaded' : 'CPU'}). ` +
+    `ALLMIND → ${allmind.label} on ${deviceName(allmindDevice)} (${allmindGpuLayers > 0 ? 'GPU offloaded' : 'CPU'}).`;
 
-  return { sayon, allmind, sayonGpuLayers: 0, allmindGpuLayers, reasoning };
+  return { sayon, allmind, sayonDevice, allmindDevice, sayonGpuLayers, allmindGpuLayers, reasoning };
 }
 
 // ── GGUF download ─────────────────────────────────────────────────────────────
@@ -274,17 +415,35 @@ export async function* downloadModel(
             : parseInt(res.headers['content-length'] ?? String(spec.sizeBytes), 10);
 
           const fd = fs.createWriteStream(tmp, { flags: existingBytes > 0 ? 'a' : 'w' });
+
           res.on('data', (chunk: Buffer) => {
             bytesReceived += chunk.length;
             fd.write(chunk);
           });
+
           res.on('end', () => {
-            fd.close(() => {
-              fs.renameSync(tmp, dest);
+            // fd.end() guarantees flush+close before callback fires
+            fd.end(() => {
+              try {
+                fs.renameSync(tmp, dest);
+              } catch {
+                // Windows OneDrive or cross-drive: fallback to copy + delete
+                try {
+                  fs.copyFileSync(tmp, dest);
+                  fs.unlinkSync(tmp);
+                } catch (copyErr) {
+                  reject(new Error(`Failed to finalize download: ${copyErr}`));
+                  return;
+                }
+              }
               resolve();
             });
           });
-          res.on('error', reject);
+
+          res.on('error', (err) => {
+            fd.destroy();
+            reject(err);
+          });
         },
       );
       req.on('error', reject);
@@ -296,23 +455,33 @@ export async function* downloadModel(
 }
 
 // ── llama-server binary resolution ───────────────────────────────────────────
-// When running as SEA:   binary lives next to phobos-core in dist/
-// When running via tsx:  binary lives in repo/bin/
+// Supports backend-specific binaries on Windows:
+//   llama-server-win32-x64-cuda.exe   (for NVIDIA)
+//   llama-server-win32-x64-vulkan.exe (for AMD iGPU, Intel, fallback)
+// Falls back to generic llama-server-{platform}-{arch}{ext} if specific not found.
 
-export function resolveLlamaServerBin(): string {
-  const platform = process.platform; // 'win32' | 'darwin' | 'linux'
-  const arch     = process.arch;     // 'x64' | 'arm64'
+export function resolveLlamaServerBin(backend?: 'cuda' | 'vulkan' | 'metal'): string {
+  const platform = process.platform;
+  const arch     = process.arch;
   const ext      = platform === 'win32' ? '.exe' : '';
-  const name     = `llama-server-${platform}-${arch}${ext}`;
 
-  // SEA path: same directory as the running executable
-  const seaDir  = path.dirname(process.execPath);
+  const seaDir   = path.dirname(process.execPath);
+  const repoRoot = path.resolve(__dirname, '..', '..');
+
+  // On Windows, try backend-specific binary first
+  if (platform === 'win32' && backend) {
+    const specificName = `llama-server-${platform}-${arch}-${backend}${ext}`;
+    const seaPath = path.join(seaDir, specificName);
+    if (fs.existsSync(seaPath)) return seaPath;
+    const devPath = path.join(repoRoot, 'bin', specificName);
+    if (fs.existsSync(devPath)) return devPath;
+    // Fall through to generic
+  }
+
+  const name    = `llama-server-${platform}-${arch}${ext}`;
   const seaPath = path.join(seaDir, name);
   if (fs.existsSync(seaPath)) return seaPath;
-
-  // Dev path: repo/bin/
-  const repoRoot = path.resolve(__dirname, '..', '..');
-  const devPath  = path.join(repoRoot, 'bin', name);
+  const devPath = path.join(repoRoot, 'bin', name);
   if (fs.existsSync(devPath)) return devPath;
 
   throw new Error(
@@ -320,4 +489,18 @@ export function resolveLlamaServerBin(): string {
     `Expected at:\n  ${seaPath}\n  ${devPath}\n` +
     `Run scripts/fetch-llamacpp.js to download binaries.`
   );
+}
+
+/**
+ * Deletes a downloaded GGUF file from disk.
+ */
+export function deleteModel(modelId: string): boolean {
+  const spec = getSpec(modelId);
+  if (!spec) throw new Error(`Unknown model ID: ${modelId}`);
+  const p = modelPath(spec);
+  if (!fs.existsSync(p)) return false;
+  fs.unlinkSync(p);
+  const tmp = p + '.download';
+  if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+  return true;
 }

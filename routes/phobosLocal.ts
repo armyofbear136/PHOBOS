@@ -5,6 +5,8 @@ import {
   listDownloaded,
   downloadModel,
   getSpec,
+  deleteModel,
+  GGUF_CATALOGUE,
 } from '../phobos/PhobosLocalManager.js';
 import {
   startServer,
@@ -17,11 +19,24 @@ import {
 export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> {
 
   // GET /api/phobos/hardware
-  // Hardware profile + recommended model pair.
   fastify.get('/api/phobos/hardware', async (_req, reply) => {
     const hw  = await detectHardware();
     const rec = buildRecommendation(hw);
     return reply.send({ hardware: hw, recommendation: rec });
+  });
+
+  // GET /api/phobos/catalogue
+  // Returns the full model catalogue (for frontend display of all available models).
+  fastify.get('/api/phobos/catalogue', async (_req, reply) => {
+    return reply.send({
+      models: GGUF_CATALOGUE.map(s => ({
+        modelId: s.modelId,
+        label:   s.label,
+        sizeBytes: s.sizeBytes,
+        ramRequiredGb: s.ramRequiredGb,
+        contextWindow: s.contextWindow,
+      })),
+    });
   });
 
   // GET /api/phobos/models
@@ -40,7 +55,6 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
 
   // GET /api/phobos/download?sayon=<modelId>&allmind=<modelId>
   // SSE stream — downloads both GGUFs sequentially, emits progress.
-  // Event shape: { phase, modelId, bytesReceived, bytesTotal, done, error? }
   fastify.get<{
     Querystring: { sayon: string; allmind: string };
   }>('/api/phobos/download', async (req, reply) => {
@@ -70,7 +84,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
     const downloadPhase = async (spec: typeof sayonSpec, phase: 'sayon' | 'allmind') => {
       try {
         for await (const progress of downloadModel(spec, phase)) {
-          emit(progress);
+          emit(progress as unknown as Record<string, unknown>);
         }
       } catch (err) {
         emit({
@@ -92,12 +106,12 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
   });
 
   // POST /api/phobos/start
-  // Body: { sayon: { modelId, gpuLayers?, contextSize?, threads? }, allmind: { ... } }
-  // Starts (or restarts) the two llama-server processes.
+  // Body: { sayon: { modelId, gpuLayers?, contextSize?, threads?, deviceIndex?, gpuBackend? },
+  //         allmind: { ... } }
   fastify.post<{
     Body: {
-      sayon:   { modelId: string; gpuLayers?: number; contextSize?: number; threads?: number };
-      allmind: { modelId: string; gpuLayers?: number; contextSize?: number; threads?: number };
+      sayon:   { modelId: string; gpuLayers?: number; contextSize?: number; threads?: number; deviceIndex?: number; gpuBackend?: string };
+      allmind: { modelId: string; gpuLayers?: number; contextSize?: number; threads?: number; deviceIndex?: number; gpuBackend?: string };
     };
   }>('/api/phobos/start', async (req, reply) => {
     const { sayon, allmind } = req.body;
@@ -109,6 +123,8 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         gpuLayers:   sayon.gpuLayers   ?? 0,
         contextSize: sayon.contextSize ?? 4096,
         threads:     sayon.threads     ?? 0,
+        deviceIndex: sayon.deviceIndex,
+        gpuBackend:  sayon.gpuBackend as 'cuda' | 'vulkan' | 'metal' | undefined,
       }),
       startServer('allmind', {
         modelId:     allmind.modelId,
@@ -116,6 +132,8 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         gpuLayers:   allmind.gpuLayers   ?? 99,
         contextSize: allmind.contextSize ?? 4096,
         threads:     allmind.threads     ?? 0,
+        deviceIndex: allmind.deviceIndex,
+        gpuBackend:  allmind.gpuBackend as 'cuda' | 'vulkan' | 'metal' | undefined,
       }),
     ]);
 
@@ -140,4 +158,29 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
   fastify.get('/api/phobos/status', async (_req, reply) => {
     return reply.send({ status: getServerStatus() });
   });
+
+  // DELETE /api/phobos/models/:modelId
+  fastify.delete<{ Params: { modelId: string } }>(
+    '/api/phobos/models/:modelId',
+    async (req, reply) => {
+      const { modelId } = req.params;
+
+      const status = getServerStatus();
+      for (const [role, s] of Object.entries(status) as [string, { state: string; modelId: string }][]) {
+        if (s.modelId === modelId && (s.state === 'running' || s.state === 'starting')) {
+          return reply.status(409).send({
+            error: `Model is currently loaded in ${role.toUpperCase()} server. Stop the server before deleting.`,
+          });
+        }
+      }
+
+      try {
+        const existed = deleteModel(modelId);
+        if (!existed) return reply.status(404).send({ error: `Model not found: ${modelId}` });
+        return reply.send({ ok: true, modelId });
+      } catch (err) {
+        return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  );
 }

@@ -192,13 +192,16 @@ export async function buildForPlatform({
   }
 
   // llama-server — stage all platform binaries present in bin/ into dist/
-  // Runtime resolves the correct one via process.platform + process.arch.
+  // Includes backend-specific variants (cuda, vulkan) plus generic fallbacks.
   const binDir = path.join(__dirname, 'bin');
   if (fs.existsSync(binDir)) {
     const BIN_NAMES = [
       'llama-server-linux-x64',
       'llama-server-darwin-arm64',
       'llama-server-darwin-x64',
+      // Windows — backend-specific + generic fallback
+      'llama-server-win32-x64-cuda.exe',
+      'llama-server-win32-x64-vulkan.exe',
       'llama-server-win32-x64.exe',
     ];
     let staged = 0;

@@ -5,6 +5,7 @@ import { DocumentStore } from '../db/DocumentStore.js';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 import { DispatchLogStore } from '../db/DispatchLogStore.js';
 import { MessageEventStore } from '../db/MessageEventStore.js';
+import { ThinkingSegmentStore } from '../db/ThinkingSegmentStore.js';
 import { ChatSummaryStore } from '../db/ChatSummaryStore.js';
 import { ModelConfigStore } from '../db/ModelConfigStore.js';
 import { KnowledgeStore } from '../db/KnowledgeStore.js';
@@ -24,6 +25,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   const documentStore = new DocumentStore(db);
   const dispatchLogStore = new DispatchLogStore(db);
   const eventStore = new MessageEventStore(db);
+  const segmentStore = new ThinkingSegmentStore(db);
   const summaryStore = new ChatSummaryStore(db);
   const configStore = new ModelConfigStore(db);
   const knowledgeStore = new KnowledgeStore(db);
@@ -68,6 +70,18 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
         createdAt: e.created_at,
       }));
       return reply.send(mapped);
+    }
+  );
+
+  // GET /api/threads/:id/thinking
+  // Returns all thinking segments for the thread in chronological order.
+  // This is the single source of truth for the reasoning panel — built in real time
+  // via per-token UPDATEs so it is always current, even mid-stream.
+  fastify.get<{ Params: { id: string } }>(
+    '/api/threads/:id/thinking',
+    async (req, reply) => {
+      const segments = await segmentStore.getByThread(req.params.id);
+      return reply.send(segments);
     }
   );
 
@@ -266,6 +280,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           priorHistory,
           messageStore,
           eventStore,
+          segmentStore,
           trackingsendEvent
         );
         if (directMsgId && activityLog.length > 0) {
@@ -312,11 +327,24 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           persistEvent: async (eventType, payload) => {
             await eventStore.insert(threadId, eventType as any, payload, assistantMsg.id);
           },
-          onThinkChunk: async (content, source) => {
-            await eventStore.insert(threadId, 'think_chunk', { type: 'think_chunk', content, source }, assistantMsg.id);
+          // Real-time segment writes — one segment per thinking phase, appended per token.
+          // segmentStore tracks the active segment ID internally per (messageId, source) pair.
+          onThinkChunk: (() => {
+            const segIds: Record<string, string | null> = { coordinator: null, engine: null };
+            return async (content: string, source: 'coordinator' | 'engine') => {
+              if (!segIds[source]) {
+                segIds[source] = await segmentStore.openSegment(threadId, assistantMsg.id, source);
+              }
+              await segmentStore.appendToken(segIds[source]!, content);
+            };
+          })(),
+          onThinkPhaseComplete: async (source: 'coordinator' | 'engine') => {
+            // Called by LoopController when a thinking phase ends — close the segment
+            // We don't have the segment ID here so we close by message+phase
+            await segmentStore.closeLatestSegment(assistantMsg.id, source);
           },
-          onOutputChunk: async (content) => {
-            await eventStore.insert(threadId, 'output_chunk', { type: 'output_chunk', content }, assistantMsg.id);
+          onOutputChunk: async (_content) => {
+            // output chunks no longer need separate persistence — messages table is the canonical record
           },
         });
 
@@ -452,6 +480,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           [],
           messageStore,
           eventStore,
+          segmentStore,
           (event: Record<string, unknown>) => {
             if (event.type === 'output_token') {
               sendEvent({ type: 'token', token: event.token });
@@ -486,6 +515,7 @@ async function handleDirectResponse(
   history: Array<{ role: string; content: string }>,
   messageStore: MessageStore,
   eventStore: MessageEventStore,
+  segmentStore: ThinkingSegmentStore,
   sendEvent: (data: Record<string, unknown>) => void
 ): Promise<string | null> {
   const { coordinatorClient, COORDINATOR_MODEL, getThinkingStrategy: getStrategy, COORDINATOR_PROVIDER: COORD_PROV } = await import('../ai/clients.js');
@@ -521,8 +551,24 @@ async function handleDirectResponse(
     thinking_trace: null,
   });
 
-  const { StreamPersister } = await import('../db/StreamPersister.js');
-  const persister = new StreamPersister(eventStore, threadId, msg.id);
+  // Open a coordinator thinking segment — will be appended to per token
+  let activeSegmentId: string | null = null;
+
+  const openCoordSegment = async (): Promise<void> => {
+    if (activeSegmentId) return; // already open
+    activeSegmentId = await segmentStore.openSegment(threadId, msg.id, 'coordinator');
+  };
+
+  const appendToSegment = async (token: string): Promise<void> => {
+    if (!activeSegmentId) await openCoordSegment();
+    await segmentStore.appendToken(activeSegmentId!, token);
+  };
+
+  const closeCoordSegment = async (): Promise<void> => {
+    if (!activeSegmentId) return;
+    await segmentStore.closeSegment(activeSegmentId);
+    activeSegmentId = null;
+  };
 
   try {
     const { getThinkingExtraBody: getExtra } = await import('../ai/clients.js');
@@ -564,32 +610,26 @@ async function handleDirectResponse(
       const delta = chunk.choices[0]?.delta as Record<string, unknown>;
 
       if (strategy.thinkingPath === 'field') {
-        // FastFlowLLM uses delta.reasoning_content; Ollama uses delta.reasoning (confirmed from logs)
-        // FastFlowLLM also wraps reasoning_content with literal <think>...</think> tokens — strip them.
         const d = delta as Record<string, unknown>;
         let thinkToken = (d.reasoning_content ?? d.reasoning ?? d.thinking) as string | null | undefined;
         const outToken = d.content as string | null | undefined;
         if (thinkToken) {
-          // Strip any <think> / </think> wrapper tags FastFlowLLM injects into the field
           thinkToken = thinkToken.replace(/<\/?think>/g, '');
           if (thinkToken) {
             _dbgCount++;
             if (_dbgCount <= 3) console.log(`[handleDirect:think:${_dbgCount}] field=${JSON.stringify(thinkToken.slice(0, 80))}`);
             thinkingBuf += thinkToken;
-            persister.addThink(thinkToken, 'coordinator');
+            await appendToSegment(thinkToken);
             sendEvent({ type: 'think_token', token: thinkToken, source: 'coordinator' });
           }
         }
         if (outToken) {
           outputBuf += outToken;
-          persister.addOutput(outToken);
           sendEvent({ type: 'output_token', token: outToken });
         }
       } else {
-        // FastFlowLLM Qwen3 / Llama: everything in delta.content, <think> tags separate it
         const rawContent = delta?.content as string | null | undefined;
 
-        // Debug: log first few tokens
         if (rawContent != null) {
           _dbgCount++;
           if (_dbgCount <= 3 || rawContent.includes('<think') || rawContent.includes('</think')) {
@@ -604,14 +644,14 @@ async function handleDirectResponse(
               const closeIdx = remaining.indexOf('</think>');
               if (closeIdx === -1) {
                 thinkingBuf += remaining;
-                persister.addThink(remaining, 'coordinator');
+                await appendToSegment(remaining);
                 sendEvent({ type: 'think_token', token: remaining, source: 'coordinator' });
                 remaining = '';
               } else {
                 const chunk2 = remaining.slice(0, closeIdx);
                 if (chunk2) {
                   thinkingBuf += chunk2;
-                  persister.addThink(chunk2, 'coordinator');
+                  await appendToSegment(chunk2);
                   sendEvent({ type: 'think_token', token: chunk2, source: 'coordinator' });
                 }
                 inThinkTag = false;
@@ -621,14 +661,12 @@ async function handleDirectResponse(
               const openIdx = remaining.indexOf('<think>');
               if (openIdx === -1) {
                 outputBuf += remaining;
-                persister.addOutput(remaining);
                 sendEvent({ type: 'output_token', token: remaining });
                 remaining = '';
               } else {
                 const before = remaining.slice(0, openIdx);
                 if (before) {
                   outputBuf += before;
-                  persister.addOutput(before);
                   sendEvent({ type: 'output_token', token: before });
                 }
                 inThinkTag = true;
@@ -640,7 +678,8 @@ async function handleDirectResponse(
       }
     }
 
-    await persister.finalize();
+    // Close and timestamp the coordinator segment
+    await closeCoordSegment();
 
     // Update the pre-created message row with final content
     await messageStore.update(msg.id, {
@@ -653,12 +692,11 @@ async function handleDirectResponse(
       await eventStore.insert(threadId, 'thinking_complete', { type: 'thinking_complete', content: thinkingBuf, source: 'coordinator' }, msg.id);
     }
 
-    // Clean up transient chunks now that canonical records are written
-    await persister.cleanup();
-
     sendEvent({ type: 'complete', approved: true, bestAttempt: 1 });
     return msg.id;
   } catch (err) {
+    // Close open segment on error so it doesn't remain NULL completed_at forever
+    await closeCoordSegment().catch(() => {});
     console.error('[handleDirectResponse] Error:', err);
     sendEvent({ type: 'error', message: 'Coordinator unavailable' });
     return null;

@@ -23,15 +23,12 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
   });
 
   // GET /api/config/models
-  // Returns current config + the full provider+model catalogue.
   fastify.get('/api/config/models', async (_req, reply) => {
     const config = await configStore.getAll();
     return reply.send({
       coordinator: {
         ...config.coordinator,
-        // Models filtered to current provider
         options: getCoordinatorModels(config.coordinator.provider),
-        // All providers for the provider dropdown
         providers: PROVIDERS,
       },
       engine: {
@@ -44,16 +41,16 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
 
   // PUT /api/config/models
   // Update coordinator and/or engine config, then hot-swap the live clients.
+  // Now accepts deviceIndex, gpuBackend, gpuLayers for phobos hardware assignment.
   fastify.put<{
     Body: {
-      coordinator?: { provider?: string; endpoint?: string; model?: string; apiKey?: string };
-      engine?: { provider?: string; endpoint?: string; model?: string; apiKey?: string };
+      coordinator?: { provider?: string; endpoint?: string; model?: string; apiKey?: string; deviceIndex?: number; gpuBackend?: string; gpuLayers?: number };
+      engine?:      { provider?: string; endpoint?: string; model?: string; apiKey?: string; deviceIndex?: number; gpuBackend?: string; gpuLayers?: number };
     };
   }>('/api/config/models', async (req, reply) => {
     if (req.body.coordinator) {
       const current = await configStore.getCoordinator();
       const patch = req.body.coordinator;
-      // If provider changed, auto-update endpoint to provider default
       const provider = patch.provider ?? current.provider;
       const providerDef = PROVIDERS.find(p => p.id === provider);
       const endpoint = patch.endpoint ?? (
@@ -62,8 +59,11 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
       await configStore.setCoordinator({
         provider,
         endpoint,
-        model: patch.model ?? current.model,
-        apiKey: patch.apiKey ?? current.apiKey,
+        model:       patch.model       ?? current.model,
+        apiKey:      patch.apiKey      ?? current.apiKey,
+        deviceIndex: patch.deviceIndex ?? current.deviceIndex,
+        gpuBackend:  patch.gpuBackend  ?? current.gpuBackend,
+        gpuLayers:   patch.gpuLayers   ?? current.gpuLayers,
       });
     }
     if (req.body.engine) {
@@ -77,8 +77,11 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
       await configStore.setEngine({
         provider,
         endpoint,
-        model: patch.model ?? current.model,
-        apiKey: patch.apiKey ?? current.apiKey,
+        model:       patch.model       ?? current.model,
+        apiKey:      patch.apiKey      ?? current.apiKey,
+        deviceIndex: patch.deviceIndex ?? current.deviceIndex,
+        gpuBackend:  patch.gpuBackend  ?? current.gpuBackend,
+        gpuLayers:   patch.gpuLayers   ?? current.gpuLayers,
       });
     }
     await reconfigureClients();

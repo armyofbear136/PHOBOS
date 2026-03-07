@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import * as net from 'net';
 import * as path from 'path';
-import { resolveLlamaServerBin, modelPath, getSpec } from './PhobosLocalManager.js';
+import { resolveLlamaServerBin, modelPath, getSpec, detectHardware, buildRecommendation } from './PhobosLocalManager.js';
 
 // ── Ports — permanent wire contract ──────────────────────────────────────────
 export const SAYON_PORT   = 52626;   // coordinator
@@ -201,6 +201,8 @@ export async function stopAllServers(): Promise<void> {
 
 /**
  * Called by reconfigureClients() whenever model config changes.
+ * If deviceIndex is not explicitly set, auto-detects hardware and applies
+ * the recommendation for optimal GPU assignment.
  */
 export async function reconcilePhobosServers(config: {
   coordinator: { provider: string; model: string; deviceIndex?: number; gpuBackend?: string; gpuLayers?: number };
@@ -208,16 +210,37 @@ export async function reconcilePhobosServers(config: {
 }): Promise<void> {
   const tasks: Promise<void>[] = [];
 
+  // Auto-detect hardware for device assignment when not explicitly configured
+  const needsAutoDetect =
+    (config.coordinator.provider === 'phobos' && config.coordinator.deviceIndex === undefined) ||
+    (config.engine.provider === 'phobos' && config.engine.deviceIndex === undefined);
+
+  let rec: Awaited<ReturnType<typeof buildRecommendation>> | null = null;
+  let hw: Awaited<ReturnType<typeof detectHardware>> | null = null;
+  if (needsAutoDetect) {
+    try {
+      hw = await detectHardware();
+      rec = buildRecommendation(hw);
+      console.log(`[reconcile] Auto-detected hardware: ${hw.gpus.map(g => `${g.name} (${g.vramGb}GB, ${g.backend})`).join(', ') || 'CPU only'}`);
+    } catch (err) {
+      console.error(`[reconcile] Hardware auto-detect failed: ${(err as Error).message}`);
+    }
+  }
+
   if (config.coordinator.provider === 'phobos') {
+    const deviceIndex = config.coordinator.deviceIndex ?? (rec ? (rec.sayonDevice === 'cpu' ? undefined : rec.sayonDevice) : undefined);
+    const gpuBackend  = config.coordinator.gpuBackend ?? (deviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === deviceIndex)?.backend : undefined);
+    const gpuLayers   = config.coordinator.gpuLayers ?? (deviceIndex !== undefined ? 99 : 0);
+
     tasks.push(
       startServer('sayon', {
         modelId:     config.coordinator.model,
         port:        SAYON_PORT,
-        gpuLayers:   config.coordinator.gpuLayers ?? 0,
+        gpuLayers,
         contextSize: 4096,
         threads:     0,
-        deviceIndex: config.coordinator.deviceIndex,
-        gpuBackend:  config.coordinator.gpuBackend as ServerConfig['gpuBackend'],
+        deviceIndex,
+        gpuBackend:  gpuBackend as ServerConfig['gpuBackend'],
       }).catch(err => {
         console.error(`[reconcile] sayon start failed: ${err.message}`);
       })
@@ -227,15 +250,19 @@ export async function reconcilePhobosServers(config: {
   }
 
   if (config.engine.provider === 'phobos') {
+    const deviceIndex = config.engine.deviceIndex ?? (rec ? (rec.allmindDevice === 'cpu' ? undefined : rec.allmindDevice) : undefined);
+    const gpuBackend  = config.engine.gpuBackend ?? (deviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === deviceIndex)?.backend : undefined);
+    const gpuLayers   = config.engine.gpuLayers ?? (deviceIndex !== undefined ? 99 : 0);
+
     tasks.push(
       startServer('allmind', {
         modelId:     config.engine.model,
         port:        ALLMIND_PORT,
-        gpuLayers:   config.engine.gpuLayers ?? 99,
+        gpuLayers,
         contextSize: 4096,
         threads:     0,
-        deviceIndex: config.engine.deviceIndex,
-        gpuBackend:  config.engine.gpuBackend as ServerConfig['gpuBackend'],
+        deviceIndex,
+        gpuBackend:  gpuBackend as ServerConfig['gpuBackend'],
       }).catch(err => {
         console.error(`[reconcile] allmind start failed: ${err.message}`);
       })

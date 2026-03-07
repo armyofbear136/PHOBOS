@@ -191,6 +191,31 @@ export async function buildForPlatform({
     log('  ✅ .env');
   }
 
+  // llama-server — stage all platform binaries present in bin/ into dist/
+  // Runtime resolves the correct one via process.platform + process.arch.
+  const binDir = path.join(__dirname, 'bin');
+  if (fs.existsSync(binDir)) {
+    const BIN_NAMES = [
+      'llama-server-linux-x64',
+      'llama-server-darwin-arm64',
+      'llama-server-darwin-x64',
+      'llama-server-win32-x64.exe',
+    ];
+    let staged = 0;
+    for (const name of BIN_NAMES) {
+      const src = path.join(binDir, name);
+      if (!fs.existsSync(src)) continue;
+      const dst = path.join(distDir, name);
+      fs.copyFileSync(src, dst);
+      if (!name.endsWith('.exe')) fs.chmodSync(dst, 0o755);
+      staged++;
+    }
+    if (staged > 0) log(`  ✅ llama-server (${staged} platform binaries)`);
+    else            log('  ⚠️  llama-server — no binaries in bin/ (run: node scripts/fetch-llamacpp.js)');
+  } else {
+    log('  ⚠️  bin/ missing — run: node scripts/fetch-llamacpp.js');
+  }
+
   // ── 5. Cleanup ──────────────────────────────────────────────────────────────
   for (const f of ['sea-prep.blob', 'sea-config.json']) {
     const p = path.join(distDir, f);

@@ -1,4 +1,5 @@
 import { DatabaseManager } from './DatabaseManager.js';
+import { listDownloaded } from '../phobos/PhobosLocalManager.js';
 
 /** A single selectable model entry */
 export interface ModelOption {
@@ -31,6 +32,13 @@ export interface RoleConfig {
 
 /** Provider catalogue — shared for both roles */
 export const PROVIDERS: ProviderOption[] = [
+  {
+    id: 'phobos',
+    label: 'PHOBOS Local',
+    defaultEndpoint: 'http://127.0.0.1:52626/v1',  // SAYON default; engine overrides to 52627
+    requiresApiKey: false,
+    thinkingMode: 'system_prompt',
+  },
   {
     id: 'fastflowllm',
     label: 'FastFlowLLM',
@@ -105,14 +113,23 @@ export const ALL_MODELS: ModelOption[] = [
 
 /** Models available for coordinator role per provider */
 export function getCoordinatorModels(providerId: string): ModelOption[] {
-  // For custom, return an empty list (user types their own model id)
   if (providerId === 'custom') return [];
+  if (providerId === 'phobos') {
+    return listDownloaded().map(s => ({
+      id: s.modelId, label: s.label, contextWindow: s.contextWindow, charsPerToken: 4, provider: 'phobos',
+    }));
+  }
   return ALL_MODELS.filter(m => m.provider === providerId);
 }
 
 /** Models available for engine role per provider */
 export function getEngineModels(providerId: string): ModelOption[] {
   if (providerId === 'custom') return [];
+  if (providerId === 'phobos') {
+    return listDownloaded().map(s => ({
+      id: s.modelId, label: s.label, contextWindow: s.contextWindow, charsPerToken: 4, provider: 'phobos',
+    }));
+  }
   return ALL_MODELS.filter(m => m.provider === providerId);
 }
 

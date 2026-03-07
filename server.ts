@@ -6,6 +6,8 @@ import { threadsRoute } from './routes/threads.js';
 import { messagesRoute } from './routes/messages.js';
 import { documentsRoute } from './routes/documents.js';
 import { statusRoute } from './routes/status.js';
+import { phobosLocalRoute } from './routes/phobosLocal.js';
+import { stopAllServers } from './phobos/LlamaServerManager.js';
 import { reconfigureClients, COORDINATOR_MODEL, ENGINE_MODEL } from './ai/clients.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -55,6 +57,7 @@ async function buildServer() {
   await fastify.register(messagesRoute);
   await fastify.register(documentsRoute);
   await fastify.register(statusRoute);
+  await fastify.register(phobosLocalRoute);
 
   // Health check
   fastify.get('/health', async () => ({ ok: true, ts: Date.now() }));
@@ -99,6 +102,7 @@ async function main() {
   for (const signal of signals) {
     process.once(signal, async () => {
       console.log(`\n${signal} received — shutting down...`);
+      await stopAllServers();
       await fastify.close();
       await db.close();
       process.exit(0);

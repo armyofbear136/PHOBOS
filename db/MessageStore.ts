@@ -62,6 +62,16 @@ export class MessageStore {
     return (await this.getById(id))!;
   }
 
+  async update(id: string, fields: { content?: string; thinking_trace?: string | null }): Promise<void> {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    if (fields.content !== undefined)        { sets.push('content = ?');        vals.push(fields.content); }
+    if (fields.thinking_trace !== undefined) { sets.push('thinking_trace = ?'); vals.push(fields.thinking_trace); }
+    if (sets.length === 0) return;
+    vals.push(id);
+    await this.db.run(`UPDATE messages SET ${sets.join(', ')} WHERE id = ?`, vals);
+  }
+
   async getById(id: string): Promise<Message | null> {
     return this.db.queryOne<Message>(
       `SELECT * FROM messages WHERE id = ?`,

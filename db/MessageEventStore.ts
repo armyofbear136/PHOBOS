@@ -5,6 +5,8 @@ export type PersistedEventType =
   | 'file_panel'
   | 'coordinator'
   | 'thinking_complete'
+  | 'think_chunk'
+  | 'output_chunk'
   | 'patches_applied'
   | 'activity';
 
@@ -84,5 +86,13 @@ export class MessageEventStore {
 
   async deleteByThread(threadId: string): Promise<void> {
     await this.db.run(`DELETE FROM message_events WHERE thread_id = ?`, [threadId]);
+  }
+
+  /** Remove transient chunk records once canonical thinking_complete/output is written */
+  async deleteChunksForMessage(messageId: string): Promise<void> {
+    await this.db.run(
+      `DELETE FROM message_events WHERE message_id = ? AND event_type IN ('think_chunk', 'output_chunk')`,
+      [messageId]
+    );
   }
 }

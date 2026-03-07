@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 import { ModelConfigStore, PROVIDERS, type RoleConfig } from '../db/ModelConfigStore.js';
+import { reconcilePhobosServers } from '../phobos/LlamaServerManager.js';
 
 export let coordinatorClient: OpenAI = new OpenAI({
   baseURL: 'http://localhost:52625/v1',
@@ -40,6 +41,12 @@ export async function reconfigureClients(): Promise<void> {
 
   console.log(`[clients] Sayon:   ${coordinator.provider} / ${coordinator.endpoint}  (${COORDINATOR_MODEL})`);
   console.log(`[clients] ALLMIND: ${engine.provider} / ${engine.endpoint}  (${ENGINE_MODEL})`);
+
+  // Start/stop llama-server if either role is on the phobos provider.
+  // Fire-and-forget — server startup is async and may take a few seconds.
+  reconcilePhobosServers({ coordinator, engine }).catch(err => {
+    console.error(`[reconfigureClients] reconcilePhobosServers error: ${err.message}`);
+  });
 }
 
 export async function checkBackendHealth(): Promise<{
@@ -115,6 +122,29 @@ export interface ThinkingStrategy {
 }
 
 export function getThinkingStrategy(provider: string, model: string): ThinkingStrategy {
+  // PHOBOS Local — llama-server (llama.cpp) speaks the same OpenAI compat as Ollama.
+  // Llama models: system prompt injection, tag path.
+  // Qwen3 models: llama.cpp supports --think natively via extra_body, same as Ollama.
+  if (provider === 'phobos') {
+    if (model.startsWith('qwen3')) {
+      return {
+        systemSuffix: '',
+        thinkingPath: 'tag',         // llama-server /v1 returns <think> in delta.content
+        extraBodyThink: {},
+        extraBodyNoThink: {},
+      };
+    }
+    // Llama models — prompt-inject thinking
+    return {
+      systemSuffix:
+        '\n\nThink through the problem step by step before answering. ' +
+        'Write your reasoning inside <think> tags, then give your final answer after the closing </think> tag.',
+      thinkingPath: 'tag',
+      extraBodyThink: {},
+      extraBodyNoThink: {},
+    };
+  }
+
   // Qwen3 on Ollama — CONFIRMED from debug logs:
   // delta.content is "" (empty), thinking arrives in delta.thinking.
   // extra_body:{think:true} IS working via Ollama's /v1/ compat layer.

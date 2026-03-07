@@ -25,6 +25,10 @@ export interface LoopOptions {
   skipBuild?: boolean;
   /** Called for every event that should be persisted to DB (file_panel, coordinator, etc.) */
   persistEvent?: (eventType: string, payload: object, messageId?: string) => Promise<void>;
+  /** Called periodically with buffered think tokens — enables real-time DB persistence */
+  onThinkChunk?: (content: string, source: 'coordinator' | 'engine', messageId?: string) => Promise<void>;
+  /** Called periodically with buffered output tokens — enables real-time DB persistence */
+  onOutputChunk?: (content: string, messageId?: string) => Promise<void>;
 }
 
 export interface AttemptResult {
@@ -145,7 +149,11 @@ export class LoopController {
     let coordinatorThinkingAccum = '';
     const sendThinking = (() => {
       const raw = this.makeThinkingSender(reply, 'coordinator');
-      return (token: string) => { coordinatorThinkingAccum += token; raw(token); };
+      return (token: string) => {
+        coordinatorThinkingAccum += token;
+        this.options.onThinkChunk?.(token, 'coordinator', assistantMessageId).catch(() => {});
+        raw(token);
+      };
     })();
     const sendEngineThinking = this.makeThinkingSender(reply, 'engine');
     const sendStatus = (content: string) => this.sendEvent(reply, { type: 'status', content });
@@ -328,7 +336,7 @@ export class LoopController {
           ];
           sendStatus(`[${task.index}/${total}] Engine continuing after file read…`);
           const continued = await this.runSingleStream(
-            reply, continuationMessages, taskId, attemptResult.thinking, sendThinking
+            reply, continuationMessages, taskId, attemptResult.thinking, sendThinking, assistantMessageId
           );
           currentOutput = continued.output;
           currentParsed = this.toolParser.parse(currentOutput);
@@ -547,7 +555,7 @@ export class LoopController {
 
     while (true) {
       const streamResult = await this.runSingleStream(
-        reply, engineMessages, taskId, accumulatedThinking, sendThinking
+        reply, engineMessages, taskId, accumulatedThinking, sendThinking, assistantMessageId
       );
 
       accumulatedThinking += streamResult.thinking;
@@ -576,6 +584,7 @@ export class LoopController {
 
     this.budgetMonitor.recordTokens(taskId, Math.ceil(accumulatedThinking.length / 4));
 
+    console.log(`[LoopController:engine:thinking_complete] length=${accumulatedThinking.length} msgId=${assistantMessageId?.slice(0,8) ?? 'undefined'}`);
     if (accumulatedThinking) {
       await this.persistAndSend(reply, { type: 'thinking_complete', content: accumulatedThinking, source: 'engine' }, assistantMessageId);
     }
@@ -597,7 +606,8 @@ export class LoopController {
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
     taskId: string,
     priorThinkingContext: string,
-    sendThinking: (token: string) => void
+    sendThinking: (token: string) => void,
+    assistantMessageId?: string
   ): Promise<StreamResult> {
     const parser = new StreamParser();
     parser.reset();
@@ -653,6 +663,7 @@ export class LoopController {
       );
     }
 
+    let fieldThinkBuf = ''; // accumulates thinking tokens on field-path (parser not used there)
     try {
       let emittedThinkLen = 0;
       let emittedOutputLen = 0;
@@ -684,11 +695,14 @@ export class LoopController {
             if (thinkToken) {
               if (_dbgN <= 3) console.log(`[engine:think:field] ${JSON.stringify(thinkToken.slice(0, 80))}`);
               // Send directly — do NOT feed parser (would cause double-emit when outToken arrives)
+              fieldThinkBuf += thinkToken;
+              this.options.onThinkChunk?.(thinkToken, 'engine', assistantMessageId).catch(() => {});
               sendThinking(thinkToken);
             }
           }
           if (outToken) {
             // Content is clean on field-path providers — no <think> tags in delta.content
+            this.options.onOutputChunk?.(outToken, assistantMessageId).catch(() => {});
             reply.raw.write(`data: ${JSON.stringify({ type: 'output_token', token: outToken })}\n\n`);
             emittedOutputLen += outToken.length;
           }
@@ -707,9 +721,17 @@ export class LoopController {
             parser.feed(outToken);
             const { thinking: thinkBuf, output: outBuf } = parser.getBuffers();
             const newThink = thinkBuf.slice(emittedThinkLen);
-            if (newThink) { emittedThinkLen = thinkBuf.length; sendThinking(newThink); }
+            if (newThink) {
+              emittedThinkLen = thinkBuf.length;
+              this.options.onThinkChunk?.(newThink, 'engine', assistantMessageId).catch(() => {});
+              sendThinking(newThink);
+            }
             const newOut = outBuf.slice(emittedOutputLen);
-            if (newOut) { emittedOutputLen = outBuf.length; reply.raw.write(`data: ${JSON.stringify({ type: 'output_token', token: newOut })}\n\n`); }
+            if (newOut) {
+              emittedOutputLen = outBuf.length;
+              this.options.onOutputChunk?.(newOut, assistantMessageId).catch(() => {});
+              reply.raw.write(`data: ${JSON.stringify({ type: 'output_token', token: newOut })}\n\n`);
+            }
           }
         }
 
@@ -724,7 +746,8 @@ export class LoopController {
     }
 
     parser.complete();
-    const { thinking: streamThinking, output: streamOutput } = parser.getBuffers();
+    const { thinking: parserThinking, output: streamOutput } = parser.getBuffers();
+    const streamThinking = fieldThinkBuf || parserThinking;
 
     if (interventionQuestion === null) {
       return { thinking: streamThinking, output: streamOutput };

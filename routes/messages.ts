@@ -312,6 +312,12 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           persistEvent: async (eventType, payload) => {
             await eventStore.insert(threadId, eventType as any, payload, assistantMsg.id);
           },
+          onThinkChunk: async (content, source) => {
+            await eventStore.insert(threadId, 'think_chunk', { type: 'think_chunk', content, source }, assistantMsg.id);
+          },
+          onOutputChunk: async (content) => {
+            await eventStore.insert(threadId, 'output_chunk', { type: 'output_chunk', content }, assistantMsg.id);
+          },
         });
 
         const startTime = Date.now();
@@ -371,6 +377,9 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
         if (loopActivityLog.length > 0) {
           await eventStore.insert(threadId, 'activity', { type: 'activity', events: loopActivityLog }, assistantMsg.id);
         }
+
+        // Remove transient chunk records now that canonical thinking_complete/output records exist
+        await eventStore.deleteChunksForMessage(assistantMsg.id);
       }
 
       await threadStore.touch(threadId);
@@ -503,6 +512,18 @@ async function handleDirectResponse(
 
   console.log(`[handleDirect:config] provider=${COORD_PROV} model=${COORDINATOR_MODEL} thinkingPath=${strategy.thinkingPath} systemSuffix=${JSON.stringify(strategy.systemSuffix.slice(0, 40))}`);
 
+  // Pre-create the assistant message so we have an ID to attach stream chunks to.
+  // Content and thinking_trace are updated at the end with the full result.
+  const msg = await messageStore.insert({
+    thread_id: threadId,
+    role: 'assistant',
+    content: '',
+    thinking_trace: null,
+  });
+
+  const { StreamPersister } = await import('../db/StreamPersister.js');
+  const persister = new StreamPersister(eventStore, threadId, msg.id);
+
   try {
     const { getThinkingExtraBody: getExtra } = await import('../ai/clients.js');
     const coordExtraBody = getExtra(COORD_PROV, COORDINATOR_MODEL, 'think');
@@ -555,11 +576,13 @@ async function handleDirectResponse(
             _dbgCount++;
             if (_dbgCount <= 3) console.log(`[handleDirect:think:${_dbgCount}] field=${JSON.stringify(thinkToken.slice(0, 80))}`);
             thinkingBuf += thinkToken;
+            persister.addThink(thinkToken, 'coordinator');
             sendEvent({ type: 'think_token', token: thinkToken, source: 'coordinator' });
           }
         }
         if (outToken) {
           outputBuf += outToken;
+          persister.addOutput(outToken);
           sendEvent({ type: 'output_token', token: outToken });
         }
       } else {
@@ -581,12 +604,14 @@ async function handleDirectResponse(
               const closeIdx = remaining.indexOf('</think>');
               if (closeIdx === -1) {
                 thinkingBuf += remaining;
+                persister.addThink(remaining, 'coordinator');
                 sendEvent({ type: 'think_token', token: remaining, source: 'coordinator' });
                 remaining = '';
               } else {
                 const chunk2 = remaining.slice(0, closeIdx);
                 if (chunk2) {
                   thinkingBuf += chunk2;
+                  persister.addThink(chunk2, 'coordinator');
                   sendEvent({ type: 'think_token', token: chunk2, source: 'coordinator' });
                 }
                 inThinkTag = false;
@@ -596,12 +621,14 @@ async function handleDirectResponse(
               const openIdx = remaining.indexOf('<think>');
               if (openIdx === -1) {
                 outputBuf += remaining;
+                persister.addOutput(remaining);
                 sendEvent({ type: 'output_token', token: remaining });
                 remaining = '';
               } else {
                 const before = remaining.slice(0, openIdx);
                 if (before) {
                   outputBuf += before;
+                  persister.addOutput(before);
                   sendEvent({ type: 'output_token', token: before });
                 }
                 inThinkTag = true;
@@ -613,17 +640,21 @@ async function handleDirectResponse(
       }
     }
 
-    const msg = await messageStore.insert({
-      thread_id: threadId,
-      role: 'assistant',
+    await persister.finalize();
+
+    // Update the pre-created message row with final content
+    await messageStore.update(msg.id, {
       content: outputBuf.trim() || '(no output)',
       thinking_trace: thinkingBuf || null,
     });
 
     if (thinkingBuf) {
-      sendEvent({ type: 'thinking_complete', content: thinkingBuf });
+      sendEvent({ type: 'thinking_complete', content: thinkingBuf, source: 'coordinator' });
       await eventStore.insert(threadId, 'thinking_complete', { type: 'thinking_complete', content: thinkingBuf, source: 'coordinator' }, msg.id);
     }
+
+    // Clean up transient chunks now that canonical records are written
+    await persister.cleanup();
 
     sendEvent({ type: 'complete', approved: true, bestAttempt: 1 });
     return msg.id;

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'child_process';
 import * as net from 'net';
+import * as path from 'path';
 import { resolveLlamaServerBin, modelPath, getSpec } from './PhobosLocalManager.js';
 
 // ── Ports — permanent wire contract ──────────────────────────────────────────
@@ -67,8 +68,8 @@ export async function startServer(role: 'sayon' | 'allmind', cfg: ServerConfig):
 
   const ggufPath = modelPath(spec);
 
-  // Resolve the correct binary for the target backend
-  const bin = resolveLlamaServerBin(cfg.gpuBackend);
+  // Resolve the llama-server binary (single binary, loads backend DLLs dynamically)
+  const bin = resolveLlamaServerBin();
 
   managed.config = { ...cfg };
   managed.state  = 'starting';
@@ -116,9 +117,14 @@ export async function startServer(role: 'sayon' | 'allmind', cfg: ServerConfig):
 
   console.log(`[LlamaServerManager] Starting ${role} on :${cfg.port} — ${spec.label} (ngl=${cfg.gpuLayers}, device=${cfg.deviceIndex ?? 'auto'}, backend=${cfg.gpuBackend ?? 'auto'})`);
 
+  // Set cwd to the directory containing the binary so companion DLLs
+  // (ggml-vulkan.dll, ggml-cpu-*.dll, ggml-rpc.dll, ggml-cuda.dll) are found.
+  const binDir = path.dirname(bin);
+
   const proc = spawn(bin, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     env,
+    cwd: binDir,
   });
 
   proc.stderr?.on('data', (data: Buffer) => {

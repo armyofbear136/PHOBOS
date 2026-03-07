@@ -7,7 +7,15 @@ import * as https from 'https';
 import { fileURLToPath } from 'url';
 
 const execFileAsync = promisify(execFile);
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// ESM (tsx dev) → import.meta.url is defined; CJS (SEA bundle) → use __dirname global
+const _dirname: string = (() => {
+  try {
+    if (typeof import.meta?.url === 'string') return path.dirname(fileURLToPath(import.meta.url));
+  } catch { /* CJS bundle — import.meta.url is undefined */ }
+  // esbuild CJS: __dirname is injected by Node at runtime
+  return typeof __dirname === 'string' ? __dirname : process.cwd();
+})();
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -56,24 +64,39 @@ async function detectNvidiaGpus(): Promise<GpuDevice[]> {
 }
 
 // ── AMD / Intel iGPU detection via WMI (Windows) ─────────────────────────────
-// Queries Win32_VideoController for non-NVIDIA adapters.
-// AMD Radeon iGPUs and Intel Arc/UHD/Iris all appear here.
-// We mark AMD as 'vulkan' and Intel as 'vulkan' (SYCL is niche, Vulkan works).
+// Queries Win32_VideoController for non-NVIDIA adapters, then reads accurate
+// VRAM from the registry (HardwareInformation.qwMemorySize) because WMI's
+// AdapterRAM is a uint32 that caps at ~4 GB.
 //
-// NOTE: WMI AdapterRAM is a uint32 — caps at 4 GB for large allocations.
-// For AMD iGPUs with >4 GB dedicated, we fall back to PowerShell
-// Get-CimInstance to read AdapterRAM as uint64.
+// Registry path: HKLM\SYSTEM\ControlSet001\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\000N
+// Each GPU adapter gets a subkey (0000, 0001, ...) containing:
+//   - DriverDesc (REG_SZ): matches Win32_VideoController.Name
+//   - HardwareInformation.qwMemorySize (REG_QWORD): true VRAM in bytes, 64-bit
 
 async function detectNonNvidiaGpus(): Promise<GpuDevice[]> {
   if (process.platform !== 'win32') return [];
   try {
+    // Step 1: Get adapter names from WMI (reliable for enumeration)
+    // Step 2: Read true VRAM from registry per adapter (reliable for >4 GB)
     const { stdout } = await execFileAsync('powershell', [
       '-NoProfile', '-Command',
-      // Use Get-CimInstance which returns uint64 for AdapterRAM
-      `Get-CimInstance Win32_VideoController ` +
-      `| Where-Object { $_.Name -notmatch 'NVIDIA' -and $_.Name -notmatch 'Microsoft' -and $_.AdapterRAM -gt 0 } ` +
-      `| Select-Object -Property Name,AdapterRAM,VideoProcessor ` +
-      `| ConvertTo-Json -Compress`,
+      `$regBase = 'HKLM:\\SYSTEM\\ControlSet001\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}'; ` +
+      `$adapters = Get-CimInstance Win32_VideoController ` +
+      `| Where-Object { $_.Name -notmatch 'NVIDIA' -and $_.Name -notmatch 'Microsoft' -and $_.Status -eq 'OK' } ` +
+      `| Select-Object -Property Name,AdapterRAM,PNPDeviceID; ` +
+      `$results = @(); ` +
+      `foreach ($a in $adapters) { ` +
+      `  $vram = [uint64]$a.AdapterRAM; ` +
+      `  $regKeys = Get-ChildItem $regBase -ErrorAction SilentlyContinue | Where-Object { ` +
+      `    (Get-ItemProperty $_.PSPath -Name 'DriverDesc' -ErrorAction SilentlyContinue).DriverDesc -eq $a.Name ` +
+      `  }; ` +
+      `  foreach ($rk in $regKeys) { ` +
+      `    $qw = (Get-ItemProperty $rk.PSPath -Name 'HardwareInformation.qwMemorySize' -ErrorAction SilentlyContinue).'HardwareInformation.qwMemorySize'; ` +
+      `    if ($qw -and [uint64]$qw -gt $vram) { $vram = [uint64]$qw } ` +
+      `  }; ` +
+      `  $results += @{ Name = $a.Name; VramBytes = $vram } ` +
+      `}; ` +
+      `$results | ConvertTo-Json -Compress`,
     ], { timeout: 15_000 });
     if (!stdout.trim()) return [];
 
@@ -83,16 +106,12 @@ async function detectNonNvidiaGpus(): Promise<GpuDevice[]> {
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      // AdapterRAM is in bytes — CIM returns uint64 as a number (safe up to ~8 PB)
-      const vramBytes = Number(item.AdapterRAM ?? 0);
-      const vramGb    = Math.floor(vramBytes / (1024 ** 3));
+      const vramBytes = Number(item.VramBytes ?? 0);
+      const vramGb    = Math.round(vramBytes / (1024 ** 3));
       if (vramGb < 1) continue;
 
       const name = String(item.Name ?? 'Unknown GPU');
 
-      // Determine backend: AMD → vulkan, Intel → vulkan
-      // (SYCL/oneAPI for Intel is available but requires separate runtime;
-      //  Vulkan works out-of-box with the standard llama-server Vulkan build)
       gpus.push({
         index: 100 + i,
         name,
@@ -460,25 +479,15 @@ export async function* downloadModel(
 //   llama-server-win32-x64-vulkan.exe (for AMD iGPU, Intel, fallback)
 // Falls back to generic llama-server-{platform}-{arch}{ext} if specific not found.
 
-export function resolveLlamaServerBin(backend?: 'cuda' | 'vulkan' | 'metal'): string {
+export function resolveLlamaServerBin(): string {
   const platform = process.platform;
   const arch     = process.arch;
   const ext      = platform === 'win32' ? '.exe' : '';
+  const name     = `llama-server-${platform}-${arch}${ext}`;
 
   const seaDir   = path.dirname(process.execPath);
-  const repoRoot = path.resolve(__dirname, '..', '..');
+  const repoRoot = path.resolve(_dirname, '..', '..');
 
-  // On Windows, try backend-specific binary first
-  if (platform === 'win32' && backend) {
-    const specificName = `llama-server-${platform}-${arch}-${backend}${ext}`;
-    const seaPath = path.join(seaDir, specificName);
-    if (fs.existsSync(seaPath)) return seaPath;
-    const devPath = path.join(repoRoot, 'bin', specificName);
-    if (fs.existsSync(devPath)) return devPath;
-    // Fall through to generic
-  }
-
-  const name    = `llama-server-${platform}-${arch}${ext}`;
   const seaPath = path.join(seaDir, name);
   if (fs.existsSync(seaPath)) return seaPath;
   const devPath = path.join(repoRoot, 'bin', name);

@@ -195,22 +195,28 @@ export async function buildForPlatform({
   // Includes backend-specific variants (cuda, vulkan) plus generic fallbacks.
   const binDir = path.join(__dirname, 'bin');
   if (fs.existsSync(binDir)) {
-    const BIN_NAMES = [
+    // Stage platform binaries + all companion DLLs
+    const BIN_PATTERNS = [
       'llama-server-linux-x64',
       'llama-server-darwin-arm64',
       'llama-server-darwin-x64',
-      // Windows — backend-specific + generic fallback
-      'llama-server-win32-x64-cuda.exe',
-      'llama-server-win32-x64-vulkan.exe',
       'llama-server-win32-x64.exe',
     ];
     let staged = 0;
-    for (const name of BIN_NAMES) {
+    for (const name of BIN_PATTERNS) {
       const src = path.join(binDir, name);
       if (!fs.existsSync(src)) continue;
       const dst = path.join(distDir, name);
       fs.copyFileSync(src, dst);
       if (!name.endsWith('.exe')) fs.chmodSync(dst, 0o755);
+      staged++;
+    }
+    // Also stage all .dll files from bin/ (ggml-vulkan.dll, ggml-cuda.dll, ggml-cpu-*.dll, ggml-rpc.dll, etc.)
+    for (const entry of fs.readdirSync(binDir)) {
+      if (!entry.endsWith('.dll')) continue;
+      const src = path.join(binDir, entry);
+      const dst = path.join(distDir, entry);
+      fs.copyFileSync(src, dst);
       staged++;
     }
     if (staged > 0) log(`  ✅ llama-server (${staged} platform binaries)`);

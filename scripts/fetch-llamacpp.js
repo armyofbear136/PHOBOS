@@ -355,18 +355,10 @@ const TARGETS = [
     binInZip: 'llama-server',
     outName:  'llama-server-darwin-x64',
   },
-  // Windows — CUDA build (for NVIDIA GPUs)
-  {
-    platform: 'win32',
-    arch:     'x64',
-    variants: [
-      { suffix: 'win-cuda-cu12.2.0-x64', ext: '.zip' },
-      { suffix: 'win-cuda-x64',          ext: '.zip' },
-    ],
-    binInZip: 'llama-server.exe',
-    outName:  'llama-server-win32-x64-cuda.exe',
-  },
-  // Windows — Vulkan build (for AMD iGPU, Intel, general fallback)
+  // Windows — Vulkan build
+  // Modern llama.cpp uses dynamic backend loading: llama-server.exe needs
+  // ggml-vulkan.dll, ggml-cpu-*.dll, ggml-rpc.dll etc. in the same directory.
+  // We extract ALL files from the archive, not just the server binary.
   {
     platform: 'win32',
     arch:     'x64',
@@ -375,9 +367,113 @@ const TARGETS = [
       { suffix: 'win-cpu-x64',    ext: '.zip' },
     ],
     binInZip: 'llama-server.exe',
-    outName:  'llama-server-win32-x64-vulkan.exe',
+    outName:  'llama-server-win32-x64.exe',
+    extractAll: true,   // extract entire archive contents into BIN_DIR
   },
 ];
+
+// Windows CUDA backend DLL — extracted separately from the CUDA release archive.
+// llama-server.exe loads this dynamically at runtime if it exists in the same directory.
+const CUDA_DLL_TARGETS = [
+  {
+    variants: [
+      { suffix: 'win-cuda-12.4-x64',   ext: '.zip' },
+      { suffix: 'win-cuda-12.8-x64',   ext: '.zip' },
+      { suffix: 'win-cuda-12.2-x64',   ext: '.zip' },
+      { suffix: 'win-cuda-12.6-x64',   ext: '.zip' },
+    ],
+    dllInZip: 'ggml-cuda.dll',
+    outName:  'ggml-cuda.dll',
+  },
+];
+
+/**
+ * Extract ALL files from a .zip archive into destDir.
+ * Skips directories and zero-byte files. Overwrites existing files.
+ */
+async function extractAllFilesFromZip(archivePath, destDir) {
+  const fd       = fs.openSync(archivePath, 'r');
+  const fileSize = fs.fstatSync(fd).size;
+
+  // Find End of Central Directory
+  const eocdBufSize = Math.min(65536 + 22, fileSize);
+  const eocdBuf     = Buffer.alloc(eocdBufSize);
+  fs.readSync(fd, eocdBuf, 0, eocdBufSize, fileSize - eocdBufSize);
+
+  let eocdOffset = -1;
+  for (let i = eocdBuf.length - 22; i >= 0; i--) {
+    if (eocdBuf[i] === 0x50 && eocdBuf[i+1] === 0x4b && eocdBuf[i+2] === 0x05 && eocdBuf[i+3] === 0x06) {
+      eocdOffset = i;
+      break;
+    }
+  }
+  if (eocdOffset === -1) { fs.closeSync(fd); throw new Error('ZIP: EOCD not found'); }
+
+  const cdSize  = eocdBuf.readUInt32LE(eocdOffset + 12);
+  const cdStart = eocdBuf.readUInt32LE(eocdOffset + 16);
+
+  const cdBuf = Buffer.alloc(cdSize);
+  fs.readSync(fd, cdBuf, 0, cdSize, cdStart);
+  fs.closeSync(fd);
+
+  // Walk Central Directory and extract each regular file
+  let cdPos = 0;
+  const extracted = [];
+  while (cdPos < cdBuf.length) {
+    if (cdBuf.readUInt32LE(cdPos) !== 0x02014b50) break;
+    const compMethod  = cdBuf.readUInt16LE(cdPos + 10);
+    const compSize    = cdBuf.readUInt32LE(cdPos + 20);
+    const uncompSize  = cdBuf.readUInt32LE(cdPos + 24);
+    const fnLen       = cdBuf.readUInt16LE(cdPos + 28);
+    const extraLen    = cdBuf.readUInt16LE(cdPos + 30);
+    const commentLen  = cdBuf.readUInt16LE(cdPos + 32);
+    const localOffset = cdBuf.readUInt32LE(cdPos + 42);
+    const entryName   = cdBuf.subarray(cdPos + 46, cdPos + 46 + fnLen).toString('utf8');
+    cdPos += 46 + fnLen + extraLen + commentLen;
+
+    // Skip directories and zero-byte files
+    if (entryName.endsWith('/') || uncompSize === 0) continue;
+    // Only extract .exe and .dll files (skip docs, etc.)
+    const basename = entryName.split('/').pop();
+    if (!basename.endsWith('.exe') && !basename.endsWith('.dll')) continue;
+
+    const destPath = path.join(destDir, basename);
+
+    // Read local file header to find data offset
+    const lhBuf = Buffer.alloc(30);
+    const lhFd  = fs.openSync(archivePath, 'r');
+    fs.readSync(lhFd, lhBuf, 0, 30, localOffset);
+    const lhFnLen    = lhBuf.readUInt16LE(26);
+    const lhExtraLen = lhBuf.readUInt16LE(28);
+    const dataOffset = localOffset + 30 + lhFnLen + lhExtraLen;
+
+    await new Promise((resolve, reject) => {
+      const input = fs.createReadStream(archivePath, {
+        start: dataOffset,
+        end:   dataOffset + compSize - 1,
+      });
+      const outFd = fs.createWriteStream(destPath);
+      const fail = (err) => { outFd.destroy(); reject(err); };
+      outFd.on('finish', () => { fs.closeSync(lhFd); resolve(); });
+      outFd.on('error', fail);
+      input.on('error', fail);
+
+      if (compMethod === 0) {
+        input.pipe(outFd);
+      } else if (compMethod === 8) {
+        const inflate = zlib.createInflateRaw();
+        inflate.on('error', fail);
+        input.pipe(inflate).pipe(outFd);
+      } else {
+        reject(new Error(`Unsupported zip method: ${compMethod}`));
+      }
+    });
+
+    extracted.push(basename);
+  }
+
+  return extracted;
+}
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -420,7 +516,18 @@ async function main() {
       }
 
       try {
-        await extractSingleFile(archiveDest, target.binInZip, outPath);
+        if (target.extractAll) {
+          // Extract all .exe and .dll files from the archive into BIN_DIR
+          const files = await extractAllFilesFromZip(archiveDest, BIN_DIR);
+          console.log(`   extracted ${files.length} files: ${files.join(', ')}`);
+          // Rename the server binary to our expected name if needed
+          const serverInBin = path.join(BIN_DIR, target.binInZip);
+          if (fs.existsSync(serverInBin) && target.binInZip !== target.outName) {
+            fs.renameSync(serverInBin, outPath);
+          }
+        } else {
+          await extractSingleFile(archiveDest, target.binInZip, outPath);
+        }
       } catch (err) {
         console.error(`   ✗ Extract failed: ${err.message}`);
         if (fs.existsSync(archiveDest)) fs.unlinkSync(archiveDest);
@@ -441,15 +548,61 @@ async function main() {
     }
   }
 
-  fs.rmSync(TMP_DIR, { recursive: true, force: true });
+  // ── Download CUDA backend DLL for Windows ──────────────────────────────────
+  // This is a separate archive that only contains ggml-cuda.dll.
+  // llama-server.exe will dynamically load it at runtime for NVIDIA GPU support.
+  for (const cudaTarget of CUDA_DLL_TARGETS) {
+    const outPath = path.join(BIN_DIR, cudaTarget.outName);
 
-  // Ensure a generic Windows fallback exists (Vulkan works for both NVIDIA and AMD)
-  const genericWin = path.join(BIN_DIR, 'llama-server-win32-x64.exe');
-  const vulkanWin  = path.join(BIN_DIR, 'llama-server-win32-x64-vulkan.exe');
-  if (!fs.existsSync(genericWin) && fs.existsSync(vulkanWin)) {
-    fs.copyFileSync(vulkanWin, genericWin);
-    console.log('  → copied vulkan binary as generic fallback (llama-server-win32-x64.exe)');
+    if (fs.existsSync(outPath)) {
+      console.log(`✓  ${cudaTarget.outName} (already present)`);
+      continue;
+    }
+
+    console.log(`↓  ${cudaTarget.outName} (CUDA backend DLL)`);
+
+    let downloaded = false;
+    for (const { suffix, ext } of cudaTarget.variants) {
+      const archiveName = `llama-${version}-bin-${suffix}${ext}`;
+      const url         = `https://github.com/ggml-org/llama.cpp/releases/download/${version}/${archiveName}`;
+      const archiveDest = path.join(TMP_DIR, archiveName);
+
+      console.log(`   trying: ${url}`);
+
+      let result;
+      try {
+        result = await downloadFile(url, archiveDest);
+      } catch (err) {
+        console.error(`   ✗ Download error: ${err.message}`);
+        continue;
+      }
+
+      if (result.status === 404) {
+        console.log(`   ✗ 404 — trying next variant...`);
+        continue;
+      }
+
+      try {
+        await extractSingleFile(archiveDest, cudaTarget.dllInZip, outPath);
+      } catch (err) {
+        console.error(`   ✗ Extract failed: ${err.message}`);
+        if (fs.existsSync(archiveDest)) fs.unlinkSync(archiveDest);
+        if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
+        continue;
+      }
+
+      fs.unlinkSync(archiveDest);
+      console.log(`   ✓  ${cudaTarget.outName}`);
+      downloaded = true;
+      break;
+    }
+
+    if (!downloaded) {
+      console.log(`   ⚠️  CUDA DLL not found — NVIDIA GPU offload will use Vulkan fallback`);
+    }
   }
+
+  fs.rmSync(TMP_DIR, { recursive: true, force: true });
 
   console.log('\nDone. Binaries are in bin/');
   console.log('Commit bin/ to your repo, or add it to your CI pre-build step.');

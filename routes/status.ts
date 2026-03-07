@@ -56,10 +56,19 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
       const endpoint = patch.endpoint ?? (
         patch.provider && providerDef ? providerDef.defaultEndpoint : current.endpoint
       );
+      // When provider changes, verify the model is valid for the new provider.
+      // If not, auto-select the first available model for that provider.
+      let model = patch.model ?? current.model;
+      if (patch.provider && patch.provider !== current.provider) {
+        const available = getCoordinatorModels(provider);
+        if (!available.some(m => m.id === model)) {
+          model = available[0]?.id ?? model;
+        }
+      }
       await configStore.setCoordinator({
         provider,
         endpoint,
-        model:       patch.model       ?? current.model,
+        model,
         apiKey:      patch.apiKey      ?? current.apiKey,
         deviceIndex: patch.deviceIndex ?? current.deviceIndex,
         gpuBackend:  patch.gpuBackend  ?? current.gpuBackend,
@@ -74,10 +83,17 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
       const endpoint = patch.endpoint ?? (
         patch.provider && providerDef ? providerDef.defaultEndpoint : current.endpoint
       );
+      let model = patch.model ?? current.model;
+      if (patch.provider && patch.provider !== current.provider) {
+        const available = getEngineModels(provider);
+        if (!available.some(m => m.id === model)) {
+          model = available[0]?.id ?? model;
+        }
+      }
       await configStore.setEngine({
         provider,
         endpoint,
-        model:       patch.model       ?? current.model,
+        model,
         apiKey:      patch.apiKey      ?? current.apiKey,
         deviceIndex: patch.deviceIndex ?? current.deviceIndex,
         gpuBackend:  patch.gpuBackend  ?? current.gpuBackend,

@@ -1,23 +1,27 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { coordinatorCall, coordinatorStream } from './clients.js';
+import { coordinatorCall, coordinatorStream, engineStream } from './clients.js';
 import type { FileSummary } from './ContextIngester.js';
 
 
 /**
  * Stage 3 — Instruction Query & Task Construction
  *
- * Rather than dispatching the whole request to the engine in one shot,
- * the coordinator first:
+ * Role separation:
+ *   SAYON (coordinator) — discovery roadmap + file extraction
+ *     The coordinator is cheap and fast. It knows the workspace and the user's
+ *     intent. It decides which files matter and pulls out the relevant facts.
  *
- *   1. Builds a discovery roadmap: which files must be read and why
- *   2. Reads those files (paginated for large files, with overlap buffer)
- *   3. Decomposes the request into ordered, atomic, file-scoped tasks
- *   4. Assigns each task only the context it needs — no raw docs, only
- *      the extracted constraints relevant to that task
+ *   ALLMIND (engine) — task decomposition
+ *     ALLMIND receives the fully assembled context package from SAYON and does
+ *     the planning. It produces a tight, scoped task list. Keeping decomposition
+ *     on the engine means the same model that will execute the tasks also plans
+ *     them — it knows its own tools and won't over-decompose simple requests.
  *
- * The result is a TaskPlan: an ordered list of Task objects ready for
- * the engine execution loop.
+ * Pipeline:
+ *   1. SAYON builds a discovery roadmap (which files to read)
+ *   2. SAYON reads those files and extracts task-relevant facts
+ *   3. ALLMIND receives the assembled context package and decomposes into tasks
  */
 
 export interface Task {
@@ -36,7 +40,7 @@ export interface Task {
    */
   prompt: string;
   /**
-   * Relevant file contents the coordinator extracted for this task.
+   * Relevant file contents extracted for this task.
    * Injected as <task_context> in the engine's system prompt.
    */
   context: string;
@@ -56,6 +60,8 @@ const OVERLAP_CHARS = Math.floor(PAGE_SIZE_CHARS * 0.12);
 const MAX_DISCOVERY_FILES = 8;
 /** Max chars of extracted context per task */
 const MAX_TASK_CONTEXT_CHARS = 8_000;
+/** Hard cap on tasks ALLMIND can produce — safety valve */
+const MAX_TASKS = 8;
 
 export class TaskPlanner {
   constructor(private workspaceDir: string) {}
@@ -67,25 +73,28 @@ export class TaskPlanner {
    * @param fileSummaries  Coordinator file summaries from Stage 1
    * @param repoMap  Workspace index string
    * @param sendStatus  Emits status pills to the client
-   * @param sendThinking  Streams coordinator thinking tokens
+   * @param sendThinking  Streams coordinator thinking tokens to the SAYON panel
+   * @param sendEngineThinking  Streams engine thinking tokens to the ALLMIND panel
    */
   async plan(
     userMessage: string,
     fileSummaries: FileSummary[],
     repoMap: string,
     sendStatus: (content: string) => void,
-    sendThinking: (token: string) => void
+    sendThinking: (token: string) => void,
+    sendEngineThinking?: (token: string) => void,
+    onThinkPhaseComplete?: (source: 'coordinator' | 'engine') => Promise<void>,
   ): Promise<TaskPlan> {
 
-    // ── Step 1: Discovery roadmap ──────────────────────────────────────────
-    // Ask the coordinator which files it needs to read to make a precise plan.
+    // ── Step 1: SAYON — Discovery roadmap ─────────────────────────────────
+    // The coordinator picks which files are actually needed — nothing more.
     sendStatus('Building discovery roadmap…');
 
     const discoveryFiles = await this.buildDiscoveryRoadmap(
       userMessage, fileSummaries, repoMap, sendThinking
     );
 
-    // ── Step 2: Read discovered files ─────────────────────────────────────
+    // ── Step 2: SAYON — Read and extract from discovered files ─────────────
     let completeContext = '';
 
     if (discoveryFiles.length > 0) {
@@ -95,19 +104,25 @@ export class TaskPlanner {
       );
     }
 
-    // ── Step 3: Task decomposition ────────────────────────────────────────
-    sendStatus('Decomposing into tasks…');
+    // ── Step 3: ALLMIND — Task decomposition ───────────────────────────────
+    // Hand the assembled context package to the engine. It knows its own tools
+    // and execution model better than the coordinator — let it plan.
+    sendStatus('ALLMIND planning tasks…');
 
     const plan = await this.decomposeTasks(
-      userMessage, fileSummaries, completeContext, repoMap, sendThinking
+      userMessage, fileSummaries, completeContext, repoMap,
+      sendEngineThinking ?? sendThinking
     );
+
+    // Close the planning engine thinking segment so it persists correctly
+    await onThinkPhaseComplete?.('engine').catch(() => {});
 
     return plan;
   }
 
   /**
-   * Step 1: Ask coordinator which files to read and why.
-   * Returns a list of filenames to load.
+   * SAYON Step 1: Ask coordinator which files to read and why.
+   * Returns a list of filenames to load. Cheap, fast, no thinking needed.
    */
   private async buildDiscoveryRoadmap(
     userMessage: string,
@@ -141,7 +156,6 @@ export class TaskPlanner {
       const match = clean.match(/\[[\s\S]*\]/);
       if (match) {
         const files = JSON.parse(match[0]) as string[];
-        // Validate against known files — ignore hallucinated paths
         const known = new Set(fileSummaries.map((f) => f.filename));
         return files.filter((f) => typeof f === 'string' && known.has(f)).slice(0, MAX_DISCOVERY_FILES);
       }
@@ -152,10 +166,9 @@ export class TaskPlanner {
   }
 
   /**
-   * Step 2: Read each discovered file.
-   * Large files are paginated with overlap. The coordinator's extraction
-   * instructions are prepended to every chunk so it stays focused.
-   * Returns a single assembled "complete context" string.
+   * SAYON Step 2: Read each discovered file and extract task-relevant facts.
+   * Large files are paginated with overlap.
+   * Returns a single assembled context string for ALLMIND.
    */
   private async readFilesForContext(
     filenames: string[],
@@ -175,13 +188,11 @@ export class TaskPlanner {
       }
 
       if (content.length <= PAGE_SIZE_CHARS) {
-        // File fits in one chunk — extract directly
         const extracted = await this.extractFromChunk(
           filename, content, userMessage, sendThinking
         );
         contextParts.push(`<file_context path="${filename}">\n${extracted}\n</file_context>`);
       } else {
-        // Paginate with overlap
         const chunks = this.paginate(content);
         const extractions: string[] = [];
         for (let i = 0; i < chunks.length; i++) {
@@ -203,8 +214,8 @@ export class TaskPlanner {
   }
 
   /**
-   * Extract task-relevant information from a single file chunk.
-   * Returns a concise prose summary of what was found.
+   * SAYON: Extract task-relevant information from a single file chunk.
+   * Returns concise prose — function signatures, line numbers, constraints.
    */
   private async extractFromChunk(
     filename: string,
@@ -222,6 +233,7 @@ export class TaskPlanner {
       `FILE: ${filename}\n` +
       `---\n${content.slice(0, PAGE_SIZE_CHARS)}\n---`;
 
+    console.log(`[planner:sayon:extract] file="${filename}" task="${userMessage.slice(0, 80).replace(/\n/g, ' ')}"`);
     try {
       const clean = await coordinatorStream({
         systemPrompt: '',
@@ -239,8 +251,11 @@ export class TaskPlanner {
   }
 
   /**
-   * Step 3: Use the complete context to decompose the request into
-   * ordered, atomic, file-scoped tasks with per-task prompts.
+   * ALLMIND Step 3: Decompose the request into ordered, atomic, file-scoped tasks.
+   *
+   * ALLMIND receives a fully assembled context package from SAYON and produces
+   * a tight task list. Scope rules are enforced in the prompt — ALLMIND must not
+   * expand a simple request into infrastructure scaffolding.
    */
   private async decomposeTasks(
     userMessage: string,
@@ -257,36 +272,52 @@ export class TaskPlanner {
       ? `WORKSPACE FILES:\n${fileSummaries.map((f) => `  ${f.filename}: ${f.summary}`).join('\n')}\n\n`
       : '';
 
+    // Estimate complexity from the request text — used in the scope instruction
+    const isLikelySimple = this.looksSimple(userMessage, fileSummaries);
+
+    const scopeRule = isLikelySimple
+      ? `SCOPE: This request appears simple. Produce the MINIMUM number of tasks ` +
+        `to satisfy it — do not add project scaffolding, config files, package.json, ` +
+        `tsconfig, or dependency installation unless explicitly requested. ` +
+        `If the request can be done in a single file, produce exactly one task.\n\n`
+      : `SCOPE: Only touch files the request explicitly mentions or that are directly ` +
+        `required by the change. Do not add infrastructure (config, manifests, lockfiles) ` +
+        `unless the request asks for it. When in doubt, do less.\n\n`;
+
     const prompt =
-      `Decompose this coding request into ordered, atomic, file-scoped tasks. ` +
+      `You are ALLMIND, a coding execution engine. Decompose the request below into ` +
+      `ordered, atomic, file-scoped tasks that you will execute yourself. ` +
       `Each task targets exactly one file and performs one clear operation. ` +
-      `For each task, write a precise prompt the coding engine will execute — ` +
-      `include exact function names, line references, and constraints from the context. ` +
-      `No raw file contents in the prompts — only the facts needed.\n\n` +
-      `Respond ONLY with a JSON object:\n` +
+      `For each task write a precise self-contained prompt — include exact function names, ` +
+      `line references, and constraints from the context. No raw file contents in prompts.\n\n` +
+      scopeRule +
+      `Respond ONLY with a JSON object (no preamble, no markdown fences):\n` +
       `{\n` +
-      `  "planSummary": "<one sentence describing the overall plan, max 20 words>",\n` +
+      `  "planSummary": "<one sentence, max 20 words>",\n` +
       `  "tasks": [\n` +
       `    {\n` +
-      `      "title": "<short action phrase e.g. 'Add JWT verification to middleware'>",\n` +
-      `      "targetFile": "<filename or empty string for analysis tasks>",\n` +
+      `      "title": "<short action phrase>",\n` +
+      `      "targetFile": "<filename or empty string>",\n` +
       `      "operation": "<modify|create|delete|analyze>",\n` +
-      `      "prompt": "<full engine prompt with all constraints and context>",\n` +
-      `      "context": "<extracted constraints specific to this task, max 400 words>"\n` +
+      `      "prompt": "<full self-contained engine prompt>",\n` +
+      `      "context": "<extracted constraints for this task only, max 400 words>"\n` +
       `    }\n` +
       `  ]\n` +
       `}\n\n` +
-      `TASK: ${userMessage}\n\n` +
+      `REQUEST: ${userMessage}\n\n` +
       fileListSection +
       contextSection +
-      `Rules:\n` +
-      `- Each task is independent enough that the engine can execute it with only the context provided\n` +
-      `- Order tasks so dependencies come first (create files before modifying them)\n` +
-      `- Max 8 tasks — consolidate small changes to the same file into one task\n` +
-      `- If the request only touches one file, produce exactly one task`;
+      `RULES:\n` +
+      `- Tasks must be ordered so dependencies come first (create before modify)\n` +
+      `- Consolidate multiple changes to the same file into one task\n` +
+      `- Hard maximum: ${MAX_TASKS} tasks\n` +
+      `- If the request only touches one file, produce exactly one task\n` +
+      `- Do NOT create tasks for files not mentioned or directly required`;
+
+    console.log(`[planner:allmind:decompose] task="${userMessage.slice(0, 120).replace(/\n/g, ' ')}" simple=${isLikelySimple}`);
 
     try {
-      const clean = await coordinatorStream({
+      const clean = await engineStream({
         systemPrompt: '',
         messages: [{ role: 'user', content: prompt }],
         maxTokens: 2048,
@@ -294,6 +325,9 @@ export class TaskPlanner {
         mode: 'think',
         onThinkToken: sendThinking,
       });
+
+      console.log(`[planner:raw] "${clean.slice(0, 600).replace(/\n/g, ' ')}"`);
+
       const match = clean.match(/\{[\s\S]*\}/);
       if (match) {
         const parsed = JSON.parse(match[0]) as {
@@ -308,7 +342,7 @@ export class TaskPlanner {
         };
 
         if (Array.isArray(parsed.tasks) && parsed.tasks.length > 0) {
-          const tasks: Task[] = parsed.tasks.slice(0, 8).map((t, i) => ({
+          const tasks: Task[] = parsed.tasks.slice(0, MAX_TASKS).map((t, i) => ({
             index: i + 1,
             title: String(t.title ?? `Task ${i + 1}`),
             targetFile: String(t.targetFile ?? ''),
@@ -326,10 +360,10 @@ export class TaskPlanner {
         }
       }
     } catch (err) {
-      console.warn('[TaskPlanner] Task decomposition failed, falling back to single task:', err);
+      console.warn('[TaskPlanner] ALLMIND task decomposition failed, falling back to single task:', err);
     }
 
-    // Fallback: treat the whole request as one task
+    // Fallback: send the whole request as one task
     return {
       tasks: [{
         index: 1,
@@ -341,6 +375,28 @@ export class TaskPlanner {
       }],
       planSummary: 'Sending task to engine.',
     };
+  }
+
+  /**
+   * Heuristic: does this request look simple enough to warrant a strict
+   * single-file scope guard? Used to set the SCOPE instruction in the
+   * ALLMIND decomposition prompt.
+   *
+   * Simple signals:
+   * - Short request text (< 120 chars)
+   * - Contains "function", "hello", "snippet", "example", "demo", "test"
+   * - Empty workspace (no existing files)
+   * - Request mentions exactly one file or none
+   */
+  private looksSimple(userMessage: string, fileSummaries: FileSummary[]): boolean {
+    const msg = userMessage.toLowerCase();
+    if (fileSummaries.length === 0) return true;
+    if (userMessage.length < 120) return true;
+    if (/\b(hello|snippet|example|demo|sample|test function|simple function)\b/.test(msg)) return true;
+    // Count explicit file references — if zero or one, likely simple
+    const fileRefs = (userMessage.match(/\.(ts|js|tsx|jsx|py|go|rs|cs|cpp|c|json|md)\b/gi) ?? []).length;
+    if (fileRefs <= 1) return true;
+    return false;
   }
 
   /** Split content into overlapping pages */

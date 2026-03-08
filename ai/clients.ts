@@ -18,6 +18,10 @@ export let engineClient: OpenAI = new OpenAI({
 
 export let ENGINE_MODEL = 'qwen3:30b-a3b';
 export let ENGINE_PROVIDER = 'ollama';
+// Getters — use these in other modules instead of the bare exports to avoid
+// esbuild CJS live-binding issues (let exports are captured at import time).
+export const getEngineProvider = () => ENGINE_PROVIDER;
+export const getEngineModel    = () => ENGINE_MODEL;
 
 function makeClient(cfg: RoleConfig): OpenAI {
   return new OpenAI({
@@ -144,9 +148,14 @@ export function getThinkingStrategy(provider: string, model: string): ThinkingSt
     if (model.startsWith('qwen3')) {
       return {
         systemSuffix: '',
-        thinkingPath: 'tag',         // llama-server /v1 returns <think> in delta.content
-        extraBodyThink: {},
-        extraBodyNoThink: {},
+        thinkingPath: 'field',
+        // reasoning_format per-request is more reliable than the CLI flag —
+        // works regardless of llama.cpp build age.
+        // chat_template_kwargs:{enable_thinking:true} activates Qwen3 thinking
+        // via the Jinja template; reasoning_format:deepseek routes the resulting
+        // <think> block into delta.reasoning_content on the /v1/ compat layer.
+        extraBodyThink:   { reasoning_format: 'deepseek', chat_template_kwargs: { enable_thinking: true } },
+        extraBodyNoThink: { reasoning_format: 'none',     chat_template_kwargs: { enable_thinking: false } },
       };
     }
     // Llama models — prompt-inject thinking
@@ -256,18 +265,9 @@ export function applyThinkingStrategy(
   // FastFlowLLM: extra_body activates thinking via server config, no message change.
   if (provider === 'fastflowllm') return { messages, systemPrompt };
 
-  // PHOBOS Local Qwen3: inject /think or /no_think prefix on the first user message.
-  // llama.cpp does not auto-activate thinking — the prefix is required.
-  // --reasoning-format deepseek (set in LlamaServerManager) then routes the
-  // resulting <think> block into delta.reasoning_content (field path).
-  if (provider === 'phobos' && model.startsWith('qwen3')) {
-    const prefix = mode === 'no_think' ? '/no_think\n' : '/think\n';
-    const firstUserIdx = messages.findIndex(m => m.role === 'user');
-    if (firstUserIdx === -1) return { messages, systemPrompt };
-    const patched = messages.slice();
-    patched[firstUserIdx] = { ...patched[firstUserIdx], content: prefix + patched[firstUserIdx].content };
-    return { messages: patched, systemPrompt };
-  }
+  // PHOBOS Local Qwen3: thinking activated via chat_template_kwargs:{enable_thinking:true}
+  // in extra_body (set in getThinkingStrategy). No message prefix needed.
+  if (provider === 'phobos' && model.startsWith('qwen3')) return { messages, systemPrompt };
 
   // System prompt injection for models that need it (Llama on Ollama, PHOBOS Llama, etc.)
   const finalSystem = mode === 'think'
@@ -459,6 +459,151 @@ export async function coordinatorStream(opts: {
               inThink = true;
               remaining = remaining.slice(openIdx + '<think>'.length);
             }
+          }
+        }
+      }
+    }
+  }
+
+  return outputBuf.trim();
+}
+
+/**
+ * Streaming engine (ALLMIND) call with thinking strategy applied.
+ *
+ * Mirrors coordinatorStream but targets the engine client.
+ * For phobos provider, uses raw fetch+SSE to avoid the OpenAI SDK
+ * silently dropping reasoning_content from delta objects.
+ */
+export async function engineStream(opts: {
+  systemPrompt: string;
+  messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
+  maxTokens: number;
+  temperature: number;
+  mode?: 'think' | 'no_think' | 'none';
+  onThinkToken?: (token: string) => void;
+}): Promise<string> {
+  const { mode = 'think', onThinkToken } = opts;
+
+  // Use module-level vars directly — we are in the same module so no CJS binding issue.
+  const liveProvider = ENGINE_PROVIDER;
+  const liveModel = ENGINE_MODEL;
+  const engineBaseURL = ((engineClient as unknown as { baseURL?: string }).baseURL ?? '').replace(/\/$/, '');
+
+  const { messages: stratMsgs, systemPrompt: stratSystem } = applyThinkingStrategy(
+    opts.messages,
+    opts.systemPrompt,
+    liveProvider,
+    liveModel,
+    mode
+  );
+
+  const allMessages = stratSystem
+    ? [{ role: 'system' as const, content: stratSystem }, ...stratMsgs]
+    : stratMsgs;
+
+  const extraBody = getThinkingExtraBody(liveProvider, liveModel, mode);
+  console.log(`[engineStream] mode=${mode} provider=${liveProvider} model=${liveModel} extraBody=${JSON.stringify(extraBody)}`);
+
+  const callParams: Record<string, unknown> = {
+    model: liveModel,
+    messages: allMessages,
+    max_tokens: opts.maxTokens,
+    temperature: opts.temperature,
+    ...(Object.keys(extraBody).length > 0 ? { ...extraBody } : {}),
+  };
+
+  const strategy = getThinkingStrategy(liveProvider, liveModel);
+  let outputBuf = ''
+  let thinkBuf = '';
+
+  // Phobos: raw fetch to preserve reasoning_content which the OpenAI SDK strips.
+  if (liveProvider === 'phobos') {
+    const resp = await fetch(`${engineBaseURL}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...callParams, stream: true }),
+    });
+    if (!resp.ok || !resp.body) throw new Error(`[engineStream] HTTP ${resp.status}`);
+
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const json = trimmed.slice(5).trim();
+        if (json === '[DONE]') break;
+        try {
+          const parsed = JSON.parse(json);
+          const delta = parsed?.choices?.[0]?.delta as Record<string, unknown> | undefined;
+          if (!delta) continue;
+
+          if (strategy.thinkingPath === 'field') {
+            let thinkToken = (delta.reasoning_content ?? delta.reasoning ?? delta.thinking) as string | null | undefined;
+            const outToken = delta.content as string | null | undefined;
+            if (thinkToken) {
+              thinkToken = thinkToken.replace(/<\/?think>/g, '');
+              if (thinkToken) { thinkBuf += thinkToken; if (onThinkToken) onThinkToken(thinkToken); }
+            }
+            if (outToken) outputBuf += outToken;
+          } else {
+            const outToken = delta.content as string | null | undefined;
+            if (outToken) outputBuf += outToken;
+          }
+        } catch { /* malformed chunk */ }
+      }
+    }
+    return outputBuf.trim();
+  }
+
+  // Non-phobos: use OpenAI SDK stream.
+  let stream: Awaited<ReturnType<typeof engineClient.chat.completions.create>>;
+  try {
+    stream = await engineClient.chat.completions.create({
+      ...(callParams as unknown as Parameters<typeof engineClient.chat.completions.create>[0]),
+      stream: true as const,
+    });
+  } catch (createErr: unknown) {
+    console.error(`[engineStream:error] ${createErr instanceof Error ? createErr.message : String(createErr)}`);
+    const { extra_body: _drop, ...fallback } = callParams as Record<string, unknown>;
+    stream = await engineClient.chat.completions.create({
+      ...(fallback as unknown as Parameters<typeof engineClient.chat.completions.create>[0]),
+      stream: true as const,
+    });
+  }
+
+  let inThink = false;
+  for await (const chunk of stream) {
+    const delta = chunk.choices[0]?.delta as Record<string, unknown>;
+    if (strategy.thinkingPath === 'field') {
+      let thinkToken = (delta.reasoning_content ?? delta.reasoning ?? delta.thinking) as string | null | undefined;
+      const outToken = delta.content as string | null | undefined;
+      if (thinkToken) {
+        thinkToken = thinkToken.replace(/<\/?think>/g, '');
+        if (thinkToken) { thinkBuf += thinkToken; if (onThinkToken) onThinkToken(thinkToken); }
+      }
+      if (outToken) outputBuf += outToken;
+    } else {
+      const outToken = delta?.content as string | null | undefined;
+      if (outToken) {
+        let remaining = outToken;
+        while (remaining.length > 0) {
+          if (inThink) {
+            const ci = remaining.indexOf('</think>');
+            if (ci === -1) { remaining = ''; }
+            else { inThink = false; remaining = remaining.slice(ci + 8); }
+          } else {
+            const oi = remaining.indexOf('<think>');
+            if (oi === -1) { outputBuf += remaining; remaining = ''; }
+            else { outputBuf += remaining.slice(0, oi); inThink = true; remaining = remaining.slice(oi + 7); }
           }
         }
       }

@@ -268,10 +268,10 @@ Attempt ${attemptNumber}/3. Address the errors above precisely.
       ? `Task ${input.currentTask.index}/${input.currentTask.index}: ${input.currentTask.title}`
       : input.intentType;
     console.log(
-      `[DispatchComposer] ${taskLabel}, ` +
-      `~${estimatedInputTokens} input tokens, ` +
-      `attempt ${input.retryContext?.attemptNumber ?? 1}`
+      `[dispatch] ${taskLabel} op=${input.currentTask?.operation ?? 'n/a'} file="${input.currentTask?.targetFile ?? ''}" ` +
+      `~${estimatedInputTokens} tok attempt=${input.retryContext?.attemptNumber ?? 1}`
     );
+    console.log(`[dispatch:prompt] "${userContent.slice(0, 300).replace(/\n/g, ' ')}"`);
 
     return { systemPrompt, messages, taskType: input.intentType, estimatedInputTokens };
   }

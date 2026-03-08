@@ -202,6 +202,11 @@ export class ModelConfigStore {
       if (!parsed.provider) {
         parsed.provider = parsed.endpoint?.includes('11434') ? 'ollama' : 'fastflowllm';
       }
+      // Migrate stale phobos engine configs that were saved with the coordinator port (52626).
+      // Engine must use ALLMIND port 52627; coordinator uses SAYON port 52626.
+      if (parsed.provider === 'phobos' && parsed.endpoint?.includes('52626')) {
+        parsed.endpoint = parsed.endpoint.replace('52626', '52627');
+      }
       return parsed as RoleConfig;
     } catch { return DEFAULT_ENGINE; }
   }

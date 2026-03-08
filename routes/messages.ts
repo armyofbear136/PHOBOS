@@ -309,10 +309,16 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
         (reply.raw as any).write = (chunk: any): boolean => {
           try {
             const str: string = typeof chunk === 'string' ? chunk : chunk.toString();
-            const match = str.match(/^data: (.+)\n\n$/);
-            if (match) {
-              const evt = JSON.parse(match[1]) as { type: string; content?: string };
-              if (evt.type === 'status' && evt.content) loopActivityLog.push(evt.content);
+            // A single write() call may contain multiple SSE frames when Node batches
+            // under load. Split on the SSE frame boundary and parse each individually.
+            const frames = str.split('\n\n');
+            for (const frame of frames) {
+              const line = frame.trim();
+              if (!line.startsWith('data: ')) continue;
+              try {
+                const evt = JSON.parse(line.slice(6)) as { type: string; content?: string };
+                if (evt.type === 'status' && evt.content) loopActivityLog.push(evt.content);
+              } catch { /* malformed JSON in frame, skip */ }
             }
           } catch { /* non-SSE chunk, ignore */ }
           return origWrite(chunk);
@@ -345,6 +351,10 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           },
           onOutputChunk: async (_content) => {
             // output chunks no longer need separate persistence — messages table is the canonical record
+          },
+          onAgentState: (event) => {
+            // agent_state already written to SSE by AgentStateManager — persist for replay
+            eventStore.insert(threadId, 'agent_state', event, assistantMsg.id).catch(() => {});
           },
         });
 

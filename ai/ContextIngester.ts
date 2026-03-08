@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { coordinatorCall, coordinatorStream } from './clients.js';
+import type { AgentStateManager } from './AgentStateManager.js';
 
 
 
@@ -63,7 +64,8 @@ export class ContextIngester {
     repoMap: string,
     sendStatus: (content: string) => void,
     sendThinking: (token: string) => void,
-    chatSummary?: string
+    chatSummary?: string,
+    agentState?: AgentStateManager
   ): Promise<IngestionResult> {
     const filesToProcess = filenames.slice(0, MAX_FILES_TO_SUMMARISE);
 
@@ -75,6 +77,7 @@ export class ContextIngester {
     const fileContents: Array<{ filename: string; content: string; sizeBytes: number; language: string }> = [];
     for (const filename of filesToProcess) {
       try {
+        agentState?.transition('reading', filename.split('/').pop()!.slice(0, 20));
         const absPath = path.resolve(this.workspaceDir, filename);
         const stat = await fs.stat(absPath);
         const ext = path.extname(filename).slice(1) || 'text';
@@ -162,6 +165,7 @@ export class ContextIngester {
     }
 
     // ── Step 3: Rewrite user message with full context ─────────────────────
+    agentState?.transition('reading', 'Rewriting request');
     sendStatus('Coordinator reviewing request…');
 
     const contextHints: string[] = [];
@@ -174,11 +178,16 @@ export class ContextIngester {
     }
 
     const rewritePrompt =
-      `You are preparing a request for ALLMIND, a powerful AI execution engine. ` +
+      `You are preparing a task brief for ALLMIND, a coding execution engine. ` +
       `Rewrite the user's message into a precise, unambiguous task description. ` +
       `Resolve any vague references using the available context (exact function names, ` +
-      `file paths, line numbers if relevant). Clarify scope. Note constraints. ` +
-      `Preserve the intent exactly — if it is a question or conversation, keep it as such. ` +
+      `file paths, line numbers if relevant). ` +
+      `Preserve the intent exactly — if it is a question or conversation, keep it as such.\n\n` +
+      `SCOPE RULE: Describe only what files need to change and what the outcome must be. ` +
+      `Do NOT expand scope beyond what is asked. Do NOT mention project setup, tsconfig, ` +
+      `package.json, package managers, or infrastructure unless the user explicitly requested them. ` +
+      `If the request is for a single function or snippet, state that explicitly so the ` +
+      `planner produces exactly one task — not a full project scaffold.\n\n` +
       `Respond with JSON only: {"reformulated":"<improved prompt>","summary":"<one sentence, max 15 words>"}. ` +
       `No preamble, nothing outside the JSON.\n\n` +
       `USER REQUEST: ${userMessage}\n\n` +

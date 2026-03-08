@@ -80,8 +80,12 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
       const patch = req.body.engine;
       const provider = patch.provider ?? current.provider;
       const providerDef = PROVIDERS.find(p => p.id === provider);
+      // Phobos engine always uses ALLMIND port (52627), not the shared defaultEndpoint (52626)
+      const phobosEngineEndpoint = 'http://127.0.0.1:52627/v1';
       const endpoint = patch.endpoint ?? (
-        patch.provider && providerDef ? providerDef.defaultEndpoint : current.endpoint
+        patch.provider && providerDef
+          ? (provider === 'phobos' ? phobosEngineEndpoint : providerDef.defaultEndpoint)
+          : current.endpoint
       );
       let model = patch.model ?? current.model;
       if (patch.provider && patch.provider !== current.provider) {

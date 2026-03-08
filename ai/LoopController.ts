@@ -1,4 +1,5 @@
 import type { FastifyReply } from 'fastify';
+import { AgentStateManager, type AgentStateEvent } from './AgentStateManager.js';
 import { engineClient, coordinatorClient, ENGINE_MODEL, COORDINATOR_MODEL, ENGINE_PROVIDER, COORDINATOR_PROVIDER, applyThinkingStrategy, getThinkingStrategy, getThinkingExtraBody, coordinatorStream } from './clients.js';
 import { DispatchComposer, type ComposeInput } from './DispatchComposer.js';
 import { ContextIngester } from './ContextIngester.js';
@@ -29,6 +30,8 @@ export interface LoopOptions {
   onThinkChunk?: (content: string, source: 'coordinator' | 'engine', messageId?: string) => Promise<void>;
   /** Called when a thinking phase ends (coordinator done, or engine done) — used to close DB segment */
   onThinkPhaseComplete?: (source: 'coordinator' | 'engine') => Promise<void>;
+  /** Called for every agent_state transition — wire to SSE for frontend icon updates */
+  onAgentState?: (event: AgentStateEvent) => void;
   /** Called periodically with buffered output tokens — enables real-time DB persistence */
   onOutputChunk?: (content: string, messageId?: string) => Promise<void>;
 }
@@ -47,7 +50,7 @@ export interface AttemptResult {
 
 export type SSEEvent =
   | { type: 'status'; content: string }
-  | { type: 'coordinator'; content: string }
+  | { type: 'coordinator'; content: string; source?: 'coordinator' | 'engine' }
   | { type: 'think_token'; token: string; source?: 'coordinator' | 'engine' }
   | { type: 'output_token'; token: string }
   | { type: 'thinking_complete'; content: string; source?: 'coordinator' | 'engine' }
@@ -144,6 +147,12 @@ export class LoopController {
     const workspaceDir = this.options.workspaceDir ?? projectRoot;
     const taskId = Math.random().toString(36).slice(2, 10);
 
+    // ── Agent state manager — emits agent_state SSE events ─────────────────
+    const agentState = new AgentStateManager((event) => {
+      reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+      this.options.onAgentState?.(event);
+    });
+
     const toolExecutor = new FileToolExecutor(projectRoot);
     const syntaxValidator = new SyntaxValidator();
     const buildRunner = new BuildRunner(projectRoot);
@@ -170,6 +179,7 @@ export class LoopController {
           .filter((f) => f && !f.startsWith('#') && f.includes('.'))
       : [];
 
+    agentState.transition('reading', 'Workspace files');
     const ingester = new ContextIngester(workspaceDir);
     const ingestion = await ingester.ingest(
       fileList,
@@ -178,8 +188,12 @@ export class LoopController {
       composeInput.repoMap ?? '',
       sendStatus,
       sendThinking,
-      composeInput.chatSummary
+      composeInput.chatSummary,
+      agentState
     );
+
+    // After ingestion always go idle briefly before next stage (planning or direct dispatch)
+    agentState.transition('idle', '');
 
     // Update composeInput with Stage 1 outputs
     composeInput = {
@@ -190,7 +204,7 @@ export class LoopController {
 
     await this.persistAndSend(
       reply,
-      { type: 'coordinator', content: ingestion.coordinatorSummary },
+      { type: 'coordinator', content: ingestion.coordinatorSummary, source: 'coordinator' },
       assistantMessageId
     );
 
@@ -209,13 +223,16 @@ export class LoopController {
     let tasks: import('./TaskPlanner.js').Task[];
 
     if (needsPlanning) {
+      agentState.transition('planning', 'Decomposing tasks');
       const planner = new TaskPlanner(workspaceDir);
       const plan = await planner.plan(
         ingestion.rewrittenUserMessage,
         ingestion.fileSummaries,
         composeInput.repoMap ?? '',
         sendStatus,
-        sendThinking
+        sendThinking,            // SAYON: discovery + extraction thinking → coordinator panel
+        sendEngineThinking,      // ALLMIND: decomposition thinking → engine panel
+        this.options.onThinkPhaseComplete  // closes the planning engine segment in DB
       );
       // If intent is CODE_REQUEST, remap any 'analyze' operation to 'modify'.
       // The coordinator sometimes returns 'analyze' for simple single-file edits
@@ -231,10 +248,13 @@ export class LoopController {
       // Emit plan summary as coordinator bubble (distinct from Stage 1 summary)
       await this.persistAndSend(
         reply,
-        { type: 'coordinator', content: plan.planSummary },
+        { type: 'coordinator', content: plan.planSummary, source: 'engine' },
         assistantMessageId
       );
-      console.log(`[LoopController] Stage 3: ${tasks.length} task(s) planned`);
+      console.log(`[loop:plan] ${tasks.length} task(s) planned`);
+      for (const t of tasks) {
+        console.log(`[loop:plan:task${t.index}] op=${t.operation} file="${t.targetFile}" title="${t.title}"`);
+      }
     } else {
       // Q&A / direct answer path — wrap whole request as single task
       tasks = [{
@@ -292,6 +312,8 @@ export class LoopController {
           retryContext: retryContext ? { ...retryContext, attemptNumber: attempt } : undefined,
         });
 
+        console.log(`[loop:attempt] task=${task.index}/${total} attempt=${attempt}/${maxAttempts} retryCtx=${retryContext ? 'yes' : 'none'}`);
+        agentState.transition('thinking', task.title.slice(0, 20), task.index, total);
         sendStatus(`[${task.index}/${total}] Engine thinking…`);
 
         // ── Engine stream ────────────────────────────────────────────────────────
@@ -311,6 +333,7 @@ export class LoopController {
           break;
         }
 
+        console.log(`[loop:parse] task=${task.index} toolCalls=${parsed.toolCalls.length} hasRead=${parsed.hasReadRequest} tools=${JSON.stringify(parsed.toolCalls.map(c => c.tool + ':' + c.path))}`);
         // ── read_file → act cycle ──────────────────────────────────────────────
         let currentOutput = attemptResult.output;
         let currentParsed = parsed;
@@ -322,6 +345,7 @@ export class LoopController {
           readCycles < LoopController.MAX_READ_CYCLES
         ) {
           readCycles++;
+          agentState.transition('reading', `files (${readCycles})`, task.index, total);
           sendStatus(`[${task.index}/${total}] Reading files (${readCycles})…`);
           const readResults = await toolExecutor.executeAll(currentParsed.toolCalls);
           const readFeedback = readResults
@@ -352,9 +376,12 @@ export class LoopController {
           break;
         }
 
+        const execDetail = writeCalls[0]?.path ? writeCalls[0].path.split('/').pop()! : `${writeCalls.length} ops`;
+        agentState.transition('executing', execDetail, task.index, total);
         sendStatus(`[${task.index}/${total}] Executing ${writeCalls.length} operation(s)…`);
         const toolResults = await toolExecutor.executeAll(writeCalls);
 
+        console.log(`[loop:exec] task=${task.index} writes=${writeCalls.length} results=${JSON.stringify(toolResults.map(r => r.tool + ':' + r.path + '=' + (r.success ? 'ok' : r.error?.slice(0,60))))}`);
         const failedOps = toolResults.filter(r => !r.success);
         if (failedOps.length > 0) {
           const errorSummary = failedOps.map(r => `${r.tool} ${r.path}: ${r.error}`).join('\n');
@@ -411,6 +438,7 @@ export class LoopController {
         if (!this.options.skipBuild && isLastTask) {
           const hasBuildableFiles = await this.workspaceHasBuildableFiles(projectRoot);
           if (hasBuildableFiles) {
+            agentState.transition('building', buildCommand.slice(0, 20));
             sendStatus('Running build…');
             const buildResult = await buildRunner.run(buildCommand);
             if (!buildResult.success && this.isNoInputsError(buildResult)) {
@@ -431,8 +459,16 @@ export class LoopController {
         // ── Review ──────────────────────────────────────────────────────────────
         sendStatus(`[${task.index}/${total}] Reviewing…`);
         const changedSummary = writtenFiles.map(r => `${r.tool} ${r.path}`).join('\n');
-        const review = await this.runReviewDispatch(task.prompt, currentOutput, changedSummary, sendThinking);  // coordinator thinking
+        // Pass tool-call XML only — full output includes Qwen3 reasoning prose
+        // that the reviewer misreads as describe-instead-of-do and REJECTs spuriously.
+        const reviewOutput = writtenFiles
+          .map(r => `<${r.tool} path="${r.path}">\n${(r.content ?? '').slice(0, 400)}\n</${r.tool}>`)
+          .join('\n');
+        agentState.transition('reviewing', task.title.slice(0, 20), task.index, total);
+        console.log(`[loop:review:in] task=${task.index} prompt="${task.prompt.slice(0, 120).replace(/\n/g, ' ')}" changed="${changedSummary}" outputLen=${reviewOutput.length}`);
+        const review = await this.runReviewDispatch(task.prompt, reviewOutput, changedSummary, sendThinking);  // coordinator thinking
 
+        console.log(`[loop:review:out] task=${task.index} score=${review.score} decision=${review.decision} guidance="${(review.guidance ?? '').slice(0, 120)}"`);
         attemptResult.reviewScore = review.score;
         attemptResult.approved = review.decision === 'APPROVE';
         this.sendEvent(reply, { type: 'review', score: review.score, decision: review.decision, guidance: review.guidance });
@@ -449,9 +485,13 @@ export class LoopController {
           continue;
         }
 
+        // REJECT is terminal — do not retry. NEEDS_REVISION at maxAttempts also lands here.
         taskFailReason = review.guidance ?? 'Max attempts reached';
+        console.log(`[loop:exit] task=${task.index} attempt=${attempt} REJECT/maxAttempts — breaking`);
+        break;
       } // end attempt loop
 
+      console.log(`[loop:task:done] task=${task.index} approved=${taskApproved} failReason="${taskFailReason ?? ''}"`);
       if (taskApproved) {
         this.sendEvent(reply, { type: 'task_complete', taskIndex: task.index, total, title: task.title });
       } else {
@@ -464,6 +504,7 @@ export class LoopController {
 
     // ── Stage 5: Delivery ──────────────────────────────────────────────────────
     const overallApproved = taskResults.length > 0 && taskResults.every(r => r.approved);
+    agentState.transition('delivering', 'Final response');
     await this.emitDelivery(
       reply,
       composeInput.userMessage,
@@ -484,6 +525,8 @@ export class LoopController {
       }, assistantMessageId).catch(() => {});
       await this.options.onThinkPhaseComplete?.('coordinator').catch(() => {});
     }
+
+    agentState.idle();
 
     const bestAttempt = allAttempts.length > 0
       ? allAttempts.reduce((best, curr) => curr.reviewScore > best.reviewScore ? curr : best, allAttempts[0])
@@ -530,7 +573,7 @@ export class LoopController {
       });
       await this.persistAndSend(
         reply,
-        { type: 'coordinator', content: delivery },
+        { type: 'coordinator', content: delivery, source: 'coordinator' },
         assistantMessageId
       );
     } catch (err) {
@@ -627,44 +670,108 @@ export class LoopController {
       abortController.abort();
     });
 
+    // Derive live provider from engineClient.baseURL — avoids esbuild CJS stale-binding
+    // where module-level `let` exports are captured at bundle init time.
+    const engineBaseURLEarly = ((engineClient as unknown as { baseURL?: string }).baseURL ?? '').replace(/\/$/, '');
+    const liveProvider = /127\.0\.0\.1:526|localhost:526/.test(engineBaseURLEarly) ? 'phobos' : ENGINE_PROVIDER;
+    const liveModel = ENGINE_MODEL; // model string suffix is stable enough for routing
+
     // Apply thinking activation strategy for the current engine model/provider
     const { messages: thinkMessages, systemPrompt: thinkSystemPrompt } = applyThinkingStrategy(
       messages.filter(m => m.role !== 'system'),
       messages.find(m => m.role === 'system')?.content ?? '',
-      ENGINE_PROVIDER,
-      ENGINE_MODEL,
+      liveProvider,
+      liveModel,
       'think'
     );
     const finalMessages = thinkSystemPrompt
       ? [{ role: 'system' as const, content: thinkSystemPrompt }, ...thinkMessages]
       : thinkMessages;
 
-    const engineExtraBody = getThinkingExtraBody(ENGINE_PROVIDER, ENGINE_MODEL, 'think');
-    console.log(`[engine:config] provider=${ENGINE_PROVIDER} model=${ENGINE_MODEL} extraBody=${JSON.stringify(engineExtraBody)}`);
+    // Read the live baseURL from the client object — always current even in esbuild CJS
+    // bundles where module-level `let` exports are captured at init time.
+    const engineBaseURL = engineBaseURLEarly;
+    const isPhobosLive = /127\.0\.0\.1:526/.test(engineBaseURL) || /localhost:526/.test(engineBaseURL);
+
+    const engineExtraBody = getThinkingExtraBody(liveProvider, liveModel, 'think');
+    console.log(`[engine:config] provider=${liveProvider} model=${liveModel} baseURL=${engineBaseURLEarly} extraBody=${JSON.stringify(engineExtraBody)}`);
     const engineCallParams = {
-      model: ENGINE_MODEL,
+      model: liveModel,
       messages: finalMessages as Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
       max_tokens: 32768,
       temperature: 0.4,
       ...(Object.keys(engineExtraBody).length > 0 ? { extra_body: engineExtraBody } : {}),
     };
 
-    let stream: Awaited<ReturnType<typeof engineClient.chat.completions.create>>;
-    try {
-      stream = await engineClient.chat.completions.create(
-        { ...engineCallParams, stream: true as const },
-        { signal: abortController.signal }
+    // For phobos provider, bypass the OpenAI SDK stream parser — it strips unknown
+    // fields like reasoning_content from delta before we can read them.
+    // Derived from live engineClient.baseURL to avoid esbuild CJS stale-binding issues.
+    const useRawFetch = isPhobosLive;
+
+    async function* rawSseStream(url: string, body: Record<string, unknown>, signal: AbortSignal): AsyncGenerator<Record<string, unknown>> {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...body, stream: true }),
+        signal,
+      });
+      if (!resp.ok || !resp.body) throw new Error(`[engine:raw] HTTP ${resp.status}`);
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const json = trimmed.slice(5).trim();
+          if (json === '[DONE]') return;
+          try {
+            const parsed = JSON.parse(json);
+            const delta = parsed?.choices?.[0]?.delta;
+            if (delta) yield delta as Record<string, unknown>;
+          } catch { /* malformed chunk — skip */ }
+        }
+      }
+    }
+
+    let stream: import('openai/streaming').Stream<import('openai/resources').ChatCompletionChunk> | null = null;
+    let rawStream: AsyncGenerator<Record<string, unknown>> | null = null;
+
+    if (useRawFetch) {
+      const baseURL = ((engineClient as unknown as { baseURL?: string }).baseURL ?? 'http://127.0.0.1:52627/v1').replace(/\/$/, '');
+      rawStream = rawSseStream(
+        `${baseURL}/chat/completions`,
+        { ...engineCallParams },
+        abortController.signal
       );
-    } catch (createErr: unknown) {
-      // Ollama may reject think:true for certain models — retry without it
-      console.error(`[engine:create:error] ${createErr instanceof Error ? createErr.message : String(createErr)}`);
-      console.log('[engine:create:retry] Retrying without extra_body...');
-      const fallbackParams = { ...engineCallParams };
-      delete (fallbackParams as Record<string, unknown>).extra_body;
-      stream = await engineClient.chat.completions.create(
-        { ...fallbackParams, stream: true as const },
-        { signal: abortController.signal }
-      );
+    } else {
+      try {
+        stream = await engineClient.chat.completions.create(
+          { ...engineCallParams, stream: true as const },
+          { signal: abortController.signal }
+        );
+      } catch (createErr: unknown) {
+        console.error(`[engine:create:error] ${createErr instanceof Error ? createErr.message : String(createErr)}`);
+        console.log('[engine:create:retry] Retrying without extra_body...');
+        const fallbackParams = { ...engineCallParams };
+        delete (fallbackParams as Record<string, unknown>).extra_body;
+        stream = await engineClient.chat.completions.create(
+          { ...fallbackParams, stream: true as const },
+          { signal: abortController.signal }
+        );
+      }
+    }
+
+    async function* deltaIterator(): AsyncGenerator<Record<string, unknown>> {
+      if (rawStream) { yield* rawStream; return; }
+      for await (const chunk of stream!) {
+        yield chunk.choices[0]?.delta as Record<string, unknown>;
+      }
     }
 
     let fieldThinkBuf = ''; // accumulates thinking tokens on field-path (parser not used there)
@@ -672,18 +779,16 @@ export class LoopController {
       let emittedThinkLen = 0;
       let emittedOutputLen = 0;
       let _dbgN = 0;
-      const engineStrategy = getThinkingStrategy(ENGINE_PROVIDER, ENGINE_MODEL);
+      const engineStrategy = getThinkingStrategy(liveProvider, liveModel);
       console.log(`[engine:strategy] thinkingPath=${engineStrategy.thinkingPath}`);
 
-      for await (const chunk of stream) {
+      for await (const delta of deltaIterator()) {
         if (streamAborted) break;
 
-        const delta = chunk.choices[0]?.delta as Record<string, unknown>;
-
-        // Log first 3 chunks fully — shows ALL delta keys Ollama actually sends
+        // Log first 3 chunks fully
         if (_dbgN <= 2) {
           console.log(`[engine:delta:${_dbgN}] keys=${JSON.stringify(Object.keys(delta ?? {}))}`);
-          console.log(`[engine:delta:${_dbgN}] content=${JSON.stringify(delta?.content)} thinking=${JSON.stringify((delta as any)?.thinking)} reasoning=${JSON.stringify((delta as any)?.reasoning_content ?? (delta as any)?.reasoning)}`);
+          console.log(`[engine:delta:${_dbgN}] content=${JSON.stringify(delta?.content)} thinking=${JSON.stringify(delta?.thinking)} reasoning=${JSON.stringify(delta?.reasoning_content ?? delta?.reasoning)}`);
         }
         _dbgN++;
 
@@ -790,6 +895,7 @@ export class LoopController {
       `CHANGES MADE:\n${changedSummary}\n\n` +
       `ENGINE OUTPUT (check that tool calls target the correct file with correct content):\n${output.slice(0, 2000)}`;
 
+    console.log(`[review:prompt] ${reviewPrompt.slice(0, 400).replace(/\n/g, ' ')}`);
     try {
       const stripped = await coordinatorStream({
         systemPrompt: reviewSystem,
@@ -799,6 +905,7 @@ export class LoopController {
         mode: 'think',
         onThinkToken: sendThinking,
       });
+      console.log(`[review:raw] "${stripped.slice(0, 300).replace(/\n/g, ' ')}"`);
       const jsonMatch = stripped.match(/\{[\s\S]*\}/);
       const cleaned = jsonMatch ? jsonMatch[0] : stripped;
       const parsed = JSON.parse(cleaned);

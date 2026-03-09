@@ -60,7 +60,9 @@ jobs:
 
       - name: Read version
         id: version
-        run: node -e "import('./version.js').then(m => console.log('CORE_VERSION=' + m.CORE_VERSION))" >> $GITHUB_OUTPUT
+        run: |
+          VERSION=$(node -e "const fs=require('fs'); const m=fs.readFileSync('version.ts','utf8').match(/CORE_VERSION\s*=\s*'([^']+)'/); console.log('CORE_VERSION='+m[1]);")
+          echo "$VERSION" >> $GITHUB_OUTPUT
         shell: bash
 
       - name: Fetch llama.cpp binaries

@@ -1,3 +1,6 @@
+# Build binaries
+bin/
+
 # Build output
 dist/
 dist-all/

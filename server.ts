@@ -7,6 +7,7 @@ import { messagesRoute } from './routes/messages.js';
 import { documentsRoute } from './routes/documents.js';
 import { statusRoute } from './routes/status.js';
 import { phobosLocalRoute } from './routes/phobosLocal.js';
+import { registerLicenseRoutes } from './routes/license.js';
 import { stopAllServers } from './phobos/LlamaServerManager.js';
 import { reconfigureClients, COORDINATOR_MODEL, ENGINE_MODEL } from './ai/clients.js';
 
@@ -59,6 +60,9 @@ async function buildServer() {
   await fastify.register(documentsRoute);
   await fastify.register(statusRoute);
   await fastify.register(phobosLocalRoute);
+
+  // License routes (not a Fastify plugin — direct registration)
+  await registerLicenseRoutes(fastify);
 
   // Health check
   fastify.get('/health', async () => ({ ok: true, ts: Date.now() }));

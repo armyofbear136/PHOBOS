@@ -7,8 +7,16 @@
  *
  * Endpoints:
  *   GET  /api/license        — check if a valid license.key exists on this machine
- *   POST /api/license        — validate a TX ID, generate key, write ~/.phobos/license.key
- *   POST /api/license/check  — validate a raw key string against a TX ID (internal use)
+ *   POST /api/license        — validate a TX ID (online check + offline fallback),
+ *                               generate key, write ~/.phobos/license.key
+ *   POST /api/license/check  — validate a raw key string against a TX ID (internal)
+ *
+ * Online verification:
+ *   1. User submits TX ID
+ *   2. phobos-core calls AUTARCH_LICENSE_URL/api/licenses/verify/:txId
+ *   3. If valid → generate key, write to disk
+ *   4. If server unreachable / timeout → fallback to local keygen (offline grace)
+ *   5. If server explicitly says not_found → reject
  */
 
 import { FastifyInstance } from 'fastify';
@@ -17,12 +25,10 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
-// ─── SECRET SEED ─────────────────────────────────────────────────────────────
-// Must match generate-license.ts exactly.
-// Load from environment variable in production — never hardcode in committed code.
-// Set in your .env file: PHOBOS_LICENSE_SEED=your_secret_here
+// ─── CONFIG ──────────────────────────────────────────────────────────────────
 const PHOBOS_LICENSE_SEED = process.env.PHOBOS_LICENSE_SEED ?? 'REPLACE_WITH_YOUR_SECRET_SEED_BEFORE_USE';
-
+const AUTARCH_LICENSE_URL = (process.env.AUTARCH_LICENSE_URL ?? 'https://autarch.net').replace(/\/$/, '');
+const VERIFY_TIMEOUT_MS = 8000;
 const KEY_VERSION = 'PH1';
 
 // ─── Paths ───────────────────────────────────────────────────────────────────
@@ -34,7 +40,7 @@ function getLicenseKeyPath(): string {
   return join(getPhobosDir(), 'license.key');
 }
 
-// ─── Algorithm (identical to generate-license.ts) ───────────────────────────
+// ─── Key generation (matches server.js and generate-license.ts) ─────────────
 function generateLicenseKey(transactionId: string): string {
   const normalized = transactionId.trim().toUpperCase();
   const hmac = createHmac('sha256', PHOBOS_LICENSE_SEED);
@@ -58,6 +64,49 @@ function validateKeyAgainstTx(transactionId: string, key: string): boolean {
   }
 }
 
+// ─── Online verification with offline fallback ──────────────────────────────
+interface VerifyResult {
+  valid: boolean;
+  key?: string;
+  reason?: string;
+  source: 'online' | 'offline';
+}
+
+async function verifyOnline(transactionId: string): Promise<VerifyResult> {
+  const normalized = transactionId.trim().toUpperCase();
+  const url = `${AUTARCH_LICENSE_URL}/api/licenses/verify/${encodeURIComponent(normalized)}`;
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), VERIFY_TIMEOUT_MS);
+
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'Accept': 'application/json' },
+    });
+
+    clearTimeout(timeout);
+
+    if (!res.ok) {
+      console.warn(`License server returned ${res.status} — falling back to offline`);
+      return { valid: true, source: 'offline', reason: 'server_error_fallback' };
+    }
+
+    const data = await res.json() as { valid: boolean; key?: string; reason?: string };
+
+    if (data.valid) {
+      return { valid: true, key: data.key, source: 'online' };
+    }
+
+    // Server explicitly rejected — TX ID not in whitelist
+    return { valid: false, reason: data.reason ?? 'not_found', source: 'online' };
+  } catch (err: any) {
+    const reason = err.name === 'AbortError' ? 'timeout' : 'network_error';
+    console.warn(`License server unreachable (${reason}) — falling back to offline keygen`);
+    return { valid: true, source: 'offline', reason };
+  }
+}
+
 // ─── License file helpers ────────────────────────────────────────────────────
 function readLicenseFile(): string | null {
   const path = getLicenseKeyPath();
@@ -70,7 +119,6 @@ function readLicenseFile(): string | null {
 }
 
 function extractKeyFromFile(content: string): string | null {
-  // Key is the last non-comment, non-empty line
   const lines = content.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
   return lines[lines.length - 1] ?? null;
 }
@@ -82,7 +130,6 @@ function isLicenseFileValid(): boolean {
   const key = extractKeyFromFile(content);
   if (!key || !key.startsWith(`${KEY_VERSION}-`)) return false;
 
-  // Extract TX ID from file comments for validation
   const txLine = content.split('\n').find(l => l.startsWith('# Transaction:'));
   if (!txLine) return false;
   const txId = txLine.replace('# Transaction:', '').trim();
@@ -118,9 +165,7 @@ export async function registerLicenseRoutes(app: FastifyInstance) {
     return reply.send({ valid, tier: valid ? 'individual' : null });
   });
 
-  // POST /api/license — validate a TX ID, generate key, write to ~/.phobos/license.key
-  // Body: { transactionId: string }
-  // This is called by LicenseDialog.tsx when the user submits their PayPal TX ID
+  // POST /api/license — validate TX ID (online + offline fallback), keygen, write
   app.post('/api/license', async (req, reply) => {
     const { transactionId } = req.body as { transactionId?: string };
 
@@ -132,26 +177,33 @@ export async function registerLicenseRoutes(app: FastifyInstance) {
       return reply.status(503).send({ valid: false, reason: 'license_system_not_configured' });
     }
 
-    // Generate the key from the TX ID
-    const key = generateLicenseKey(transactionId);
+    // Online verification with offline fallback
+    const result = await verifyOnline(transactionId);
 
-    // TODO: Before writing, optionally verify the TX ID against PayPal's API
-    // (requires PayPal SDK + credentials on your Autarch server, not phobos-core)
-    // For now: we trust the TX ID format and write the key.
-    // The real fraud protection is that the key only works on one machine at a time
-    // and you can revoke by changing the seed (invalidates all keys).
+    if (!result.valid) {
+      return reply.status(403).send({
+        valid: false,
+        reason: result.reason ?? 'transaction_not_found',
+        message: 'Transaction ID not found in the license registry. Check your PayPal receipt and try again.',
+      });
+    }
+
+    const key = generateLicenseKey(transactionId);
 
     try {
       writeLicenseFile(transactionId, key);
-      return reply.send({ valid: true, key });
+      return reply.send({
+        valid: true,
+        key,
+        source: result.source,
+      });
     } catch (err) {
       app.log.error('Failed to write license file:');
       return reply.status(500).send({ valid: false, reason: 'write_failed' });
     }
   });
 
-  // POST /api/license/check — validate a raw key string (used by startup check)
-  // Body: { key: string, transactionId: string }
+  // POST /api/license/check — validate a raw key string
   app.post('/api/license/check', async (req, reply) => {
     const { key, transactionId } = req.body as { key?: string; transactionId?: string };
     if (!key || !transactionId) {

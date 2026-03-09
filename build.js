@@ -188,7 +188,15 @@ export async function buildForPlatform({
 
   if (fs.existsSync(path.join(__dirname, '.env'))) {
     fs.copyFileSync(path.join(__dirname, '.env'), path.join(distDir, '.env'));
-    log('  ✅ .env');
+    log('  ✅ .env (copied from source)');
+  } else if (process.env.PHOBOS_LICENSE_SEED) {
+    // CI build: generate .env from environment variables
+    const envLines = [];
+    if (process.env.PHOBOS_LICENSE_SEED) envLines.push(`PHOBOS_LICENSE_SEED=${process.env.PHOBOS_LICENSE_SEED}`);
+    if (process.env.AUTARCH_LICENSE_URL) envLines.push(`AUTARCH_LICENSE_URL=${process.env.AUTARCH_LICENSE_URL}`);
+    envLines.push('');
+    fs.writeFileSync(path.join(distDir, '.env'), envLines.join('\n'));
+    log('  ✅ .env (generated from CI environment)');
   }
 
   // llama-server — stage all platform binaries present in bin/ into dist/

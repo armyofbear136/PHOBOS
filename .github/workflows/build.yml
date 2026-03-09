@@ -60,6 +60,8 @@ jobs:
 
       - name: Build
         run: node build.js
+        env:
+          PHOBOS_LICENSE_SEED: ${{ secrets.PHOBOS_LICENSE_SEED }}
 
       - name: Package (tar)
         if: matrix.pack == 'tar'

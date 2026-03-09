@@ -100,6 +100,13 @@ export class ThreadStore {
     );
   }
 
+  async updateProject(id: string, projectId: string | null): Promise<void> {
+    await this.db.run(
+      `UPDATE threads SET project_id = ?, updated_at = ? WHERE id = ?`,
+      [projectId, new Date().toISOString(), id]
+    );
+  }
+
   async touch(id: string): Promise<void> {
     await this.db.run(
       `UPDATE threads SET updated_at = ? WHERE id = ?`,

@@ -19,6 +19,19 @@ export async function threadsRoute(fastify: FastifyInstance): Promise<void> {
     return reply.send(mapped);
   });
 
+  // PATCH /api/threads/:id — update title and/or project_id
+  fastify.patch<{
+    Params: { id: string };
+    Body: { title?: string; project_id?: string | null };
+  }>('/api/threads/:id', async (req, reply) => {
+    const thread = await store.getById(req.params.id);
+    if (!thread) return reply.status(404).send({ error: 'Thread not found' });
+    if (req.body.title) await store.updateTitle(req.params.id, req.body.title);
+    if ('project_id' in req.body) await store.updateProject(req.params.id, req.body.project_id ?? null);
+    const updated = await store.getById(req.params.id);
+    return reply.send(updated);
+  });
+
   // GET /api/threads/:id
   fastify.get<{ Params: { id: string } }>(
     '/api/threads/:id',

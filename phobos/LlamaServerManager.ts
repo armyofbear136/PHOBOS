@@ -1,5 +1,4 @@
 import { spawn, type ChildProcess } from 'child_process';
-import * as net from 'net';
 import * as path from 'path';
 import { resolveLlamaServerBin, modelPath, getSpec, detectHardware, buildRecommendation } from './PhobosLocalManager.js';
 
@@ -33,17 +32,25 @@ const servers: Record<'sayon' | 'allmind', ManagedServer> = {
   allmind: { config: { modelId: '', port: ALLMIND_PORT, gpuLayers: 99, contextSize: 4096, threads: 4 }, process: null, state: 'stopped', error: null },
 };
 
-function waitForPort(port: number, timeoutMs = 30_000): Promise<void> {
+function waitForReady(port: number, timeoutMs = 120_000): Promise<void> {
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + timeoutMs;
     const attempt = () => {
-      const sock = net.connect(port, '127.0.0.1');
-      sock.once('connect', () => { sock.destroy(); resolve(); });
-      sock.once('error', () => {
-        sock.destroy();
-        if (Date.now() > deadline) { reject(new Error(`Port ${port} not ready after ${timeoutMs}ms`)); return; }
-        setTimeout(attempt, 500);
-      });
+      if (Date.now() > deadline) {
+        reject(new Error(`Server on port ${port} not ready after ${timeoutMs}ms`));
+        return;
+      }
+      const req = require('http').get(
+        { hostname: '127.0.0.1', port, path: '/health', timeout: 2000 },
+        (res: import('http').IncomingMessage) => {
+          res.resume();
+          if (res.statusCode === 200) { resolve(); return; }
+          // 503 = model weights still loading — keep polling
+          setTimeout(attempt, 1000);
+        }
+      );
+      req.on('error', () => setTimeout(attempt, 1000));
+      req.on('timeout', () => { req.destroy(); setTimeout(attempt, 1000); });
     };
     attempt();
   });
@@ -162,7 +169,7 @@ export async function startServer(role: 'sayon' | 'allmind', cfg: ServerConfig):
   managed.process = proc;
 
   try {
-    await waitForPort(cfg.port, 60_000);
+    await waitForReady(cfg.port, 120_000);
     managed.state = 'running';
     console.log(`[LlamaServerManager] ${role} ready on :${cfg.port}`);
   } catch (err) {

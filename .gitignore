@@ -1,6 +1,20 @@
-node_modules
-dist
-dist-all
-localai.duckdb.wal
-scripts
+# Build output
+dist/
+dist-all/
+
+# Native addons (large binaries)
+node_modules/
+
+# License generation output
+output/
+
+# Environment secrets
 .env
+.env.*
+
+#localdb
+workspaces/
+localai.duckdb.wal
+
+# License generator script (contains seed logic)
+scripts/generate-license.ts

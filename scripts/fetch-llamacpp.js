@@ -209,7 +209,7 @@ async function extractFromTarGz(archivePath, targetName, destPath) {
     });
 
     gunzip.on('end', () => {
-      if (state !== 'header' && !outFd) {
+      if (!outFd) {
         reject(new Error(`"${targetName}" not found in tar.gz archive`));
       }
     });

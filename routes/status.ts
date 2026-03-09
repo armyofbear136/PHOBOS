@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { checkBackendHealth, reconfigureClients, COORDINATOR_MODEL, ENGINE_MODEL, COORDINATOR_PROVIDER, ENGINE_PROVIDER } from '../ai/clients.js';
+import { CORE_VERSION } from '../version';
 import { DispatchLogStore } from '../db/DispatchLogStore.js';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 import { ModelConfigStore, PROVIDERS, getCoordinatorModels, getEngineModels } from '../db/ModelConfigStore.js';
@@ -8,6 +9,11 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
   const db = DatabaseManager.getInstance();
   const dispatchStore = new DispatchLogStore(db);
   const configStore = new ModelConfigStore(db);
+
+  // GET /api/version
+  fastify.get('/api/version', async (_req, reply) => {
+    return reply.send({ version: CORE_VERSION });
+  });
 
   // GET /api/status
   fastify.get('/api/status', async (_req, reply) => {

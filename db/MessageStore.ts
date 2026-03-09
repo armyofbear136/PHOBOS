@@ -95,9 +95,10 @@ export class MessageStore {
    */
   async getContextHistory(
     threadId: string,
-    summaryStore?: ChatSummaryStore
+    summaryStore?: ChatSummaryStore,
+    maxRecent?: number
   ): Promise<Array<{ role: string; content: string }>> {
-    const MAX_RECENT = 6;
+    const MAX_RECENT = maxRecent != null ? Math.max(1, Math.min(20, maxRecent)) : 6;
     const CHAR_BUDGET = 24_000; // ~6k tokens at 4 chars/token, safe for any supported model
 
     const messages = await this.getByThread(threadId, false);

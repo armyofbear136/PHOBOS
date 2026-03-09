@@ -131,7 +131,19 @@ export async function buildForPlatform({
   const exePath = path.join(distDir, `phobos-core-${CORE_VERSION}${ext}`);
 
   fs.copyFileSync(process.execPath, exePath);
+
   if (isMac) execSync(`codesign --remove-signature "${exePath}"`);
+
+  // Windows: strip the Authenticode signature from the copied node.exe before
+  // postject injects — postject cannot write to a signed PE file.
+  // signtool is in the Windows SDK; fall back silently if not on PATH.
+  if (isWin) {
+    try {
+      execSync(`signtool remove /s "${exePath}"`, { stdio: 'pipe' });
+    } catch {
+      // signtool not found or already unsigned — postject will try anyway
+    }
+  }
 
   const machoFlag = isMac ? '--macho-segment-name NODE_SEA' : '';
   execSync(

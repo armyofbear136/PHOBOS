@@ -170,10 +170,11 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
       build_command?: string;
       skip_build?: boolean;
       attached_files?: Array<{ name: string; content: string }>;
+      context_history_depth?: number;
     };
   }>('/api/threads/:id/messages', async (req, reply) => {
     const { id: threadId } = req.params;
-    const { content, build_command, skip_build, attached_files } = req.body;
+    const { content, build_command, skip_build, attached_files, context_history_depth } = req.body;
 
     // Validate/create thread
     let thread = await threadStore.getById(threadId);
@@ -259,7 +260,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
         routing: intent.type === 'QUESTION' ? 'ANSWER_DIRECTLY' : 'NEEDS_ALLMIND',
       });
 
-      const history = await messageStore.getContextHistory(threadId, summaryStore);
+      const history = await messageStore.getContextHistory(threadId, summaryStore, context_history_depth);
       const priorHistory = history.slice(0, -1);
 
       // Collect all status events so we can persist them as a single activity event after the turn

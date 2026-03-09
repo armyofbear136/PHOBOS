@@ -66,17 +66,6 @@ export async function threadsRoute(fastify: FastifyInstance): Promise<void> {
     }
   );
 
-  // PATCH /api/threads/:id
-  fastify.patch<{
-    Params: { id: string };
-    Body: { title?: string };
-  }>('/api/threads/:id', async (req, reply) => {
-    const { title } = req.body;
-    if (title) await store.updateTitle(req.params.id, title);
-    const updated = await store.getById(req.params.id);
-    return reply.send(updated);
-  });
-
   // DELETE /api/threads/:id
   fastify.delete<{ Params: { id: string } }>(
     '/api/threads/:id',

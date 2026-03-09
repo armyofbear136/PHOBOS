@@ -128,22 +128,10 @@ export async function buildForPlatform({
   const isWin = process.platform === 'win32';
   const isMac = process.platform === 'darwin';
   const ext   = isWin ? '.exe' : '';
-  const exePath = path.join(distDir, `phobos-core-${CORE_VERSION}${ext}`);
+  const exePath = path.join(distDir, `phobos-core${ext}`);
 
   fs.copyFileSync(process.execPath, exePath);
-
   if (isMac) execSync(`codesign --remove-signature "${exePath}"`);
-
-  // Windows: strip the Authenticode signature from the copied node.exe before
-  // postject injects — postject cannot write to a signed PE file.
-  // signtool is in the Windows SDK; fall back silently if not on PATH.
-  if (isWin) {
-    try {
-      execSync(`signtool remove /s "${exePath}"`, { stdio: 'pipe' });
-    } catch {
-      // signtool not found or already unsigned — postject will try anyway
-    }
-  }
 
   const machoFlag = isMac ? '--macho-segment-name NODE_SEA' : '';
   execSync(
@@ -268,9 +256,9 @@ const ext   = isWin ? '.exe' : '';
 console.log('🚀 Starting PHOBOS build...');
 buildForPlatform()
   .then(exe => {
-    console.log(`\n✅ Build complete → ${path.basename(exe)}`);
-    console.log(`   dist/ layout: ${path.basename(exe)}  duckdb/  tree-sitter/  (.env)`);
-    console.log(`   Run: cd dist && .${isWin ? '\\' : '/'}${path.basename(exe)}`);
+    console.log(`\n✅ Build complete → dist/phobos-core${ext}`);
+    console.log(`   dist/ layout: phobos-core${ext}  duckdb/  tree-sitter/  (.env)`);
+    console.log(`   Run: cd dist && .${isWin ? '\\' : '/'}phobos-core${ext}`);
   })
   .catch(err => {
     console.error('❌ Build failed:', err.message);

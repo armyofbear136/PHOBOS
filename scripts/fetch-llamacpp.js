@@ -3,16 +3,15 @@
 // Downloads pre-built llama-server binaries from the llama.cpp GitHub releases
 // into the repo's bin/ directory. Run once before building.
 //
+// Standalone — fetches ALL platforms:
 //   node scripts/fetch-llamacpp.js
-//   node scripts/fetch-llamacpp.js --version b5000   (pin a specific release tag)
+//   node scripts/fetch-llamacpp.js --version b5000
 //
-// Platforms fetched:
-//   linux-x64       llama-b{N}-bin-ubuntu-x64.zip       → llama-server-linux-x64
-//   darwin-arm64    llama-b{N}-bin-macos-arm64.zip       → llama-server-darwin-arm64
-//   darwin-x64      llama-b{N}-bin-macos-x64.zip         → llama-server-darwin-x64
-//   win32-x64       llama-b{N}-bin-win-vulkan-x64.zip    → llama-server-win32-x64.exe
-//
-// Requires: curl and unzip (standard on macOS/Linux). On Windows, uses PowerShell.
+// Per-platform scripts import fetchBinaries() and pass a single target:
+//   scripts/fetch-linux-x64.js
+//   scripts/fetch-darwin-arm64.js
+//   scripts/fetch-darwin-x64.js
+//   scripts/fetch-win32-x64.js
 
 import https  from 'node:https';
 import fs     from 'node:fs';
@@ -20,8 +19,8 @@ import path   from 'node:path';
 import zlib   from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BIN_DIR   = path.resolve(__dirname, '..', 'bin');
-const TMP_DIR   = path.resolve(__dirname, '..', 'bin', '.tmp');
+export const BIN_DIR = path.resolve(__dirname, '..', 'bin');
+export const TMP_DIR = path.resolve(__dirname, '..', 'bin', '.tmp');
 
 const args    = process.argv.slice(2);
 const vArg    = args.find(a => a.startsWith('--version='))?.split('=')[1]
@@ -477,14 +476,16 @@ async function extractAllFilesFromZip(archivePath, destDir) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-async function main() {
-  fs.mkdirSync(BIN_DIR,  { recursive: true });
-  fs.mkdirSync(TMP_DIR,  { recursive: true });
+// ── Core fetch logic (exported for per-platform scripts) ─────────────────────
+
+export async function fetchBinaries(targets, cudaTargets = []) {
+  fs.mkdirSync(BIN_DIR, { recursive: true });
+  fs.mkdirSync(TMP_DIR, { recursive: true });
 
   const version = vArg ?? await getLatestRelease();
   console.log(`\nFetching llama-server binaries from llama.cpp release: ${version}\n`);
 
-  for (const target of TARGETS) {
+  for (const target of targets) {
     const outPath = path.join(BIN_DIR, target.outName);
 
     if (fs.existsSync(outPath)) {
@@ -517,10 +518,8 @@ async function main() {
 
       try {
         if (target.extractAll) {
-          // Extract all .exe and .dll files from the archive into BIN_DIR
           const files = await extractAllFilesFromZip(archiveDest, BIN_DIR);
           console.log(`   extracted ${files.length} files: ${files.join(', ')}`);
-          // Rename the server binary to our expected name if needed
           const serverInBin = path.join(BIN_DIR, target.binInZip);
           if (fs.existsSync(serverInBin) && target.binInZip !== target.outName) {
             fs.renameSync(serverInBin, outPath);
@@ -531,7 +530,7 @@ async function main() {
       } catch (err) {
         console.error(`   ✗ Extract failed: ${err.message}`);
         if (fs.existsSync(archiveDest)) fs.unlinkSync(archiveDest);
-        if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
+        if (fs.existsSync(outPath))     fs.unlinkSync(outPath);
         continue;
       }
 
@@ -548,10 +547,8 @@ async function main() {
     }
   }
 
-  // ── Download CUDA backend DLL for Windows ──────────────────────────────────
-  // This is a separate archive that only contains ggml-cuda.dll.
-  // llama-server.exe will dynamically load it at runtime for NVIDIA GPU support.
-  for (const cudaTarget of CUDA_DLL_TARGETS) {
+  // ── CUDA backend DLL (Windows only) ─────────────────────────────────────────
+  for (const cudaTarget of cudaTargets) {
     const outPath = path.join(BIN_DIR, cudaTarget.outName);
 
     if (fs.existsSync(outPath)) {
@@ -587,7 +584,7 @@ async function main() {
       } catch (err) {
         console.error(`   ✗ Extract failed: ${err.message}`);
         if (fs.existsSync(archiveDest)) fs.unlinkSync(archiveDest);
-        if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
+        if (fs.existsSync(outPath))     fs.unlinkSync(outPath);
         continue;
       }
 
@@ -603,9 +600,12 @@ async function main() {
   }
 
   fs.rmSync(TMP_DIR, { recursive: true, force: true });
-
   console.log('\nDone. Binaries are in bin/');
-  console.log('Commit bin/ to your repo, or add it to your CI pre-build step.');
 }
 
-main().catch(err => { console.error(err.message); process.exit(1); });
+// ── Standalone: fetch all platforms ─────────────────────────────────────────
+// Only runs when this file is executed directly, not when imported.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  fetchBinaries(TARGETS, CUDA_DLL_TARGETS)
+    .catch(err => { console.error(err.message); process.exit(1); });
+}

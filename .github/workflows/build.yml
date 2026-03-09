@@ -19,25 +19,29 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label:    win32-x64
-            runner:   windows-latest
-            artifact: phobos-win32-x64
-            pack:     zip
+          - label:        win32-x64
+            runner:       windows-latest
+            artifact:     phobos-win32-x64
+            pack:         zip
+            fetch-script: scripts/fetch-win32-x64.js
 
-          - label:    darwin-arm64
-            runner:   macos-14
-            artifact: phobos-darwin-arm64
-            pack:     tar
+          - label:        darwin-arm64
+            runner:       macos-14
+            artifact:     phobos-darwin-arm64
+            pack:         tar
+            fetch-script: scripts/fetch-darwin-arm64.js
 
-          - label:    linux-x64
-            runner:   ubuntu-latest
-            artifact: phobos-linux-x64
-            pack:     tar
+          - label:        linux-x64
+            runner:       ubuntu-latest
+            artifact:     phobos-linux-x64
+            pack:         tar
+            fetch-script: scripts/fetch-linux-x64.js
 
-          - label:    linux-arm64
-            runner:   ubuntu-24.04-arm
-            artifact: phobos-linux-arm64
-            pack:     tar
+          - label:        linux-arm64
+            runner:       ubuntu-24.04-arm
+            artifact:     phobos-linux-arm64
+            pack:         tar
+            fetch-script: scripts/fetch-linux-arm64.js
 
     steps:
       - uses: actions/checkout@v4
@@ -59,7 +63,7 @@ jobs:
         run: npm ci --foreground-scripts
 
       - name: Fetch llama.cpp binaries
-        run: node scripts/fetch-llamacpp.js
+        run: node ${{ matrix.fetch-script }}
 
       - name: Build
         run: node build.js

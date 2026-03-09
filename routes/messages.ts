@@ -324,6 +324,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           return origWrite(chunk);
         };
 
+        const loopSegIds: Record<string, string | null> = { coordinator: null, engine: null };
         const loopController = new LoopController({
           buildCommand: build_command ?? extractBuildCommand(docs.claudeMd),
           projectRoot: workspaceDir,
@@ -335,19 +336,19 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           },
           // Real-time segment writes — one segment per thinking phase, appended per token.
           // segmentStore tracks the active segment ID internally per (messageId, source) pair.
-          onThinkChunk: (() => {
-            const segIds: Record<string, string | null> = { coordinator: null, engine: null };
-            return async (content: string, source: 'coordinator' | 'engine') => {
-              if (!segIds[source]) {
-                segIds[source] = await segmentStore.openSegment(threadId, assistantMsg.id, source);
-              }
-              await segmentStore.appendToken(segIds[source]!, content);
-            };
-          })(),
+          onThinkChunk: async (content: string, source: 'coordinator' | 'engine') => {
+            if (!loopSegIds[source]) {
+              loopSegIds[source] = await segmentStore.openSegment(threadId, assistantMsg.id, source);
+            }
+            await segmentStore.appendToken(loopSegIds[source]!, content);
+          },
           onThinkPhaseComplete: async (source: 'coordinator' | 'engine') => {
             // Called by LoopController when a thinking phase ends — close the segment
             // We don't have the segment ID here so we close by message+phase
             await segmentStore.closeLatestSegment(assistantMsg.id, source);
+            // Reset the segment ID so the next phase for this source opens a new segment
+            // rather than appending to the now-closed one.
+            loopSegIds[source] = null;
           },
           onOutputChunk: async (_content) => {
             // output chunks no longer need separate persistence — messages table is the canonical record

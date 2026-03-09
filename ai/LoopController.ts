@@ -166,7 +166,15 @@ export class LoopController {
         raw(token);
       };
     })();
-    const sendEngineThinking = this.makeThinkingSender(reply, 'engine');
+    let plannerEngineThinkingAccum = '';
+    const sendEngineThinking = (() => {
+      const raw = this.makeThinkingSender(reply, 'engine');
+      return (token: string) => {
+        plannerEngineThinkingAccum += token;
+        this.options.onThinkChunk?.(token, 'engine', assistantMessageId).catch(() => {});
+        raw(token);
+      };
+    })();
     const sendStatus = (content: string) => this.sendEvent(reply, { type: 'status', content });
 
     // ── Stage 1: Context Ingestion ─────────────────────────────────────────────
@@ -234,6 +242,14 @@ export class LoopController {
         sendEngineThinking,      // ALLMIND: decomposition thinking → engine panel
         this.options.onThinkPhaseComplete  // closes the planning engine segment in DB
       );
+      // Persist planner engine thinking so it survives thread switch/server restart
+      if (plannerEngineThinkingAccum && assistantMessageId) {
+        await this.options.persistEvent?.('thinking_complete', {
+          type: 'thinking_complete',
+          content: plannerEngineThinkingAccum,
+          source: 'engine',
+        }, assistantMessageId).catch(() => {});
+      }
       // If intent is CODE_REQUEST, remap any 'analyze' operation to 'modify'.
       // The coordinator sometimes returns 'analyze' for simple single-file edits
       // (e.g. "add text to test.txt") when the workspace has few/no files to discover.
@@ -811,6 +827,7 @@ export class LoopController {
           }
           if (outToken) {
             // Content is clean on field-path providers — no <think> tags in delta.content
+            parser.feedOutput(outToken);
             this.options.onOutputChunk?.(outToken, assistantMessageId).catch(() => {});
             reply.raw.write(`data: ${JSON.stringify({ type: 'output_token', token: outToken })}\n\n`);
             emittedOutputLen += outToken.length;

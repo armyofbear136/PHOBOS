@@ -58,6 +58,9 @@ jobs:
       - name: Install dependencies
         run: npm ci --foreground-scripts
 
+      - name: Fetch llama.cpp binaries
+        run: node scripts/fetch-llamacpp.js
+
       - name: Build
         run: node build.js
         env:

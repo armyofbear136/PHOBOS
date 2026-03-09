@@ -51,16 +51,17 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
-      # Python 3.12+ removed distutils, which node-gyp < 10 needs to compile
-      # native addons from source. Install setuptools to restore it, and also
-      # upgrade pip so the install is reliable. Only needed on macOS where the
-      # runner ships Python 3.14 as default.
       - name: Restore distutils (macOS)
         if: runner.os == 'macOS'
         run: pip3 install setuptools --break-system-packages
 
       - name: Install dependencies
         run: npm ci --foreground-scripts
+
+      - name: Read version
+        id: version
+        run: node -e "import('./version.js').then(m => console.log('CORE_VERSION=' + m.CORE_VERSION))" >> $GITHUB_OUTPUT
+        shell: bash
 
       - name: Fetch llama.cpp binaries
         run: node ${{ matrix.fetch-script }}
@@ -72,27 +73,27 @@ jobs:
 
       - name: Package (tar)
         if: matrix.pack == 'tar'
-        run: tar -czf ${{ matrix.artifact }}.tar.gz -C dist .
+        run: tar -czf ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.tar.gz -C dist .
 
       - name: Package (zip)
         if: matrix.pack == 'zip'
         shell: pwsh
-        run: Compress-Archive -Path dist\* -DestinationPath ${{ matrix.artifact }}.zip
+        run: Compress-Archive -Path dist\* -DestinationPath ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.zip
 
       - name: Upload artifact (tar)
         if: matrix.pack == 'tar'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}.tar.gz
+          name: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}
+          path: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.tar.gz
           retention-days: 7
 
       - name: Upload artifact (zip)
         if: matrix.pack == 'zip'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}.zip
+          name: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}
+          path: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.zip
           retention-days: 7
 
   release:

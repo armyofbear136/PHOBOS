@@ -4,8 +4,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build as esbuild } from 'esbuild';
+
+// Read version from source tree — stamps the output binary name.
+// Tries version.ts first (dev), falls back to version.js (if pre-compiled).
+const _versionFile = fs.existsSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'version.ts'))
+  ? pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), 'version.ts')).href
+  : pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), 'version.js')).href;
+const { CORE_VERSION } = await import(_versionFile);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -121,7 +128,7 @@ export async function buildForPlatform({
   const isWin = process.platform === 'win32';
   const isMac = process.platform === 'darwin';
   const ext   = isWin ? '.exe' : '';
-  const exePath = path.join(distDir, `phobos-core${ext}`);
+  const exePath = path.join(distDir, `phobos-core-${CORE_VERSION}${ext}`);
 
   fs.copyFileSync(process.execPath, exePath);
   if (isMac) execSync(`codesign --remove-signature "${exePath}"`);
@@ -249,9 +256,9 @@ const ext   = isWin ? '.exe' : '';
 console.log('🚀 Starting PHOBOS build...');
 buildForPlatform()
   .then(exe => {
-    console.log(`\n✅ Build complete → dist/phobos-core${ext}`);
-    console.log(`   dist/ layout: phobos-core${ext}  duckdb/  tree-sitter/  (.env)`);
-    console.log(`   Run: cd dist && .${isWin ? '\\' : '/'}phobos-core${ext}`);
+    console.log(`\n✅ Build complete → ${path.basename(exe)}`);
+    console.log(`   dist/ layout: ${path.basename(exe)}  duckdb/  tree-sitter/  (.env)`);
+    console.log(`   Run: cd dist && .${isWin ? '\\' : '/'}${path.basename(exe)}`);
   })
   .catch(err => {
     console.error('❌ Build failed:', err.message);

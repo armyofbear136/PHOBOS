@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import Fastify, { type FastifyError } from 'fastify';
 import cors from '@fastify/cors';
+import os from 'node:os';
 import { DatabaseManager } from './db/DatabaseManager.js';
 import { threadsRoute } from './routes/threads.js';
 import { messagesRoute } from './routes/messages.js';
@@ -14,7 +15,17 @@ import { reconfigureClients, COORDINATOR_MODEL, ENGINE_MODEL } from './ai/client
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
-const DB_PATH = process.env.DB_PATH ?? './localai.duckdb';
+
+// All persistent data lives in ~/.phobos/ so it survives updates and is never
+// inside the executable's directory. Env overrides are respected for dev/testing.
+const PHOBOS_DATA_DIR = process.env.PHOBOS_DATA_DIR ?? path.join(os.homedir(), '.phobos');
+import { mkdirSync } from 'node:fs';
+import path from 'node:path';
+mkdirSync(PHOBOS_DATA_DIR, { recursive: true });
+
+const DB_PATH          = process.env.DB_PATH          ?? path.join(PHOBOS_DATA_DIR, 'phobos.duckdb');
+const WORKSPACES_ROOT  = process.env.WORKSPACES_ROOT  ?? path.join(PHOBOS_DATA_DIR, 'workspaces');
+mkdirSync(WORKSPACES_ROOT, { recursive: true });
 
 async function buildServer() {
   const fastify = Fastify({
@@ -86,6 +97,11 @@ async function buildServer() {
 }
 
 async function main() {
+  // Propagate resolved paths into process.env so all modules that read these
+  // env vars (ThreadWorkspace, etc.) pick up the correct ~/.phobos/ paths.
+  process.env.DB_PATH         = DB_PATH;
+  process.env.WORKSPACES_ROOT = WORKSPACES_ROOT;
+
   console.log('⚙️  Initializing Phobos Core Systems...');
   const db = DatabaseManager.getInstance(DB_PATH);
   await db.initialize();

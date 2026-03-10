@@ -455,6 +455,17 @@ const TARGETS = [
     extractAll: true,
   },
   {
+    platform:   'linux',
+    arch:       'arm64',
+    variants: [
+      { suffix: 'ubuntu-arm64',        ext: '.tar.gz' },
+      { suffix: 'ubuntu-vulkan-arm64', ext: '.tar.gz' },
+    ],
+    binInZip:   'llama-server',
+    outName:    'llama-server-linux-arm64',
+    extractAll: true,
+  },
+  {
     platform:   'darwin',
     arch:       'arm64',
     variants: [

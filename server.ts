@@ -41,7 +41,6 @@ async function buildServer() {
         !origin || 
         origin.includes('localhost') || 
         origin.includes('127.0.0.1') || 
-        origin.includes('code-companion-6gp3.onrender.com') ||
         origin.includes('autarch.net')
       ) {
         cb(null, true);

@@ -30,6 +30,13 @@ export interface GpuDevice {
   vramGb: number;
   /** Backend llama-server should use for this device */
   backend: 'cuda' | 'vulkan' | 'metal';
+  /**
+   * True on Apple Silicon / AMD APUs where GPU VRAM and system RAM are the
+   * same physical pool. When set, VRAM should NOT be double-counted alongside
+   * system RAM — the recommendation engine will budget both models from a
+   * single shared pool.
+   */
+  unifiedMemory?: boolean;
 }
 
 export interface HardwareProfile {
@@ -164,12 +171,15 @@ async function detectAppleSilicon(): Promise<GpuDevice[]> {
     const { stdout } = await execFileAsync('system_profiler', ['SPHardwareDataType']);
     const memMatch  = stdout.match(/Memory:\s+(\d+)\s+GB/i);
     const chipMatch = stdout.match(/Chip:\s+(.+)/i);
-    if (!memMatch) return [];
+    // Only flag as Apple Silicon if it's actually an ARM chip (M-series)
+    const isAppleSilicon = chipMatch && /Apple M/i.test(chipMatch[1]);
+    if (!memMatch || !isAppleSilicon) return [];
     return [{
       index: 0,
-      name: chipMatch ? chipMatch[1].trim() : 'Apple Silicon',
+      name: chipMatch![1].trim(),
       vramGb: parseInt(memMatch[1], 10),
       backend: 'metal',
+      unifiedMemory: true,   // GPU VRAM == system RAM — same physical pool
     }];
   } catch {
     return [];
@@ -206,6 +216,12 @@ export interface GGUFSpec {
   /** Logical model name used as phobos provider model ID */
   modelId: string;
   label: string;
+  /** Model family group for UI display */
+  family: string;
+  /** Primary role this model is suited for */
+  role: 'sayon' | 'allmind' | 'both';
+  /** Whether this model emits thinking/reasoning tokens */
+  thinkingTokens: boolean;
   /** HuggingFace repo: "owner/repo" */
   hfRepo: string;
   /** Exact filename within the repo */
@@ -217,9 +233,13 @@ export interface GGUFSpec {
 }
 
 export const GGUF_CATALOGUE: GGUFSpec[] = [
+  // ── Llama 3 family — no thinking tokens, great for SAYON coordinator ────────
   {
     modelId: 'llama3.2-1b-q4',
     label: 'Llama 3.2 1B Q4',
+    family: 'Llama 3',
+    role: 'sayon',
+    thinkingTokens: false,
     hfRepo: 'bartowski/Llama-3.2-1B-Instruct-GGUF',
     hfFile: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf',
     sizeBytes: 770_000_000,
@@ -229,6 +249,9 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
   {
     modelId: 'llama3.2-3b-q4',
     label: 'Llama 3.2 3B Q4',
+    family: 'Llama 3',
+    role: 'sayon',
+    thinkingTokens: false,
     hfRepo: 'bartowski/Llama-3.2-3B-Instruct-GGUF',
     hfFile: 'Llama-3.2-3B-Instruct-Q4_K_M.gguf',
     sizeBytes: 2_020_000_000,
@@ -238,15 +261,59 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
   {
     modelId: 'llama3.1-8b-q4',
     label: 'Llama 3.1 8B Q4',
+    family: 'Llama 3',
+    role: 'sayon',
+    thinkingTokens: false,
     hfRepo: 'bartowski/Meta-Llama-3.1-8B-Instruct-GGUF',
     hfFile: 'Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf',
     sizeBytes: 4_920_000_000,
     ramRequiredGb: 6,
     contextWindow: 131072,
   },
+  // ── Gemma 3 family — no thinking tokens, strong SAYON alternative ──────────
+  {
+    modelId: 'gemma3-1b-q4',
+    label: 'Gemma 3 1B Q4',
+    family: 'Gemma 3',
+    role: 'sayon',
+    thinkingTokens: false,
+    hfRepo: 'bartowski/google_gemma-3-1b-it-GGUF',
+    hfFile: 'google_gemma-3-1b-it-Q4_K_M.gguf',
+    sizeBytes: 694_000_000,
+    ramRequiredGb: 1,
+    contextWindow: 32768,
+  },
+  {
+    modelId: 'gemma3-4b-q4',
+    label: 'Gemma 3 4B Q4',
+    family: 'Gemma 3',
+    role: 'sayon',
+    thinkingTokens: false,
+    hfRepo: 'bartowski/google_gemma-3-4b-it-GGUF',
+    hfFile: 'google_gemma-3-4b-it-Q4_K_M.gguf',
+    sizeBytes: 2_530_000_000,
+    ramRequiredGb: 3,
+    contextWindow: 131072,
+  },
+  {
+    modelId: 'gemma3-12b-q4',
+    label: 'Gemma 3 12B Q4',
+    family: 'Gemma 3',
+    role: 'sayon',
+    thinkingTokens: false,
+    hfRepo: 'bartowski/google_gemma-3-12b-it-GGUF',
+    hfFile: 'google_gemma-3-12b-it-Q4_K_M.gguf',
+    sizeBytes: 7_800_000_000,
+    ramRequiredGb: 10,
+    contextWindow: 131072,
+  },
+  // ── Qwen3 family — thinking tokens, ideal ALLMIND reasoning engine ──────────
   {
     modelId: 'qwen3-4b-q4',
     label: 'Qwen3 4B Q4',
+    family: 'Qwen3',
+    role: 'allmind',
+    thinkingTokens: true,
     hfRepo: 'bartowski/Qwen_Qwen3-4B-GGUF',
     hfFile: 'Qwen_Qwen3-4B-Q4_K_M.gguf',
     sizeBytes: 2_580_000_000,
@@ -256,6 +323,9 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
   {
     modelId: 'qwen3-8b-q4',
     label: 'Qwen3 8B Q4',
+    family: 'Qwen3',
+    role: 'allmind',
+    thinkingTokens: true,
     hfRepo: 'bartowski/Qwen_Qwen3-8B-GGUF',
     hfFile: 'Qwen_Qwen3-8B-Q4_K_M.gguf',
     sizeBytes: 5_190_000_000,
@@ -265,6 +335,9 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
   {
     modelId: 'qwen3-14b-q4',
     label: 'Qwen3 14B Q4',
+    family: 'Qwen3',
+    role: 'allmind',
+    thinkingTokens: true,
     hfRepo: 'bartowski/Qwen_Qwen3-14B-GGUF',
     hfFile: 'Qwen_Qwen3-14B-Q4_K_M.gguf',
     sizeBytes: 9_000_000_000,
@@ -274,11 +347,88 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
   {
     modelId: 'qwen3-30b-a3b-q4',
     label: 'Qwen3 30B-A3B Q4',
+    family: 'Qwen3',
+    role: 'allmind',
+    thinkingTokens: true,
     hfRepo: 'bartowski/Qwen_Qwen3-30B-A3B-GGUF',
     hfFile: 'Qwen_Qwen3-30B-A3B-Q4_K_M.gguf',
     sizeBytes: 18_400_000_000,
     ramRequiredGb: 20,
     contextWindow: 32768,
+  },
+  {
+    modelId: 'qwen3-coder-8b-q4',
+    label: 'Qwen3 Coder 8B Q4',
+    family: 'Qwen3',
+    role: 'allmind',
+    thinkingTokens: true,
+    hfRepo: 'bartowski/Qwen_Qwen3-Coder-8B-GGUF',
+    hfFile: 'Qwen_Qwen3-Coder-8B-Q4_K_M.gguf',
+    sizeBytes: 5_190_000_000,
+    ramRequiredGb: 6,
+    contextWindow: 32768,
+  },
+  // ── Mistral family — thinking tokens via Magistral, ALLMIND-class ──────────
+  {
+    modelId: 'mistral-7b-q4',
+    label: 'Mistral 7B v0.3 Q4',
+    family: 'Mistral',
+    role: 'allmind',
+    thinkingTokens: false,
+    hfRepo: 'bartowski/Mistral-7B-Instruct-v0.3-GGUF',
+    hfFile: 'Mistral-7B-Instruct-v0.3-Q4_K_M.gguf',
+    sizeBytes: 4_370_000_000,
+    ramRequiredGb: 6,
+    contextWindow: 32768,
+  },
+  {
+    modelId: 'magistral-8b-q4',
+    label: 'Magistral 8B Q4',
+    family: 'Mistral',
+    role: 'allmind',
+    thinkingTokens: true,
+    hfRepo: 'bartowski/Magistral-Small-2506-GGUF',
+    hfFile: 'Magistral-Small-2506-Q4_K_M.gguf',
+    sizeBytes: 14_400_000_000,
+    ramRequiredGb: 16,
+    contextWindow: 131072,
+  },
+  // ── DeepSeek-R1 family — strong reasoning, ALLMIND-class ───────────────────
+  {
+    modelId: 'deepseek-r1-8b-q4',
+    label: 'DeepSeek-R1 8B Q4',
+    family: 'DeepSeek-R1',
+    role: 'allmind',
+    thinkingTokens: true,
+    hfRepo: 'bartowski/DeepSeek-R1-0528-Qwen3-8B-GGUF',
+    hfFile: 'DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf',
+    sizeBytes: 5_190_000_000,
+    ramRequiredGb: 6,
+    contextWindow: 32768,
+  },
+  {
+    modelId: 'deepseek-r1-14b-q4',
+    label: 'DeepSeek-R1 14B Q4',
+    family: 'DeepSeek-R1',
+    role: 'allmind',
+    thinkingTokens: true,
+    hfRepo: 'bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF',
+    hfFile: 'DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf',
+    sizeBytes: 9_050_000_000,
+    ramRequiredGb: 11,
+    contextWindow: 65536,
+  },
+  {
+    modelId: 'deepseek-r1-70b-q4',
+    label: 'DeepSeek-R1 70B Q4',
+    family: 'DeepSeek-R1',
+    role: 'allmind',
+    thinkingTokens: true,
+    hfRepo: 'bartowski/DeepSeek-R1-Distill-Llama-70B-GGUF',
+    hfFile: 'DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf',
+    sizeBytes: 42_520_000_000,
+    ramRequiredGb: 48,
+    contextWindow: 65536,
   },
 ];
 
@@ -314,66 +464,116 @@ export interface ModelRecommendation {
   reasoning: string;
 }
 
-function selectSayon(ramGb: number): GGUFSpec {
-  if (ramGb >= 16) return GGUF_CATALOGUE.find(s => s.modelId === 'llama3.1-8b-q4')!;
-  if (ramGb >= 8)  return GGUF_CATALOGUE.find(s => s.modelId === 'llama3.2-3b-q4')!;
-  return GGUF_CATALOGUE.find(s => s.modelId === 'llama3.2-1b-q4')!;
-}
+/** SAYON candidates: no thinking tokens, ≤15B params, ordered by preference */
+const SAYON_CANDIDATES = ['llama3.1-8b-q4', 'gemma3-12b-q4', 'gemma3-4b-q4', 'llama3.2-3b-q4', 'gemma3-1b-q4', 'llama3.2-1b-q4'];
 
-function selectAllmindSpec(vramGb: number): GGUFSpec {
-  if (vramGb >= 20) return GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-30b-a3b-q4')!;
-  if (vramGb >= 16) return GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-14b-q4')!;
-  if (vramGb >= 8)  return GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-8b-q4')!;
-  if (vramGb >= 4)  return GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-4b-q4')!;
-  return GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-4b-q4')!;
+/** ALLMIND candidates: reasoning/thinking models, ordered by quality */
+const ALLMIND_CANDIDATES = [
+  'deepseek-r1-70b-q4',   // 48 GB — only viable on high-VRAM systems
+  'qwen3-30b-a3b-q4',     // 20 GB — MoE, efficient
+  'magistral-8b-q4',      // 16 GB
+  'deepseek-r1-14b-q4',   // 11 GB
+  'qwen3-14b-q4',         // 11 GB
+  'qwen3-coder-8b-q4',    //  6 GB
+  'deepseek-r1-8b-q4',    //  6 GB
+  'qwen3-8b-q4',          //  6 GB
+  'qwen3-4b-q4',          //  3 GB — minimum useful reasoning model
+];
+
+function pickBestFit(candidates: string[], budgetGb: number): GGUFSpec {
+  for (const id of candidates) {
+    const spec = GGUF_CATALOGUE.find(s => s.modelId === id);
+    if (spec && spec.ramRequiredGb <= budgetGb) return spec;
+  }
+  // Absolute fallback — smallest available
+  return GGUF_CATALOGUE.find(s => s.modelId === candidates[candidates.length - 1])!;
 }
 
 export function buildRecommendation(hw: HardwareProfile): ModelRecommendation {
-  const sayon = selectSayon(hw.ramGb);
-
-  // Sort GPUs by VRAM descending — largest first
+  // Sort GPUs by VRAM descending
   const gpusByVram = [...hw.gpus].sort((a, b) => b.vramGb - a.vramGb);
   const bestGpu    = gpusByVram[0] ?? null;
   const secondGpu  = gpusByVram[1] ?? null;
 
-  // ALLMIND: biggest GPU, or CPU fallback
+  // ── Unified memory detection ───────────────────────────────────────────────
+  // Apple Silicon and AMD APUs report system RAM as VRAM. On these devices the
+  // "VRAM" of the GPU is the same physical pool as system RAM, so we must
+  // budget BOTH models from a single shared pool — not independently.
+  const hasUnifiedMemory = bestGpu?.unifiedMemory === true;
+
+  // Usable memory pool: leave ~20% headroom for OS + KV cache
+  const HEADROOM = 0.80;
+
+  let sayon: GGUFSpec;
   let allmind: GGUFSpec;
+  let sayonDevice: 'cpu' | number;
   let allmindDevice: 'cpu' | number;
+  let sayonGpuLayers: number;
   let allmindGpuLayers: number;
 
-  if (bestGpu && bestGpu.vramGb >= 4) {
-    allmind          = selectAllmindSpec(bestGpu.vramGb);
+  if (hasUnifiedMemory && bestGpu) {
+    // ── Apple Silicon / unified memory path ───────────────────────────────
+    // Total usable pool = system RAM (== VRAM on these devices)
+    const pool = Math.floor(hw.ramGb * HEADROOM);
+
+    // Give ALLMIND the larger share (up to 75%), SAYON gets the remainder
+    const allmindBudget = Math.floor(pool * 0.75);
+    const sayonBudget   = Math.floor(pool * 0.35);  // overlapping is fine — sequential inference
+
+    allmind          = pickBestFit(ALLMIND_CANDIDATES, allmindBudget);
+    sayon            = pickBestFit(SAYON_CANDIDATES,   sayonBudget);
+    allmindDevice    = bestGpu.index;
+    sayonDevice      = bestGpu.index;  // same device — Metal handles scheduling
+    allmindGpuLayers = 99;
+    sayonGpuLayers   = 99;
+
+  } else if (bestGpu && bestGpu.vramGb >= 3) {
+    // ── Discrete / dedicated GPU path ─────────────────────────────────────
+    // ALLMIND gets the biggest GPU
+    const allmindBudget = Math.floor(bestGpu.vramGb * HEADROOM);
+    allmind          = pickBestFit(ALLMIND_CANDIDATES, allmindBudget);
     allmindDevice    = bestGpu.index;
     allmindGpuLayers = 99;
+
+    // SAYON: second GPU if useful, else CPU from system RAM
+    if (secondGpu && secondGpu.vramGb >= 2 && !secondGpu.unifiedMemory) {
+      const sayonBudget = Math.floor(secondGpu.vramGb * HEADROOM);
+      sayon            = pickBestFit(SAYON_CANDIDATES, sayonBudget);
+      sayonDevice      = secondGpu.index;
+      sayonGpuLayers   = 99;
+    } else {
+      sayon            = pickBestFit(SAYON_CANDIDATES, Math.floor(hw.ramGb * HEADROOM));
+      sayonDevice      = 'cpu';
+      sayonGpuLayers   = 0;
+    }
+
   } else {
-    // CPU fallback
-    if (hw.ramGb >= 32) allmind = GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-8b-q4')!;
-    else if (hw.ramGb >= 16) allmind = GGUF_CATALOGUE.find(s => s.modelId === 'qwen3-4b-q4')!;
-    else allmind = GGUF_CATALOGUE.find(s => s.modelId === 'llama3.2-3b-q4')!;
+    // ── CPU-only path ─────────────────────────────────────────────────────
+    const pool = Math.floor(hw.ramGb * HEADROOM);
+    // Split roughly 60/40 ALLMIND/SAYON for CPU-only — they share system RAM
+    allmind          = pickBestFit(ALLMIND_CANDIDATES, Math.floor(pool * 0.60));
+    sayon            = pickBestFit(SAYON_CANDIDATES,   Math.floor(pool * 0.40));
     allmindDevice    = 'cpu';
+    sayonDevice      = 'cpu';
     allmindGpuLayers = 0;
+    sayonGpuLayers   = 0;
   }
 
-  // SAYON: second GPU if available (e.g. iGPU), else CPU
-  let sayonDevice: 'cpu' | number = 'cpu';
-  let sayonGpuLayers = 0;
-  if (secondGpu && secondGpu.vramGb >= 2) {
-    sayonDevice    = secondGpu.index;
-    sayonGpuLayers = 99;
-  }
-
-  // Build reasoning string
-  const gpuLines = hw.gpus.map(g => `${g.name} (${g.vramGb} GB, ${g.backend})`).join(' · ');
-  const gpuStr   = gpuLines || 'No GPU — CPU fallback';
+  // ── Reasoning string ───────────────────────────────────────────────────────
+  const gpuLines = hw.gpus.map(g =>
+    `${g.name} (${g.vramGb} GB${g.unifiedMemory ? ', unified' : ''}, ${g.backend})`
+  ).join(' · ');
+  const gpuStr = gpuLines || 'No GPU — CPU fallback';
 
   const deviceName = (d: 'cpu' | number) =>
     d === 'cpu' ? 'CPU' : (hw.gpus.find(g => g.index === d)?.name ?? `GPU #${d}`);
 
   const reasoning =
     `System: ${hw.ramGb} GB RAM · ${hw.cpuCores} cores · ${hw.cpuName}. ` +
-    `GPUs: ${gpuStr}. ` +
-    `SAYON → ${sayon.label} on ${deviceName(sayonDevice)} (${sayonGpuLayers > 0 ? 'GPU offloaded' : 'CPU'}). ` +
-    `ALLMIND → ${allmind.label} on ${deviceName(allmindDevice)} (${allmindGpuLayers > 0 ? 'GPU offloaded' : 'CPU'}).`;
+    `GPUs: ${gpuStr}.` +
+    (hasUnifiedMemory ? ` Unified memory — both models share the same ${hw.ramGb} GB pool.` : '') +
+    ` SAYON → ${sayon.label} on ${deviceName(sayonDevice)} (${sayonGpuLayers > 0 ? 'GPU' : 'CPU'}).` +
+    ` ALLMIND → ${allmind.label} on ${deviceName(allmindDevice)} (${allmindGpuLayers > 0 ? 'GPU' : 'CPU'}).`;
 
   return { sayon, allmind, sayonDevice, allmindDevice, sayonGpuLayers, allmindGpuLayers, reasoning };
 }

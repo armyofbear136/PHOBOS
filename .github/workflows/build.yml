@@ -76,14 +76,15 @@ jobs:
         if: matrix.build-llama == true
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y cmake build-essential
+          sudo apt-get install -y cmake build-essential ninja-build
           git clone --depth 1 https://github.com/ggml-org/llama.cpp llama-src
-          cmake -B llama-src/build llama-src             -DCMAKE_BUILD_TYPE=Release             -DLLAMA_BUILD_SERVER=ON             -DLLAMA_BUILD_TESTS=OFF             -DLLAMA_BUILD_TOOLS=OFF             -DGGML_RPC=ON             -DCMAKE_INSTALL_RPATH='$ORIGIN'
-          cmake --build llama-src/build --config Release -j$(nproc) --target llama-server
+          cmake -B llama-src/build llama-src             -G Ninja             -DCMAKE_BUILD_TYPE=Release             -DLLAMA_BUILD_TESTS=OFF             -DGGML_RPC=ON             -DCMAKE_INSTALL_RPATH='$ORIGIN'
+          cmake --build llama-src/build --config Release -j$(nproc)
           mkdir -p bin
           cp llama-src/build/bin/llama-server bin/llama-server-linux-arm64
           cp llama-src/build/src/libllama.so* bin/ 2>/dev/null || true
           cp llama-src/build/ggml/src/libggml*.so* bin/ 2>/dev/null || true
+          cp llama-src/build/src/libmtmd.so* bin/ 2>/dev/null || true
           chmod +x bin/llama-server-linux-arm64
 
       - name: Build

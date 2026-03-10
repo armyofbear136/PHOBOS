@@ -32,6 +32,7 @@ const vArg    = args.find(a => a.startsWith('--version='))?.split('=')[1]
 const GH_HEADERS = {
   'User-Agent': 'phobos-fetch-llamacpp/1.0',
   'Accept':     'application/vnd.github+json',
+  ...(process.env.GITHUB_TOKEN ? { 'Authorization': `Bearer ${process.env.GITHUB_TOKEN}` } : {}),
 };
 
 function httpsGet(url, extraHeaders = {}) {
@@ -383,10 +384,11 @@ async function extractAllFilesFromTarGz(archivePath, destDir) {
         if (state === 'data-target') {
           if (remaining === 0) {
             state = 'header';
-            const name = outName;
-            outFd.end(() => {
+            const name   = outName;
+            const fd     = outFd;
+            outFd = null; outName = null;
+            fd.end(() => {
               extracted.push(name);
-              outFd = null; outName = null;
               processBuffer();
             });
             return;
@@ -398,6 +400,17 @@ async function extractAllFilesFromTarGz(archivePath, destDir) {
           dataSize  -= writeable;
           buf        = buf.subarray(take);
           remaining -= take;
+          if (remaining === 0) {
+            // Entry fully consumed — close and re-enter from header state
+            state = 'header';
+            const name   = outName;
+            const fd     = outFd;
+            outFd = null; outName = null;
+            fd.end(() => {
+              extracted.push(name);
+              processBuffer();
+            });
+          }
           return;
         }
       }

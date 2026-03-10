@@ -67,6 +67,8 @@ jobs:
 
       - name: Fetch llama.cpp binaries
         run: node ${{ matrix.fetch-script }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build
         run: node build.js

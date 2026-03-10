@@ -430,7 +430,17 @@ async function extractAllFilesFromTarGz(archivePath, destDir) {
     };
 
     gunzip.on('data', (chunk) => { buf = Buffer.concat([buf, chunk]); processBuffer(); });
-    gunzip.on('end',  () => resolve(extracted));
+    gunzip.on('end', () => {
+      // If a file write is still in flight (fd.end not yet called back), wait for it.
+      if (outFd) {
+        const name = outName;
+        const fd   = outFd;
+        outFd = null; outName = null;
+        fd.end(() => { extracted.push(name); resolve(extracted); });
+      } else {
+        resolve(extracted);
+      }
+    });
     gunzip.on('error', fail);
     input.on('error', fail);
     input.pipe(gunzip);

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'child_process';
+import * as net from 'net';
 import * as path from 'path';
 import { resolveLlamaServerBin, modelPath, getSpec, detectHardware, buildRecommendation } from './PhobosLocalManager.js';
 
@@ -32,25 +33,17 @@ const servers: Record<'sayon' | 'allmind', ManagedServer> = {
   allmind: { config: { modelId: '', port: ALLMIND_PORT, gpuLayers: 99, contextSize: 4096, threads: 4 }, process: null, state: 'stopped', error: null },
 };
 
-function waitForReady(port: number, timeoutMs = 120_000): Promise<void> {
+function waitForPort(port: number, timeoutMs = 30_000): Promise<void> {
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + timeoutMs;
     const attempt = () => {
-      if (Date.now() > deadline) {
-        reject(new Error(`Server on port ${port} not ready after ${timeoutMs}ms`));
-        return;
-      }
-      const req = require('http').get(
-        { hostname: '127.0.0.1', port, path: '/health', timeout: 2000 },
-        (res: import('http').IncomingMessage) => {
-          res.resume();
-          if (res.statusCode === 200) { resolve(); return; }
-          // 503 = model weights still loading — keep polling
-          setTimeout(attempt, 1000);
-        }
-      );
-      req.on('error', () => setTimeout(attempt, 1000));
-      req.on('timeout', () => { req.destroy(); setTimeout(attempt, 1000); });
+      const sock = net.connect(port, '127.0.0.1');
+      sock.once('connect', () => { sock.destroy(); resolve(); });
+      sock.once('error', () => {
+        sock.destroy();
+        if (Date.now() > deadline) { reject(new Error(`Port ${port} not ready after ${timeoutMs}ms`)); return; }
+        setTimeout(attempt, 500);
+      });
     };
     attempt();
   });
@@ -118,20 +111,17 @@ export async function startServer(role: 'sayon' | 'allmind', cfg: ServerConfig):
   const env = { ...process.env };
 
   if (cfg.gpuLayers > 0 && cfg.deviceIndex !== undefined) {
-    if (cfg.deviceIndex >= 100) {
-      // AMD iGPU as primary — match Ollama's multi-GPU approach:
-      // Ollama sees both Vulkan devices and auto-splits layers across them.
-      // CUDA_VISIBLE_DEVICES=-1 hides the CUDA backend but NOT the Vulkan
-      // view of the NVIDIA GPU, so both GPUs remain available for layer splitting.
-      // HSA_OVERRIDE_GFX_VERSION for AMD RDNA 3.5 iGPU compat.
-      // --device Vulkan1 sets the 890M as the main/primary GPU.
+    if (cfg.gpuBackend === 'metal') {
+      // Metal on macOS — llama-server auto-selects the only GPU via Metal.
+      // Do NOT pass --device VulkanN — the macos-arm64 binary has no Vulkan backend.
+      // No env vars needed; Metal is the default and only GPU backend on Apple Silicon.
+    } else if (cfg.deviceIndex >= 100) {
+      // AMD iGPU as primary (Vulkan) — match Ollama's multi-GPU approach
       env.CUDA_VISIBLE_DEVICES = '-1';
       env.HSA_OVERRIDE_GFX_VERSION = '11.0.0';
-      // Do NOT set GGML_VK_VISIBLE_DEVICES — let llama-server see all Vulkan
-      // devices so it can split layers across 890M + 3080 like Ollama does.
       args.push('--device', 'Vulkan1');
     } else {
-      // NVIDIA discrete GPU as primary
+      // NVIDIA discrete GPU (Vulkan/CUDA)
       env.GGML_VK_VISIBLE_DEVICES = String(cfg.deviceIndex);
       args.push('--device', 'Vulkan0');
     }
@@ -169,7 +159,7 @@ export async function startServer(role: 'sayon' | 'allmind', cfg: ServerConfig):
   managed.process = proc;
 
   try {
-    await waitForReady(cfg.port, 120_000);
+    await waitForPort(cfg.port, 60_000);
     managed.state = 'running';
     console.log(`[LlamaServerManager] ${role} ready on :${cfg.port}`);
   } catch (err) {

@@ -354,6 +354,19 @@ async function extractAllFilesFromTarGz(archivePath, destDir) {
           const fileBytes   = parseInt(header.subarray(124, 136).toString('ascii').trim(), 8) || 0;
           const paddedBytes = Math.ceil(fileBytes / 512) * 512;
 
+          // Symlink — linkname is in bytes 157-256 of the header
+          if (typeFlag === '2') {
+            const linkTarget = header.subarray(157, 257).toString('utf8').replace(/\0.*/, '');
+            const basename   = rawName.split('/').pop();
+            const destPath   = path.join(destDir, basename);
+            try {
+              if (fs.existsSync(destPath)) fs.unlinkSync(destPath);
+              fs.symlinkSync(linkTarget, destPath);
+              extracted.push(basename);
+            } catch { /* ignore symlink errors — file may not exist yet, dyld resolves at runtime */ }
+            state = 'data-skip'; remaining = paddedBytes; continue;
+          }
+
           if (typeFlag !== '0' && typeFlag !== '\0') {
             state = 'data-skip'; remaining = paddedBytes; continue;
           }

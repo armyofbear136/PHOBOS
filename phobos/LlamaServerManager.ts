@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'child_process';
+import * as fs from 'fs';
 import * as net from 'net';
 import * as path from 'path';
 import { resolveLlamaServerBin, modelPath, getSpec, detectHardware, buildRecommendation } from './PhobosLocalManager.js';
@@ -70,6 +71,12 @@ export async function startServer(role: 'sayon' | 'allmind', cfg: ServerConfig):
 
   // Resolve the llama-server binary (single binary, loads backend DLLs dynamically)
   const bin = resolveLlamaServerBin();
+
+  // Ensure the binary is executable — tar extraction on some systems (Termux, WinRAR)
+  // strips execute permissions. chmod is a no-op if already set.
+  if (process.platform !== 'win32') {
+    try { fs.chmodSync(bin, 0o755); } catch { /* ignore — may lack permissions on some fs */ }
+  }
 
   managed.config = { ...cfg };
   managed.state  = 'starting';

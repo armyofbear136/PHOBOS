@@ -4,13 +4,14 @@ import { fetchBinaries } from './fetch-llamacpp.js';
 
 await fetchBinaries([
   {
-    platform: 'linux',
-    arch:     'arm64',
+    platform:   'linux',
+    arch:       'arm64',
     variants: [
       { suffix: 'ubuntu-arm64',        ext: '.tar.gz' },
       { suffix: 'ubuntu-vulkan-arm64', ext: '.tar.gz' },
     ],
-    binInZip: 'llama-server',
-    outName:  'llama-server-linux-arm64',
+    binInZip:   'llama-server',
+    outName:    'llama-server-linux-arm64',
+    extractAll: true,
   },
 ]);

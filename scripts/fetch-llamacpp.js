@@ -320,6 +320,97 @@ async function extractSingleFile(archivePath, targetName, destPath) {
   if (size < 1000) throw new Error(`Extracted file suspiciously small (${size} bytes)`);
 }
 
+/**
+ * Extract ALL regular files from a .tar.gz archive into destDir.
+ * Skips directories and zero-byte entries. Only extracts binaries and shared
+ * libraries (no extension filter — macOS dylibs, Linux .so, etc. all pass through).
+ */
+async function extractAllFilesFromTarGz(archivePath, destDir) {
+  return new Promise((resolve, reject) => {
+    const input  = fs.createReadStream(archivePath);
+    const gunzip = zlib.createGunzip();
+    const extracted = [];
+    let buf = Buffer.alloc(0);
+
+    let state     = 'header';
+    let remaining = 0;
+    let dataSize  = 0;
+    let outFd     = null;
+    let outName   = null;
+
+    const fail = (err) => { outFd?.destroy(); input.destroy(); reject(err); };
+
+    const processBuffer = () => {
+      while (true) {
+        if (state === 'header') {
+          if (buf.length < 512) return;
+          const header = buf.subarray(0, 512);
+          buf = buf.subarray(512);
+          if (header.every(b => b === 0)) continue;
+
+          const typeFlag    = String.fromCharCode(header[156]);
+          const rawName     = header.subarray(0, 100).toString('utf8').replace(/\0.*/, '');
+          const fileBytes   = parseInt(header.subarray(124, 136).toString('ascii').trim(), 8) || 0;
+          const paddedBytes = Math.ceil(fileBytes / 512) * 512;
+
+          if (typeFlag !== '0' && typeFlag !== '\0') {
+            state = 'data-skip'; remaining = paddedBytes; continue;
+          }
+          if (fileBytes === 0) {
+            state = 'data-skip'; remaining = 0; continue;
+          }
+
+          const basename = rawName.split('/').pop();
+          const destPath = path.join(destDir, basename);
+          outFd   = fs.createWriteStream(destPath);
+          outFd.on('error', fail);
+          outName   = basename;
+          state     = 'data-target';
+          dataSize  = fileBytes;
+          remaining = paddedBytes;
+          continue;
+        }
+
+        if (state === 'data-skip') {
+          if (remaining === 0) { state = 'header'; continue; }
+          const take = Math.min(remaining, buf.length);
+          buf = buf.subarray(take);
+          remaining -= take;
+          if (remaining === 0) state = 'header';
+          return;
+        }
+
+        if (state === 'data-target') {
+          if (remaining === 0) {
+            state = 'header';
+            const name = outName;
+            outFd.end(() => {
+              extracted.push(name);
+              outFd = null; outName = null;
+              processBuffer();
+            });
+            return;
+          }
+          if (buf.length === 0) return;
+          const writeable = Math.min(dataSize, buf.length, remaining);
+          const take      = Math.min(remaining, buf.length);
+          if (writeable > 0) outFd.write(buf.subarray(0, writeable));
+          dataSize  -= writeable;
+          buf        = buf.subarray(take);
+          remaining -= take;
+          return;
+        }
+      }
+    };
+
+    gunzip.on('data', (chunk) => { buf = Buffer.concat([buf, chunk]); processBuffer(); });
+    gunzip.on('end',  () => resolve(extracted));
+    gunzip.on('error', fail);
+    input.on('error', fail);
+    input.pipe(gunzip);
+  });
+}
+
 // ── Platform targets ──────────────────────────────────────────────────────────
 // Each target lists suffix+ext pairs to try in order.
 // suffix: the part after "llama-bNNNN-bin-" in the filename
@@ -327,47 +418,50 @@ async function extractSingleFile(archivePath, targetName, destPath) {
 
 const TARGETS = [
   {
-    platform: 'linux',
-    arch:     'x64',
+    platform:   'linux',
+    arch:       'x64',
     variants: [
-      { suffix: 'ubuntu-x64',        ext: '.tar.gz' },  // CPU — current naming
-      { suffix: 'ubuntu-vulkan-x64', ext: '.tar.gz' },  // GPU/Vulkan variant
+      { suffix: 'ubuntu-x64',        ext: '.tar.gz' },
+      { suffix: 'ubuntu-vulkan-x64', ext: '.tar.gz' },
     ],
-    binInZip: 'llama-server',
-    outName:  'llama-server-linux-x64',
+    binInZip:   'llama-server',
+    outName:    'llama-server-linux-x64',
+    extractAll: true,
   },
   {
-    platform: 'darwin',
-    arch:     'arm64',
+    platform:   'darwin',
+    arch:       'arm64',
     variants: [
       { suffix: 'macos-arm64', ext: '.tar.gz' },
     ],
-    binInZip: 'llama-server',
-    outName:  'llama-server-darwin-arm64',
+    binInZip:   'llama-server',
+    outName:    'llama-server-darwin-arm64',
+    extractAll: true,
   },
   {
-    platform: 'darwin',
-    arch:     'x64',
+    platform:   'darwin',
+    arch:       'x64',
     variants: [
       { suffix: 'macos-x64', ext: '.tar.gz' },
     ],
-    binInZip: 'llama-server',
-    outName:  'llama-server-darwin-x64',
+    binInZip:   'llama-server',
+    outName:    'llama-server-darwin-x64',
+    extractAll: true,
   },
   // Windows — Vulkan build
   // Modern llama.cpp uses dynamic backend loading: llama-server.exe needs
   // ggml-vulkan.dll, ggml-cpu-*.dll, ggml-rpc.dll etc. in the same directory.
   // We extract ALL files from the archive, not just the server binary.
   {
-    platform: 'win32',
-    arch:     'x64',
+    platform:   'win32',
+    arch:       'x64',
     variants: [
       { suffix: 'win-vulkan-x64', ext: '.zip' },
       { suffix: 'win-cpu-x64',    ext: '.zip' },
     ],
-    binInZip: 'llama-server.exe',
-    outName:  'llama-server-win32-x64.exe',
-    extractAll: true,   // extract entire archive contents into BIN_DIR
+    binInZip:   'llama-server.exe',
+    outName:    'llama-server-win32-x64.exe',
+    extractAll: true,
   },
 ];
 
@@ -518,8 +612,11 @@ export async function fetchBinaries(targets, cudaTargets = []) {
 
       try {
         if (target.extractAll) {
-          const files = await extractAllFilesFromZip(archiveDest, BIN_DIR);
+          const files = archiveDest.endsWith('.tar.gz')
+            ? await extractAllFilesFromTarGz(archiveDest, BIN_DIR)
+            : await extractAllFilesFromZip(archiveDest, BIN_DIR);
           console.log(`   extracted ${files.length} files: ${files.join(', ')}`);
+          // Rename the server binary to our canonical name if needed
           const serverInBin = path.join(BIN_DIR, target.binInZip);
           if (fs.existsSync(serverInBin) && target.binInZip !== target.outName) {
             fs.renameSync(serverInBin, outPath);
@@ -534,7 +631,13 @@ export async function fetchBinaries(targets, cudaTargets = []) {
         continue;
       }
 
-      if (target.platform !== 'win32') fs.chmodSync(outPath, 0o755);
+      if (target.platform !== 'win32') {
+        // chmod all extracted files — dylibs and the server binary all need execute/read
+        for (const entry of fs.readdirSync(BIN_DIR)) {
+          const p = path.join(BIN_DIR, entry);
+          if (fs.statSync(p).isFile()) fs.chmodSync(p, 0o755);
+        }
+      }
       fs.unlinkSync(archiveDest);
 
       console.log(`   ✓  ${target.outName}`);

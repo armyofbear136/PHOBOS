@@ -207,34 +207,20 @@ export async function buildForPlatform({
   }
 
   // llama-server — stage all platform binaries present in bin/ into dist/
-  // Includes backend-specific variants (cuda, vulkan) plus generic fallbacks.
+  // Copies everything: llama-server binaries, dylibs (.dylib), shared objects (.so),
+  // DLLs (.dll), and any other companion files llama-server links against.
   const binDir = path.join(__dirname, 'bin');
   if (fs.existsSync(binDir)) {
-    // Stage platform binaries + all companion DLLs
-    const BIN_PATTERNS = [
-      'llama-server-linux-x64',
-      'llama-server-darwin-arm64',
-      'llama-server-darwin-x64',
-      'llama-server-win32-x64.exe',
-    ];
     let staged = 0;
-    for (const name of BIN_PATTERNS) {
-      const src = path.join(binDir, name);
-      if (!fs.existsSync(src)) continue;
-      const dst = path.join(distDir, name);
-      fs.copyFileSync(src, dst);
-      if (!name.endsWith('.exe')) fs.chmodSync(dst, 0o755);
-      staged++;
-    }
-    // Also stage all .dll files from bin/ (ggml-vulkan.dll, ggml-cuda.dll, ggml-cpu-*.dll, ggml-rpc.dll, etc.)
     for (const entry of fs.readdirSync(binDir)) {
-      if (!entry.endsWith('.dll')) continue;
       const src = path.join(binDir, entry);
+      if (!fs.statSync(src).isFile()) continue;
       const dst = path.join(distDir, entry);
       fs.copyFileSync(src, dst);
+      if (!entry.endsWith('.exe') && !entry.endsWith('.dll')) fs.chmodSync(dst, 0o755);
       staged++;
     }
-    if (staged > 0) log(`  ✅ llama-server (${staged} platform binaries)`);
+    if (staged > 0) log(`  ✅ bin/ (${staged} files staged)`);
     else            log('  ⚠️  llama-server — no binaries in bin/ (run: node scripts/fetch-llamacpp.js)');
   } else {
     log('  ⚠️  bin/ missing — run: node scripts/fetch-llamacpp.js');

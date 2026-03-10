@@ -130,9 +130,7 @@ export async function buildForPlatform({
   const ext   = isWin ? '.exe' : '';
   const exePath = path.join(distDir, `phobos-core${ext}`);
 
-  // For cross-compilation (e.g. linux-arm64 built on x64 CI), use the arm64 node binary.
-  const nodeExec = process.env.CROSS_NODE || process.execPath;
-  fs.copyFileSync(nodeExec, exePath);
+  fs.copyFileSync(process.execPath, exePath);
   if (isMac) execSync(`codesign --remove-signature "${exePath}"`);
 
   const machoFlag = isMac ? '--macho-segment-name NODE_SEA' : '';

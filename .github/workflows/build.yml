@@ -38,11 +38,11 @@ jobs:
             fetch-script: scripts/fetch-linux-x64.js
 
           - label:        linux-arm64
-            runner:       ubuntu-latest
+            runner:       ubuntu-24.04-arm
             artifact:     phobos-linux-arm64
             pack:         tar
             fetch-script: scripts/fetch-linux-arm64.js
-            node-arch:    arm64
+            build-llama:  true
 
     steps:
       - uses: actions/checkout@v4
@@ -51,12 +51,6 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-
-      - name: Download arm64 Node binary (linux-arm64 cross-build)
-        if: matrix.node-arch == 'arm64'
-        run: |
-          curl -fsSL https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-arm64.tar.gz | tar -xz -C /tmp
-          echo "CROSS_NODE=/tmp/node-v22.14.0-linux-arm64/bin/node" >> $GITHUB_ENV
 
       - name: Restore distutils (macOS)
         if: runner.os == 'macOS'
@@ -73,15 +67,29 @@ jobs:
         shell: bash
 
       - name: Fetch llama.cpp binaries
+        if: matrix.build-llama != true
         run: node ${{ matrix.fetch-script }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build llama-server from source (linux-arm64)
+        if: matrix.build-llama == true
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y cmake build-essential
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp llama-src
+          cmake -B llama-src/build llama-src             -DCMAKE_BUILD_TYPE=Release             -DLLAMA_BUILD_SERVER=ON             -DLLAMA_BUILD_TESTS=OFF             -DLLAMA_BUILD_TOOLS=OFF             -DGGML_RPC=ON             -DCMAKE_INSTALL_RPATH='$ORIGIN'
+          cmake --build llama-src/build --config Release -j$(nproc) --target llama-server
+          mkdir -p bin
+          cp llama-src/build/bin/llama-server bin/llama-server-linux-arm64
+          cp llama-src/build/src/libllama.so* bin/ 2>/dev/null || true
+          cp llama-src/build/ggml/src/libggml*.so* bin/ 2>/dev/null || true
+          chmod +x bin/llama-server-linux-arm64
 
       - name: Build
         run: node build.js
         env:
           PHOBOS_LICENSE_SEED: ${{ secrets.PHOBOS_LICENSE_SEED }}
-          CROSS_NODE: ${{ env.CROSS_NODE }}
 
       - name: Package (tar)
         if: matrix.pack == 'tar'

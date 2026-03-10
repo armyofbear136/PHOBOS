@@ -473,17 +473,39 @@ export async function* downloadModel(
   yield { modelId: spec.modelId, phase, bytesReceived, bytesTotal: spec.sizeBytes, done: true };
 }
 
+// ── Android / Termux detection ────────────────────────────────────────────────
+// On Termux, process.platform is 'linux' — we distinguish Android by checking
+// for environment markers that are always present in the Termux runtime.
+// ANDROID_ROOT  (/system)  — set by Android for all processes
+// TERMUX_VERSION            — set by Termux's bootstrap environment
+// /system/build.prop        — always present on Android, never on Linux
+
+function isAndroid(): boolean {
+  if (process.platform !== 'linux') return false;
+  if (process.env.ANDROID_ROOT || process.env.TERMUX_VERSION) return true;
+  try { fs.accessSync('/system/build.prop'); return true; } catch { return false; }
+}
+
 // ── llama-server binary resolution ───────────────────────────────────────────
-// Supports backend-specific binaries on Windows:
-//   llama-server-win32-x64-cuda.exe   (for NVIDIA)
-//   llama-server-win32-x64-vulkan.exe (for AMD iGPU, Intel, fallback)
+// Resolution order for each platform:
+//   android-arm64  → llama-server-android-arm64   (NDK static build, Bionic libc)
+//   linux-arm64    → llama-server-linux-arm64      (glibc build, Ubuntu layer)
+//   win32-x64      → llama-server-win32-x64[-cuda|-vulkan].exe
+//   darwin-arm64   → llama-server-darwin-arm64
+//   linux-x64      → llama-server-linux-x64
 // Falls back to generic llama-server-{platform}-{arch}{ext} if specific not found.
 
 export function resolveLlamaServerBin(): string {
   const platform = process.platform;
   const arch     = process.arch;
   const ext      = platform === 'win32' ? '.exe' : '';
-  const name     = `llama-server-${platform}-${arch}${ext}`;
+
+  // On Android/Termux, override platform to use the NDK-built static binary
+  const effectivePlatform = (platform === 'linux' && arch === 'arm64' && isAndroid())
+    ? 'android'
+    : platform;
+
+  const name = `llama-server-${effectivePlatform}-${arch}${ext}`;
 
   const seaDir   = path.dirname(process.execPath);
   const repoRoot = path.resolve(_dirname, '..', '..');
@@ -492,6 +514,15 @@ export function resolveLlamaServerBin(): string {
   if (fs.existsSync(seaPath)) return seaPath;
   const devPath = path.join(repoRoot, 'bin', name);
   if (fs.existsSync(devPath)) return devPath;
+
+  // On Android, fall back to the linux-arm64 glibc build if android binary absent
+  if (effectivePlatform === 'android') {
+    const fallbackName = `llama-server-linux-arm64`;
+    const fallbackSea  = path.join(seaDir, fallbackName);
+    if (fs.existsSync(fallbackSea)) return fallbackSea;
+    const fallbackDev  = path.join(repoRoot, 'bin', fallbackName);
+    if (fs.existsSync(fallbackDev)) return fallbackDev;
+  }
 
   throw new Error(
     `llama-server binary not found.\n` +

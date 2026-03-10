@@ -38,10 +38,11 @@ jobs:
             fetch-script: scripts/fetch-linux-x64.js
 
           - label:        linux-arm64
-            runner:       ubuntu-24.04-arm
+            runner:       ubuntu-latest
             artifact:     phobos-linux-arm64
             pack:         tar
             fetch-script: scripts/fetch-linux-arm64.js
+            node-arch:    arm64
 
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +51,12 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
+
+      - name: Download arm64 Node binary (linux-arm64 cross-build)
+        if: matrix.node-arch == 'arm64'
+        run: |
+          curl -fsSL https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-arm64.tar.gz | tar -xz -C /tmp
+          echo "CROSS_NODE=/tmp/node-v22.14.0-linux-arm64/bin/node" >> $GITHUB_ENV
 
       - name: Restore distutils (macOS)
         if: runner.os == 'macOS'
@@ -74,6 +81,7 @@ jobs:
         run: node build.js
         env:
           PHOBOS_LICENSE_SEED: ${{ secrets.PHOBOS_LICENSE_SEED }}
+          CROSS_NODE: ${{ env.CROSS_NODE }}
 
       - name: Package (tar)
         if: matrix.pack == 'tar'

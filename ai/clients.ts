@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 import { ModelConfigStore, PROVIDERS, type RoleConfig } from '../db/ModelConfigStore.js';
 import { reconcilePhobosServers } from '../phobos/LlamaServerManager.js';
+import { getSpec } from '../phobos/PhobosLocalManager.js';
 import { PromptLogStore, type PromptStage } from '../db/PromptLogStore.js';
 
 /**
@@ -206,23 +207,24 @@ export interface ThinkingStrategy {
 
 export function getThinkingStrategy(provider: string, model: string): ThinkingStrategy {
   // PHOBOS Local — llama-server (llama.cpp) speaks the same OpenAI compat as Ollama.
-  // Llama models: system prompt injection, tag path.
-  // Qwen3 models: llama.cpp supports --think natively via extra_body, same as Ollama.
+  // Jinja-template models (Qwen3, Magistral, DeepSeek-R1 Qwen3 distills): field path.
+  // All other models (Llama, Gemma, DeepSeek-R1 Llama distill): tag path via prompt injection.
   if (provider === 'phobos') {
-    if (model.startsWith('qwen3')) {
+    const spec = getSpec(model);
+    if (spec?.jinjaTemplate) {
       return {
         systemSuffix: '',
         thinkingPath: 'field',
         // reasoning_format per-request is more reliable than the CLI flag —
         // works regardless of llama.cpp build age.
-        // chat_template_kwargs:{enable_thinking:true} activates Qwen3 thinking
+        // chat_template_kwargs:{enable_thinking:true} activates thinking
         // via the Jinja template; reasoning_format:deepseek routes the resulting
         // <think> block into delta.reasoning_content on the /v1/ compat layer.
         extraBodyThink:   { reasoning_format: 'deepseek', chat_template_kwargs: { enable_thinking: true } },
         extraBodyNoThink: { reasoning_format: 'none',     chat_template_kwargs: { enable_thinking: false } },
       };
     }
-    // Llama models — prompt-inject thinking
+    // Llama-architecture models — prompt-inject thinking
     return {
       systemSuffix:
         '\n\nThink through the problem step by step before answering. ' +
@@ -302,6 +304,7 @@ export function isThinkingModel(model: string): boolean {
   if (/^llama3[.\-:]/.test(model)) return COORDINATOR_PROVIDER === 'fastflowllm';
   if (model.startsWith('qwen3')) return true;
   if (model.startsWith('deepseek-r1')) return true;
+  if (model.startsWith('magistral')) return true;
   return false;
 }
 
@@ -329,9 +332,9 @@ export function applyThinkingStrategy(
   // FastFlowLLM: extra_body activates thinking via server config, no message change.
   if (provider === 'fastflowllm') return { messages, systemPrompt };
 
-  // PHOBOS Local Qwen3: thinking activated via chat_template_kwargs:{enable_thinking:true}
+  // PHOBOS Local Jinja-template models: thinking activated via chat_template_kwargs:{enable_thinking:true}
   // in extra_body (set in getThinkingStrategy). No message prefix needed.
-  if (provider === 'phobos' && model.startsWith('qwen3')) return { messages, systemPrompt };
+  if (provider === 'phobos' && getSpec(model)?.jinjaTemplate) return { messages, systemPrompt };
 
   // System prompt injection for models that need it (Llama on Ollama, PHOBOS Llama, etc.)
   const finalSystem = mode === 'think'

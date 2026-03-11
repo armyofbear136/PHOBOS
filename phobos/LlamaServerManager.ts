@@ -95,11 +95,11 @@ export async function startServer(role: 'sayon' | 'allmind', cfg: ServerConfig):
     '--log-disable',
   ];
 
-  // Qwen3 thinking support: --jinja enables the Jinja chat template required
-  // for thinking mode; --reasoning-format deepseek routes <think> blocks into
-  // delta.reasoning_content instead of leaving them raw in delta.content.
-  // Applied to allmind only — sayon runs Llama which uses tag-based thinking.
-  if (role === 'allmind' && spec.modelId.startsWith('qwen3')) {
+  // Jinja chat template + reasoning-format routing for all Qwen3-architecture models.
+  // Covers: Qwen3 family, Magistral, DeepSeek-R1 Qwen3 distills (8B, 14B).
+  // Not applied to Llama-architecture models (Llama 3, Gemma 3, DeepSeek-R1 70B)
+  // which use tag-based thinking or no thinking at all.
+  if (role === 'allmind' && spec.jinjaTemplate) {
     args.push('--jinja', '--reasoning-format', 'deepseek');
   }
 

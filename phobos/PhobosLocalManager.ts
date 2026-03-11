@@ -222,6 +222,10 @@ export interface GGUFSpec {
   role: 'sayon' | 'allmind' | 'both';
   /** Whether this model emits thinking/reasoning tokens */
   thinkingTokens: boolean;
+  /** Whether this model requires --jinja + --reasoning-format deepseek at startup.
+   *  True for Qwen3-architecture models (Qwen3, Magistral, DeepSeek-R1 Qwen3 distills).
+   *  False for Llama-architecture models even if they emit <think> tags natively. */
+  jinjaTemplate: boolean;
   /** HuggingFace repo: "owner/repo" */
   hfRepo: string;
   /** Exact filename within the repo */
@@ -240,6 +244,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     family: 'Llama 3',
     role: 'sayon',
     thinkingTokens: false,
+    jinjaTemplate: false,
     hfRepo: 'bartowski/Llama-3.2-1B-Instruct-GGUF',
     hfFile: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf',
     sizeBytes: 770_000_000,
@@ -252,6 +257,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     family: 'Llama 3',
     role: 'sayon',
     thinkingTokens: false,
+    jinjaTemplate: false,
     hfRepo: 'bartowski/Llama-3.2-3B-Instruct-GGUF',
     hfFile: 'Llama-3.2-3B-Instruct-Q4_K_M.gguf',
     sizeBytes: 2_020_000_000,
@@ -264,6 +270,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     family: 'Llama 3',
     role: 'sayon',
     thinkingTokens: false,
+    jinjaTemplate: false,
     hfRepo: 'bartowski/Meta-Llama-3.1-8B-Instruct-GGUF',
     hfFile: 'Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf',
     sizeBytes: 4_920_000_000,
@@ -277,6 +284,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     family: 'Gemma 3',
     role: 'sayon',
     thinkingTokens: false,
+    jinjaTemplate: false,
     hfRepo: 'bartowski/google_gemma-3-1b-it-GGUF',
     hfFile: 'google_gemma-3-1b-it-Q4_K_M.gguf',
     sizeBytes: 694_000_000,
@@ -289,6 +297,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     family: 'Gemma 3',
     role: 'sayon',
     thinkingTokens: false,
+    jinjaTemplate: false,
     hfRepo: 'bartowski/google_gemma-3-4b-it-GGUF',
     hfFile: 'google_gemma-3-4b-it-Q4_K_M.gguf',
     sizeBytes: 2_530_000_000,
@@ -301,6 +310,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     family: 'Gemma 3',
     role: 'sayon',
     thinkingTokens: false,
+    jinjaTemplate: false,
     hfRepo: 'bartowski/google_gemma-3-12b-it-GGUF',
     hfFile: 'google_gemma-3-12b-it-Q4_K_M.gguf',
     sizeBytes: 7_800_000_000,
@@ -314,6 +324,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     family: 'Qwen3',
     role: 'allmind',
     thinkingTokens: true,
+    jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3-4B-GGUF',
     hfFile: 'Qwen_Qwen3-4B-Q4_K_M.gguf',
     sizeBytes: 2_580_000_000,
@@ -326,6 +337,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     family: 'Qwen3',
     role: 'allmind',
     thinkingTokens: true,
+    jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3-8B-GGUF',
     hfFile: 'Qwen_Qwen3-8B-Q4_K_M.gguf',
     sizeBytes: 5_190_000_000,
@@ -338,6 +350,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     family: 'Qwen3',
     role: 'allmind',
     thinkingTokens: true,
+    jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3-14B-GGUF',
     hfFile: 'Qwen_Qwen3-14B-Q4_K_M.gguf',
     sizeBytes: 9_000_000_000,
@@ -350,6 +363,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     family: 'Qwen3',
     role: 'allmind',
     thinkingTokens: true,
+    jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3-30B-A3B-GGUF',
     hfFile: 'Qwen_Qwen3-30B-A3B-Q4_K_M.gguf',
     sizeBytes: 18_400_000_000,
@@ -362,6 +376,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     family: 'Qwen3',
     role: 'allmind',
     thinkingTokens: true,
+    jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3-Coder-8B-GGUF',
     hfFile: 'Qwen_Qwen3-Coder-8B-Q4_K_M.gguf',
     sizeBytes: 5_190_000_000,
@@ -375,6 +390,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     family: 'Mistral',
     role: 'allmind',
     thinkingTokens: false,
+    jinjaTemplate: false,
     hfRepo: 'bartowski/Mistral-7B-Instruct-v0.3-GGUF',
     hfFile: 'Mistral-7B-Instruct-v0.3-Q4_K_M.gguf',
     sizeBytes: 4_370_000_000,
@@ -387,6 +403,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     family: 'Mistral',
     role: 'allmind',
     thinkingTokens: true,
+    jinjaTemplate: true,
     hfRepo: 'bartowski/Magistral-Small-2506-GGUF',
     hfFile: 'Magistral-Small-2506-Q4_K_M.gguf',
     sizeBytes: 14_400_000_000,
@@ -394,12 +411,15 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     contextWindow: 131072,
   },
   // ── DeepSeek-R1 family — strong reasoning, ALLMIND-class ───────────────────
+  // deepseek-r1-8b and deepseek-r1-14b are Qwen3-architecture distills — jinjaTemplate: true.
+  // deepseek-r1-70b is a Llama-architecture distill — uses native <think> tags, jinjaTemplate: false.
   {
     modelId: 'deepseek-r1-8b-q4',
     label: 'DeepSeek-R1 8B Q4',
     family: 'DeepSeek-R1',
     role: 'allmind',
     thinkingTokens: true,
+    jinjaTemplate: true,
     hfRepo: 'bartowski/DeepSeek-R1-0528-Qwen3-8B-GGUF',
     hfFile: 'DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf',
     sizeBytes: 5_190_000_000,
@@ -412,6 +432,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     family: 'DeepSeek-R1',
     role: 'allmind',
     thinkingTokens: true,
+    jinjaTemplate: true,
     hfRepo: 'bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF',
     hfFile: 'DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf',
     sizeBytes: 9_050_000_000,
@@ -424,6 +445,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     family: 'DeepSeek-R1',
     role: 'allmind',
     thinkingTokens: true,
+    jinjaTemplate: false,
     hfRepo: 'bartowski/DeepSeek-R1-Distill-Llama-70B-GGUF',
     hfFile: 'DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf',
     sizeBytes: 42_520_000_000,

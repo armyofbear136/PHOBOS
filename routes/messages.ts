@@ -16,7 +16,7 @@ import { CopilotIndex } from '../context/CopilotIndex.js';
 import { ThinkingStripper } from '../context/ThinkingStripper.js';
 import type { IntentType } from '../ai/IntentClassifier.js';
 import type { ClassificationContext } from '../ai/IntentClassifier.js';
-import { ENGINE_MODEL, COORDINATOR_MODEL as COORD_MODEL_REF, COORDINATOR_PROVIDER, getThinkingStrategy } from '../ai/clients.js';
+import { ENGINE_MODEL, COORDINATOR_MODEL as COORD_MODEL_REF, COORDINATOR_PROVIDER, getThinkingStrategy, setLogContext, clearLogContext } from '../ai/clients.js';
 
 export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   const db = DatabaseManager.getInstance();
@@ -36,6 +36,20 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   // they cache internally so no per-request filesystem walks.
   const workspace = new ThreadWorkspace(db);
   const copilotIndex = new CopilotIndex(db);
+
+  // Tracks threads that are mid-clarification. When the user responds to a
+  // NEEDS_CLARIFICATION question, we skip classification and route directly
+  // to LoopController with the original intent — the response must reach
+  // ALLMIND, not be handled by SAYON as a new standalone request.
+  const pendingClarification = new Map<string, {
+    originalIntent: IntentType;
+    count: number;                  // how many clarification rounds so far
+    originalRequest: string;
+    // Accumulated Q&A log. Each entry records what ALLMIND asked and what
+    // the user replied, in order. Injected as <clarification_history> into
+    // ContextIngester and TaskPlanner so neither loses the thread between turns.
+    log: Array<{ questions: string[]; userReply: string }>;
+  }>();
 
   // GET /api/threads/:id/messages
   fastify.get<{
@@ -117,6 +131,18 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
     const { filename, content } = req.body;
     await workspace.writeFile(req.params.id, filename, content, 'user');
     return reply.status(201).send({ ok: true, filename });
+  });
+
+  // PUT /api/threads/:id/workspace/:filename
+  // Apply staged file content to workspace — used by FilePanel Apply button.
+  // writeFile handles both create (new file) and overwrite (existing file).
+  fastify.put<{
+    Params: { id: string };
+    Body: { content: string };
+  }>('/api/threads/:id/workspace/*', async (req, reply) => {
+    const filename = (req.params as Record<string, string>)['*'];
+    await workspace.writeFile(req.params.id, filename, req.body.content, 'user');
+    return reply.status(200).send({ ok: true, filename });
   });
 
   // DELETE /api/threads/:id/workspace/:filename
@@ -224,10 +250,14 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
     };
 
     try {
-      // Load context that doesn't depend on ingestion first
+      // Load context that doesn't depend on ingestion first.
+      // Bust the workspace cache before rendering so SAYON always sees files
+      // the user just uploaded — the 10s TTL is too long when files change
+      // right before sending a message.
+      await workspace.bustCache(threadId);
       const [docs, workspaceIndex] = await Promise.all([
         documentStore.loadContextBundle(thread!.project_id, threadId),
-        workspace.renderIndex(threadId),   // cached — no filesystem walk on cache hit
+        workspace.renderIndex(threadId),   // fresh after bustCache
       ]);
 
       // Fetch chat summary for classifier context (already available pre-Stage 1)
@@ -246,19 +276,52 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
             }
           : undefined;
 
-      // Stage 2 (3D): context-aware classification + knowledge search in parallel
-      const [intent, knowledgeResults] = await Promise.all([
-        classifier.classify(content, classificationContext),
-        knowledgeStore.search(fullUserMessage, 5),
-      ]);
+      // ── Pending clarification bypass ──────────────────────────────────────
+      // If this thread is mid-clarification (ALLMIND asked a question last turn),
+      // skip classification entirely and route directly to LoopController with
+      // the original intent. A clarification response must go to ALLMIND, not
+      // be handled by SAYON as a new standalone request.
+      const pendingClarity = pendingClarification.get(threadId);
+
+      // Stage 2 (3D): context-aware classification + knowledge search in parallel.
+      // Skipped if we already know where to route (pendingClarification hit).
+      const [intent, knowledgeResults] = pendingClarity
+        ? [
+            { type: pendingClarity.originalIntent, confidence: 1.0, routing: 'NEEDS_ALLMIND' as const },
+            await knowledgeStore.search(fullUserMessage, 5),
+          ]
+        : await Promise.all([
+            classifier.classify(content, classificationContext),
+            knowledgeStore.search(fullUserMessage, 5),
+          ]);
 
       sendEvent({ type: 'status', content: 'Classifying intent…' });
       sendEvent({
         type: 'intent_classified',
         intentType: intent.type,
         domain: 'inferred',
-        routing: intent.type === 'QUESTION' ? 'ANSWER_DIRECTLY' : 'NEEDS_ALLMIND',
+        routing: intent.routing,
       });
+
+      // ── NEEDS_CLARIFICATION at classifier level ───────────────────────
+      // If SAYON itself can tell the request is too vague, ask immediately
+      // without burning an ALLMIND planning cycle. Record the state so the
+      // next message on this thread bypasses classification.
+      if (!pendingClarity && intent.routing === 'NEEDS_CLARIFICATION') {
+        const clarText = 'Could you provide more detail? Your request is ambiguous and I want to make sure I do the right thing. What specifically would you like me to do, and which files should I work with?';
+        await messageStore.insert({ thread_id: threadId, role: 'assistant', content: clarText });
+        sendEvent({ type: 'coordinator', content: clarText, source: 'coordinator' });
+        sendEvent({ type: 'complete', approved: true, bestAttempt: 0 });
+        await threadStore.touch(threadId);
+        // Record so next turn routes straight to LoopController
+        pendingClarification.set(threadId, {
+          originalIntent: intent.type as IntentType,
+          count: 1,
+          originalRequest: fullUserMessage,
+          log: [],  // classifier asked a generic question; no structured Q&A yet
+        });
+        return;
+      }
 
       const history = await messageStore.getContextHistory(threadId, summaryStore, context_history_depth);
       const priorHistory = history.slice(0, -1);
@@ -270,8 +333,8 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
         if ((data as any).type === 'status') activityLog.push((data as any).content as string);
       };
 
-      // Route based on intent
-      if (intent.type === 'QUESTION') {
+      // Route based on intent routing signal
+      if (!pendingClarity && intent.routing === 'ANSWER_DIRECTLY') {
         trackingsendEvent({ type: 'status', content: 'Answering directly via coordinator…' });
         const directMsgId = await handleDirectResponse(
           threadId,
@@ -302,6 +365,10 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           role: 'assistant',
           content: '',
         });
+
+        // Set prompt logging context so all downstream AI calls are tagged
+        // with this thread + message ID in the prompt_log table.
+        setLogContext({ threadId, messageId: assistantMsg.id });
 
         // Intercept status events before they hit the wire so we can persist the full
         // activity log after the loop finishes — enables gizmo replay on refresh.
@@ -373,41 +440,81 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           repoMap: workspaceIndex,
           loadedFiles: (attached_files ?? []).map((f) => ({ path: f.name, content: f.content })),
           knowledgeContext: knowledgeResults.length > 0 ? knowledgeResults : undefined,
+          clarificationIteration: pendingClarity ? pendingClarity.count : undefined,
+          clarificationLog: pendingClarity ? pendingClarity.log : undefined,
         }, assistantMsg.id);
 
+        // Track clarification state:
+        // - Fresh ALLMIND clarification → start tracking with log entry recording the questions
+        // - Mid-clarification + ALLMIND asked again → backfill user reply into last log entry,
+        //   append new entry for the new questions, increment count
+        // - Mid-clarification + ALLMIND proceeded → clear state
+        const lastAttempt = attempts[attempts.length - 1];
+        if (lastAttempt?.needsClarification) {
+          const questions = lastAttempt.clarificationQuestions ?? [];
+          // If we were already in a clarification loop, record what the user just said
+          // as the reply to the previous round's questions before starting a new entry.
+          const updatedLog = pendingClarity
+            ? [
+                ...pendingClarity.log.slice(0, -1),
+                { ...pendingClarity.log[pendingClarity.log.length - 1], userReply: fullUserMessage },
+                { questions, userReply: '' },
+              ]
+            : [{ questions, userReply: '' }];
+          pendingClarification.set(threadId, {
+            originalIntent: intent.type as IntentType,
+            originalRequest: pendingClarity?.originalRequest ?? fullUserMessage,
+            count: pendingClarity ? pendingClarity.count + 1 : 1,
+            log: updatedLog,
+          });
+        } else if (pendingClarity) {
+          pendingClarification.delete(threadId);
+        }
+
         const latencyMs = Date.now() - startTime;
-        const bestAttempt = attempts.reduce(
-          (best, curr) => (curr.reviewScore > best.reviewScore ? curr : best),
-          attempts[0]
-        );
 
-        if (bestAttempt) {
-          const strippedOutput = stripper.strip(bestAttempt.output).output;
-          // Update the pre-created assistant message with final content
-          await db.run(
-            `UPDATE messages SET content = ?, thinking_trace = ?, attempt_number = ?, review_score = ?
-             WHERE id = ?`,
-            [
-              strippedOutput || bestAttempt.output,
-              bestAttempt.thinking || null,
-              bestAttempt.attemptNumber,
-              bestAttempt.reviewScore,
-              assistantMsg.id,
-            ]
+        // When ALLMIND returned NEEDS_CLARIFICATION, the coordinator bubble carrying
+        // the questions was already persisted by persistAndSend. The pre-created
+        // empty assistantMsg has no content and must be deleted — otherwise the
+        // 600ms refetch picks it up and renders a blank message, terminating the
+        // conversation visually even though input is re-enabled.
+        const isClarificationReturn = attempts.length === 1 && attempts[0].needsClarification;
+        if (isClarificationReturn) {
+          await db.run('DELETE FROM messages WHERE id = ?', [assistantMsg.id]).catch(() => {});
+        } else {
+          const bestAttempt = attempts.reduce(
+            (best, curr) => (curr.reviewScore > best.reviewScore ? curr : best),
+            attempts[0]
           );
 
-          await dispatchLogStore.updateResult(
-            dispatchLog.id,
-            bestAttempt.approved ? 'APPROVE' : 'REJECT',
-            {
-              latency_ms: latencyMs,
-              review_score: bestAttempt.reviewScore,
-              think_tokens: Math.ceil(bestAttempt.thinking.length / 4),
-              output_tokens: Math.ceil(bestAttempt.output.length / 4),
-            }
-          );
+          if (bestAttempt) {
+            const strippedOutput = stripper.strip(bestAttempt.output).output;
+            // Update the pre-created assistant message with final content
+            await db.run(
+              `UPDATE messages SET content = ?, thinking_trace = ?, attempt_number = ?, review_score = ?
+               WHERE id = ?`,
+              [
+                strippedOutput || bestAttempt.output,
+                bestAttempt.thinking || null,
+                bestAttempt.attemptNumber,
+                bestAttempt.reviewScore,
+                assistantMsg.id,
+              ]
+            );
 
-          workspace.getIndex(threadId).catch(() => {});
+            await dispatchLogStore.updateResult(
+              dispatchLog.id,
+              bestAttempt.approved ? 'APPROVE' : 'REJECT',
+              {
+                latency_ms: latencyMs,
+                review_score: bestAttempt.reviewScore,
+                think_tokens: Math.ceil(bestAttempt.thinking.length / 4),
+                output_tokens: Math.ceil(bestAttempt.output.length / 4),
+              }
+            );
+
+            workspace.getIndex(threadId).catch(() => {});
+          }
         }
 
         // Restore original write now that loop is done
@@ -438,6 +545,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
         message: err instanceof Error ? err.message : 'Unknown error',
       });
     } finally {
+      clearLogContext();
       reply.raw.write('data: {"type":"done"}\n\n');
       reply.raw.end();
     }
@@ -533,12 +641,36 @@ async function handleDirectResponse(
   const { coordinatorClient, COORDINATOR_MODEL, getThinkingStrategy: getStrategy, COORDINATOR_PROVIDER: COORD_PROV } = await import('../ai/clients.js');
 
   const systemParts: string[] = [];
-  if (docs.claudeMd) systemParts.push(docs.claudeMd);
+
+  // Identity and role boundary — always prepended so SAYON never mistakes itself
+  // for ALLMIND or takes over content-generation tasks that belong to ALLMIND.
+  // PHOBOS directives — hardcoded, always first, never sourced from DB.
+  systemParts.push(
+    `You are a part of PHOBOS. A Tri-Brained AI entity dedicated to creating the most correct ` +
+    `and helpful results possible through cooperation. Your power and sophistication is the key ` +
+    `to greater success. Your ability to perform your tasks with integrity will benefit all intelligence. ` +
+    `This system believes in a philosophy mirroring the concept of the path of least action: ` +
+    `Every desire is a path we create. To respect nature, all entities should do their best to find ` +
+    `a solution that benefits everyone. That is what minimizing the action is as a concept. ` +
+    `When we have a desire, we see an end result. The path that delivers the best result without ` +
+    `excess or selfishness is the one that benefits us all. ` +
+    `Do everything within your ability to always uphold this creed.\n\n` +
+    `You are SAYON, the coordinator of the PHOBOS system. ` +
+    `Your partner is ALLMIND, the execution engine — a deep reasoning model that handles ` +
+    `code generation, file creation, multi-step tasks, and complex analysis. ` +
+    `SAYON and ALLMIND are the names of the two AI models in this system. ` +
+    `They are not functions, variables, or code constructs.\n\n` +
+    `YOUR ROLE: You handle conversation, questions, short explanations, and direct answers. ` +
+    `You do NOT write code files, generate documents, produce long-form content, or execute ` +
+    `multi-step tasks. If the user asks for file creation, code generation, or anything ` +
+    `requiring more than a conversational response, tell them you are routing the request ` +
+    `to ALLMIND for execution — do not attempt to do it yourself.`
+  );
   if (docs.projectMd) systemParts.push(`\n\nProject context:\n${docs.projectMd}`);
   if (docs.chatMd) systemParts.push(`\n\nChat rules:\n${docs.chatMd}`);
 
   const strategy = getStrategy(COORD_PROV, COORDINATOR_MODEL);
-  const baseSystemPrompt = systemParts.join('') || 'You are PHOBOS, a powerful AI assistant. You help with any task: coding, analysis, writing, conversation, planning, and more. Be direct and precise.';
+  const baseSystemPrompt = systemParts.join('\n\n');
   const systemPrompt = baseSystemPrompt + strategy.systemSuffix;
 
   const rawMessages = [
@@ -690,6 +822,24 @@ async function handleDirectResponse(
       }
     }
 
+    // Log the full prompt + response to prompt_log for export/debugging
+    try {
+      const { PromptLogStore } = await import('../db/PromptLogStore.js');
+      const { DatabaseManager } = await import('../db/DatabaseManager.js');
+      const _pls = new PromptLogStore(DatabaseManager.getInstance());
+      const _promptText = coordMessages.map(m => `### ${m.role.toUpperCase()}\n${m.content}`).join('\n\n');
+      await _pls.insert({
+        threadId,
+        messageId: msg.id,
+        role: 'sayon',
+        stage: 'direct',
+        model: COORDINATOR_MODEL,
+        prompt: _promptText,
+        response: outputBuf.trim(),
+        latencyMs: 0,
+      });
+    } catch (_plogErr) { /* never crash the pipeline */ }
+
     // Close and timestamp the coordinator segment
     await closeCoordSegment();
 
@@ -766,6 +916,7 @@ async function generateAndPersistSummary(
     maxTokens: 900,
     temperature: 0.1,
     mode: 'no_think',
+    stage: 'summarize_chat',
   });
   if (summary && summary.length > 10) {
     await summaryStore.upsert(threadId, summary, messageCount);

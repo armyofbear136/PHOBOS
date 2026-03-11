@@ -36,7 +36,7 @@ export interface WorkspaceIndex {
  * filesystem walk that was causing latency.
  */
 export class ThreadWorkspace {
-  private static WORKSPACES_ROOT = process.env.WORKSPACES_ROOT ?? './workspaces';
+  private static get WORKSPACES_ROOT() { return process.env.WORKSPACES_ROOT ?? './workspaces'; }
 
   // In-memory cache: threadId → { index, lastScanned }
   private static cache = new Map<string, { index: WorkspaceIndex; lastScanned: number }>();
@@ -75,6 +75,15 @@ export class ThreadWorkspace {
       throw new Error(`Path traversal attempt blocked: ${filename}`);
     }
     return resolved;
+  }
+
+  /**
+   * Bust the in-memory cache for a thread so the next getIndex/renderIndex call
+   * performs a fresh disk scan. Called at message-send time to ensure SAYON
+   * always sees files the user just uploaded.
+   */
+  bustCache(threadId: string): void {
+    ThreadWorkspace.cache.delete(threadId);
   }
 
   /** Ensure the workspace directory exists. Called when a thread is created. */

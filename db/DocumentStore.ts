@@ -82,7 +82,7 @@ export class DocumentStore {
     projectId?: string | null,
     chatThreadId?: string | null
   ): Promise<{ claudeMd: string; userDirectivesMd: string; projectMd: string; chatMd: string }> {
-    const claudeDoc = await this.getLatest('claude_md');
+    // claudeMd (PHOBOS directives) is hardcoded in the engine — not loaded from DB.
     const userDirectivesDoc = await this.getLatest('user_directives');
     const projectDoc = projectId
       ? await this.getLatest('project_md', projectId)
@@ -92,7 +92,7 @@ export class DocumentStore {
       : null;
 
     return {
-      claudeMd: claudeDoc?.content ?? '',
+      claudeMd: '',  // unused — PHOBOS directives are hardcoded in DispatchComposer and handleDirectResponse
       userDirectivesMd: userDirectivesDoc?.content ?? '',
       projectMd: projectDoc?.content ?? '',
       chatMd: chatDoc?.content ?? '',

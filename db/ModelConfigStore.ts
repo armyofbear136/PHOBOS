@@ -59,34 +59,6 @@ export const PROVIDERS: ProviderOption[] = [
     requiresApiKey: false,
     thinkingMode: 'qwen3_prefix',
   },
-  {
-    id: 'openai',
-    label: 'OpenAI',
-    defaultEndpoint: 'https://api.openai.com/v1',
-    requiresApiKey: true,
-    thinkingMode: 'none',
-  },
-  {
-    id: 'anthropic',
-    label: 'Anthropic',
-    defaultEndpoint: 'https://api.anthropic.com/v1',
-    requiresApiKey: true,
-    thinkingMode: 'none',
-  },
-  {
-    id: 'google',
-    label: 'Google',
-    defaultEndpoint: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    requiresApiKey: true,
-    thinkingMode: 'none',
-  },
-  {
-    id: 'custom',
-    label: 'Custom',
-    defaultEndpoint: '',
-    requiresApiKey: false,
-    thinkingMode: 'system_prompt',
-  },
 ];
 
 /** Model catalogue — tagged by provider */
@@ -103,18 +75,6 @@ export const ALL_MODELS: ModelOption[] = [
   { id: 'llama3.1:70b',          label: 'Llama3.1-70B',          contextWindow: 131072, charsPerToken: 4, provider: 'ollama' },
   { id: 'deepseek-r1:32b',       label: 'DeepSeek-R1-32B',       contextWindow: 65536,  charsPerToken: 4, provider: 'ollama' },
   { id: 'deepseek-r1:70b',       label: 'DeepSeek-R1-70B',       contextWindow: 65536,  charsPerToken: 4, provider: 'ollama' },
-  // OpenAI
-  { id: 'gpt-4o-mini',           label: 'GPT-4o Mini',           contextWindow: 128000, charsPerToken: 4, provider: 'openai' },
-  { id: 'gpt-4o',                label: 'GPT-4o',                contextWindow: 128000, charsPerToken: 4, provider: 'openai' },
-  { id: 'o4-mini',               label: 'o4-mini',               contextWindow: 128000, charsPerToken: 4, provider: 'openai' },
-  { id: 'o3',                    label: 'o3',                    contextWindow: 200000, charsPerToken: 4, provider: 'openai' },
-  // Anthropic
-  { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', contextWindow: 200000, charsPerToken: 4, provider: 'anthropic' },
-  { id: 'claude-sonnet-4-6',     label: 'Claude Sonnet 4.6',     contextWindow: 200000, charsPerToken: 4, provider: 'anthropic' },
-  { id: 'claude-opus-4-6',       label: 'Claude Opus 4.6',       contextWindow: 200000, charsPerToken: 4, provider: 'anthropic' },
-  // Google
-  { id: 'gemini-2.0-flash',      label: 'Gemini 2.0 Flash',      contextWindow: 1048576, charsPerToken: 4, provider: 'google' },
-  { id: 'gemini-2.5-pro',        label: 'Gemini 2.5 Pro',        contextWindow: 1048576, charsPerToken: 4, provider: 'google' },
 ];
 
 /** Models available for coordinator role per provider */

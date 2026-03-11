@@ -10,12 +10,136 @@ import { InterventionHandler } from './InterventionHandler.js';
 import { ThinkingBudgetMonitor } from './ThinkingBudgetMonitor.js';
 import { FileToolParser } from '../patch/FileToolParser.js';
 import { FileToolExecutor } from '../patch/FileToolExecutor.js';
+import type { StagedFileToolResult } from '../patch/FileToolExecutor.js';
 import { SyntaxValidator } from '../patch/SyntaxValidator.js';
 import { BuildRunner } from '../build/BuildRunner.js';
 import { ErrorFormatter } from '../build/ErrorFormatter.js';
 import type { FileToolResult } from './FileTools.js';
 import fs from 'fs/promises';
 import path from 'path';
+
+/**
+ * ToolTagFilter — streaming XML suppressor for file tool calls.
+ *
+ * ALLMIND emits tool calls as raw XML in the output stream, e.g.:
+ *   <write_file path="foo.ts">\nfull contents\n</write_file>
+ *
+ * These must never reach the frontend as output_token events.
+ * This filter accumulates the stream incrementally and only forwards
+ * the portions that are outside any tool tag to the emit callback.
+ *
+ * Works on both the field-path (clean outToken per chunk) and the
+ * parser-path (outputBuffer slices), since both hit the same feed() method.
+ *
+ * Tool tags suppressed: write_file, append_file, insert_lines,
+ *                       replace_lines, delete_lines, read_file
+ */
+class ToolTagFilter {
+  private static readonly TOOL_NAMES = [
+    'write_file', 'append_file', 'insert_lines',
+    'replace_lines', 'delete_lines', 'read_file',
+  ] as const;
+
+  // Build a regex that matches any opening tool tag (with optional attributes)
+  // OR a self-closing read_file tag. Anchored to catch across chunk boundaries
+  // via the accumulation buffer.
+  private static readonly OPEN_RE  = /<(write_file|append_file|insert_lines|replace_lines|delete_lines|read_file)(\s[^>]*)?\/?>|<\/?(write_file|append_file|insert_lines|replace_lines|delete_lines|read_file)>/;
+
+  private buf = '';          // accumulates unclassified input
+  private insideTag = '';    // name of currently-open tool tag, or ''
+
+  reset(): void {
+    this.buf = '';
+    this.insideTag = '';
+  }
+
+  /**
+   * Feed a chunk of output text. Returns the portion safe to emit to the client.
+   * Anything inside a tool XML block is swallowed.
+   */
+  feed(chunk: string): string {
+    this.buf += chunk;
+    let safe = '';
+
+    while (this.buf.length > 0) {
+      if (this.insideTag === '') {
+        // Not inside a tool block — scan for an opening tag
+        const match = ToolTagFilter.OPEN_RE.exec(this.buf);
+        if (match === null) {
+          // No tag found. But a partial tag could be at the tail — hold it back.
+          const heldBack = this.partialTagLen(this.buf);
+          const emit = this.buf.slice(0, this.buf.length - heldBack);
+          safe += emit;
+          this.buf = this.buf.slice(emit.length);
+          break;
+        }
+        // Emit everything before the tag
+        safe += this.buf.slice(0, match.index);
+        const tagName = (match[1] ?? match[3] ?? '').replace('/', '');
+        const fullMatch = match[0];
+
+        // Self-closing, read_file, or stray closing tag — suppress and skip
+        const isClosingTag = fullMatch.startsWith('</');
+        if (fullMatch.endsWith('/>') || tagName === 'read_file' || isClosingTag) {
+          // Suppress the tag itself, advance past it — insideTag stays ''
+          this.buf = this.buf.slice(match.index + fullMatch.length);
+        } else {
+          // Opening tag — enter suppression mode
+          this.insideTag = tagName;
+          this.buf = this.buf.slice(match.index + fullMatch.length);
+        }
+      } else {
+        // Inside a tool block — scan for the matching closing tag
+        const closeTag = `</${this.insideTag}>`;
+        const closeIdx = this.buf.indexOf(closeTag);
+        if (closeIdx === -1) {
+          // Closing tag not yet arrived — hold entire buffer
+          break;
+        }
+        // Discard everything up to and including the closing tag
+        this.buf = this.buf.slice(closeIdx + closeTag.length);
+        this.insideTag = '';
+      }
+    }
+
+    return safe;
+  }
+
+  /** How many trailing chars in str could be the start of any tool open-tag */
+  private partialTagLen(str: string): number {
+    // Longest possible tool open tag prefix to hold back: "<write_file" = 11 chars
+    const MAX_HOLD = 12;
+    const tail = str.slice(-MAX_HOLD);
+    for (let len = Math.min(tail.length, MAX_HOLD); len >= 1; len--) {
+      const candidate = tail.slice(tail.length - len);
+      if ('<write_file'.startsWith(candidate) ||
+          '<append_file'.startsWith(candidate) ||
+          '<insert_lines'.startsWith(candidate) ||
+          '<replace_lines'.startsWith(candidate) ||
+          '<delete_lines'.startsWith(candidate) ||
+          '<read_file'.startsWith(candidate)) {
+        return len;
+      }
+    }
+    return 0;
+  }
+
+  /**
+   * Flush any remaining buffered content that is safe to emit.
+   * Call after the stream ends. If we're still insideTag, the model
+   * produced an unclosed tool block — discard the remainder.
+   */
+  flush(): string {
+    if (this.insideTag !== '') {
+      this.buf = '';
+      this.insideTag = '';
+      return '';
+    }
+    const remaining = this.buf;
+    this.buf = '';
+    return remaining;
+  }
+}
 
 export interface LoopOptions {
   maxAttempts?: number;
@@ -46,6 +170,10 @@ export interface AttemptResult {
   reviewScore: number;
   approved: boolean;
   errorOutput?: string;
+  /** True when ALLMIND determined it needs more info from the user before executing */
+  needsClarification?: boolean;
+  /** The questions ALLMIND asked — populated when needsClarification is true */
+  clarificationQuestions?: string[];
 }
 
 export type SSEEvent =
@@ -63,6 +191,7 @@ export type SSEEvent =
   | { type: 'task_failed'; taskIndex: number; total: number; title: string; reason: string }
   | { type: 'complete'; approved: boolean; bestAttempt: number }
   | { type: 'thinking_retry'; attempt: number }
+  | { type: 'clarification_needed'; questions: string[] }
   | { type: 'error'; message: string };
 
 interface StreamResult {
@@ -197,17 +326,27 @@ export class LoopController {
       sendStatus,
       sendThinking,
       composeInput.chatSummary,
-      agentState
+      agentState,
+      composeInput.clarificationLog,
+      composeInput.intentType        // intent-aware rewrite prompt branching
     );
 
     // After ingestion always go idle briefly before next stage (planning or direct dispatch)
     agentState.transition('idle', '');
 
-    // Update composeInput with Stage 1 outputs
+    // Update composeInput with Stage 1 outputs.
+    // Merge any inline content blocks extracted from the user message into
+    // loadedFiles so they reach ALLMIND via the <loaded_files> injection path
+    // in DispatchComposer — exactly the same path as user-uploaded files.
+    const mergedLoadedFiles = [
+      ...(composeInput.loadedFiles ?? []),
+      ...ingestion.extractedFiles,
+    ];
     composeInput = {
       ...composeInput,
       userMessage: ingestion.rewrittenUserMessage,
       fileSummaries: ingestion.fileSummaries,
+      loadedFiles: mergedLoadedFiles.length > 0 ? mergedLoadedFiles : undefined,
     };
 
     await this.persistAndSend(
@@ -218,6 +357,11 @@ export class LoopController {
 
     const allAttempts: AttemptResult[] = [];
     const allChangedFiles: string[] = [];
+    // Maps relative file path → staged content string for use by validation.
+    // Populated by simulateAll; never touches the real workspace on disk.
+    const stagedContents = new Map<string, string>();
+    // Absolute paths of temp staging dirs to clean up after delivery.
+    const stagingDirsToClean: string[] = [];
 
     // ── Stage 3: Task Planning ───────────────────────────────────────────────
     // For code/plan requests: coordinator reads relevant files and decomposes
@@ -240,7 +384,9 @@ export class LoopController {
         sendStatus,
         sendThinking,            // SAYON: discovery + extraction thinking → coordinator panel
         sendEngineThinking,      // ALLMIND: decomposition thinking → engine panel
-        this.options.onThinkPhaseComplete  // closes the planning engine segment in DB
+        this.options.onThinkPhaseComplete,  // closes the planning engine segment in DB
+        composeInput.clarificationIteration,  // weight system for clarification loop
+        composeInput.clarificationLog         // full Q&A transcript for this loop
       );
       // Persist planner engine thinking so it survives thread switch/server restart
       if (plannerEngineThinkingAccum && assistantMessageId) {
@@ -260,6 +406,37 @@ export class LoopController {
           t.operation === 'analyze' ? { ...t, operation: 'modify' as const } : t
         );
       }
+
+      // ── NEEDS_CLARIFICATION exit ───────────────────────────────────────────
+      // ALLMIND determined it cannot proceed without more information from the user.
+      // Emit the questions as a coordinator bubble and a structured event, then
+      // return empty results. The frontend keeps the input open so the user can
+      // respond, and their next message re-enters the pipeline with the
+      // clarification exchange in conversation history.
+      if (plan.needsClarification && plan.clarificationQuestions?.length) {
+        const questionText = plan.clarificationQuestions
+          .map((q, i) => `${i + 1}. ${q}`)
+          .join('\n');
+        await this.persistAndSend(
+          reply,
+          {
+            type: 'coordinator',
+            content: `I need a few things clarified before I can proceed:\n\n${questionText}`,
+            source: 'engine',
+          },
+          assistantMessageId
+        );
+        this.sendEvent(reply, {
+          type: 'clarification_needed',
+          questions: plan.clarificationQuestions,
+        });
+        console.log(`[loop:clarification] ${plan.clarificationQuestions.length} question(s) — returning early`);
+
+        agentState.idle();
+        this.sendEvent(reply, { type: 'complete', approved: true, bestAttempt: 0 });
+        return [{ attemptNumber: 0, taskIndex: 0, thinking: '', output: '', patchesApplied: false, buildPassed: false, reviewScore: 0, approved: false, needsClarification: true, clarificationQuestions: plan.clarificationQuestions }];
+      }
+
       tasks = plan.tasks;
       // Emit plan summary as coordinator bubble (distinct from Stage 1 summary)
       await this.persistAndSend(
@@ -309,6 +486,7 @@ export class LoopController {
       let taskApproved = false;
       let taskFailReason: string | undefined;
 
+      
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         if (attempt > 1) {
           sendStatus(`[${task.index}/${total}] Retrying — attempt ${attempt}/${maxAttempts}…`);
@@ -395,7 +573,16 @@ export class LoopController {
         const execDetail = writeCalls[0]?.path ? writeCalls[0].path.split('/').pop()! : `${writeCalls.length} ops`;
         agentState.transition('executing', execDetail, task.index, total);
         sendStatus(`[${task.index}/${total}] Executing ${writeCalls.length} operation(s)…`);
-        const toolResults = await toolExecutor.executeAll(writeCalls);
+        const toolResults = await toolExecutor.simulateAll(writeCalls) as StagedFileToolResult[];
+
+        // Collect staging dirs for cleanup after delivery
+        for (const r of toolResults) {
+          if (r.stagedPath) {
+            const dir = r.stagedPath.substring(0, r.stagedPath.lastIndexOf('/'));
+            const stageRoot = dir.substring(0, dir.lastIndexOf('/'));
+            if (!stagingDirsToClean.includes(stageRoot)) stagingDirsToClean.push(stageRoot);
+          }
+        }
 
         console.log(`[loop:exec] task=${task.index} writes=${writeCalls.length} results=${JSON.stringify(toolResults.map(r => r.tool + ':' + r.path + '=' + (r.success ? 'ok' : r.error?.slice(0,60))))}`);
         const failedOps = toolResults.filter(r => !r.success);
@@ -416,6 +603,7 @@ export class LoopController {
 
         for (const r of writtenFiles) {
           if (!allChangedFiles.includes(r.path)) allChangedFiles.push(r.path);
+          if (r.content) stagedContents.set(r.path, r.content);
         }
         for (const result of writtenFiles) {
           if (result.content) {
@@ -475,11 +663,11 @@ export class LoopController {
         // ── Review ──────────────────────────────────────────────────────────────
         sendStatus(`[${task.index}/${total}] Reviewing…`);
         const changedSummary = writtenFiles.map(r => `${r.tool} ${r.path}`).join('\n');
-        // Pass tool-call XML only — full output includes Qwen3 reasoning prose
-        // that the reviewer misreads as describe-instead-of-do and REJECTs spuriously.
+        // Pass full file content to reviewer (up to 4000 chars each) so SAYON can
+        // meaningfully assess code quality, not just see 400-char XML snippets.
         const reviewOutput = writtenFiles
-          .map(r => `<${r.tool} path="${r.path}">\n${(r.content ?? '').slice(0, 400)}\n</${r.tool}>`)
-          .join('\n');
+          .map(r => `File: ${r.path}\nOperation: ${r.tool}\n---\n${(r.content ?? '').slice(0, 4_000)}\n---`)
+          .join('\n\n');
         agentState.transition('reviewing', task.title.slice(0, 20), task.index, total);
         console.log(`[loop:review:in] task=${task.index} prompt="${task.prompt.slice(0, 120).replace(/\n/g, ' ')}" changed="${changedSummary}" outputLen=${reviewOutput.length}`);
         const review = await this.runReviewDispatch(task.prompt, reviewOutput, changedSummary, sendThinking);  // coordinator thinking
@@ -496,7 +684,13 @@ export class LoopController {
         }
 
         if (attempt < maxAttempts && review.decision === 'NEEDS_REVISION') {
-          retryContext = { attemptNumber: attempt, priorThinking: attemptResult.thinking, guidanceFromReview: review.guidance };
+          retryContext = {
+            attemptNumber: attempt,
+            priorThinking: attemptResult.thinking,
+            guidanceFromReview: review.guidance,
+            reviewIssues: review.issues,
+            priorOutput: attemptResult.output,
+          };
           taskFailReason = review.guidance ?? 'Needs revision';
           continue;
         }
@@ -518,8 +712,37 @@ export class LoopController {
       this.budgetMonitor.reset(taskId);
     } // end task loop
 
+    // ── Stage 4.5: ALLMIND Final Validation ──────────────────────────────────
+    // For multi-task plans or plans with failures, ALLMIND reviews all completed
+    // work holistically. Single approved tasks skip this — the per-task review
+    // already covered them.
+    let overallApproved = taskResults.length > 0 && taskResults.every(r => r.approved);
+    let validationSummary: string | undefined;
+
+    const needsFinalValidation =
+      taskResults.length > 1 ||
+      taskResults.some(r => !r.approved);
+
+    if (needsFinalValidation && allChangedFiles.length > 0) {
+      agentState.transition('reviewing', 'Final validation');
+      sendStatus('ALLMIND validating all changes…');
+
+      try {
+        validationSummary = await this.runFinalValidation(
+          composeInput.userMessage,
+          taskResults,
+          allChangedFiles,
+          stagedContents,
+          sendEngineThinking,
+          assistantMessageId,
+        );
+        console.log(`[loop:validation] summary="${(validationSummary ?? '').slice(0, 200).replace(/\n/g, ' ')}"`);
+      } catch (err) {
+        console.warn('[LoopController] Stage 4.5 final validation failed (non-fatal):', err);
+      }
+    }
+
     // ── Stage 5: Delivery ──────────────────────────────────────────────────────
-    const overallApproved = taskResults.length > 0 && taskResults.every(r => r.approved);
     agentState.transition('delivering', 'Final response');
     await this.emitDelivery(
       reply,
@@ -529,7 +752,9 @@ export class LoopController {
       allChangedFiles,
       overallApproved,
       assistantMessageId,
-      taskResults
+      taskResults,
+      validationSummary,
+      composeInput.intentType
     );
 
     // Persist coordinator thinking accumulated during the loop (planning, review calls)
@@ -559,11 +784,16 @@ export class LoopController {
       bestAttempt: bestAttempt.attemptNumber,
     });
 
+    // Clean up temp staging directories created by simulateAll
+    for (const dir of stagingDirsToClean) {
+      fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+
     return allAttempts;
   }
 
   /**
-   * Stage 5: Ask the coordinator to assemble a final natural-language summary,
+   * Stage 5: Ask ALLMIND to assemble a final natural-language summary,
    * then emit it as a coordinator-type SSE event (which the frontend renders
    * as the assistant's chat message content).
    */
@@ -575,7 +805,9 @@ export class LoopController {
     changedFiles: string[],
     approved: boolean,
     assistantMessageId?: string,
-    taskResults?: Array<{ task: import('./TaskPlanner.js').Task; approved: boolean; attempts: AttemptResult[]; failReason?: string }>
+    taskResults?: Array<{ task: import('./TaskPlanner.js').Task; approved: boolean; attempts: AttemptResult[]; failReason?: string }>,
+    validationSummary?: string,
+    intentType?: string
   ): Promise<void> {
     try {
       this.sendEvent(reply, { type: 'status', content: 'Assembling response…' });
@@ -586,6 +818,8 @@ export class LoopController {
         changedFiles,
         approved,
         taskResults,
+        validationSummary,
+        intentType,
       });
       await this.persistAndSend(
         reply,
@@ -594,6 +828,94 @@ export class LoopController {
       );
     } catch (err) {
       console.warn('[LoopController] Stage 5 delivery failed, skipping:', err);
+    }
+  }
+
+  /**
+   * Stage 4.5: ALLMIND holistic validation of all completed work.
+   *
+   * Reads the final state of all changed files from disk and asks ALLMIND
+   * to review them as a coherent whole against the original request.
+   * Returns a validation summary string that feeds into delivery.
+   *
+   * This catches cross-file inconsistencies that per-task review misses:
+   * mismatched imports, naming inconsistencies, incomplete integration, etc.
+   */
+  private async runFinalValidation(
+    originalRequest: string,
+    taskResults: Array<{
+      task: import('./TaskPlanner.js').Task;
+      approved: boolean;
+      failReason?: string;
+    }>,
+    changedFiles: string[],
+    stagedContents: Map<string, string>,
+    sendThinking: (token: string) => void,
+    assistantMessageId?: string,
+  ): Promise<string | undefined> {
+    // Read final state of all changed files from staged content (never from disk)
+    const fileContents: string[] = [];
+    let totalChars = 0;
+    const maxChars = 30_000;
+
+    for (const filepath of changedFiles) {
+      if (totalChars >= maxChars) {
+        fileContents.push(`[${filepath}: skipped — validation budget exceeded]`);
+        continue;
+      }
+      const content = stagedContents.get(filepath);
+      if (content === undefined) {
+        fileContents.push(`<file path="${filepath}">\n[Staged content unavailable]\n</file>`);
+        continue;
+      }
+      const truncated = content.length > 6_000
+        ? content.slice(0, 6_000) + `\n... [truncated at 6000 chars, full size ${content.length}]`
+        : content;
+      fileContents.push(`<file path="${filepath}">\n${truncated}\n</file>`);
+      totalChars += truncated.length;
+    }
+
+    const taskOutcomes = taskResults
+      .map(r =>
+        `  ${r.approved ? '✓' : '✗'} Task ${r.task.index}: ${r.task.title} → ${r.task.targetFile || '(no file)'}` +
+        (r.failReason ? ` — ${r.failReason.slice(0, 100)}` : '')
+      )
+      .join('\n');
+
+    const prompt =
+      `You are ALLMIND performing final validation. Review ALL completed work as a coherent whole.\n\n` +
+      `ORIGINAL REQUEST:\n${originalRequest.slice(0, 2_000)}\n\n` +
+      `TASK OUTCOMES:\n${taskOutcomes}\n\n` +
+      `FINAL FILE STATE:\n${fileContents.join('\n\n')}\n\n` +
+      `Evaluate holistically:\n` +
+      `1. Does the combined output satisfy the original request?\n` +
+      `2. Are there cross-file inconsistencies (mismatched imports, naming, types)?\n` +
+      `3. Is anything missing that the request implied but no task addressed?\n` +
+      `4. Are there any obvious integration issues between the changed files?\n\n` +
+      `Respond with a brief validation summary (2-4 sentences). ` +
+      `If everything looks correct, say so. If there are issues, describe them specifically. ` +
+      `No JSON, no formatting — just plain prose.`;
+
+    try {
+      const { engineStream: engStream } = await import('./clients.js');
+      const result = await engStream({
+        systemPrompt: '',
+        messages: [{ role: 'user', content: prompt }],
+        maxTokens: 512,
+        temperature: 0.2,
+        mode: 'think',
+        onThinkToken: sendThinking,
+      });
+
+      // Persist the validation thinking
+      if (assistantMessageId) {
+        await this.options.onThinkPhaseComplete?.('engine').catch(() => {});
+      }
+
+      return result.trim() || undefined;
+    } catch (err) {
+      console.warn('[LoopController] Final validation engine call failed:', err);
+      return undefined;
     }
   }
 
@@ -791,6 +1113,7 @@ export class LoopController {
     }
 
     let fieldThinkBuf = ''; // accumulates thinking tokens on field-path (parser not used there)
+    const toolFilter = new ToolTagFilter(); // suppresses tool XML from output_token stream
     try {
       let emittedThinkLen = 0;
       let emittedOutputLen = 0;
@@ -821,7 +1144,6 @@ export class LoopController {
               if (_dbgN <= 3) console.log(`[engine:think:field] ${JSON.stringify(thinkToken.slice(0, 80))}`);
               // Send directly — do NOT feed parser (would cause double-emit when outToken arrives)
               fieldThinkBuf += thinkToken;
-              this.options.onThinkChunk?.(thinkToken, 'engine', assistantMessageId).catch(() => {});
               sendThinking(thinkToken);
             }
           }
@@ -829,7 +1151,10 @@ export class LoopController {
             // Content is clean on field-path providers — no <think> tags in delta.content
             parser.feedOutput(outToken);
             this.options.onOutputChunk?.(outToken, assistantMessageId).catch(() => {});
-            reply.raw.write(`data: ${JSON.stringify({ type: 'output_token', token: outToken })}\n\n`);
+            const safeToken = toolFilter.feed(outToken);
+            if (safeToken) {
+              reply.raw.write(`data: ${JSON.stringify({ type: 'output_token', token: safeToken })}\n\n`);
+            }
             emittedOutputLen += outToken.length;
           }
         } else {
@@ -849,14 +1174,16 @@ export class LoopController {
             const newThink = thinkBuf.slice(emittedThinkLen);
             if (newThink) {
               emittedThinkLen = thinkBuf.length;
-              this.options.onThinkChunk?.(newThink, 'engine', assistantMessageId).catch(() => {});
               sendThinking(newThink);
             }
             const newOut = outBuf.slice(emittedOutputLen);
             if (newOut) {
               emittedOutputLen = outBuf.length;
               this.options.onOutputChunk?.(newOut, assistantMessageId).catch(() => {});
-              reply.raw.write(`data: ${JSON.stringify({ type: 'output_token', token: newOut })}\n\n`);
+              const safeOut = toolFilter.feed(newOut);
+              if (safeOut) {
+                reply.raw.write(`data: ${JSON.stringify({ type: 'output_token', token: safeOut })}\n\n`);
+              }
             }
           }
         }
@@ -874,6 +1201,14 @@ export class LoopController {
     parser.complete();
     const { thinking: parserThinking, output: streamOutput } = parser.getBuffers();
     const streamThinking = fieldThinkBuf || parserThinking;
+
+    // Flush any safe content held in the filter buffer (e.g. text after the last tool block)
+    const filterFlush = toolFilter.flush();
+    if (filterFlush) {
+      reply.raw.write(`data: ${JSON.stringify({ type: 'output_token', token: filterFlush })}
+
+`);
+    }
 
     if (interventionQuestion === null) {
       return { thinking: streamThinking, output: streamOutput };
@@ -899,25 +1234,49 @@ export class LoopController {
     output: string,
     changedSummary: string,
     sendThinking?: (token: string) => void
-  ): Promise<{ score: number; decision: 'APPROVE' | 'NEEDS_REVISION' | 'REJECT'; guidance?: string }> {
+  ): Promise<{
+    score: number;
+    decision: 'APPROVE' | 'NEEDS_REVISION' | 'REJECT';
+    guidance?: string;
+    issues?: Array<{ file: string; line_range?: string; issue: string; expected?: string }>;
+  }> {
     const reviewSystem =
-      'You are a coordinator reviewing whether a coding engine correctly solved a task. ' +
-      'Respond with ONLY a JSON object: {"score":0.0-1.0,"decision":"APPROVE|NEEDS_REVISION|REJECT","guidance":"optional"}. ' +
-      'APPROVE (score >= 0.8) if: the correct target file was modified/created AND the content matches what was requested. ' +
-      'REJECT (score < 0.5) if: the wrong file was created, or the engine wrote example/stub code instead of performing the actual task, or the engine described what to do instead of doing it. ' +
-      'NEEDS_REVISION (0.5-0.8) if: the right file was touched but content is incomplete or incorrect. ' +
-      'No preamble.';
+      'You are SAYON, a coordinator reviewing whether a coding engine correctly solved a task. ' +
+      'Evaluate the output against these criteria:\n' +
+      '1. CORRECTNESS: Does the output address the original task? Are the right files targeted?\n' +
+      '2. COMPLETENESS: Is the code complete (not truncated, not stubbed, not placeholder)?\n' +
+      '3. QUALITY: Are there obvious syntax errors, logic flaws, or missing imports?\n' +
+      '4. PRESERVATION: Do the changes preserve existing functionality that should remain?\n\n' +
+      'Respond with ONLY a JSON object (no preamble, no markdown):\n' +
+      '{\n' +
+      '  "score": 0.0-1.0,\n' +
+      '  "decision": "APPROVE|NEEDS_REVISION|REJECT",\n' +
+      '  "issues": [\n' +
+      '    {\n' +
+      '      "file": "filename",\n' +
+      '      "line_range": "45-60 (optional, if identifiable)",\n' +
+      '      "issue": "what is wrong",\n' +
+      '      "expected": "what should be there instead (optional)"\n' +
+      '    }\n' +
+      '  ],\n' +
+      '  "guidance": "overall direction for the next attempt"\n' +
+      '}\n\n' +
+      'APPROVE (score >= 0.8): correct file, content matches request, no obvious defects.\n' +
+      'NEEDS_REVISION (0.5-0.8): right direction but has specific fixable issues — list them.\n' +
+      'REJECT (score < 0.5): wrong file, stub/placeholder code, or described instead of doing.\n' +
+      'If approving, issues array should be empty.';
+
     const reviewPrompt =
-      `ORIGINAL TASK:\n${originalTask}\n\n` +
+      `ORIGINAL TASK:\n${originalTask.slice(0, 2_000)}\n\n` +
       `CHANGES MADE:\n${changedSummary}\n\n` +
-      `ENGINE OUTPUT (check that tool calls target the correct file with correct content):\n${output.slice(0, 2000)}`;
+      `FILE CONTENTS AFTER CHANGES:\n${output.slice(0, 8_000)}`;
 
     console.log(`[review:prompt] ${reviewPrompt.slice(0, 400).replace(/\n/g, ' ')}`);
     try {
       const stripped = await coordinatorStream({
         systemPrompt: reviewSystem,
         messages: [{ role: 'user', content: reviewPrompt }],
-        maxTokens: 256,
+        maxTokens: 512,
         temperature: 0.1,
         mode: 'think',
         onThinkToken: sendThinking,
@@ -926,10 +1285,25 @@ export class LoopController {
       const jsonMatch = stripped.match(/\{[\s\S]*\}/);
       const cleaned = jsonMatch ? jsonMatch[0] : stripped;
       const parsed = JSON.parse(cleaned);
+
+      // Parse structured issues if present
+      let issues: Array<{ file: string; line_range?: string; issue: string; expected?: string }> | undefined;
+      if (Array.isArray(parsed.issues) && parsed.issues.length > 0) {
+        issues = parsed.issues
+          .filter((iss: Record<string, unknown>) => typeof iss.file === 'string' && typeof iss.issue === 'string')
+          .map((iss: Record<string, unknown>) => ({
+            file: String(iss.file),
+            line_range: typeof iss.line_range === 'string' ? iss.line_range : undefined,
+            issue: String(iss.issue),
+            expected: typeof iss.expected === 'string' ? iss.expected : undefined,
+          }));
+      }
+
       return {
         score: typeof parsed.score === 'number' ? parsed.score : 0.5,
         decision: parsed.decision ?? 'APPROVE',
         guidance: parsed.guidance,
+        issues,
       };
     } catch {
       return { score: 0.8, decision: 'APPROVE' };

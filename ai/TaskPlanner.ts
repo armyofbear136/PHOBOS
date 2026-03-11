@@ -50,6 +50,10 @@ export interface TaskPlan {
   tasks: Task[];
   /** One-line plan description emitted as coordinator bubble */
   planSummary: string;
+  /** When true, ALLMIND determined it cannot proceed without user input */
+  needsClarification?: boolean;
+  /** Specific questions ALLMIND needs answered before it can plan */
+  clarificationQuestions?: string[];
 }
 
 /** Files larger than this are paginated. ~30k chars ≈ 7.5k tokens */
@@ -62,6 +66,12 @@ const MAX_DISCOVERY_FILES = 8;
 const MAX_TASK_CONTEXT_CHARS = 8_000;
 /** Hard cap on tasks ALLMIND can produce — safety valve */
 const MAX_TASKS = 8;
+/**
+ * Max total chars of raw file content injected into ALLMIND's planning context.
+ * ~80k chars ≈ 20k tokens. Leaves room for system prompt, summaries, and thinking.
+ * Files beyond this budget get extraction-only treatment.
+ */
+const ALLMIND_CONTEXT_BUDGET = 80_000;
 
 export class TaskPlanner {
   constructor(private workspaceDir: string) {}
@@ -84,19 +94,18 @@ export class TaskPlanner {
     sendThinking: (token: string) => void,
     sendEngineThinking?: (token: string) => void,
     onThinkPhaseComplete?: (source: 'coordinator' | 'engine') => Promise<void>,
+    clarificationIteration?: number,
+    clarificationLog?: Array<{ questions: string[]; userReply: string }>,
   ): Promise<TaskPlan> {
 
     // ── Step 1: SAYON — Discovery roadmap ─────────────────────────────────
-    // The coordinator picks which files are actually needed — nothing more.
     sendStatus('Building discovery roadmap…');
-
     const discoveryFiles = await this.buildDiscoveryRoadmap(
       userMessage, fileSummaries, repoMap, sendThinking
     );
 
     // ── Step 2: SAYON — Read and extract from discovered files ─────────────
     let completeContext = '';
-
     if (discoveryFiles.length > 0) {
       sendStatus(`Reading ${discoveryFiles.length} file${discoveryFiles.length > 1 ? 's' : ''}…`);
       completeContext = await this.readFilesForContext(
@@ -105,18 +114,15 @@ export class TaskPlanner {
     }
 
     // ── Step 3: ALLMIND — Task decomposition ───────────────────────────────
-    // Hand the assembled context package to the engine. It knows its own tools
-    // and execution model better than the coordinator — let it plan.
     sendStatus('ALLMIND planning tasks…');
-
     const plan = await this.decomposeTasks(
       userMessage, fileSummaries, completeContext, repoMap,
-      sendEngineThinking ?? sendThinking
+      sendEngineThinking ?? sendThinking,
+      clarificationIteration,
+      clarificationLog
     );
 
-    // Close the planning engine thinking segment so it persists correctly
     await onThinkPhaseComplete?.('engine').catch(() => {});
-
     return plan;
   }
 
@@ -168,14 +174,22 @@ export class TaskPlanner {
   /**
    * SAYON Step 2: Read each discovered file and extract task-relevant facts.
    * Large files are paginated with overlap.
-   * Returns a single assembled context string for ALLMIND.
+   * Returns a single assembled context string for ALLMIND that includes both
+   * SAYON's extraction AND the raw file content (budget-gated).
+   *
+   * Also populates discoveredFileContents so decomposeTasks can enrich
+   * per-task context with the actual file being edited.
    */
+  private discoveredFileContents = new Map<string, string>();
+
   private async readFilesForContext(
     filenames: string[],
     userMessage: string,
     sendThinking: (token: string) => void
   ): Promise<string> {
     const contextParts: string[] = [];
+    this.discoveredFileContents.clear();
+    let rawBudgetRemaining = ALLMIND_CONTEXT_BUDGET;
 
     for (const filename of filenames) {
       const absPath = path.resolve(this.workspaceDir, filename);
@@ -187,11 +201,26 @@ export class TaskPlanner {
         continue;
       }
 
+      // Store raw content for per-task enrichment in decomposeTasks
+      this.discoveredFileContents.set(filename, content);
+
       if (content.length <= PAGE_SIZE_CHARS) {
         const extracted = await this.extractFromChunk(
           filename, content, userMessage, sendThinking
         );
-        contextParts.push(`<file_context path="${filename}">\n${extracted}\n</file_context>`);
+        // Include both SAYON analysis and raw content (budget-gated)
+        if (content.length <= rawBudgetRemaining) {
+          contextParts.push(
+            `<file_context path="${filename}">\n` +
+            `<sayon_analysis>\n${extracted}\n</sayon_analysis>\n` +
+            `<full_content>\n${content}\n</full_content>\n` +
+            `</file_context>`
+          );
+          rawBudgetRemaining -= content.length;
+        } else {
+          // Over budget — extraction only
+          contextParts.push(`<file_context path="${filename}">\n${extracted}\n</file_context>`);
+        }
       } else {
         const chunks = this.paginate(content);
         const extractions: string[] = [];
@@ -202,6 +231,9 @@ export class TaskPlanner {
           );
           extractions.push(extracted);
         }
+        // Large paginated files: extraction only in the planning context.
+        // Full content is still available via discoveredFileContents for
+        // per-task injection in decomposeTasks.
         contextParts.push(
           `<file_context path="${filename}" chunks="${chunks.length}">\n` +
           extractions.join('\n---\n') +
@@ -262,7 +294,9 @@ export class TaskPlanner {
     fileSummaries: FileSummary[],
     completeContext: string,
     repoMap: string,
-    sendThinking: (token: string) => void
+    sendThinking: (token: string) => void,
+    clarificationIteration?: number,
+    clarificationLog?: Array<{ questions: string[]; userReply: string }>,
   ): Promise<TaskPlan> {
     const contextSection = completeContext
       ? `EXTRACTED FILE CONTEXT:\n${completeContext.slice(0, 12_000)}\n\n`
@@ -284,15 +318,72 @@ export class TaskPlanner {
         `required by the change. Do not add infrastructure (config, manifests, lockfiles) ` +
         `unless the request asks for it. When in doubt, do less.\n\n`;
 
+    // Clarification weight — injected when this is a follow-up to a prior
+    // NEEDS_CLARIFICATION. The weight increases pressure to attempt the task
+    // rather than asking again. Formula: min(10, count*2 + 2).
+    // Weight 1-4: ask freely. 5-6: lean toward attempting. 7-8: strong pressure.
+    // 9-10: must attempt with best interpretation — do not ask another question.
+    let clarificationBlock = '';
+    if (clarificationIteration && clarificationIteration > 0) {
+      const weight = Math.min(10, clarificationIteration * 2 + 2);
+      const guidance =
+        weight <= 4 ? 'You may ask for clarification if genuinely needed.' :
+        weight <= 6 ? 'Lean toward attempting the task with your best interpretation rather than asking again.' :
+        weight <= 8 ? 'Strong pressure to attempt: only ask another question if it is truly impossible to proceed otherwise.' :
+        'You MUST attempt the task now. Do not ask another question. Use your best interpretation of the user\'s intent.';
+
+      // Build a full transcript of the Q&A so far
+      let historyLines = '';
+      if (clarificationLog && clarificationLog.length > 0) {
+        historyLines = clarificationLog.map((entry, i) => {
+          const qLines = entry.questions.map((q, qi) => `  Q${qi + 1}: ${q}`).join('\n');
+          const replyLine = entry.userReply
+            ? `  User answered: ${entry.userReply}`
+            : `  (User is replying now — see REQUEST below)`;
+          return `Round ${i + 1}:\n${qLines}\n${replyLine}`;
+        }).join('\n\n');
+      }
+
+      clarificationBlock =
+        `<clarification_context iteration="${clarificationIteration}" weight="${weight}/10">\n` +
+        `The user has answered ${clarificationIteration} clarification question(s). ` +
+        `Weight: ${weight}/10. ${guidance}\n\n` +
+        (historyLines
+          ? `Full clarification history:\n${historyLines}\n\n` +
+            `The REQUEST below is the user's latest reply. ` +
+            `Treat all prior answers as established facts — do NOT ask about them again.\n`
+          : '') +
+        `</clarification_context>\n\n`;
+    }
+
+    // In synthesis mode (clarificationIteration > 0), the "ask if unsure" rule
+    // is replaced with "attempt using best interpretation". The BEFORE PLANNING
+    // check is the primary reason ALLMIND loops identically — it fires even when
+    // the user has already answered, because the three-question test still fails
+    // on unresolved details the user deliberately left open ("just create something").
+    const beforePlanningRule = (clarificationIteration && clarificationIteration > 0)
+      ? `BEFORE PLANNING — the user has already answered clarification questions. ` +
+        `You have all the information you need to proceed. Make reasonable creative decisions ` +
+        `for any details the user left open (filename, structure, content). ` +
+        `Do NOT ask another NEEDS_CLARIFICATION — proceed to BUILD_QUEUE.\n\n`
+      : `BEFORE PLANNING — ask yourself: "Do I know exactly what file to edit, exactly what ` +
+        `to change, and exactly what the result should look like?" If the answer to ANY of ` +
+        `those is no, return NEEDS_CLARIFICATION with specific questions. It is ALWAYS better ` +
+        `to ask one question and get it right than to produce work the user has to redo.\n\n`;
+
     const prompt =
       `You are ALLMIND, a coding execution engine. Decompose the request below into ` +
       `ordered, atomic, file-scoped tasks that you will execute yourself. ` +
       `Each task targets exactly one file and performs one clear operation. ` +
       `For each task write a precise self-contained prompt — include exact function names, ` +
       `line references, and constraints from the context. No raw file contents in prompts.\n\n` +
+      beforePlanningRule +
+      clarificationBlock +
       scopeRule +
-      `Respond ONLY with a JSON object (no preamble, no markdown fences):\n` +
+      `Respond ONLY with a JSON object (no preamble, no markdown fences).\n\n` +
+      `If you CAN proceed:\n` +
       `{\n` +
+      `  "decision": "BUILD_QUEUE",\n` +
       `  "planSummary": "<one sentence, max 20 words>",\n` +
       `  "tasks": [\n` +
       `    {\n` +
@@ -304,6 +395,12 @@ export class TaskPlanner {
       `    }\n` +
       `  ]\n` +
       `}\n\n` +
+      `If you CANNOT proceed without more information:\n` +
+      `{\n` +
+      `  "decision": "NEEDS_CLARIFICATION",\n` +
+      `  "planSummary": "Need clarification before proceeding",\n` +
+      `  "questions": ["<specific question 1>", "<specific question 2>"]\n` +
+      `}\n\n` +
       `REQUEST: ${userMessage}\n\n` +
       fileListSection +
       contextSection +
@@ -312,7 +409,10 @@ export class TaskPlanner {
       `- Consolidate multiple changes to the same file into one task\n` +
       `- Hard maximum: ${MAX_TASKS} tasks\n` +
       `- If the request only touches one file, produce exactly one task\n` +
-      `- Do NOT create tasks for files not mentioned or directly required`;
+      `- Do NOT create tasks for files not mentioned or directly required\n` +
+      ((!clarificationIteration || clarificationIteration === 0)
+        ? `- If the request is ambiguous about which files, what approach, or what the outcome should be — use NEEDS_CLARIFICATION`
+        : `- User has already answered questions — make your best creative choices and proceed with BUILD_QUEUE`);
 
     console.log(`[planner:allmind:decompose] task="${userMessage.slice(0, 120).replace(/\n/g, ' ')}" simple=${isLikelySimple}`);
 
@@ -331,8 +431,10 @@ export class TaskPlanner {
       const match = clean.match(/\{[\s\S]*\}/);
       if (match) {
         const parsed = JSON.parse(match[0]) as {
+          decision?: string;
           planSummary: string;
-          tasks: Array<{
+          questions?: string[];
+          tasks?: Array<{
             title: string;
             targetFile: string;
             operation: string;
@@ -341,6 +443,22 @@ export class TaskPlanner {
           }>;
         };
 
+        // ── NEEDS_CLARIFICATION exit ──────────────────────────────────────
+        if (
+          parsed.decision === 'NEEDS_CLARIFICATION' &&
+          Array.isArray(parsed.questions) &&
+          parsed.questions.length > 0
+        ) {
+          console.log(`[planner:clarification] ${parsed.questions.length} question(s)`);
+          return {
+            tasks: [],
+            planSummary: String(parsed.planSummary ?? 'Need clarification before proceeding'),
+            needsClarification: true,
+            clarificationQuestions: parsed.questions.map(String),
+          };
+        }
+
+        // ── BUILD_QUEUE (normal path) ─────────────────────────────────────
         if (Array.isArray(parsed.tasks) && parsed.tasks.length > 0) {
           const tasks: Task[] = parsed.tasks.slice(0, MAX_TASKS).map((t, i) => ({
             index: i + 1,
@@ -352,6 +470,12 @@ export class TaskPlanner {
             prompt: String(t.prompt ?? userMessage),
             context: String(t.context ?? '').slice(0, MAX_TASK_CONTEXT_CHARS),
           }));
+
+          // ── Enrich: inject full target file content into each task ───────
+          // ALLMIND's context field from planning is a 400-word summary.
+          // For modify/analyze operations, replace it with the actual file
+          // so the engine has the real code during execution.
+          this.enrichTasksWithFileContent(tasks, fileSummaries);
 
           return {
             tasks,
@@ -375,6 +499,50 @@ export class TaskPlanner {
       }],
       planSummary: 'Sending task to engine.',
     };
+  }
+
+  /**
+   * Post-plan enrichment: for each task that targets an existing file,
+   * replace the ALLMIND-generated 400-word context summary with the actual
+   * file content. The target file always gets full injection regardless of
+   * budget — this is the file ALLMIND is about to edit.
+   *
+   * Sources checked in order:
+   *   1. discoveredFileContents — files read during SAYON discovery (Step 2)
+   *   2. fileSummaries[].content — files read during Stage 1 ingestion
+   *
+   * For 'create' operations the file doesn't exist yet, so no enrichment.
+   */
+  private enrichTasksWithFileContent(tasks: Task[], fileSummaries: FileSummary[]): void {
+    const summaryContentMap = new Map<string, string>();
+    for (const fs of fileSummaries) {
+      if (fs.content && !fs.content.startsWith('[File too large')) {
+        summaryContentMap.set(fs.filename, fs.content);
+      }
+    }
+
+    for (const task of tasks) {
+      if (!task.targetFile || task.operation === 'create') continue;
+
+      // Prefer discovery content (read at full resolution in Step 2)
+      // Fall back to ingestion content (may be truncated at 20k chars)
+      const fullContent =
+        this.discoveredFileContents.get(task.targetFile) ??
+        summaryContentMap.get(task.targetFile);
+
+      if (!fullContent) continue;
+
+      // Preserve ALLMIND's extracted constraints as a preamble, then append full file.
+      // The constraints tell ALLMIND what to focus on; the file gives it the real code.
+      const enriched =
+        task.context +
+        `\n\n<target_file path="${task.targetFile}">\n` +
+        fullContent +
+        `\n</target_file>`;
+
+      task.context = enriched;
+      console.log(`[planner:enrich] task=${task.index} file="${task.targetFile}" injected=${fullContent.length} chars`);
+    }
   }
 
   /**

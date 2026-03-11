@@ -586,6 +586,7 @@ export interface DownloadProgress {
   bytesReceived: number;
   bytesTotal: number;
   done: boolean;
+  installing?: boolean;
   error?: string;
 }
 
@@ -609,10 +610,28 @@ export async function* downloadModel(
 
   const url = hfUrl(spec);
   let bytesReceived = existingBytes;
+  let bytesTotal    = spec.sizeBytes;
 
-  yield { modelId: spec.modelId, phase, bytesReceived, bytesTotal: spec.sizeBytes, done: false };
+  yield { modelId: spec.modelId, phase, bytesReceived, bytesTotal, done: false };
 
-  await new Promise<void>((resolve, reject) => {
+  // Push-queue so the async generator can yield progress while https streams data.
+  // Events throttled to max 1 per 250ms OR per 2 MB to avoid SSE flood.
+  type QueueItem =
+    | { kind: 'progress'; bytesReceived: number; bytesTotal: number }
+    | { kind: 'installing' }
+    | { kind: 'done' }
+    | { kind: 'error'; err: Error };
+
+  const queue: QueueItem[] = [];
+  let notify: (() => void) | null = null;
+  const push = (item: QueueItem) => { queue.push(item); notify?.(); };
+
+  const THROTTLE_MS    = 250;
+  const THROTTLE_BYTES = 2 * 1024 * 1024;
+  let lastEmitBytes = existingBytes;
+  let lastEmitTime  = Date.now();
+
+  const downloadPromise = new Promise<void>((resolve, reject) => {
     const follow = (targetUrl: string, redirectCount = 0) => {
       if (redirectCount > 5) { reject(new Error('Too many redirects')); return; }
 
@@ -625,11 +644,13 @@ export async function* downloadModel(
             return;
           }
           if (res.statusCode !== 200 && res.statusCode !== 206) {
-            reject(new Error(`HTTP ${res.statusCode} for ${targetUrl}`));
+            const err = new Error(`HTTP ${res.statusCode} for ${targetUrl}`);
+            push({ kind: 'error', err });
+            reject(err);
             return;
           }
 
-          const total = res.statusCode === 206
+          bytesTotal = res.statusCode === 206
             ? existingBytes + parseInt(res.headers['content-length'] ?? '0', 10)
             : parseInt(res.headers['content-length'] ?? String(spec.sizeBytes), 10);
 
@@ -638,74 +659,81 @@ export async function* downloadModel(
           res.on('data', (chunk: Buffer) => {
             bytesReceived += chunk.length;
             fd.write(chunk);
+            const now = Date.now();
+            if (now - lastEmitTime >= THROTTLE_MS || bytesReceived - lastEmitBytes >= THROTTLE_BYTES) {
+              lastEmitTime  = now;
+              lastEmitBytes = bytesReceived;
+              push({ kind: 'progress', bytesReceived, bytesTotal });
+            }
           });
 
           res.on('end', () => {
-            // fd.end() guarantees flush+close before callback fires
+            // File fully received — signal installing state while we flush + rename
+            push({ kind: 'installing' });
             fd.end(() => {
               try {
                 fs.renameSync(tmp, dest);
               } catch {
-                // Windows OneDrive or cross-drive: fallback to copy + delete
                 try {
                   fs.copyFileSync(tmp, dest);
                   fs.unlinkSync(tmp);
                 } catch (copyErr) {
-                  reject(new Error(`Failed to finalize download: ${copyErr}`));
+                  const err = new Error(`Failed to finalize download: ${copyErr}`);
+                  push({ kind: 'error', err });
+                  reject(err);
                   return;
                 }
               }
+              push({ kind: 'done' });
               resolve();
             });
           });
 
-          res.on('error', (err) => {
-            fd.destroy();
-            reject(err);
-          });
+          res.on('error', (err) => { fd.destroy(); push({ kind: 'error', err }); reject(err); });
         },
       );
-      req.on('error', reject);
+      req.on('error', (err) => { push({ kind: 'error', err }); reject(err); });
     };
     follow(url);
   });
 
-  yield { modelId: spec.modelId, phase, bytesReceived, bytesTotal: spec.sizeBytes, done: true };
+  // Drain the queue, yielding progress events to the SSE route
+  let finished = false;
+  while (!finished) {
+    if (queue.length === 0) {
+      await new Promise<void>((res) => { notify = res; });
+      notify = null;
+    }
+    while (queue.length > 0) {
+      const item = queue.shift()!;
+      if (item.kind === 'progress') {
+        yield { modelId: spec.modelId, phase, bytesReceived: item.bytesReceived, bytesTotal: item.bytesTotal, done: false };
+      } else if (item.kind === 'installing') {
+        yield { modelId: spec.modelId, phase, bytesReceived, bytesTotal, done: false, installing: true };
+      } else if (item.kind === 'done') {
+        finished = true;
+      } else {
+        throw item.err;
+      }
+    }
+  }
+
+  await downloadPromise;
+  yield { modelId: spec.modelId, phase, bytesReceived, bytesTotal, done: true };
 }
 
-// ── Android / Termux detection ────────────────────────────────────────────────
-// On Termux, process.platform is 'linux' — we distinguish Android by checking
-// for environment markers that are always present in the Termux runtime.
-// ANDROID_ROOT  (/system)  — set by Android for all processes
-// TERMUX_VERSION            — set by Termux's bootstrap environment
-// /system/build.prop        — always present on Android, never on Linux
-
-function isAndroid(): boolean {
-  if (process.platform !== 'linux') return false;
-  if (process.env.ANDROID_ROOT || process.env.TERMUX_VERSION) return true;
-  try { fs.accessSync('/system/build.prop'); return true; } catch { return false; }
-}
 
 // ── llama-server binary resolution ───────────────────────────────────────────
-// Resolution order for each platform:
-//   android-arm64  → llama-server-android-arm64   (NDK static build, Bionic libc)
-//   linux-arm64    → llama-server-linux-arm64      (glibc build, Ubuntu layer)
-//   win32-x64      → llama-server-win32-x64[-cuda|-vulkan].exe
-//   darwin-arm64   → llama-server-darwin-arm64
-//   linux-x64      → llama-server-linux-x64
+// Supports backend-specific binaries on Windows:
+//   llama-server-win32-x64-cuda.exe   (for NVIDIA)
+//   llama-server-win32-x64-vulkan.exe (for AMD iGPU, Intel, fallback)
 // Falls back to generic llama-server-{platform}-{arch}{ext} if specific not found.
 
 export function resolveLlamaServerBin(): string {
   const platform = process.platform;
   const arch     = process.arch;
   const ext      = platform === 'win32' ? '.exe' : '';
-
-  // On Android/Termux, override platform to use the NDK-built static binary
-  const effectivePlatform = (platform === 'linux' && arch === 'arm64' && isAndroid())
-    ? 'android'
-    : platform;
-
-  const name = `llama-server-${effectivePlatform}-${arch}${ext}`;
+  const name     = `llama-server-${platform}-${arch}${ext}`;
 
   const seaDir   = path.dirname(process.execPath);
   const repoRoot = path.resolve(_dirname, '..', '..');
@@ -714,15 +742,6 @@ export function resolveLlamaServerBin(): string {
   if (fs.existsSync(seaPath)) return seaPath;
   const devPath = path.join(repoRoot, 'bin', name);
   if (fs.existsSync(devPath)) return devPath;
-
-  // On Android, fall back to the linux-arm64 glibc build if android binary absent
-  if (effectivePlatform === 'android') {
-    const fallbackName = `llama-server-linux-arm64`;
-    const fallbackSea  = path.join(seaDir, fallbackName);
-    if (fs.existsSync(fallbackSea)) return fallbackSea;
-    const fallbackDev  = path.join(repoRoot, 'bin', fallbackName);
-    if (fs.existsSync(fallbackDev)) return fallbackDev;
-  }
 
   throw new Error(
     `llama-server binary not found.\n` +

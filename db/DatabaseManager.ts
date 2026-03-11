@@ -169,6 +169,27 @@ CREATE INDEX IF NOT EXISTS idx_thinking_segments_thread
 CREATE INDEX IF NOT EXISTS idx_thinking_segments_message
   ON thinking_segments(message_id, seq ASC);
 
+-- Prompt log: every raw AI call — exact prompt in, exact response out.
+-- One row per coordinatorCall / coordinatorStream / engineStream invocation.
+-- Captures all internal prompts that never appear in the normal chat UI:
+-- file summaries, request rewrites, task decomposition, dispatch system prompts,
+-- review calls, delivery composition, chat summaries, and so on.
+-- Used by the export route to build a complete audit transcript.
+CREATE TABLE IF NOT EXISTS prompt_log (
+  id          VARCHAR PRIMARY KEY,
+  thread_id   VARCHAR NOT NULL REFERENCES threads(id),
+  message_id  VARCHAR,
+  role        VARCHAR NOT NULL,   -- 'sayon' | 'allmind'
+  stage       VARCHAR NOT NULL,   -- 'classify' | 'rewrite' | 'summarise' | 'discover' | 'extract' | 'decompose' | 'dispatch' | 'review' | 'validate' | 'deliver' | 'summarize_chat' | 'direct' | 'other'
+  model       VARCHAR NOT NULL,
+  prompt      TEXT    NOT NULL,
+  response    TEXT    NOT NULL,
+  latency_ms  INTEGER NOT NULL DEFAULT 0,
+  created_at  TIMESTAMP NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_prompt_log_thread
+  ON prompt_log(thread_id, created_at ASC);
+
 -- Seed default documents if none exist.
 -- claude.md is intentionally language-agnostic — the user sets their own standards.
 INSERT OR IGNORE INTO documents (id, doc_type, content, version)

@@ -1,4 +1,4 @@
-import { engineClient, ENGINE_MODEL, coordinatorCall } from './clients.js';
+import { engineStream } from './clients.js';
 import type { AttemptResult } from './LoopController.js';
 
 export interface TaskResultSummary {
@@ -18,30 +18,38 @@ export interface DeliveryInput {
   changedFiles: string[];
   /** Whether all tasks were approved */
   approved: boolean;
+  /** Intent type — controls whether file-outcome framing is included */
+  intentType?: string;
   /** Per-task outcomes from Stage 3/4 execution */
   taskResults?: Array<{
     task: { index: number; title: string; targetFile: string };
     approved: boolean;
     failReason?: string;
   }>;
+  /** Optional: ALLMIND's final validation result (from Stage 4.5) */
+  validationSummary?: string;
 }
 
+/**
+ * Stage 5: ALLMIND composes the final delivery message.
+ *
+ * Uses engineStream() which handles the phobos raw-fetch path correctly,
+ * avoiding the OpenAI SDK stripping reasoning_content that caused Bug 8.1.
+ */
 export class DeliveryComposer {
   async compose(
     input: DeliveryInput,
     sendThinking?: (token: string) => void
   ): Promise<string> {
-    const { originalUserMessage, rewrittenTask, attempts, changedFiles, approved, taskResults } = input;
+    const { originalUserMessage, rewrittenTask, attempts, changedFiles, approved, taskResults, validationSummary, intentType } = input;
 
-    const bestAttempt = attempts.length > 0
-      ? attempts.reduce((best, curr) => (curr.reviewScore > best.reviewScore ? curr : best), attempts[0])
-      : null;
+    const isQuestion = intentType === 'QUESTION' || (changedFiles.length === 0 && !taskResults?.length);
 
+    // Build task/file outcome sections — omitted entirely for questions
     const filesSection = changedFiles.length > 0
       ? `Files modified:\n${changedFiles.map((f) => `  - ${f}`).join('\n')}`
-      : 'No files were modified.';
+      : '';
 
-    // Build task-level outcome summary if we have it
     const taskSection = taskResults && taskResults.length > 1
       ? `Tasks:\n${taskResults.map((r) =>
           `  ${r.approved ? '✓' : '✗'} Task ${r.task.index}: ${r.task.title}` +
@@ -53,52 +61,44 @@ export class DeliveryComposer {
       ? `All tasks completed successfully.`
       : `Some tasks did not complete. ${taskResults?.filter(r => !r.approved).length ?? 0} of ${taskResults?.length ?? 1} task(s) failed.`;
 
-    const prompt =
-      `Write a concise response summarising the outcome. ` +
-      `Write in first person, plain prose, 2-4 sentences max. ` +
-      `For file changes: mention what changed and any failures. For answers: confirm what was addressed. ` +
-      `Match the tone to the task — technical for code, conversational for questions. ` +
-      `Do not use bullet points or headers. Do not repeat the task verbatim.\n\n` +
-      `ORIGINAL REQUEST: ${originalUserMessage}\n\n` +
-      `TASK AS PLANNED: ${rewrittenTask}\n\n` +
-      `${filesSection}\n\n` +
-      (taskSection ? `${taskSection}\n\n` : '') +
-      `${statusLine}`;
+    const validationBlock = validationSummary
+      ? `\nFINAL VALIDATION:\n${validationSummary}\n`
+      : '';
+
+    // For questions: lean delivery brief — no file outcome noise.
+    // For execution: full outcome summary with files, tasks, status.
+    const prompt = isQuestion
+      ? `Write a concise response confirming what was addressed. ` +
+        `Write in first person, plain conversational prose, 2-4 sentences max. ` +
+        `Do not mention files, tasks, or whether anything was modified. ` +
+        `Do not use bullet points or headers. Do not repeat the question verbatim.\n\n` +
+        `ORIGINAL REQUEST: ${originalUserMessage}\n\n` +
+        `TASK AS PLANNED: ${rewrittenTask}`
+      : `Write a concise response summarising the outcome. ` +
+        `Write in first person, plain prose, 2-4 sentences max. ` +
+        `For file changes: mention what changed and any failures. ` +
+        `Match the tone to the task — technical for code, conversational for questions. ` +
+        `Do not use bullet points or headers. Do not repeat the task verbatim.\n\n` +
+        `ORIGINAL REQUEST: ${originalUserMessage}\n\n` +
+        `TASK AS PLANNED: ${rewrittenTask}\n\n` +
+        (filesSection ? `${filesSection}\n\n` : '') +
+        (taskSection ? `${taskSection}\n\n` : '') +
+        validationBlock +
+        statusLine;
 
     try {
-      const stream = await engineClient.chat.completions.create({
-        model: ENGINE_MODEL,
+      const clean = await engineStream({
+        systemPrompt: '',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 512,
+        maxTokens: 512,
         temperature: 0.3,
-        stream: true as const,
+        mode: 'no_think',
+        onThinkToken: sendThinking,
       });
 
-      let outputBuf = '';
-      let inThink = false;
-      for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta as Record<string, unknown>;
-        // Discard dedicated reasoning fields — we only want the output
-        const outToken = delta?.content as string | undefined;
-        if (!outToken) continue;
-        let remaining = outToken;
-        while (remaining.length > 0) {
-          if (inThink) {
-            const ci = remaining.indexOf('</think>');
-            if (ci === -1) { remaining = ''; }
-            else { inThink = false; remaining = remaining.slice(ci + 8); }
-          } else {
-            const oi = remaining.indexOf('<think>');
-            if (oi === -1) { outputBuf += remaining; remaining = ''; }
-            else { outputBuf += remaining.slice(0, oi); inThink = true; remaining = remaining.slice(oi + 7); }
-          }
-        }
-      }
-
-      const clean = outputBuf.trim();
       if (clean.length > 20) return clean;
     } catch (err) {
-      console.warn('[DeliveryComposer] Coordinator call failed, using fallback:', err);
+      console.warn('[DeliveryComposer] Engine call failed, using fallback:', err);
     }
 
     return this.buildFallback(input);

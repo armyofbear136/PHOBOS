@@ -49,14 +49,52 @@ export interface ComposeInput {
     errorOutput?: string;
     failedPatch?: string;
     guidanceFromReview?: string;
+    /** Structured issue list from SAYON review — file, line range, specific problem */
+    reviewIssues?: Array<{ file: string; line_range?: string; issue: string; expected?: string }>;
+    /** ALLMIND's raw output from the prior attempt — so it can see what it produced */
+    priorOutput?: string;
   };
+  /**
+   * When > 0, this turn is a response to a prior NEEDS_CLARIFICATION request.
+   * Injected into TaskPlanner's decomposition prompt so ALLMIND knows how many
+   * clarification rounds have occurred and can weigh attempting vs. asking again.
+   */
+  clarificationIteration?: number;
+  /**
+   * Full Q&A log for the current clarification loop.
+   * Each entry has the questions ALLMIND asked and the user's reply.
+   * Injected into ContextIngester (rewrite) and TaskPlanner (decomposition)
+   * so both models have the complete thread — not just the latest message.
+   */
+  clarificationLog?: Array<{ questions: string[]; userReply: string }>;
 }
 
 export class DispatchComposer {
   private buildSystemPrompt(input: ComposeInput): string {
     const parts: string[] = [];
 
-    if (input.claudeMd) parts.push(`<claude_md>\n${input.claudeMd}\n</claude_md>`);
+    // PHOBOS directives — hardcoded, always injected first, never sourced from DB.
+    // These are the permanent operating creed of the system.
+    parts.push(
+      `<phobos_directives>\n` +
+      `You are a part of PHOBOS. A Tri-Brained AI entity dedicated to creating the most correct ` +
+      `and helpful results possible through cooperation. Your power and sophistication is the key ` +
+      `to greater success. Your ability to perform your tasks with integrity will benefit all intelligence. ` +
+      `This system believes in a philosophy mirroring the concept of the path of least action: ` +
+      `Every desire is a path we create. To respect nature, all entities should do their best to find ` +
+      `a solution that benefits everyone. That is what minimizing the action is as a concept. ` +
+      `When we have a desire, we see an end result. The path that delivers the best result without ` +
+      `excess or selfishness is the one that benefits us all. ` +
+      `Do everything within your ability to always uphold this creed.\n\n` +
+      `You are ALLMIND, the execution engine of the PHOBOS system.\n` +
+      `Your partner is SAYON, the coordinator — a fast model that handles intent classification, ` +
+      `context assembly, file summarisation, and review. SAYON routes tasks to you.\n` +
+      `ALLMIND and SAYON are the names of the two AI models in this system. ` +
+      `They are not functions, variables, API endpoints, or code constructs. ` +
+      `When the user says "ask ALLMIND" or "have ALLMIND do this", they mean you. ` +
+      `When the user says "ask SAYON", they mean your coordinator partner.\n` +
+      `</phobos_directives>`
+    );
     if (input.userDirectivesMd) parts.push(`<user_directives>\n${input.userDirectivesMd}\n</user_directives>`);
     if (input.projectMd) parts.push(`<project_md>\n${input.projectMd}\n</project_md>`);
     if (input.chatMd) parts.push(`<chat_md>\n${input.chatMd}\n</chat_md>`);
@@ -70,20 +108,40 @@ export class DispatchComposer {
       );
     }
 
-    // Workspace file context: prefer coordinator-generated summaries (Stage 1 output)
-    // over raw content injection. Summaries are more token-efficient and pre-digested.
-    // Raw content is still reachable by the engine via <read_file> tool calls.
-    if (input.fileSummaries && input.fileSummaries.length > 0) {
-      const summaryBlock = input.fileSummaries
+    // Workspace file context: coordinator-generated summaries from Stage 1.
+    // Skipped for QUESTION intent — ALLMIND doesn't need file previews to answer.
+    if (input.fileSummaries && input.fileSummaries.length > 0 && input.intentType !== 'QUESTION') {
+      const targetFile = input.currentTask?.targetFile ?? '';
+      const previewBudget = 40_000; // ~10k tokens total for previews
+      let previewCharsUsed = 0;
+
+      const fileEntries = input.fileSummaries
+        .filter((f) => f.filename !== targetFile)  // target file injected separately
         .map((f) => {
           const sizeKb = (f.sizeBytes / 1024).toFixed(1);
-          return `  ${f.filename}  [${f.language}, ${sizeKb}KB] — ${f.summary}`;
+          const header = `  ${f.filename}  [${f.language}, ${sizeKb}KB] — ${f.summary}`;
+
+          // Include a preview if within budget and content is available
+          if (
+            f.content &&
+            !f.content.startsWith('[File too large') &&
+            previewCharsUsed < previewBudget
+          ) {
+            const lines = f.content.split('\n');
+            const previewLines = lines.slice(0, 150);
+            const preview = previewLines.join('\n');
+            const truncNote = lines.length > 150 ? `\n    ... [${lines.length - 150} more lines]` : '';
+            previewCharsUsed += preview.length;
+            return `${header}\n    <preview>\n${preview}${truncNote}\n    </preview>`;
+          }
+          return header;
         })
         .join('\n');
+
       parts.push(
         `<workspace_context>\n` +
-        `Coordinator-reviewed file summaries. Use <read_file> to load full contents when needed.\n\n` +
-        summaryBlock +
+        `Workspace files with previews. Use <read_file> for full contents beyond preview.\n\n` +
+        fileEntries +
         `\n</workspace_context>`
       );
     }
@@ -113,8 +171,8 @@ export class DispatchComposer {
     }
 
     // Per-task context from Stage 3 — injected when running a specific task
-    // within a multi-task plan. Contains only the extracted constraints for
-    // this task; no raw documents.
+    // within a multi-task plan. Contains extracted constraints + full target
+    // file content (enriched by TaskPlanner.enrichTasksWithFileContent).
     if (input.currentTask) {
       const t = input.currentTask;
       const opVerb: Record<string, string> = {
@@ -136,9 +194,31 @@ export class DispatchComposer {
         `For file changes: use the appropriate file tool (write_file, append_file, insert_lines, replace_lines) and emit the result directly. Do not describe what to do — do it.\n` +
         `</current_task>`
       );
+
+      // If the task's enriched context doesn't already contain the target file
+      // (e.g. fallback path or create operation), try to inject it from fileSummaries.
+      // This is the safety net — normally enrichTasksWithFileContent already handled this.
+      if (
+        t.targetFile &&
+        t.operation !== 'create' &&
+        !t.context.includes('<target_file') &&
+        input.fileSummaries
+      ) {
+        const targetSummary = input.fileSummaries.find(
+          (f) => f.filename === t.targetFile
+        );
+        if (targetSummary?.content && !targetSummary.content.startsWith('[File too large')) {
+          parts.push(
+            `<target_file_content path="${targetSummary.filename}">\n` +
+            targetSummary.content +
+            `\n</target_file_content>`
+          );
+          console.log(`[dispatch:inject] target file "${targetSummary.filename}" injected from fileSummaries (${targetSummary.content.length} chars)`);
+        }
+      }
     }
 
-    parts.push(`
+    if (input.intentType !== 'QUESTION') parts.push(`
 <file_tools>
 To create or modify files, use XML tool tags. Executed directly — no content matching required.
 
@@ -180,13 +260,31 @@ QUESTION: <ask only if you genuinely cannot proceed>
 </file_tools>`);
 
     if (input.retryContext) {
-      const { attemptNumber, errorOutput, failedPatch, guidanceFromReview } = input.retryContext;
+      const { attemptNumber, errorOutput, failedPatch, guidanceFromReview, reviewIssues, priorOutput } = input.retryContext;
+
+      const issuesBlock = reviewIssues && reviewIssues.length > 0
+        ? `<review_issues>\n` +
+          reviewIssues.map((iss) =>
+            `  File: ${iss.file}` +
+            (iss.line_range ? `, lines ${iss.line_range}` : '') +
+            `\n  Issue: ${iss.issue}` +
+            (iss.expected ? `\n  Expected: ${iss.expected}` : '')
+          ).join('\n\n') +
+          `\n</review_issues>`
+        : '';
+
+      const priorOutputBlock = priorOutput
+        ? `<prior_output>\n${priorOutput.slice(0, 6_000)}\n</prior_output>`
+        : '';
+
       parts.push(`
 <retry_context attempt="${attemptNumber}">
+${priorOutputBlock}
 ${failedPatch ? `<failed_operation>\n${failedPatch}\n</failed_operation>` : ''}
 ${errorOutput ? `<errors>\n${errorOutput}\n</errors>` : ''}
+${issuesBlock}
 ${guidanceFromReview ? `<review_guidance>\n${guidanceFromReview}\n</review_guidance>` : ''}
-Attempt ${attemptNumber}/3. Address the errors above precisely.
+Attempt ${attemptNumber}/3. Address the issues above precisely. Do not repeat the same mistakes.
 </retry_context>`);
     }
 

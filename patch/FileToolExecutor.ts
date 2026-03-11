@@ -1,6 +1,13 @@
 import fs from 'fs/promises';
 import path from 'path';
+import os from 'os';
+import { randomBytes } from 'crypto';
 import type { FileToolCall, FileToolResult } from '../ai/FileTools.js';
+
+export interface StagedFileToolResult extends FileToolResult {
+  /** Absolute path to the temp file holding the computed result. Undefined for read_file. */
+  stagedPath?: string;
+}
 
 /**
  * Executes file tool calls against a workspace directory.
@@ -32,8 +39,10 @@ export class FileToolExecutor {
         case 'read_file':
           return await this.readFile(absPath, call.path);
 
-        default:
-          return { tool: (call as FileToolCall).tool, path: call.path, success: false, error: 'Unknown tool' };
+        default: {
+          const unknown = call as FileToolCall;
+          return { tool: unknown.tool, path: unknown.path, success: false, error: 'Unknown tool' };
+        }
       }
     } catch (err) {
       return {
@@ -55,6 +64,101 @@ export class FileToolExecutor {
         console.error(`[FileToolExecutor] ${call.tool} failed on ${call.path}: ${result.error}`);
       }
     }
+    return results;
+  }
+
+  /**
+   * Simulates all write tool calls — computes the result for each operation
+   * (reading source files from the real workspace as needed) but writes output
+   * to a temporary directory instead of the workspace.
+   *
+   * Returns StagedFileToolResult with a stagedPath pointing to the temp file.
+   * read_file calls pass through to the real workspace unchanged.
+   * The caller is responsible for cleaning up the staged temp directory.
+   */
+  async simulateAll(calls: FileToolCall[]): Promise<StagedFileToolResult[]> {
+    const stagingDir = path.join(os.tmpdir(), 'phobos-stage', randomBytes(8).toString('hex'));
+    await fs.mkdir(stagingDir, { recursive: true });
+
+    const results: StagedFileToolResult[] = [];
+    for (const call of calls) {
+      if (call.tool === 'read_file') {
+        // Reads always go to the real workspace — no staging needed
+        const result = await this.execute(call);
+        results.push(result);
+        continue;
+      }
+
+      try {
+        const realAbsPath = this.resolveSafe(call.path);
+        const stagedAbsPath = path.join(stagingDir, call.path.replace(/[/\\]/g, '__'));
+
+        let finalContent: string;
+
+        switch (call.tool) {
+          case 'write_file': {
+            finalContent = call.content;
+            break;
+          }
+          case 'append_file': {
+            let existing = '';
+            try { existing = await fs.readFile(realAbsPath, 'utf-8'); } catch { /* new file */ }
+            const separator = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
+            finalContent = existing + separator + call.content;
+            break;
+          }
+          case 'insert_lines': {
+            const existing = await fs.readFile(realAbsPath, 'utf-8');
+            const lines = existing.split('\n');
+            const insertAt = Math.min(Math.max(call.afterLine, 0), lines.length);
+            lines.splice(insertAt, 0, ...call.content.split('\n'));
+            finalContent = lines.join('\n');
+            break;
+          }
+          case 'replace_lines': {
+            const existing = await fs.readFile(realAbsPath, 'utf-8');
+            const lines = existing.split('\n');
+            const start = Math.max(call.startLine - 1, 0);
+            const end = Math.min(call.endLine - 1, lines.length - 1);
+            lines.splice(start, end - start + 1, ...call.content.split('\n'));
+            finalContent = lines.join('\n');
+            break;
+          }
+          case 'delete_lines': {
+            const existing = await fs.readFile(realAbsPath, 'utf-8');
+            const lines = existing.split('\n');
+            const start = Math.max(call.startLine - 1, 0);
+            const end = Math.min(call.endLine - 1, lines.length - 1);
+            lines.splice(start, end - start + 1);
+            finalContent = lines.join('\n');
+            break;
+          }
+          default: {
+            const unknown = call as FileToolCall;
+            results.push({ tool: unknown.tool, path: unknown.path, success: false, error: 'Unknown tool' });
+            continue;
+          }
+        }
+
+        await fs.writeFile(stagedAbsPath, finalContent, 'utf-8');
+        results.push({
+          tool: call.tool,
+          path: call.path,
+          success: true,
+          content: finalContent,
+          lineCount: finalContent.split('\n').length,
+          stagedPath: stagedAbsPath,
+        });
+      } catch (err) {
+        results.push({
+          tool: call.tool,
+          path: call.path,
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     return results;
   }
 

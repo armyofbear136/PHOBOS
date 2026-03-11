@@ -2,6 +2,70 @@ import OpenAI from 'openai';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 import { ModelConfigStore, PROVIDERS, type RoleConfig } from '../db/ModelConfigStore.js';
 import { reconcilePhobosServers } from '../phobos/LlamaServerManager.js';
+import { PromptLogStore, type PromptStage } from '../db/PromptLogStore.js';
+
+/**
+ * Thread-local logging context. Set this before any pipeline call so that
+ * coordinatorCall / coordinatorStream / engineStream can log to prompt_log
+ * without needing every call site to pass thread/message IDs explicitly.
+ *
+ * Usage:
+ *   setLogContext({ threadId, messageId });   // at turn start
+ *   clearLogContext();                         // at turn end (or in finally)
+ */
+let _logCtx: { threadId: string; messageId?: string | null } | null = null;
+
+export function setLogContext(ctx: { threadId: string; messageId?: string | null }): void {
+  _logCtx = ctx;
+}
+export function clearLogContext(): void {
+  _logCtx = null;
+}
+
+async function writePromptLog(opts: {
+  role: 'sayon' | 'allmind';
+  stage: PromptStage;
+  model: string;
+  prompt: string;
+  response: string;
+  latencyMs: number;
+}): Promise<void> {
+  if (!_logCtx) return; // no context set — skip silently
+  try {
+    const db = DatabaseManager.getInstance();
+    const store = new PromptLogStore(db);
+    await store.insert({
+      threadId:  _logCtx.threadId,
+      messageId: _logCtx.messageId ?? null,
+      role:      opts.role,
+      stage:     opts.stage,
+      model:     opts.model,
+      prompt:    opts.prompt,
+      response:  opts.response,
+      latencyMs: opts.latencyMs,
+    });
+  } catch (err) {
+    // Never let logging crash the pipeline
+    console.warn('[promptLog] write failed:', err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * Formats a messages array into a readable prompt string for logging.
+ * Shows role labels and full content so the export reads like a script.
+ */
+function formatPromptForLog(
+  messages: Array<{ role: string; content: string }>
+): string {
+  return messages.map(m => {
+    const label =
+      m.role === 'system'    ? '### SYSTEM'    :
+      m.role === 'user'      ? '### USER'      :
+      m.role === 'assistant' ? '### ASSISTANT' :
+      `### ${m.role.toUpperCase()}`;
+    return `${label}\n${m.content}`;
+  }).join('\n\n');
+}
 
 export let coordinatorClient: OpenAI = new OpenAI({
   baseURL: 'http://localhost:52625/v1',
@@ -286,8 +350,10 @@ export async function coordinatorCall(opts: {
   maxTokens: number;
   temperature: number;
   mode?: 'think' | 'no_think' | 'none';
+  stage?: PromptStage;
 }): Promise<string> {
   const { mode = 'think' } = opts;
+  const t0 = Date.now();
   const { messages: stratMsgs, systemPrompt: stratSystem } = applyThinkingStrategy(
     opts.messages,
     opts.systemPrompt,
@@ -361,7 +427,16 @@ export async function coordinatorCall(opts: {
     }
   }
 
-  return outputBuf.trim();
+  const _ccResult = outputBuf.trim();
+  await writePromptLog({
+    role: 'sayon',
+    stage: opts.stage ?? 'other',
+    model: COORDINATOR_MODEL,
+    prompt: formatPromptForLog(allMessages),
+    response: _ccResult,
+    latencyMs: Date.now() - t0,
+  });
+  return _ccResult;
 }
 
 /**
@@ -374,8 +449,10 @@ export async function coordinatorStream(opts: {
   temperature: number;
   mode?: 'think' | 'no_think' | 'none';
   onThinkToken?: (token: string) => void;
+  stage?: PromptStage;
 }): Promise<string> {
   const { mode = 'think', onThinkToken } = opts;
+  const t0 = Date.now();
   const { messages: stratMsgs, systemPrompt: stratSystem } = applyThinkingStrategy(
     opts.messages,
     opts.systemPrompt,
@@ -465,7 +542,16 @@ export async function coordinatorStream(opts: {
     }
   }
 
-  return outputBuf.trim();
+  const _csResult = outputBuf.trim();
+  await writePromptLog({
+    role: 'sayon',
+    stage: opts.stage ?? 'other',
+    model: COORDINATOR_MODEL,
+    prompt: formatPromptForLog(allMessages as Array<{ role: string; content: string }>),
+    response: _csResult,
+    latencyMs: Date.now() - t0,
+  });
+  return _csResult;
 }
 
 /**
@@ -482,8 +568,10 @@ export async function engineStream(opts: {
   temperature: number;
   mode?: 'think' | 'no_think' | 'none';
   onThinkToken?: (token: string) => void;
+  stage?: PromptStage;
 }): Promise<string> {
   const { mode = 'think', onThinkToken } = opts;
+  const t0 = Date.now();
 
   // Use module-level vars directly — we are in the same module so no CJS binding issue.
   const liveProvider = ENGINE_PROVIDER;
@@ -561,7 +649,16 @@ export async function engineStream(opts: {
         } catch { /* malformed chunk */ }
       }
     }
-    return outputBuf.trim();
+    const _esPhobosResult = outputBuf.trim();
+    await writePromptLog({
+      role: 'allmind',
+      stage: opts.stage ?? 'other',
+      model: liveModel,
+      prompt: formatPromptForLog(allMessages as Array<{ role: string; content: string }>),
+      response: _esPhobosResult,
+      latencyMs: Date.now() - t0,
+    });
+    return _esPhobosResult;
   }
 
   // Non-phobos: use OpenAI SDK stream.
@@ -610,5 +707,14 @@ export async function engineStream(opts: {
     }
   }
 
-  return outputBuf.trim();
+  const _esResult = outputBuf.trim();
+  await writePromptLog({
+    role: 'allmind',
+    stage: opts.stage ?? 'other',
+    model: liveModel,
+    prompt: formatPromptForLog(allMessages as Array<{ role: string; content: string }>),
+    response: _esResult,
+    latencyMs: Date.now() - t0,
+  });
+  return _esResult;
 }

@@ -44,12 +44,6 @@ jobs:
             fetch-script: scripts/fetch-linux-arm64.js
             build-llama:  linux-arm64
 
-          - label:        android-arm64
-            runner:       ubuntu-latest
-            artifact:     phobos-android-arm64
-            pack:         tar
-            fetch-script: scripts/fetch-android-arm64.js
-            build-llama:  android
 
     steps:
       - uses: actions/checkout@v4
@@ -112,38 +106,6 @@ jobs:
             fi
           done
           chmod +x bin/llama-server-linux-arm64
-
-      - name: Build llama-server for Android (NDK cross-compile)
-        if: matrix.build-llama == 'android'
-        uses: nttld/setup-ndk@v1
-        id: setup-ndk
-        with:
-          ndk-version: r27c
-          local-cache: true
-
-      - name: Build llama-server for Android (cmake)
-        if: matrix.build-llama == 'android'
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y cmake ninja-build
-          git clone --depth 1 https://github.com/ggml-org/llama.cpp llama-src
-          cmake -B llama-src/build llama-src \
-            -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-28 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DLLAMA_BUILD_TESTS=OFF \
-            -DGGML_RPC=ON \
-            -DGGML_OPENMP=OFF \
-            -DGGML_LLAMAFILE=OFF \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DCMAKE_C_FLAGS='-march=armv8.7a' \
-            -DCMAKE_CXX_FLAGS='-march=armv8.7a'
-          cmake --build llama-src/build --config Release -j$(nproc)
-          mkdir -p bin
-          cp llama-src/build/bin/llama-server bin/llama-server-android-arm64
-          chmod +x bin/llama-server-android-arm64
 
       - name: Build
         run: node build.js

@@ -41,7 +41,7 @@ export interface ThinkingSegmentView {
   tokenCount: number;
   startedAt: string;
   completedAt: string | null;
-  live: false;  // always false when fetched from DB; front end sets true for active segment
+  live: boolean;  // true when completed_at is null (segment still being written); false once closed
 }
 
 export class ThinkingSegmentStore {
@@ -121,7 +121,7 @@ export class ThinkingSegmentStore {
       tokenCount:   r.token_count,
       startedAt:    r.started_at,
       completedAt:  r.completed_at,
-      live:         false,
+      live:         r.completed_at === null,
     }));
   }
 
@@ -142,7 +142,7 @@ export class ThinkingSegmentStore {
       tokenCount:   r.token_count,
       startedAt:    r.started_at,
       completedAt:  r.completed_at,
-      live:         false,
+      live:         r.completed_at === null,
     }));
   }
 

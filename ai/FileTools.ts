@@ -34,7 +34,8 @@ export type FileToolCall =
   | { tool: 'insert_lines';  path: string; afterLine: number; content: string }
   | { tool: 'replace_lines'; path: string; startLine: number; endLine: number; content: string }
   | { tool: 'delete_lines';  path: string; startLine: number; endLine: number }
-  | { tool: 'read_file';     path: string };
+  | { tool: 'read_file';     path: string }
+  | { tool: 'generate_image'; path: string; prompt: string };
 
 export interface FileToolResult {
   tool: string;

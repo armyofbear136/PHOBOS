@@ -9,7 +9,8 @@ export type PersistedEventType =
   | 'output_chunk'
   | 'patches_applied'
   | 'activity'
-  | 'agent_state';
+  | 'agent_state'
+  | 'image_complete';
 
 export interface MessageEvent {
   id: string;

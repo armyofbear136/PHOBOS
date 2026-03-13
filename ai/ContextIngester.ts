@@ -242,6 +242,9 @@ export class ContextIngester {
     //                  flag ambiguity, scope tightly to what was asked.
 
     const isQuestion = !synthesisMode && intentType === 'QUESTION';
+    // Image prompts must never be rewritten or have [AMBIGUOUS] injected —
+    // the raw user message is the prompt that goes directly to sd-cli.
+    const isImageRequest = !synthesisMode && intentType === 'IMAGE_REQUEST';
 
     let rewritePrompt: string;
 
@@ -295,6 +298,14 @@ export class ContextIngester {
         `No preamble, nothing outside the JSON.\n\n` +
         `USER REQUEST: ${seedMessage}` +
         workspaceNote;
+
+    } else if (isImageRequest) {
+      // ── Mode 4: Image generation — pass through raw, no rewriting ────────────
+      // The user message IS the image prompt. Any rewriting or [AMBIGUOUS] prefix
+      // corrupts the string that goes directly to sd-cli. Echo back verbatim.
+      rewritePrompt =
+        `Respond with JSON only: {"reformulated":${JSON.stringify(seedMessage)},"summary":"Generate image"}. ` +
+        `No preamble, nothing outside the JSON.`;
 
     } else {
       // ── Mode 3: Execution (CODE_REQUEST / PLAN_REQUEST) ─────────────────────────────

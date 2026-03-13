@@ -3,6 +3,7 @@ import path from 'path';
 import os from 'os';
 import { randomBytes } from 'crypto';
 import type { FileToolCall, FileToolResult } from '../ai/FileTools.js';
+import { generateWithFlux, type ImageGenStatus } from '../phobos/ImageGenerationHandler.js';
 
 export interface StagedFileToolResult extends FileToolResult {
   /** Absolute path to the temp file holding the computed result. Undefined for read_file. */
@@ -14,7 +15,11 @@ export interface StagedFileToolResult extends FileToolResult {
  * All paths are resolved relative to projectRoot and path-traversal-checked.
  */
 export class FileToolExecutor {
-  constructor(private projectRoot: string) {}
+  constructor(
+    private projectRoot: string,
+    /** Thread ID — required for generate_image output path resolution */
+    private threadId: string = 'default',
+  ) {}
 
   async execute(call: FileToolCall): Promise<FileToolResult> {
     try {
@@ -38,6 +43,9 @@ export class FileToolExecutor {
 
         case 'read_file':
           return await this.readFile(absPath, call.path);
+
+        case 'generate_image':
+          return await this.generateImage(call.path, (call as any).prompt ?? '', this.threadId);
 
         default: {
           const unknown = call as FileToolCall;
@@ -82,8 +90,8 @@ export class FileToolExecutor {
 
     const results: StagedFileToolResult[] = [];
     for (const call of calls) {
-      if (call.tool === 'read_file') {
-        // Reads always go to the real workspace — no staging needed
+      if (call.tool === 'read_file' || call.tool === 'generate_image') {
+        // Reads and image generation bypass staging — execute directly
         const result = await this.execute(call);
         results.push(result);
         continue;
@@ -240,6 +248,50 @@ export class FileToolExecutor {
       .join('\n');
     return { tool: 'read_file', path: relPath, success: true, content: numbered, lineCount: content.split('\n').length };
   }
+
+  // ── Image generation ────────────────────────────────────────────────────
+
+  private async generateImage(path: string, prompt: string, threadId: string): Promise<FileToolResult> {
+    if (!prompt?.trim()) {
+      return { tool: 'generate_image', path, success: false, error: 'generate_image requires a non-empty prompt' };
+    }
+
+    // Do NOT call buildSdConfig or snapshotServerOnDevice here.
+    // generateWithFlux owns the full lifecycle: preliminary config → stop server →
+    // re-query VRAM with driver-settle polling → final config → spawn sd-cli → restart server.
+    // Passing sdCfg=null tells it to manage everything itself.
+
+    let lastStatus: ImageGenStatus | null = null;
+    try {
+      for await (const status of generateWithFlux(threadId, prompt, {}, null, null)) {
+        lastStatus = status;
+        if (this.onImageStatus) this.onImageStatus(status);
+        if (status.phase === 'error') {
+          return { tool: 'generate_image', path, success: false, error: status.error ?? status.message };
+        }
+      }
+    } catch (err) {
+      return { tool: 'generate_image', path, success: false, error: (err as Error).message };
+    }
+
+    if (lastStatus?.phase === 'done' && lastStatus.result) {
+      return {
+        tool: 'generate_image',
+        path: lastStatus.result.outputPath,
+        success: true,
+        content: lastStatus.result.outputPath,
+        lineCount: 0,
+      };
+    }
+
+    return { tool: 'generate_image', path, success: false, error: 'Generation did not complete' };
+  }
+
+  /**
+   * Optional callback — set by the route layer to stream image generation
+   * status events to the frontend via SSE as they occur.
+   */
+  onImageStatus?: (status: ImageGenStatus) => void;
 
   // ── Safety ──────────────────────────────────────────────────────────────
 

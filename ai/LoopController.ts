@@ -18,6 +18,8 @@ import type { FileToolResult } from './FileTools.js';
 import fs from 'fs/promises';
 import path from 'path';
 
+const DEBUG = process.env.PHOBOS_DEBUG === '1' || process.env.PHOBOS_DEBUG === 'true';
+const dbg = (...args: unknown[]) => { if (DEBUG) console.log(...args); };
 /**
  * ToolTagFilter — streaming XML suppressor for file tool calls.
  *
@@ -37,13 +39,13 @@ import path from 'path';
 class ToolTagFilter {
   private static readonly TOOL_NAMES = [
     'write_file', 'append_file', 'insert_lines',
-    'replace_lines', 'delete_lines', 'read_file',
+    'replace_lines', 'delete_lines', 'read_file', 'generate_image',
   ] as const;
 
   // Build a regex that matches any opening tool tag (with optional attributes)
-  // OR a self-closing read_file tag. Anchored to catch across chunk boundaries
+  // OR a self-closing tag. Anchored to catch across chunk boundaries
   // via the accumulation buffer.
-  private static readonly OPEN_RE  = /<(write_file|append_file|insert_lines|replace_lines|delete_lines|read_file)(\s[^>]*)?\/?>|<\/?(write_file|append_file|insert_lines|replace_lines|delete_lines|read_file)>/;
+  private static readonly OPEN_RE  = /<(write_file|append_file|insert_lines|replace_lines|delete_lines|read_file|generate_image)(\s[^>]*)?\/?>|<\/?(write_file|append_file|insert_lines|replace_lines|delete_lines|read_file|generate_image)>/;
 
   private buf = '';          // accumulates unclassified input
   private insideTag = '';    // name of currently-open tool tag, or ''
@@ -145,6 +147,8 @@ export interface LoopOptions {
   maxAttempts?: number;
   buildCommand?: string;
   projectRoot?: string;
+  /** Thread ID — passed to FileToolExecutor for image output path resolution */
+  threadId?: string;
   /** Absolute path to the workspace directory — used by Stage 1 file ingestion */
   workspaceDir?: string;
   skipBuild?: boolean;
@@ -158,6 +162,8 @@ export interface LoopOptions {
   onAgentState?: (event: AgentStateEvent) => void;
   /** Called periodically with buffered output tokens — enables real-time DB persistence */
   onOutputChunk?: (content: string, messageId?: string) => Promise<void>;
+  /** Called during image generation phases — wire to SSE for frontend status updates */
+  onImageStatus?: (status: import('../phobos/ImageGenerationHandler.js').ImageGenStatus) => void;
 }
 
 export interface AttemptResult {
@@ -282,7 +288,10 @@ export class LoopController {
       this.options.onAgentState?.(event);
     });
 
-    const toolExecutor = new FileToolExecutor(projectRoot);
+    const toolExecutor = new FileToolExecutor(projectRoot, this.options.threadId ?? 'default');
+    if (this.options.onImageStatus) {
+      toolExecutor.onImageStatus = this.options.onImageStatus;
+    }
     const syntaxValidator = new SyntaxValidator();
     const buildRunner = new BuildRunner(projectRoot);
     const errorFormatter = new ErrorFormatter();
@@ -430,7 +439,7 @@ export class LoopController {
           type: 'clarification_needed',
           questions: plan.clarificationQuestions,
         });
-        console.log(`[loop:clarification] ${plan.clarificationQuestions.length} question(s) — returning early`);
+        dbg(`[loop:clarification] ${plan.clarificationQuestions.length} question(s) — returning early`);
 
         agentState.idle();
         this.sendEvent(reply, { type: 'complete', approved: true, bestAttempt: 0 });
@@ -444,10 +453,27 @@ export class LoopController {
         { type: 'coordinator', content: plan.planSummary, source: 'engine' },
         assistantMessageId
       );
-      console.log(`[loop:plan] ${tasks.length} task(s) planned`);
+      dbg(`[loop:plan] ${tasks.length} task(s) planned`);
       for (const t of tasks) {
-        console.log(`[loop:plan:task${t.index}] op=${t.operation} file="${t.targetFile}" title="${t.title}"`);
+        dbg(`[loop:plan:task${t.index}] op=${t.operation} file="${t.targetFile}" title="${t.title}"`);
       }
+    } else if (composeInput.intentType === 'IMAGE_REQUEST') {
+      // Image generation path — bypass planning entirely.
+      // Inject a fixed directive so ALLMIND emits <generate_image .../> immediately
+      // without re-reasoning about file formats, parameters, or clarifications.
+      const imagePrompt = ingestion.rewrittenUserMessage;
+      tasks = [{
+        index: 1,
+        title: 'Generate image',
+        targetFile: '',
+        operation: 'create' as const,
+        prompt:
+          `Emit exactly one generate_image tag now. ` +
+          `Do not ask questions. Do not explain. Do not add any other output. ` +
+          `Use this prompt verbatim: ${imagePrompt}\n\n` +
+          `<generate_image prompt="${imagePrompt}"/>`,
+        context: 'Image generation request. Use the generate_image tool only.',
+      }];
     } else {
       // Q&A / direct answer path — wrap whole request as single task
       tasks = [{
@@ -506,7 +532,7 @@ export class LoopController {
           retryContext: retryContext ? { ...retryContext, attemptNumber: attempt } : undefined,
         });
 
-        console.log(`[loop:attempt] task=${task.index}/${total} attempt=${attempt}/${maxAttempts} retryCtx=${retryContext ? 'yes' : 'none'}`);
+        dbg(`[loop:attempt] task=${task.index}/${total} attempt=${attempt}/${maxAttempts} retryCtx=${retryContext ? 'yes' : 'none'}`);
         agentState.transition('thinking', task.title.slice(0, 20), task.index, total);
         sendStatus(`[${task.index}/${total}] Engine thinking…`);
 
@@ -527,7 +553,7 @@ export class LoopController {
           break;
         }
 
-        console.log(`[loop:parse] task=${task.index} toolCalls=${parsed.toolCalls.length} hasRead=${parsed.hasReadRequest} tools=${JSON.stringify(parsed.toolCalls.map(c => c.tool + ':' + c.path))}`);
+        dbg(`[loop:parse] task=${task.index} toolCalls=${parsed.toolCalls.length} hasRead=${parsed.hasReadRequest} tools=${JSON.stringify(parsed.toolCalls.map(c => c.tool + ':' + c.path))}`);
         // ── read_file → act cycle ──────────────────────────────────────────────
         let currentOutput = attemptResult.output;
         let currentParsed = parsed;
@@ -584,7 +610,7 @@ export class LoopController {
           }
         }
 
-        console.log(`[loop:exec] task=${task.index} writes=${writeCalls.length} results=${JSON.stringify(toolResults.map(r => r.tool + ':' + r.path + '=' + (r.success ? 'ok' : r.error?.slice(0,60))))}`);
+        dbg(`[loop:exec] task=${task.index} writes=${writeCalls.length} results=${JSON.stringify(toolResults.map(r => r.tool + ':' + r.path + '=' + (r.success ? 'ok' : r.error?.slice(0,60))))}`);
         const failedOps = toolResults.filter(r => !r.success);
         if (failedOps.length > 0) {
           const errorSummary = failedOps.map(r => `${r.tool} ${r.path}: ${r.error}`).join('\n');
@@ -646,7 +672,7 @@ export class LoopController {
             sendStatus('Running build…');
             const buildResult = await buildRunner.run(buildCommand);
             if (!buildResult.success && this.isNoInputsError(buildResult)) {
-              console.log('[LoopController] Build: no-inputs error — skipped');
+              dbg('[LoopController] Build: no-inputs error — skipped');
             } else if (!buildResult.success) {
               this.sendEvent(reply, { type: 'build_result', success: false, errors: errorFormatter.formatBuildErrors(buildResult) });
               if (attempt < maxAttempts) {
@@ -669,10 +695,10 @@ export class LoopController {
           .map(r => `File: ${r.path}\nOperation: ${r.tool}\n---\n${(r.content ?? '').slice(0, 4_000)}\n---`)
           .join('\n\n');
         agentState.transition('reviewing', task.title.slice(0, 20), task.index, total);
-        console.log(`[loop:review:in] task=${task.index} prompt="${task.prompt.slice(0, 120).replace(/\n/g, ' ')}" changed="${changedSummary}" outputLen=${reviewOutput.length}`);
+        dbg(`[loop:review:in] task=${task.index} prompt="${task.prompt.slice(0, 120).replace(/\n/g, ' ')}" changed="${changedSummary}" outputLen=${reviewOutput.length}`);
         const review = await this.runReviewDispatch(task.prompt, reviewOutput, changedSummary, sendThinking);  // coordinator thinking
 
-        console.log(`[loop:review:out] task=${task.index} score=${review.score} decision=${review.decision} guidance="${(review.guidance ?? '').slice(0, 120)}"`);
+        dbg(`[loop:review:out] task=${task.index} score=${review.score} decision=${review.decision} guidance="${(review.guidance ?? '').slice(0, 120)}"`);
         attemptResult.reviewScore = review.score;
         attemptResult.approved = review.decision === 'APPROVE';
         this.sendEvent(reply, { type: 'review', score: review.score, decision: review.decision, guidance: review.guidance });
@@ -697,11 +723,11 @@ export class LoopController {
 
         // REJECT is terminal — do not retry. NEEDS_REVISION at maxAttempts also lands here.
         taskFailReason = review.guidance ?? 'Max attempts reached';
-        console.log(`[loop:exit] task=${task.index} attempt=${attempt} REJECT/maxAttempts — breaking`);
+        dbg(`[loop:exit] task=${task.index} attempt=${attempt} REJECT/maxAttempts — breaking`);
         break;
       } // end attempt loop
 
-      console.log(`[loop:task:done] task=${task.index} approved=${taskApproved} failReason="${taskFailReason ?? ''}"`);
+      dbg(`[loop:task:done] task=${task.index} approved=${taskApproved} failReason="${taskFailReason ?? ''}"`);
       if (taskApproved) {
         this.sendEvent(reply, { type: 'task_complete', taskIndex: task.index, total, title: task.title });
       } else {
@@ -736,7 +762,7 @@ export class LoopController {
           sendEngineThinking,
           assistantMessageId,
         );
-        console.log(`[loop:validation] summary="${(validationSummary ?? '').slice(0, 200).replace(/\n/g, ' ')}"`);
+        dbg(`[loop:validation] summary="${(validationSummary ?? '').slice(0, 200).replace(/\n/g, ' ')}"`);
       } catch (err) {
         console.warn('[LoopController] Stage 4.5 final validation failed (non-fatal):', err);
       }
@@ -968,7 +994,7 @@ export class LoopController {
 
     this.budgetMonitor.recordTokens(taskId, Math.ceil(accumulatedThinking.length / 4));
 
-    console.log(`[LoopController:engine:thinking_complete] length=${accumulatedThinking.length} msgId=${assistantMessageId?.slice(0,8) ?? 'undefined'}`);
+    dbg(`[LoopController:engine:thinking_complete] length=${accumulatedThinking.length} msgId=${assistantMessageId?.slice(0,8) ?? 'undefined'}`);
     if (accumulatedThinking) {
       await this.persistAndSend(reply, { type: 'thinking_complete', content: accumulatedThinking, source: 'engine' }, assistantMessageId);
       await this.options.onThinkPhaseComplete?.('engine').catch(() => {});
@@ -1032,7 +1058,7 @@ export class LoopController {
     const isPhobosLive = /127\.0\.0\.1:526/.test(engineBaseURL) || /localhost:526/.test(engineBaseURL);
 
     const engineExtraBody = getThinkingExtraBody(liveProvider, liveModel, 'think');
-    console.log(`[engine:config] provider=${liveProvider} model=${liveModel} baseURL=${engineBaseURLEarly} extraBody=${JSON.stringify(engineExtraBody)}`);
+    dbg(`[engine:config] provider=${liveProvider} model=${liveModel} baseURL=${engineBaseURLEarly} extraBody=${JSON.stringify(engineExtraBody)}`);
     const engineCallParams = {
       model: liveModel,
       messages: finalMessages as Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
@@ -1095,7 +1121,7 @@ export class LoopController {
         );
       } catch (createErr: unknown) {
         console.error(`[engine:create:error] ${createErr instanceof Error ? createErr.message : String(createErr)}`);
-        console.log('[engine:create:retry] Retrying without extra_body...');
+        dbg('[engine:create:retry] Retrying without extra_body...');
         const fallbackParams = { ...engineCallParams };
         delete (fallbackParams as Record<string, unknown>).extra_body;
         stream = await engineClient.chat.completions.create(
@@ -1119,15 +1145,15 @@ export class LoopController {
       let emittedOutputLen = 0;
       let _dbgN = 0;
       const engineStrategy = getThinkingStrategy(liveProvider, liveModel);
-      console.log(`[engine:strategy] thinkingPath=${engineStrategy.thinkingPath}`);
+      dbg(`[engine:strategy] thinkingPath=${engineStrategy.thinkingPath}`);
 
       for await (const delta of deltaIterator()) {
         if (streamAborted) break;
 
         // Log first 3 chunks fully
         if (_dbgN <= 2) {
-          console.log(`[engine:delta:${_dbgN}] keys=${JSON.stringify(Object.keys(delta ?? {}))}`);
-          console.log(`[engine:delta:${_dbgN}] content=${JSON.stringify(delta?.content)} thinking=${JSON.stringify(delta?.thinking)} reasoning=${JSON.stringify(delta?.reasoning_content ?? delta?.reasoning)}`);
+          dbg(`[engine:delta:${_dbgN}] keys=${JSON.stringify(Object.keys(delta ?? {}))}`);
+          dbg(`[engine:delta:${_dbgN}] content=${JSON.stringify(delta?.content)} thinking=${JSON.stringify(delta?.thinking)} reasoning=${JSON.stringify(delta?.reasoning_content ?? delta?.reasoning)}`);
         }
         _dbgN++;
 
@@ -1141,7 +1167,7 @@ export class LoopController {
             // Strip any <think>/<think> wrapper tags some providers inject into the field
             thinkToken = thinkToken.replace(/<\/?think>/g, '');
             if (thinkToken) {
-              if (_dbgN <= 3) console.log(`[engine:think:field] ${JSON.stringify(thinkToken.slice(0, 80))}`);
+              if (_dbgN <= 3) dbg(`[engine:think:field] ${JSON.stringify(thinkToken.slice(0, 80))}`);
               // Send directly — do NOT feed parser (would cause double-emit when outToken arrives)
               fieldThinkBuf += thinkToken;
               sendThinking(thinkToken);
@@ -1164,7 +1190,7 @@ export class LoopController {
           if (outToken != null) {
             _dbgN++;
             if (_dbgN <= 3 || outToken.includes('<think') || outToken.includes('</think')) {
-              console.log(`[engine:${_dbgN}] raw=${JSON.stringify(outToken.slice(0, 100))}`);
+              dbg(`[engine:${_dbgN}] raw=${JSON.stringify(outToken.slice(0, 100))}`);
             }
           }
 
@@ -1271,7 +1297,7 @@ export class LoopController {
       `CHANGES MADE:\n${changedSummary}\n\n` +
       `FILE CONTENTS AFTER CHANGES:\n${output.slice(0, 8_000)}`;
 
-    console.log(`[review:prompt] ${reviewPrompt.slice(0, 400).replace(/\n/g, ' ')}`);
+    dbg(`[review:prompt] ${reviewPrompt.slice(0, 400).replace(/\n/g, ' ')}`);
     try {
       const stripped = await coordinatorStream({
         systemPrompt: reviewSystem,
@@ -1281,7 +1307,7 @@ export class LoopController {
         mode: 'think',
         onThinkToken: sendThinking,
       });
-      console.log(`[review:raw] "${stripped.slice(0, 300).replace(/\n/g, ' ')}"`);
+      dbg(`[review:raw] "${stripped.slice(0, 300).replace(/\n/g, ' ')}"`);
       const jsonMatch = stripped.match(/\{[\s\S]*\}/);
       const cleaned = jsonMatch ? jsonMatch[0] : stripped;
       const parsed = JSON.parse(cleaned);

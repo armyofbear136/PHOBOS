@@ -7,6 +7,25 @@ import {
   getSpec,
   deleteModel,
   GGUF_CATALOGUE,
+  FLUX_CATALOGUE,
+  FLUX_AUX_REQUIRED,
+  FLUX_T5_Q3,
+  FLUX_T5_Q4,
+  FLUX_T5_Q8,
+  SDXL_AUX_REQUIRED,
+  IMAGE_MODEL_CATALOGUE,
+  CHROMA_CATALOGUE,
+  SDXL_CATALOGUE,
+  getFluxSpec,
+  getImageModelSpec,
+  isFluxDownloaded,
+  isImageModelDownloaded,
+  isFluxAuxDownloaded,
+  getAuxFilesForModel,
+  recommendT5Encoder,
+  downloadFluxModel,
+  fluxModelPath,
+  fluxAuxPath,
 } from '../phobos/PhobosLocalManager.js';
 import {
   startServer,
@@ -181,6 +200,155 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       } catch (err) {
         return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
       }
+    }
+  );
+
+  // ── Image model routes ───────────────────────────────────────────────────
+
+  // GET /api/phobos/image/catalogue
+  // Returns full catalogue of all image models across all runner profiles,
+  // each with download state and hardware-selected aux file recommendations.
+  fastify.get('/api/phobos/image/catalogue', async (_req, reply) => {
+    const hw = await detectHardware();
+
+    const backendScore = (g: typeof hw.gpus[0]): number =>
+      (g.unifiedMemory || g.index >= 100) ? 0
+      : g.backend === 'cuda'  ? 3
+      : g.backend === 'metal' ? 2
+      : 1;
+    const bestGpu = [...hw.gpus]
+      .sort((a, b) => {
+        const scoreDiff = backendScore(b) - backendScore(a);
+        return scoreDiff !== 0 ? scoreDiff : b.vramGb - a.vramGb;
+      })[0] ?? null;
+
+    const totalVramGb = bestGpu?.vramGb ?? 0;
+    const isUnified   = bestGpu?.unifiedMemory === true || (bestGpu?.index ?? 0) >= 100;
+
+    const hardware = {
+      totalVramGb,
+      isUnifiedMemory: isUnified,
+      gpuName:  bestGpu?.name ?? 'Unknown',
+      backend:  bestGpu?.backend ?? 'cpu',
+    };
+
+    const models = IMAGE_MODEL_CATALOGUE.map(spec => {
+      // Determine aux files for this model
+      let auxFiles: typeof FLUX_AUX_REQUIRED;
+      let recommendedT5: string | undefined;
+
+      if (spec.runnerProfile === 'flux') {
+        const t5 = recommendT5Encoder(spec, totalVramGb, isUnified);
+        recommendedT5 = t5.id;
+        auxFiles = [...FLUX_AUX_REQUIRED, t5];
+      } else {
+        auxFiles = [...SDXL_AUX_REQUIRED];
+      }
+
+      const mainDownloaded = isImageModelDownloaded(spec);
+      const auxStatus = auxFiles.map(a => ({
+        id:         a.id,
+        label:      a.label,
+        sizeBytes:  a.sizeBytes,
+        downloaded: isFluxAuxDownloaded(a),
+        license:    a.license,
+        licenseUrl: a.licenseUrl,
+      }));
+      const allDownloaded = mainDownloaded && auxStatus.every(a => a.downloaded);
+      const totalDownloadBytes = (mainDownloaded ? 0 : spec.sizeBytes)
+        + auxStatus.reduce((s, a) => s + (a.downloaded ? 0 : a.sizeBytes), 0);
+
+      return {
+        modelId:            spec.modelId,
+        label:              spec.label,
+        displayName:        spec.displayName,
+        runnerProfile:      spec.runnerProfile,
+        category:           spec.category,
+        variant:            spec.variant,
+        quantization:       spec.quantization,
+        sizeBytes:          spec.sizeBytes,
+        vramRequiredGb:     spec.vramRequiredGb,
+        license:            spec.license,
+        licenseUrl:         spec.licenseUrl,
+        estSecondsCuda:     spec.estSecondsCuda,
+        estSecondsVulkan:   spec.estSecondsVulkan,
+        downloaded:         allDownloaded,
+        mainDownloaded,
+        auxFiles:           auxStatus,
+        ...(recommendedT5 ? { recommendedT5 } : {}),
+        totalDownloadBytes,
+      };
+    });
+
+    return reply.send({ models, hardware });
+  });
+
+  // GET /api/phobos/image/download?modelId=<id>
+  // SSE stream — downloads main model + all aux files for the given model.
+  fastify.get<{ Querystring: { modelId: string } }>(
+    '/api/phobos/image/download',
+    async (req, reply) => {
+      const { modelId } = req.query;
+      const spec = getImageModelSpec(modelId);
+      if (!spec) {
+        return reply.status(400).send({ error: `Unknown image model: ${modelId}` });
+      }
+
+      const hw        = await detectHardware();
+      const _bScore   = (g: typeof hw.gpus[0]): number =>
+        (g.unifiedMemory || g.index >= 100) ? 0
+        : g.backend === 'cuda'  ? 3
+        : g.backend === 'metal' ? 2
+        : 1;
+      const bestGpu   = [...hw.gpus].sort((a, b) => { const d = _bScore(b) - _bScore(a); return d !== 0 ? d : b.vramGb - a.vramGb; })[0] ?? null;
+      const totalVram = bestGpu?.vramGb ?? 0;
+      const isUnified = bestGpu?.unifiedMemory === true || (bestGpu?.index ?? 0) >= 100;
+
+      let auxFiles: typeof FLUX_AUX_REQUIRED;
+      if (spec.runnerProfile === 'flux') {
+        const t5 = recommendT5Encoder(spec, totalVram, isUnified);
+        auxFiles = [...FLUX_AUX_REQUIRED, t5];
+      } else {
+        auxFiles = [...SDXL_AUX_REQUIRED];
+      }
+
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        'Content-Type':                'text/event-stream',
+        'Cache-Control':               'no-cache',
+        'Connection':                  'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+      });
+
+      const send = (data: object) => {
+        reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+
+      try {
+        for await (const progress of downloadFluxModel(spec, auxFiles)) {
+          send(progress);
+          if (progress.error) break;
+        }
+        send({ fileId: 'complete', phase: 'complete', label: 'Done', bytesReceived: 0, bytesTotal: 0, done: true });
+      } catch (err) {
+        send({ fileId: 'error', phase: 'error', label: String(err), bytesReceived: 0, bytesTotal: 0, done: true, error: String(err) });
+      }
+
+      reply.raw.end();
+    }
+  );
+
+  // DELETE /api/phobos/image/:modelId
+  fastify.delete<{ Params: { modelId: string } }>(
+    '/api/phobos/image/:modelId',
+    async (req, reply) => {
+      const spec = getImageModelSpec(req.params.modelId);
+      if (!spec) return reply.status(404).send({ error: 'Unknown image model' });
+      const p = fluxModelPath(spec);
+      const fs = await import('fs');
+      if (!fs.existsSync(p)) return reply.status(404).send({ error: 'File not found' });
+      fs.unlinkSync(p);
+      return reply.send({ ok: true });
     }
   );
 }

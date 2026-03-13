@@ -40,7 +40,7 @@ export class ThreadWorkspace {
 
   // In-memory cache: threadId → { index, lastScanned }
   private static cache = new Map<string, { index: WorkspaceIndex; lastScanned: number }>();
-  private static CACHE_TTL_MS = 10_000; // Re-scan if >10s since last check
+  private static CACHE_TTL_MS = 2_000; // Re-scan if >2s since last check — keeps manual edits near-instant
 
   private static LANGUAGE_MAP: Record<string, string> = {
     '.ts': 'typescript', '.tsx': 'typescript', '.mts': 'typescript',
@@ -57,6 +57,7 @@ export class ThreadWorkspace {
   private static IGNORE_PATTERNS = [
     'node_modules', '.git', '__pycache__', '.venv', 'venv',
     'dist', 'build', '.next', 'coverage', '.DS_Store',
+    'images',  // media files are tracked separately via addMediaFile, not the text workspace index
   ];
 
   constructor(private db: DatabaseManager) {}

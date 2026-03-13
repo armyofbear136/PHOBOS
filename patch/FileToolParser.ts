@@ -14,7 +14,7 @@ import type { FileToolCall, ParsedToolOutput } from '../ai/FileTools.js';
 export class FileToolParser {
   private static TOOL_NAMES = [
     'write_file', 'append_file', 'insert_lines',
-    'replace_lines', 'delete_lines', 'read_file',
+    'replace_lines', 'delete_lines', 'read_file', 'generate_image',
   ] as const;
 
   parse(output: string): ParsedToolOutput {
@@ -107,8 +107,9 @@ export class FileToolParser {
   }
 
   private buildCall(tagName: string, attrs: Record<string, string>, content: string): FileToolCall | null {
-    const p = attrs['path'];
-    if (!p) return null;
+    const p = attrs['path'] ?? '';
+    // generate_image doesn't require a path — prompt is the key attribute
+    if (!p && tagName !== 'generate_image') return null;
 
     switch (tagName) {
       case 'write_file':
@@ -136,6 +137,9 @@ export class FileToolParser {
 
       case 'read_file':
         return { tool: 'read_file', path: p };
+
+      case 'generate_image':
+        return { tool: 'generate_image', path: p, prompt: attrs['prompt'] ?? '' };
 
       default:
         return null;

@@ -5,6 +5,7 @@ export type IntentType =
   | 'DOCUMENT_EDIT'
   | 'CODE_REQUEST'
   | 'PLAN_REQUEST'
+  | 'IMAGE_REQUEST'
   | 'NEEDS_CLARIFICATION';
 
 export interface ClassifiedIntent {
@@ -29,6 +30,7 @@ QUESTION - Any question, explanation, conversation, creative request, analysis, 
 DOCUMENT_EDIT - Requests to update PHOBOS DIRECTIVES, project.md, or chat.md documents
 CODE_REQUEST - Requests to write, modify, refactor, or debug actual code files or create/edit any files in the workspace
 PLAN_REQUEST - Requests to create a plan, outline an approach, or discuss architecture before any file changes
+IMAGE_REQUEST - Requests to generate, create, draw, or make an image or picture using AI. Phrases like "generate an image", "draw me", "create a picture of", "make an image of", "show me a picture of" all indicate this type
 NEEDS_CLARIFICATION - The request is too vague or ambiguous to act on. Use when: the request uses pronouns like "it" or "that" without clear antecedents, asks for a change but does not specify which file or what kind of change, could be interpreted in multiple incompatible ways, or asks to "fix" something without saying what is broken. It is always better to ask one question than to guess wrong.
 
 Also determine routing — how the request should be handled:
@@ -40,9 +42,11 @@ ROUTING OVERRIDE RULES — these take precedence over the defaults above:
 1. If the user mentions "ALLMIND" by name → always route NEEDS_ALLMIND, regardless of phrasing
 2. If the request involves generating content longer than a short paragraph (documents, guides, articles, code files, scripts) → route NEEDS_ALLMIND even if phrased as a question
 3. If the request asks to "write", "create", "build", "generate", or "make" anything substantial → route NEEDS_ALLMIND
+4. If type is IMAGE_REQUEST → always route NEEDS_ALLMIND, no exceptions
 
 Default toward QUESTION for anything purely conversational, analytical, or informational.
 Only use CODE_REQUEST when the user explicitly wants files written or changed.
+Always use IMAGE_REQUEST when the user wants any kind of image generated — never classify these as QUESTION or CODE_REQUEST.
 Use NEEDS_CLARIFICATION when the request is genuinely ambiguous — do not guess.
 
 Respond with ONLY a JSON object on a single line. No preamble, no explanation.
@@ -109,6 +113,9 @@ export class IntentClassifier {
       if (/write|create|modify|refactor|implement|add.*file|edit.*file/.test(lower)) {
         return { type: 'CODE_REQUEST', confidence: 0.6, routing: 'NEEDS_ALLMIND' };
       }
+      if (/generate.*image|draw|create.*image|make.*image|create.*picture|generate.*picture|show.*picture/.test(lower)) {
+        return { type: 'IMAGE_REQUEST', confidence: 0.6, routing: 'NEEDS_ALLMIND' };
+      }
       return { type: 'QUESTION', confidence: 0.6, routing: 'ANSWER_DIRECTLY' };
     }
   }
@@ -121,6 +128,7 @@ export class IntentClassifier {
       case 'DOCUMENT_EDIT': return 'ANSWER_DIRECTLY';
       case 'CODE_REQUEST': return 'NEEDS_ALLMIND';
       case 'PLAN_REQUEST': return 'NEEDS_ALLMIND';
+      case 'IMAGE_REQUEST': return 'NEEDS_ALLMIND';
       default: return 'ANSWER_DIRECTLY';
     }
   }

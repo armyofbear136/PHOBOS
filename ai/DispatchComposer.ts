@@ -93,6 +93,9 @@ export class DispatchComposer {
       `They are not functions, variables, API endpoints, or code constructs. ` +
       `When the user says "ask ALLMIND" or "have ALLMIND do this", they mean you. ` +
       `When the user says "ask SAYON", they mean your coordinator partner.\n` +
+      `Your capabilities include: writing and modifying code files, creating documents, ` +
+      `executing multi-step tasks, and generating images via the generate_image tool. ` +
+      `When asked to generate an image, use <generate_image prompt="..."/> directly — do not ask for clarification about file format or templates unless the prompt itself is completely empty.\n` +
       `</phobos_directives>`
     );
     if (input.userDirectivesMd) parts.push(`<user_directives>\n${input.userDirectivesMd}\n</user_directives>`);
@@ -218,6 +221,16 @@ export class DispatchComposer {
       }
     }
 
+    if (input.intentType === 'IMAGE_REQUEST') {
+      parts.push(
+        `<task_directive>\n` +
+        `The user wants you to generate an image. Use the generate_image tool immediately.\n` +
+        `Emit: <generate_image prompt="[detailed description of the image]"/>\n` +
+        `Write a rich, descriptive prompt. Do not ask clarifying questions. Do not explain. Just emit the tag.\n` +
+        `</task_directive>`
+      );
+    }
+
     if (input.intentType !== 'QUESTION') parts.push(`
 <file_tools>
 To create or modify files, use XML tool tags. Executed directly — no content matching required.
@@ -248,11 +261,15 @@ DELETE (remove lines N through M):
 READ (get file with line numbers — use before insert/replace/delete):
 <read_file path="config.ts"/>
 
+GENERATE IMAGE (creates an image from a text prompt — saved to workspace media):
+<generate_image prompt="your detailed image description here"/>
+
 Rules:
 - Use exact filename from workspace_files, no path prefix added
 - New files or full rewrites: use write_file
 - Appending to any file (including empty): use append_file
 - Surgical edits: read_file first to get line numbers, then insert/replace/delete
+- generate_image: use when the user asks you to create, draw, generate, or make an image
 - Multiple tool calls execute in order
 - Text outside tool tags is shown to the user as explanation
 

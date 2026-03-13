@@ -13,17 +13,19 @@ const _dirname: string = (() => {
   try {
     if (typeof import.meta?.url === 'string') return path.dirname(fileURLToPath(import.meta.url));
   } catch { /* CJS bundle — import.meta.url is undefined */ }
-  // esbuild CJS: __dirname is injected by Node at runtime
   return typeof __dirname === 'string' ? __dirname : process.cwd();
 })();
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-export const MODELS_DIR = path.join(os.homedir(), '.phobos', 'models');
+export const MODELS_DIR      = path.join(os.homedir(), '.phobos', 'models');
+export const FLUX_MODELS_DIR = path.join(os.homedir(), '.phobos', 'models', 'flux');
 
 // ── Hardware detection ────────────────────────────────────────────────────────
 
 export interface GpuDevice {
+  /** Free VRAM in GB at detection time (undefined if unknown — non-CUDA devices) */
+  freeVramGb?: number;
   /** Stable index — CUDA uses nvidia-smi index, others use 100+ offset */
   index: number;
   name: string;
@@ -51,18 +53,25 @@ export interface HardwareProfile {
 async function detectNvidiaGpus(): Promise<GpuDevice[]> {
   try {
     const { stdout } = await execFileAsync('nvidia-smi', [
-      '--query-gpu=index,name,memory.total',
+      '--query-gpu=index,name,memory.total,memory.free',
       '--format=csv,noheader,nounits',
     ]);
     const gpus: GpuDevice[] = [];
     for (const line of stdout.trim().split('\n')) {
       if (!line.trim()) continue;
-      const parts = line.split(',').map(s => s.trim());
-      const idx    = parseInt(parts[0], 10);
-      const name   = parts[1];
-      const vramMb = parseInt(parts[2], 10);
-      if (isNaN(idx) || isNaN(vramMb)) continue;
-      gpus.push({ index: idx, name, vramGb: Math.floor(vramMb / 1024), backend: 'cuda' });
+      const parts    = line.split(',').map(s => s.trim());
+      const idx      = parseInt(parts[0], 10);
+      const name     = parts[1];
+      const totalMb  = parseInt(parts[2], 10);
+      const freeMb   = parseInt(parts[3], 10);
+      if (isNaN(idx) || isNaN(totalMb)) continue;
+      gpus.push({
+        index:      idx,
+        name,
+        vramGb:     Math.floor(totalMb / 1024),
+        freeVramGb: isNaN(freeMb) ? undefined : Math.floor(freeMb / 1024),
+        backend:    'cuda',
+      });
     }
     return gpus;
   } catch {
@@ -71,20 +80,10 @@ async function detectNvidiaGpus(): Promise<GpuDevice[]> {
 }
 
 // ── AMD / Intel iGPU detection via WMI (Windows) ─────────────────────────────
-// Queries Win32_VideoController for non-NVIDIA adapters, then reads accurate
-// VRAM from the registry (HardwareInformation.qwMemorySize) because WMI's
-// AdapterRAM is a uint32 that caps at ~4 GB.
-//
-// Registry path: HKLM\SYSTEM\ControlSet001\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\000N
-// Each GPU adapter gets a subkey (0000, 0001, ...) containing:
-//   - DriverDesc (REG_SZ): matches Win32_VideoController.Name
-//   - HardwareInformation.qwMemorySize (REG_QWORD): true VRAM in bytes, 64-bit
 
 async function detectNonNvidiaGpus(): Promise<GpuDevice[]> {
   if (process.platform !== 'win32') return [];
   try {
-    // Step 1: Get adapter names from WMI (reliable for enumeration)
-    // Step 2: Read true VRAM from registry per adapter (reliable for >4 GB)
     const { stdout } = await execFileAsync('powershell', [
       '-NoProfile', '-Command',
       `$regBase = 'HKLM:\\SYSTEM\\ControlSet001\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}'; ` +
@@ -107,24 +106,16 @@ async function detectNonNvidiaGpus(): Promise<GpuDevice[]> {
     ], { timeout: 15_000 });
     if (!stdout.trim()) return [];
 
-    const raw = JSON.parse(stdout.trim());
+    const raw   = JSON.parse(stdout.trim());
     const items = Array.isArray(raw) ? raw : [raw];
     const gpus: GpuDevice[] = [];
 
     for (let i = 0; i < items.length; i++) {
-      const item = items[i];
+      const item      = items[i];
       const vramBytes = Number(item.VramBytes ?? 0);
       const vramGb    = Math.round(vramBytes / (1024 ** 3));
       if (vramGb < 1) continue;
-
-      const name = String(item.Name ?? 'Unknown GPU');
-
-      gpus.push({
-        index: 100 + i,
-        name,
-        vramGb,
-        backend: 'vulkan',
-      });
+      gpus.push({ index: 100 + i, name: String(item.Name ?? 'Unknown GPU'), vramGb, backend: 'vulkan' });
     }
     return gpus;
   } catch {
@@ -141,20 +132,13 @@ async function detectLinuxNonNvidiaGpus(): Promise<GpuDevice[]> {
     const gpus: GpuDevice[] = [];
     let idx = 100;
     for (const line of stdout.split('\n')) {
-      // Match VGA/3D controllers that are AMD or Intel
       if (!/VGA|3D|Display/.test(line)) continue;
-      if (/NVIDIA/i.test(line)) continue; // already handled by nvidia-smi
-
+      if (/NVIDIA/i.test(line)) continue;
       const isAmd   = /AMD|ATI|Radeon/i.test(line);
       const isIntel = /Intel/i.test(line);
       if (!isAmd && !isIntel) continue;
-
-      // Extract a rough name
       const nameMatch = line.match(/:\s+(.+?)(?:\s+\[|$)/);
       const name = nameMatch ? nameMatch[1].trim() : (isAmd ? 'AMD GPU' : 'Intel GPU');
-
-      // On Linux, shared memory for iGPUs is hard to query without root.
-      // Report 0 and let the user see it as "shared memory — configure in BIOS".
       gpus.push({ index: idx++, name, vramGb: 0, backend: 'vulkan' });
     }
     return gpus;
@@ -163,7 +147,7 @@ async function detectLinuxNonNvidiaGpus(): Promise<GpuDevice[]> {
   }
 }
 
-// ── Apple Silicon ────────────────────────────────────────────────────────────
+// ── Apple Silicon ─────────────────────────────────────────────────────────────
 
 async function detectAppleSilicon(): Promise<GpuDevice[]> {
   if (process.platform !== 'darwin') return [];
@@ -171,7 +155,6 @@ async function detectAppleSilicon(): Promise<GpuDevice[]> {
     const { stdout } = await execFileAsync('system_profiler', ['SPHardwareDataType']);
     const memMatch  = stdout.match(/Memory:\s+(\d+)\s+GB/i);
     const chipMatch = stdout.match(/Chip:\s+(.+)/i);
-    // Only flag as Apple Silicon if it's actually an ARM chip (M-series)
     const isAppleSilicon = chipMatch && /Apple M/i.test(chipMatch[1]);
     if (!memMatch || !isAppleSilicon) return [];
     return [{
@@ -179,14 +162,14 @@ async function detectAppleSilicon(): Promise<GpuDevice[]> {
       name: chipMatch![1].trim(),
       vramGb: parseInt(memMatch[1], 10),
       backend: 'metal',
-      unifiedMemory: true,   // GPU VRAM == system RAM — same physical pool
+      unifiedMemory: true,
     }];
   } catch {
     return [];
   }
 }
 
-// ── Aggregated detection ─────────────────────────────────────────────────────
+// ── Aggregated detection ──────────────────────────────────────────────────────
 
 export async function detectHardware(): Promise<HardwareProfile> {
   const ramGb    = Math.floor(os.totalmem() / (1024 ** 3));
@@ -201,256 +184,142 @@ export async function detectHardware(): Promise<HardwareProfile> {
   ]);
 
   const gpus = [...nvidiaGpus, ...nonNvidiaWin, ...nonNvidiaLinux, ...appleGpus];
-
   return { ramGb, cpuCores, cpuName, gpus };
 }
 
 // ── GGUF model catalogue ──────────────────────────────────────────────────────
-// HuggingFace direct HTTPS — no API key required for public repos.
-// All bartowski quants — consistent quality, reliable CDN.
-//
-// IMPORTANT: bartowski Qwen3 repos use "Qwen_Qwen3-" prefix in both
-// the repo name and the filename.
 
 export interface GGUFSpec {
-  /** Logical model name used as phobos provider model ID */
   modelId: string;
   label: string;
-  /** Model family group for UI display */
   family: string;
-  /** Primary role this model is suited for */
   role: 'sayon' | 'allmind' | 'both';
-  /** Whether this model emits thinking/reasoning tokens */
   thinkingTokens: boolean;
-  /** Whether this model requires --jinja + --reasoning-format deepseek at startup.
-   *  True for Qwen3-architecture models (Qwen3, Magistral, DeepSeek-R1 Qwen3 distills).
-   *  False for Llama-architecture models even if they emit <think> tags natively. */
   jinjaTemplate: boolean;
-  /** HuggingFace repo: "owner/repo" */
   hfRepo: string;
-  /** Exact filename within the repo */
   hfFile: string;
-  /** Expected size in bytes — used for progress display */
   sizeBytes: number;
   ramRequiredGb: number;
   contextWindow: number;
 }
 
 export const GGUF_CATALOGUE: GGUFSpec[] = [
-  // ── Llama 3 family — no thinking tokens, great for SAYON coordinator ────────
+  // ── Llama 3 family ───────────────────────────────────────────────────────────
   {
-    modelId: 'llama3.2-1b-q4',
-    label: 'Llama 3.2 1B Q4',
-    family: 'Llama 3',
-    role: 'sayon',
-    thinkingTokens: false,
-    jinjaTemplate: false,
+    modelId: 'llama3.2-1b-q4', label: 'Llama 3.2 1B Q4', family: 'Llama 3',
+    role: 'sayon', thinkingTokens: false, jinjaTemplate: false,
     hfRepo: 'bartowski/Llama-3.2-1B-Instruct-GGUF',
     hfFile: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf',
-    sizeBytes: 770_000_000,
-    ramRequiredGb: 1,
-    contextWindow: 131072,
+    sizeBytes: 770_000_000, ramRequiredGb: 1, contextWindow: 131072,
   },
   {
-    modelId: 'llama3.2-3b-q4',
-    label: 'Llama 3.2 3B Q4',
-    family: 'Llama 3',
-    role: 'sayon',
-    thinkingTokens: false,
-    jinjaTemplate: false,
+    modelId: 'llama3.2-3b-q4', label: 'Llama 3.2 3B Q4', family: 'Llama 3',
+    role: 'sayon', thinkingTokens: false, jinjaTemplate: false,
     hfRepo: 'bartowski/Llama-3.2-3B-Instruct-GGUF',
     hfFile: 'Llama-3.2-3B-Instruct-Q4_K_M.gguf',
-    sizeBytes: 2_020_000_000,
-    ramRequiredGb: 3,
-    contextWindow: 131072,
+    sizeBytes: 2_020_000_000, ramRequiredGb: 3, contextWindow: 131072,
   },
   {
-    modelId: 'llama3.1-8b-q4',
-    label: 'Llama 3.1 8B Q4',
-    family: 'Llama 3',
-    role: 'sayon',
-    thinkingTokens: false,
-    jinjaTemplate: false,
+    modelId: 'llama3.1-8b-q4', label: 'Llama 3.1 8B Q4', family: 'Llama 3',
+    role: 'sayon', thinkingTokens: false, jinjaTemplate: false,
     hfRepo: 'bartowski/Meta-Llama-3.1-8B-Instruct-GGUF',
     hfFile: 'Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf',
-    sizeBytes: 4_920_000_000,
-    ramRequiredGb: 6,
-    contextWindow: 131072,
+    sizeBytes: 4_920_000_000, ramRequiredGb: 6, contextWindow: 131072,
   },
-  // ── Gemma 3 family — no thinking tokens, strong SAYON alternative ──────────
+  // ── Gemma 3 family ───────────────────────────────────────────────────────────
   {
-    modelId: 'gemma3-1b-q4',
-    label: 'Gemma 3 1B Q4',
-    family: 'Gemma 3',
-    role: 'sayon',
-    thinkingTokens: false,
-    jinjaTemplate: false,
+    modelId: 'gemma3-1b-q4', label: 'Gemma 3 1B Q4', family: 'Gemma 3',
+    role: 'sayon', thinkingTokens: false, jinjaTemplate: false,
     hfRepo: 'bartowski/google_gemma-3-1b-it-GGUF',
     hfFile: 'google_gemma-3-1b-it-Q4_K_M.gguf',
-    sizeBytes: 694_000_000,
-    ramRequiredGb: 1,
-    contextWindow: 32768,
+    sizeBytes: 694_000_000, ramRequiredGb: 1, contextWindow: 32768,
   },
   {
-    modelId: 'gemma3-4b-q4',
-    label: 'Gemma 3 4B Q4',
-    family: 'Gemma 3',
-    role: 'sayon',
-    thinkingTokens: false,
-    jinjaTemplate: false,
+    modelId: 'gemma3-4b-q4', label: 'Gemma 3 4B Q4', family: 'Gemma 3',
+    role: 'sayon', thinkingTokens: false, jinjaTemplate: false,
     hfRepo: 'bartowski/google_gemma-3-4b-it-GGUF',
     hfFile: 'google_gemma-3-4b-it-Q4_K_M.gguf',
-    sizeBytes: 2_530_000_000,
-    ramRequiredGb: 3,
-    contextWindow: 131072,
+    sizeBytes: 2_530_000_000, ramRequiredGb: 3, contextWindow: 131072,
   },
   {
-    modelId: 'gemma3-12b-q4',
-    label: 'Gemma 3 12B Q4',
-    family: 'Gemma 3',
-    role: 'sayon',
-    thinkingTokens: false,
-    jinjaTemplate: false,
+    modelId: 'gemma3-12b-q4', label: 'Gemma 3 12B Q4', family: 'Gemma 3',
+    role: 'sayon', thinkingTokens: false, jinjaTemplate: false,
     hfRepo: 'bartowski/google_gemma-3-12b-it-GGUF',
     hfFile: 'google_gemma-3-12b-it-Q4_K_M.gguf',
-    sizeBytes: 7_800_000_000,
-    ramRequiredGb: 10,
-    contextWindow: 131072,
+    sizeBytes: 7_800_000_000, ramRequiredGb: 10, contextWindow: 131072,
   },
-  // ── Qwen3 family — thinking tokens, ideal ALLMIND reasoning engine ──────────
+  // ── Qwen3 family ─────────────────────────────────────────────────────────────
   {
-    modelId: 'qwen3-4b-q4',
-    label: 'Qwen3 4B Q4',
-    family: 'Qwen3',
-    role: 'allmind',
-    thinkingTokens: true,
-    jinjaTemplate: true,
+    modelId: 'qwen3-4b-q4', label: 'Qwen3 4B Q4', family: 'Qwen3',
+    role: 'allmind', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3-4B-GGUF',
     hfFile: 'Qwen_Qwen3-4B-Q4_K_M.gguf',
-    sizeBytes: 2_580_000_000,
-    ramRequiredGb: 3,
-    contextWindow: 32768,
+    sizeBytes: 2_580_000_000, ramRequiredGb: 3, contextWindow: 32768,
   },
   {
-    modelId: 'qwen3-8b-q4',
-    label: 'Qwen3 8B Q4',
-    family: 'Qwen3',
-    role: 'allmind',
-    thinkingTokens: true,
-    jinjaTemplate: true,
+    modelId: 'qwen3-8b-q4', label: 'Qwen3 8B Q4', family: 'Qwen3',
+    role: 'allmind', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3-8B-GGUF',
     hfFile: 'Qwen_Qwen3-8B-Q4_K_M.gguf',
-    sizeBytes: 5_190_000_000,
-    ramRequiredGb: 6,
-    contextWindow: 32768,
+    sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 32768,
   },
   {
-    modelId: 'qwen3-14b-q4',
-    label: 'Qwen3 14B Q4',
-    family: 'Qwen3',
-    role: 'allmind',
-    thinkingTokens: true,
-    jinjaTemplate: true,
+    modelId: 'qwen3-14b-q4', label: 'Qwen3 14B Q4', family: 'Qwen3',
+    role: 'allmind', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3-14B-GGUF',
     hfFile: 'Qwen_Qwen3-14B-Q4_K_M.gguf',
-    sizeBytes: 9_000_000_000,
-    ramRequiredGb: 11,
-    contextWindow: 32768,
+    sizeBytes: 9_000_000_000, ramRequiredGb: 11, contextWindow: 32768,
   },
   {
-    modelId: 'qwen3-30b-a3b-q4',
-    label: 'Qwen3 30B-A3B Q4',
-    family: 'Qwen3',
-    role: 'allmind',
-    thinkingTokens: true,
-    jinjaTemplate: true,
+    modelId: 'qwen3-30b-a3b-q4', label: 'Qwen3 30B-A3B Q4', family: 'Qwen3',
+    role: 'allmind', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3-30B-A3B-GGUF',
     hfFile: 'Qwen_Qwen3-30B-A3B-Q4_K_M.gguf',
-    sizeBytes: 18_400_000_000,
-    ramRequiredGb: 20,
-    contextWindow: 32768,
+    sizeBytes: 18_400_000_000, ramRequiredGb: 20, contextWindow: 32768,
   },
   {
-    modelId: 'qwen3-coder-8b-q4',
-    label: 'Qwen3 Coder 8B Q4',
-    family: 'Qwen3',
-    role: 'allmind',
-    thinkingTokens: true,
-    jinjaTemplate: true,
+    modelId: 'qwen3-coder-8b-q4', label: 'Qwen3 Coder 8B Q4', family: 'Qwen3',
+    role: 'allmind', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3-Coder-8B-GGUF',
     hfFile: 'Qwen_Qwen3-Coder-8B-Q4_K_M.gguf',
-    sizeBytes: 5_190_000_000,
-    ramRequiredGb: 6,
-    contextWindow: 32768,
+    sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 32768,
   },
-  // ── Mistral family — thinking tokens via Magistral, ALLMIND-class ──────────
+  // ── Mistral family ───────────────────────────────────────────────────────────
   {
-    modelId: 'mistral-7b-q4',
-    label: 'Mistral 7B v0.3 Q4',
-    family: 'Mistral',
-    role: 'allmind',
-    thinkingTokens: false,
-    jinjaTemplate: false,
+    modelId: 'mistral-7b-q4', label: 'Mistral 7B v0.3 Q4', family: 'Mistral',
+    role: 'allmind', thinkingTokens: false, jinjaTemplate: false,
     hfRepo: 'bartowski/Mistral-7B-Instruct-v0.3-GGUF',
     hfFile: 'Mistral-7B-Instruct-v0.3-Q4_K_M.gguf',
-    sizeBytes: 4_370_000_000,
-    ramRequiredGb: 6,
-    contextWindow: 32768,
+    sizeBytes: 4_370_000_000, ramRequiredGb: 6, contextWindow: 32768,
   },
   {
-    modelId: 'magistral-8b-q4',
-    label: 'Magistral 8B Q4',
-    family: 'Mistral',
-    role: 'allmind',
-    thinkingTokens: true,
-    jinjaTemplate: true,
+    modelId: 'magistral-8b-q4', label: 'Magistral 8B Q4', family: 'Mistral',
+    role: 'allmind', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/Magistral-Small-2506-GGUF',
     hfFile: 'Magistral-Small-2506-Q4_K_M.gguf',
-    sizeBytes: 14_400_000_000,
-    ramRequiredGb: 16,
-    contextWindow: 131072,
+    sizeBytes: 14_400_000_000, ramRequiredGb: 16, contextWindow: 131072,
   },
-  // ── DeepSeek-R1 family — strong reasoning, ALLMIND-class ───────────────────
-  // deepseek-r1-8b and deepseek-r1-14b are Qwen3-architecture distills — jinjaTemplate: true.
-  // deepseek-r1-70b is a Llama-architecture distill — uses native <think> tags, jinjaTemplate: false.
+  // ── DeepSeek-R1 family ───────────────────────────────────────────────────────
   {
-    modelId: 'deepseek-r1-8b-q4',
-    label: 'DeepSeek-R1 8B Q4',
-    family: 'DeepSeek-R1',
-    role: 'allmind',
-    thinkingTokens: true,
-    jinjaTemplate: true,
+    modelId: 'deepseek-r1-8b-q4', label: 'DeepSeek-R1 8B Q4', family: 'DeepSeek-R1',
+    role: 'allmind', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/DeepSeek-R1-0528-Qwen3-8B-GGUF',
     hfFile: 'DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf',
-    sizeBytes: 5_190_000_000,
-    ramRequiredGb: 6,
-    contextWindow: 32768,
+    sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 32768,
   },
   {
-    modelId: 'deepseek-r1-14b-q4',
-    label: 'DeepSeek-R1 14B Q4',
-    family: 'DeepSeek-R1',
-    role: 'allmind',
-    thinkingTokens: true,
-    jinjaTemplate: true,
+    modelId: 'deepseek-r1-14b-q4', label: 'DeepSeek-R1 14B Q4', family: 'DeepSeek-R1',
+    role: 'allmind', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF',
     hfFile: 'DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf',
-    sizeBytes: 9_050_000_000,
-    ramRequiredGb: 11,
-    contextWindow: 65536,
+    sizeBytes: 9_050_000_000, ramRequiredGb: 11, contextWindow: 65536,
   },
   {
-    modelId: 'deepseek-r1-70b-q4',
-    label: 'DeepSeek-R1 70B Q4',
-    family: 'DeepSeek-R1',
-    role: 'allmind',
-    thinkingTokens: true,
-    jinjaTemplate: false,
+    modelId: 'deepseek-r1-70b-q4', label: 'DeepSeek-R1 70B Q4', family: 'DeepSeek-R1',
+    role: 'allmind', thinkingTokens: true, jinjaTemplate: false,
     hfRepo: 'bartowski/DeepSeek-R1-Distill-Llama-70B-GGUF',
     hfFile: 'DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf',
-    sizeBytes: 42_520_000_000,
-    ramRequiredGb: 48,
-    contextWindow: 65536,
+    sizeBytes: 42_520_000_000, ramRequiredGb: 48, contextWindow: 65536,
   },
 ];
 
@@ -465,12 +334,463 @@ export function modelPath(spec: GGUFSpec): string {
 export function isDownloaded(spec: GGUFSpec): boolean {
   const p = modelPath(spec);
   if (!fs.existsSync(p)) return false;
-  const stat = fs.statSync(p);
-  return stat.size >= spec.sizeBytes * 0.9;
+  return fs.statSync(p).size >= spec.sizeBytes * 0.9;
 }
 
 export function listDownloaded(): GGUFSpec[] {
   return GGUF_CATALOGUE.filter(isDownloaded);
+}
+
+// ── FLUX image model catalogue ────────────────────────────────────────────────
+// FLUX models require three separate files:
+//   1. Main diffusion weights (GGUF, quantized)
+//   2. VAE — ae.safetensors (~335 MB, shared across all variants)
+//   3. Text encoders — CLIP-L (~246 MB) + T5-XXL GGUF (Q4 ~2.4 GB or Q8 ~4.7 GB)
+//
+// sd-server CLI: --model <flux.gguf> --vae <ae.safetensors>
+//                --clip_l <clip_l.safetensors> --t5xxl <t5xxl.gguf>
+//
+// VAE and CLIP-L are shared; T5 quantization is chosen per VRAM budget.
+
+/**
+ * Runner profile determines which sd.cpp CLI flags are used:
+ *   flux  — --diffusion-model + --clip_l + --t5xxl + --vae
+ *   sdxl  — -m (single file, VAE baked) + --clip_l + --clip_g
+ */
+export type ImageRunnerProfile = 'flux' | 'sdxl';
+
+/**
+ * Category tag for UI grouping. nsfw-realistic / nsfw-anime are gated behind
+ * a content warning in the UI but use the same download infrastructure.
+ */
+export type ImageModelCategory = 'realistic' | 'anime' | 'nsfw-realistic' | 'nsfw-anime';
+
+export interface ImageModelSpec {
+  modelId: string;
+  label: string;
+  /** Short name shown on the card e.g. "FLUX.1-schnell" */
+  displayName: string;
+  runnerProfile: ImageRunnerProfile;
+  category: ImageModelCategory;
+  variant: 'schnell' | 'dev' | 'pony' | 'sdxl' | 'chroma';
+  quantization: 'Q4_K_M' | 'Q8_0' | 'Q4_0' | 'f16';
+  hfRepo: string;
+  hfFile: string;
+  sizeBytes: number;
+  /** Minimum VRAM in GB */
+  vramRequiredGb: number;
+  /** Estimated generation time on CUDA (RTX 3080 class), seconds */
+  estSecondsCuda: number;
+  /** Estimated generation time on Vulkan (iGPU class), seconds */
+  estSecondsVulkan: number;
+  /** Estimated generation time on CPU, seconds */
+  estSecondsCpu: number;
+  license: string;
+  licenseUrl: string;
+}
+
+/** Backward-compat alias — existing code that imports FluxSpec still works */
+export type FluxSpec = ImageModelSpec;
+
+export interface FluxAuxFile {
+  id: string;
+  label: string;
+  hfRepo: string;
+  hfFile: string;
+  sizeBytes: number;
+  /** CLI flag passed to sd-server */
+  cliFlag: string;
+  /** SPDX licence identifier */
+  license: string;
+  licenseUrl: string;
+}
+
+// ── Shared aux files — downloaded once, reused by all FLUX variants ───────────
+
+export const FLUX_VAE: FluxAuxFile = {
+  id:        'flux-vae',
+  label:     'FLUX VAE',
+  hfRepo:    'second-state/FLUX.1-schnell-GGUF',
+  hfFile:    'ae.safetensors',
+  sizeBytes: 335_000_000,
+  cliFlag:   '--vae',
+  license:    'Apache-2.0',
+  licenseUrl: 'https://huggingface.co/black-forest-labs/FLUX.1-schnell/blob/main/LICENSE.md',
+};
+
+export const FLUX_CLIP_L: FluxAuxFile = {
+  id:        'flux-clip-l',
+  label:     'FLUX CLIP-L encoder',
+  hfRepo:    'comfyanonymous/flux_text_encoders',
+  hfFile:    'clip_l.safetensors',
+  sizeBytes: 246_000_000,
+  cliFlag:   '--clip_l',
+  license:    'MIT',
+  licenseUrl: 'https://huggingface.co/comfyanonymous/flux_text_encoders/blob/main/LICENSE',
+};
+
+export const FLUX_T5_Q3: FluxAuxFile = {
+  id:        'flux-t5-q3',
+  label:     'T5-XXL encoder Q3_K_M (~2.3 GB)',
+  hfRepo:    'city96/t5-v1_1-xxl-encoder-gguf',
+  hfFile:    't5-v1_1-xxl-encoder-Q3_K_M.gguf',
+  sizeBytes: 2_300_000_000,
+  cliFlag:   '--t5xxl',
+  license:    'Apache-2.0',
+  licenseUrl: 'https://huggingface.co/google/t5-v1_1-xxl/blob/main/LICENSE',
+};
+
+export const FLUX_T5_Q4: FluxAuxFile = {
+  id:        'flux-t5-q4',
+  label:     'T5-XXL encoder Q4_K_M (~2.9 GB)',
+  hfRepo:    'city96/t5-v1_1-xxl-encoder-gguf',
+  hfFile:    't5-v1_1-xxl-encoder-Q4_K_M.gguf',
+  sizeBytes: 2_900_000_000,
+  cliFlag:   '--t5xxl',
+  license:    'Apache-2.0',
+  licenseUrl: 'https://huggingface.co/google/t5-v1_1-xxl/blob/main/LICENSE',
+};
+
+export const FLUX_T5_Q8: FluxAuxFile = {
+  id:        'flux-t5-q8',
+  label:     'T5-XXL encoder Q8_0 (~5.1 GB)',
+  hfRepo:    'city96/t5-v1_1-xxl-encoder-gguf',
+  hfFile:    't5-v1_1-xxl-encoder-Q8_0.gguf',
+  sizeBytes: 5_060_000_000,
+  cliFlag:   '--t5xxl',
+  license:    'Apache-2.0',
+  licenseUrl: 'https://huggingface.co/google/t5-v1_1-xxl/blob/main/LICENSE',
+};
+
+/** Always-required aux files (VAE + CLIP-L). T5 encoder chosen separately. */
+export const FLUX_AUX_REQUIRED: FluxAuxFile[] = [FLUX_VAE, FLUX_CLIP_L];
+
+// ── FLUX catalogue ────────────────────────────────────────────────────────────
+
+export const FLUX_CATALOGUE: FluxSpec[] = [
+  // ── schnell — Apache 2.0, 4-step generation ──────────────────────────────
+  {
+    modelId:          'flux-schnell-q4',
+    label:            'FLUX.1-schnell Q4',
+    displayName:      'FLUX.1-schnell',
+    runnerProfile:    'flux',
+    category:         'realistic',
+    variant:          'schnell',
+    quantization:     'Q4_K_M',
+    hfRepo:           'calcuis/flux1-gguf',
+    hfFile:           'flux1-schnell-q4_k_m.gguf',
+    sizeBytes:        6_800_000_000,
+    vramRequiredGb:   8,
+    estSecondsCuda:   12,
+    estSecondsVulkan: 45,
+    estSecondsCpu:    480,
+    license:          'apache-2.0',
+    licenseUrl:       'https://huggingface.co/black-forest-labs/FLUX.1-schnell/blob/main/LICENSE.md',
+  },
+  {
+    modelId:          'flux-schnell-q8',
+    label:            'FLUX.1-schnell Q8',
+    displayName:      'FLUX.1-schnell',
+    runnerProfile:    'flux',
+    category:         'realistic',
+    variant:          'schnell',
+    quantization:     'Q8_0',
+    hfRepo:           'city96/FLUX.1-schnell-gguf',
+    hfFile:           'flux1-schnell-Q8_0.gguf',
+    sizeBytes:        11_900_000_000,
+    vramRequiredGb:   12,
+    estSecondsCuda:   15,
+    estSecondsVulkan: 60,
+    estSecondsCpu:    600,
+    license:          'apache-2.0',
+    licenseUrl:       'https://huggingface.co/black-forest-labs/FLUX.1-schnell/blob/main/LICENSE.md',
+  },
+  // ── dev — non-commercial, 20-50 step generation ──────────────────────────
+  {
+    modelId:          'flux-dev-q4',
+    label:            'FLUX.1-dev Q4',
+    displayName:      'FLUX.1-dev',
+    runnerProfile:    'flux',
+    category:         'realistic',
+    variant:          'dev',
+    quantization:     'Q4_K_M',
+    hfRepo:           'city96/FLUX.1-dev-gguf',
+    hfFile:           'flux1-dev-Q4_K_M.gguf',
+    sizeBytes:        6_800_000_000,
+    vramRequiredGb:   8,
+    estSecondsCuda:   90,
+    estSecondsVulkan: 300,
+    estSecondsCpu:    3600,
+    license:          'FLUX-1-dev-Non-Commercial',
+    licenseUrl:       'https://huggingface.co/black-forest-labs/FLUX.1-dev/blob/main/LICENSE.md',
+  },
+  {
+    modelId:          'flux-dev-q8',
+    label:            'FLUX.1-dev Q8',
+    displayName:      'FLUX.1-dev',
+    runnerProfile:    'flux',
+    category:         'realistic',
+    variant:          'dev',
+    quantization:     'Q8_0',
+    hfRepo:           'city96/FLUX.1-dev-gguf',
+    hfFile:           'flux1-dev-Q8_0.gguf',
+    sizeBytes:        11_900_000_000,
+    vramRequiredGb:   12,
+    estSecondsCuda:   110,
+    estSecondsVulkan: 380,
+    estSecondsCpu:    4200,
+    license:          'FLUX-1-dev-Non-Commercial',
+    licenseUrl:       'https://huggingface.co/black-forest-labs/FLUX.1-dev/blob/main/LICENSE.md',
+  },
+];
+
+// ── Chroma (FLUX-architecture, uncensored) ────────────────────────────────────
+// Same aux pool as FLUX.1-schnell (FLUX_VAE + FLUX_CLIP_L + FLUX_T5_*).
+// No additional downloads if schnell is already installed.
+
+export const CHROMA_CATALOGUE: ImageModelSpec[] = [
+  {
+    modelId:          'chroma-q4',
+    label:            'Chroma1-HD Q4',
+    displayName:      'Chroma1-HD',
+    runnerProfile:    'flux',
+    category:         'nsfw-realistic',
+    variant:          'chroma',
+    quantization:     'Q4_0',
+    hfRepo:           'silveroxides/Chroma-GGUF',
+    hfFile:           'Chroma1-HD-Q4_0.gguf',
+    sizeBytes:        5_570_000_000,
+    vramRequiredGb:   8,
+    estSecondsCuda:   14,
+    estSecondsVulkan: 50,
+    estSecondsCpu:    500,
+    license:          'Apache-2.0',
+    licenseUrl:       'https://huggingface.co/lodestones/Chroma/blob/main/LICENSE',
+  },
+];
+
+// ── SDXL shared aux files ─────────────────────────────────────────────────────
+// Downloaded once, shared by ALL SDXL models.
+// SDXL_CLIP_L re-uses the same file as FLUX — if FLUX is installed it's already present.
+
+export const SDXL_CLIP_L: FluxAuxFile = {
+  id:        'sdxl-clip-l',
+  label:     'SDXL CLIP-L encoder',
+  hfRepo:    'comfyanonymous/flux_text_encoders',
+  hfFile:    'clip_l.safetensors',
+  sizeBytes: 246_000_000,
+  cliFlag:   '--clip_l',
+  license:    'MIT',
+  licenseUrl: 'https://huggingface.co/comfyanonymous/flux_text_encoders/blob/main/LICENSE',
+};
+
+export const SDXL_CLIP_G: FluxAuxFile = {
+  id:        'sdxl-clip-g',
+  label:     'SDXL CLIP-G encoder',
+  hfRepo:    'Comfy-Org/stable-diffusion-3.5-fp8',
+  hfFile:    'text_encoders/clip_g.safetensors',
+  sizeBytes: 1_390_000_000,
+  cliFlag:   '--clip_g',
+  license:    'Apache-2.0',
+  licenseUrl: 'https://huggingface.co/Comfy-Org/stable-diffusion-3.5-fp8/blob/main/LICENSE',
+};
+
+export const SDXL_VAE: FluxAuxFile = {
+  id:        'sdxl-vae',
+  label:     'SDXL VAE (fp16 fix)',
+  hfRepo:    'madebyollin/sdxl-vae-fp16-fix',
+  hfFile:    'sdxl_vae.safetensors',
+  sizeBytes: 335_000_000,
+  cliFlag:   '--vae',
+  license:    'Apache-2.0',
+  licenseUrl: 'https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/blob/main/LICENSE',
+};
+
+/** Always-required SDXL aux files. Shared by all SDXL models. */
+export const SDXL_AUX_REQUIRED: FluxAuxFile[] = [SDXL_CLIP_L, SDXL_CLIP_G, SDXL_VAE];
+
+// ── SDXL catalogue ────────────────────────────────────────────────────────────
+// VAE is baked into each GGUF so sd.cpp uses -m (single file) + --clip_l + --clip_g.
+// The SDXL_VAE aux is kept for servers that prefer external VAE; baked-in is fine too.
+
+export const SDXL_CATALOGUE: ImageModelSpec[] = [
+  // ── Realistic ────────────────────────────────────────────────────────────
+  {
+    modelId:          'juggernaut-xl-q4',
+    label:            'Juggernaut XL v11 Q4',
+    displayName:      'Juggernaut XL',
+    runnerProfile:    'sdxl',
+    category:         'realistic',
+    variant:          'sdxl',
+    quantization:     'Q4_0',
+    hfRepo:           'hum-ma/SDXL-models-GGUF',
+    hfFile:           'Juggernaut-XI-v11-Q4_0.gguf',
+    sizeBytes:        4_280_000_000,
+    vramRequiredGb:   6,
+    estSecondsCuda:   10,
+    estSecondsVulkan: 35,
+    estSecondsCpu:    360,
+    license:          'creativeml-openrail-m',
+    licenseUrl:       'https://huggingface.co/RunDiffusion/Juggernaut-XL-v9/blob/main/LICENSE.md',
+  },
+  // ── Anime ────────────────────────────────────────────────────────────────
+  {
+    modelId:          'pony-diffusion-v6-q4',
+    label:            'Pony Diffusion V6 XL Q4',
+    displayName:      'Pony Diffusion V6',
+    runnerProfile:    'sdxl',
+    category:         'anime',
+    variant:          'pony',
+    quantization:     'Q4_0',
+    hfRepo:           'hum-ma/SDXL-models-GGUF',
+    hfFile:           'PonyDiffusionV6XL-Q4_0.gguf',
+    sizeBytes:        4_280_000_000,
+    vramRequiredGb:   6,
+    estSecondsCuda:   10,
+    estSecondsVulkan: 35,
+    estSecondsCpu:    360,
+    license:          'FAIPL-1.0-SD',
+    licenseUrl:       'https://huggingface.co/AstraliteHeart/pony-diffusion-v6/blob/main/LICENSE.md',
+  },
+  // ── NSFW Realistic ───────────────────────────────────────────────────────
+  {
+    modelId:          'cyberrealistic-pony-q4',
+    label:            'CyberRealistic Pony V12 Q4',
+    displayName:      'CyberRealistic Pony',
+    runnerProfile:    'sdxl',
+    category:         'nsfw-realistic',
+    variant:          'pony',
+    quantization:     'Q4_0',
+    hfRepo:           'Green-Sky/CyberRealisticPony-GGUF',
+    hfFile:           'CyberRealisticPony_V12.7-vae_f16-q4_0.gguf',
+    sizeBytes:        4_300_000_000,
+    vramRequiredGb:   6,
+    estSecondsCuda:   10,
+    estSecondsVulkan: 35,
+    estSecondsCpu:    360,
+    license:          'creativeml-openrail-m',
+    licenseUrl:       'https://huggingface.co/cyberdelia/CyberRealisticPony/blob/main/LICENSE.md',
+  },
+  // ── NSFW Anime ───────────────────────────────────────────────────────────
+  {
+    modelId:          'wai-nsfw-illustrious-q4',
+    label:            'WAI-NSFW-Illustrious SDXL v11 Q4',
+    displayName:      'WAI-NSFW-Illustrious',
+    runnerProfile:    'sdxl',
+    category:         'nsfw-anime',
+    variant:          'sdxl',
+    quantization:     'Q4_0',
+    hfRepo:           'kekusprod/WAI-NSFW-illustrious-SDXL-v110-GGUF',
+    hfFile:           'wai-nsfw-illustrious-v110-Q4_0.gguf',
+    sizeBytes:        4_280_000_000,
+    vramRequiredGb:   6,
+    estSecondsCuda:   10,
+    estSecondsVulkan: 35,
+    estSecondsCpu:    360,
+    license:          'creativeml-openrail-m',
+    licenseUrl:       'https://huggingface.co/wai-nsfw-illustrious/WAI-NSFW-illustrious-SDXL/blob/main/LICENSE.md',
+  },
+];
+
+/** Combined catalogue — all image models across all runner profiles */
+export const IMAGE_MODEL_CATALOGUE: ImageModelSpec[] = [
+  ...FLUX_CATALOGUE,
+  ...CHROMA_CATALOGUE,
+  ...SDXL_CATALOGUE,
+];
+
+export function getImageModelSpec(modelId: string): ImageModelSpec | undefined {
+  return IMAGE_MODEL_CATALOGUE.find(s => s.modelId === modelId);
+}
+
+export function isImageModelDownloaded(spec: ImageModelSpec): boolean {
+  const p = fluxModelPath(spec);
+  if (!fs.existsSync(p)) return false;
+  return fs.statSync(p).size >= spec.sizeBytes * 0.9;
+}
+
+export function getAuxFilesForModel(spec: ImageModelSpec): FluxAuxFile[] {
+  if (spec.runnerProfile === 'sdxl') return SDXL_AUX_REQUIRED;
+  // flux-profile: VAE + CLIP-L always, T5 selected lazily at download time
+  return FLUX_AUX_REQUIRED;
+}
+
+
+// ── FLUX helper functions ─────────────────────────────────────────────────────
+
+export function getFluxSpec(modelId: string): FluxSpec | undefined {
+  return FLUX_CATALOGUE.find(s => s.modelId === modelId);
+}
+
+export function fluxModelPath(spec: FluxSpec): string {
+  return path.join(FLUX_MODELS_DIR, spec.hfFile);
+}
+
+export function fluxAuxPath(aux: FluxAuxFile): string {
+  return path.join(FLUX_MODELS_DIR, aux.hfFile);
+}
+
+export function isFluxDownloaded(spec: FluxSpec): boolean {
+  const p = fluxModelPath(spec);
+  if (!fs.existsSync(p)) return false;
+  return fs.statSync(p).size >= spec.sizeBytes * 0.9;
+}
+
+export function isFluxAuxDownloaded(aux: FluxAuxFile): boolean {
+  const p = fluxAuxPath(aux);
+  if (!fs.existsSync(p)) return false;
+  return fs.statSync(p).size >= aux.sizeBytes * 0.9;
+}
+
+export function listDownloadedFlux(): FluxSpec[] {
+  return FLUX_CATALOGUE.filter(isFluxDownloaded);
+}
+
+/**
+ * Returns the best downloaded FLUX model for the given VRAM budget.
+ * Preference order: schnell Q8 → schnell Q4 → dev Q8 → dev Q4.
+ * Returns null if nothing downloaded fits or VRAM < 8 GB.
+ */
+export function recommendFluxModel(vramGb: number): FluxSpec | null {
+  const preference = ['flux-schnell-q8', 'flux-schnell-q4', 'flux-dev-q8', 'flux-dev-q4'];
+  for (const id of preference) {
+    const spec = getFluxSpec(id);
+    if (spec && isFluxDownloaded(spec) && spec.vramRequiredGb <= vramGb) return spec;
+  }
+  return null;
+}
+
+/**
+ * Returns the best T5 encoder given remaining VRAM after the main FLUX model
+ * and fixed aux (VAE ~0.4 GB + CLIP-L ~0.3 GB). Falls back to Q4.
+ */
+export function recommendT5Encoder(fluxSpec: FluxSpec, totalVramGb: number, isUnifiedMemory = false): FluxAuxFile {
+  // Never use large encoders on unified/shared memory devices.
+  if (isUnifiedMemory) return FLUX_T5_Q3;
+
+  // Select based on TOTAL VRAM (physical card capacity), not free VRAM.
+  // On CUDA VMM-enabled devices, nvidia-smi free VRAM underreports available memory
+  // because the driver reports conservatively — sd-cli consistently loads everything
+  // to VRAM even when free VRAM appears insufficient. Use card total for tier selection.
+  //
+  // Known fit budget (loaded sizes from sd-cli logs):
+  //   schnell Q4_K_M diffusion: 6693 MB
+  //   VAE: 95 MB, CLIP-L: ~230 MB
+  //   T5 Q4_K_M (2.9 GB): total ~9.9 GB → fits on 10 GB ✓
+  //   T5 Q8_0   (5.1 GB): total ~12.1 GB → needs 12 GB+
+  if (totalVramGb >= 16) return FLUX_T5_Q8;
+  if (totalVramGb >= 10) return FLUX_T5_Q4;
+  return FLUX_T5_Q3;
+}
+
+
+export function deleteFluxModel(modelId: string): boolean {
+  const spec = getFluxSpec(modelId);
+  if (!spec) return false;
+  const p = fluxModelPath(spec);
+  if (!fs.existsSync(p)) return false;
+  fs.unlinkSync(p);
+  return true;
 }
 
 // ── Model recommendation ──────────────────────────────────────────────────────
@@ -478,7 +798,6 @@ export function listDownloaded(): GGUFSpec[] {
 export interface ModelRecommendation {
   sayon: GGUFSpec;
   allmind: GGUFSpec;
-  /** 'cpu' or a GpuDevice.index */
   sayonDevice: 'cpu' | number;
   allmindDevice: 'cpu' | number;
   sayonGpuLayers: number;
@@ -486,20 +805,21 @@ export interface ModelRecommendation {
   reasoning: string;
 }
 
-/** SAYON candidates: no thinking tokens, ≤15B params, ordered by preference */
-const SAYON_CANDIDATES = ['llama3.1-8b-q4', 'gemma3-12b-q4', 'gemma3-4b-q4', 'llama3.2-3b-q4', 'gemma3-1b-q4', 'llama3.2-1b-q4'];
+const SAYON_CANDIDATES = [
+  'llama3.1-8b-q4', 'gemma3-12b-q4', 'gemma3-4b-q4',
+  'llama3.2-3b-q4', 'gemma3-1b-q4',  'llama3.2-1b-q4',
+];
 
-/** ALLMIND candidates: reasoning/thinking models, ordered by quality */
 const ALLMIND_CANDIDATES = [
-  'deepseek-r1-70b-q4',   // 48 GB — only viable on high-VRAM systems
-  'qwen3-30b-a3b-q4',     // 20 GB — MoE, efficient
-  'magistral-8b-q4',      // 16 GB
-  'deepseek-r1-14b-q4',   // 11 GB
-  'qwen3-14b-q4',         // 11 GB
-  'qwen3-coder-8b-q4',    //  6 GB
-  'deepseek-r1-8b-q4',    //  6 GB
-  'qwen3-8b-q4',          //  6 GB
-  'qwen3-4b-q4',          //  3 GB — minimum useful reasoning model
+  'deepseek-r1-70b-q4',
+  'qwen3-30b-a3b-q4',
+  'magistral-8b-q4',
+  'deepseek-r1-14b-q4',
+  'qwen3-14b-q4',
+  'qwen3-coder-8b-q4',
+  'deepseek-r1-8b-q4',
+  'qwen3-8b-q4',
+  'qwen3-4b-q4',
 ];
 
 function pickBestFit(candidates: string[], budgetGb: number): GGUFSpec {
@@ -507,23 +827,15 @@ function pickBestFit(candidates: string[], budgetGb: number): GGUFSpec {
     const spec = GGUF_CATALOGUE.find(s => s.modelId === id);
     if (spec && spec.ramRequiredGb <= budgetGb) return spec;
   }
-  // Absolute fallback — smallest available
   return GGUF_CATALOGUE.find(s => s.modelId === candidates[candidates.length - 1])!;
 }
 
 export function buildRecommendation(hw: HardwareProfile): ModelRecommendation {
-  // Sort GPUs by VRAM descending
   const gpusByVram = [...hw.gpus].sort((a, b) => b.vramGb - a.vramGb);
   const bestGpu    = gpusByVram[0] ?? null;
   const secondGpu  = gpusByVram[1] ?? null;
 
-  // ── Unified memory detection ───────────────────────────────────────────────
-  // Apple Silicon and AMD APUs report system RAM as VRAM. On these devices the
-  // "VRAM" of the GPU is the same physical pool as system RAM, so we must
-  // budget BOTH models from a single shared pool — not independently.
   const hasUnifiedMemory = bestGpu?.unifiedMemory === true;
-
-  // Usable memory pool: leave ~20% headroom for OS + KV cache
   const HEADROOM = 0.80;
 
   let sayon: GGUFSpec;
@@ -534,45 +846,34 @@ export function buildRecommendation(hw: HardwareProfile): ModelRecommendation {
   let allmindGpuLayers: number;
 
   if (hasUnifiedMemory && bestGpu) {
-    // ── Apple Silicon / unified memory path ───────────────────────────────
-    // Total usable pool = system RAM (== VRAM on these devices)
-    const pool = Math.floor(hw.ramGb * HEADROOM);
-
-    // Give ALLMIND the larger share (up to 75%), SAYON gets the remainder
+    const pool          = Math.floor(hw.ramGb * HEADROOM);
     const allmindBudget = Math.floor(pool * 0.75);
-    const sayonBudget   = Math.floor(pool * 0.35);  // overlapping is fine — sequential inference
-
+    const sayonBudget   = Math.floor(pool * 0.35);
     allmind          = pickBestFit(ALLMIND_CANDIDATES, allmindBudget);
     sayon            = pickBestFit(SAYON_CANDIDATES,   sayonBudget);
     allmindDevice    = bestGpu.index;
-    sayonDevice      = bestGpu.index;  // same device — Metal handles scheduling
+    sayonDevice      = bestGpu.index;
     allmindGpuLayers = 99;
     sayonGpuLayers   = 99;
 
   } else if (bestGpu && bestGpu.vramGb >= 3) {
-    // ── Discrete / dedicated GPU path ─────────────────────────────────────
-    // ALLMIND gets the biggest GPU
     const allmindBudget = Math.floor(bestGpu.vramGb * HEADROOM);
     allmind          = pickBestFit(ALLMIND_CANDIDATES, allmindBudget);
     allmindDevice    = bestGpu.index;
     allmindGpuLayers = 99;
 
-    // SAYON: second GPU if useful, else CPU from system RAM
     if (secondGpu && secondGpu.vramGb >= 2 && !secondGpu.unifiedMemory) {
-      const sayonBudget = Math.floor(secondGpu.vramGb * HEADROOM);
-      sayon            = pickBestFit(SAYON_CANDIDATES, sayonBudget);
-      sayonDevice      = secondGpu.index;
-      sayonGpuLayers   = 99;
+      sayon          = pickBestFit(SAYON_CANDIDATES, Math.floor(secondGpu.vramGb * HEADROOM));
+      sayonDevice    = secondGpu.index;
+      sayonGpuLayers = 99;
     } else {
-      sayon            = pickBestFit(SAYON_CANDIDATES, Math.floor(hw.ramGb * HEADROOM));
-      sayonDevice      = 'cpu';
-      sayonGpuLayers   = 0;
+      sayon          = pickBestFit(SAYON_CANDIDATES, Math.floor(hw.ramGb * HEADROOM));
+      sayonDevice    = 'cpu';
+      sayonGpuLayers = 0;
     }
 
   } else {
-    // ── CPU-only path ─────────────────────────────────────────────────────
-    const pool = Math.floor(hw.ramGb * HEADROOM);
-    // Split roughly 60/40 ALLMIND/SAYON for CPU-only — they share system RAM
+    const pool       = Math.floor(hw.ramGb * HEADROOM);
     allmind          = pickBestFit(ALLMIND_CANDIDATES, Math.floor(pool * 0.60));
     sayon            = pickBestFit(SAYON_CANDIDATES,   Math.floor(pool * 0.40));
     allmindDevice    = 'cpu';
@@ -581,12 +882,10 @@ export function buildRecommendation(hw: HardwareProfile): ModelRecommendation {
     sayonGpuLayers   = 0;
   }
 
-  // ── Reasoning string ───────────────────────────────────────────────────────
-  const gpuLines = hw.gpus.map(g =>
+  const gpuLines  = hw.gpus.map(g =>
     `${g.name} (${g.vramGb} GB${g.unifiedMemory ? ', unified' : ''}, ${g.backend})`
   ).join(' · ');
-  const gpuStr = gpuLines || 'No GPU — CPU fallback';
-
+  const gpuStr    = gpuLines || 'No GPU — CPU fallback';
   const deviceName = (d: 'cpu' | number) =>
     d === 'cpu' ? 'CPU' : (hw.gpus.find(g => g.index === d)?.name ?? `GPU #${d}`);
 
@@ -625,10 +924,9 @@ export async function* downloadModel(
   const dest = modelPath(spec);
   const tmp  = dest + '.download';
 
-  // Resume partial download
   const existingBytes = fs.existsSync(tmp) ? fs.statSync(tmp).size : 0;
-  const headers: Record<string, string> = {};
-  if (existingBytes > 0) headers['Range'] = `bytes=${existingBytes}-`;
+  const reqHeaders: Record<string, string> = {};
+  if (existingBytes > 0) reqHeaders['Range'] = `bytes=${existingBytes}-`;
 
   const url = hfUrl(spec);
   let bytesReceived = existingBytes;
@@ -636,8 +934,6 @@ export async function* downloadModel(
 
   yield { modelId: spec.modelId, phase, bytesReceived, bytesTotal, done: false };
 
-  // Push-queue so the async generator can yield progress while https streams data.
-  // Events throttled to max 1 per 250ms OR per 2 MB to avoid SSE flood.
   type QueueItem =
     | { kind: 'progress'; bytesReceived: number; bytesTotal: number }
     | { kind: 'installing' }
@@ -656,10 +952,9 @@ export async function* downloadModel(
   const downloadPromise = new Promise<void>((resolve, reject) => {
     const follow = (targetUrl: string, redirectCount = 0) => {
       if (redirectCount > 5) { reject(new Error('Too many redirects')); return; }
-
       const parsed = new URL(targetUrl);
       const req = https.get(
-        { hostname: parsed.hostname, path: parsed.pathname + parsed.search, headers },
+        { hostname: parsed.hostname, path: parsed.pathname + parsed.search, headers: reqHeaders },
         (res) => {
           if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) {
             follow(res.headers.location!, redirectCount + 1);
@@ -667,50 +962,37 @@ export async function* downloadModel(
           }
           if (res.statusCode !== 200 && res.statusCode !== 206) {
             const err = new Error(`HTTP ${res.statusCode} for ${targetUrl}`);
-            push({ kind: 'error', err });
-            reject(err);
-            return;
+            push({ kind: 'error', err }); reject(err); return;
           }
-
           bytesTotal = res.statusCode === 206
             ? existingBytes + parseInt(res.headers['content-length'] ?? '0', 10)
             : parseInt(res.headers['content-length'] ?? String(spec.sizeBytes), 10);
 
           const fd = fs.createWriteStream(tmp, { flags: existingBytes > 0 ? 'a' : 'w' });
-
           res.on('data', (chunk: Buffer) => {
             bytesReceived += chunk.length;
             fd.write(chunk);
             const now = Date.now();
             if (now - lastEmitTime >= THROTTLE_MS || bytesReceived - lastEmitBytes >= THROTTLE_BYTES) {
-              lastEmitTime  = now;
-              lastEmitBytes = bytesReceived;
+              lastEmitTime = now; lastEmitBytes = bytesReceived;
               push({ kind: 'progress', bytesReceived, bytesTotal });
             }
           });
-
           res.on('end', () => {
-            // File fully received — signal installing state while we flush + rename
             push({ kind: 'installing' });
             fd.end(() => {
               try {
                 fs.renameSync(tmp, dest);
               } catch {
-                try {
-                  fs.copyFileSync(tmp, dest);
-                  fs.unlinkSync(tmp);
-                } catch (copyErr) {
+                try { fs.copyFileSync(tmp, dest); fs.unlinkSync(tmp); }
+                catch (copyErr) {
                   const err = new Error(`Failed to finalize download: ${copyErr}`);
-                  push({ kind: 'error', err });
-                  reject(err);
-                  return;
+                  push({ kind: 'error', err }); reject(err); return;
                 }
               }
-              push({ kind: 'done' });
-              resolve();
+              push({ kind: 'done' }); resolve();
             });
           });
-
           res.on('error', (err) => { fd.destroy(); push({ kind: 'error', err }); reject(err); });
         },
       );
@@ -719,7 +1001,6 @@ export async function* downloadModel(
     follow(url);
   });
 
-  // Drain the queue, yielding progress events to the SSE route
   let finished = false;
   while (!finished) {
     if (queue.length === 0) {
@@ -744,12 +1025,174 @@ export async function* downloadModel(
   yield { modelId: spec.modelId, phase, bytesReceived, bytesTotal, done: true };
 }
 
+// ── FLUX download ─────────────────────────────────────────────────────────────
+// Same push-queue + async generator pattern as downloadModel().
+// Downloads the main FLUX model then all required aux files sequentially.
 
-// ── llama-server binary resolution ───────────────────────────────────────────
-// Supports backend-specific binaries on Windows:
-//   llama-server-win32-x64-cuda.exe   (for NVIDIA)
-//   llama-server-win32-x64-vulkan.exe (for AMD iGPU, Intel, fallback)
-// Falls back to generic llama-server-{platform}-{arch}{ext} if specific not found.
+export type FluxDownloadPhase = 'flux-main' | 'flux-aux';
+
+export interface FluxDownloadProgress {
+  fileId: string;
+  phase: FluxDownloadPhase;
+  label: string;
+  bytesReceived: number;
+  bytesTotal: number;
+  done: boolean;
+  installing?: boolean;
+  error?: string;
+}
+
+function hfFluxUrl(hfRepo: string, hfFile: string): string {
+  return `https://huggingface.co/${hfRepo}/resolve/main/${hfFile}`;
+}
+
+async function* downloadFluxFileGen(
+  hfRepo: string,
+  hfFile: string,
+  destPath: string,
+  sizeBytes: number,
+  fileId: string,
+  label: string,
+  phase: FluxDownloadPhase,
+): AsyncGenerator<FluxDownloadProgress> {
+  fs.mkdirSync(FLUX_MODELS_DIR, { recursive: true });
+
+  const tmp           = destPath + '.download';
+  const existingBytes = fs.existsSync(tmp) ? fs.statSync(tmp).size : 0;
+  const reqHeaders: Record<string, string> = {};
+  if (existingBytes > 0) reqHeaders['Range'] = `bytes=${existingBytes}-`;
+
+  const url           = hfFluxUrl(hfRepo, hfFile);
+  let bytesReceived   = existingBytes;
+  let bytesTotal      = sizeBytes;
+
+  yield { fileId, phase, label, bytesReceived, bytesTotal, done: false };
+
+  type QItem =
+    | { kind: 'progress'; bytesReceived: number; bytesTotal: number }
+    | { kind: 'installing' }
+    | { kind: 'done' }
+    | { kind: 'error'; err: Error };
+
+  const queue: QItem[] = [];
+  let notify: (() => void) | null = null;
+  const push = (item: QItem) => { queue.push(item); notify?.(); };
+
+  const THROTTLE_MS    = 250;
+  const THROTTLE_BYTES = 2 * 1024 * 1024;
+  let lastEmitBytes = existingBytes;
+  let lastEmitTime  = Date.now();
+
+  const downloadPromise = new Promise<void>((resolve, reject) => {
+    const follow = (targetUrl: string, hops = 0) => {
+      if (hops > 10) { reject(new Error('Too many redirects')); return; }
+      const parsed = new URL(targetUrl);
+      const req = https.get(
+        { hostname: parsed.hostname, path: parsed.pathname + parsed.search, headers: reqHeaders },
+        (res) => {
+          if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) {
+            follow(res.headers.location!, hops + 1); return;
+          }
+          if (res.statusCode !== 200 && res.statusCode !== 206) {
+            const err = new Error(`HTTP ${res.statusCode} for ${targetUrl}`);
+            push({ kind: 'error', err }); reject(err); return;
+          }
+          bytesTotal = res.statusCode === 206
+            ? existingBytes + parseInt(res.headers['content-length'] ?? '0', 10)
+            : parseInt(res.headers['content-length'] ?? String(sizeBytes), 10);
+
+          const fd = fs.createWriteStream(tmp, { flags: existingBytes > 0 ? 'a' : 'w' });
+          res.on('data', (chunk: Buffer) => {
+            bytesReceived += chunk.length;
+            fd.write(chunk);
+            const now = Date.now();
+            if (now - lastEmitTime >= THROTTLE_MS || bytesReceived - lastEmitBytes >= THROTTLE_BYTES) {
+              lastEmitTime = now; lastEmitBytes = bytesReceived;
+              push({ kind: 'progress', bytesReceived, bytesTotal });
+            }
+          });
+          res.on('end', () => {
+            push({ kind: 'installing' });
+            fd.end(() => {
+              try {
+                fs.renameSync(tmp, destPath);
+              } catch {
+                try { fs.copyFileSync(tmp, destPath); fs.unlinkSync(tmp); }
+                catch (copyErr) {
+                  const err = new Error(`Failed to finalize: ${copyErr}`);
+                  push({ kind: 'error', err }); reject(err); return;
+                }
+              }
+              push({ kind: 'done' }); resolve();
+            });
+          });
+          res.on('error', (err) => { fd.destroy(); push({ kind: 'error', err }); reject(err); });
+        },
+      );
+      req.on('error', (err) => { push({ kind: 'error', err }); reject(err); });
+    };
+    follow(url);
+  });
+
+  let finished = false;
+  while (!finished) {
+    if (queue.length === 0) {
+      await new Promise<void>((res) => { notify = res; });
+      notify = null;
+    }
+    while (queue.length > 0) {
+      const item = queue.shift()!;
+      if (item.kind === 'progress') {
+        yield { fileId, phase, label, bytesReceived: item.bytesReceived, bytesTotal: item.bytesTotal, done: false };
+      } else if (item.kind === 'installing') {
+        yield { fileId, phase, label, bytesReceived, bytesTotal, done: false, installing: true };
+      } else if (item.kind === 'done') {
+        finished = true;
+      } else {
+        throw item.err;
+      }
+    }
+  }
+
+  await downloadPromise;
+  yield { fileId, phase, label, bytesReceived, bytesTotal, done: true };
+}
+
+/**
+ * Downloads a FLUX model + all required aux files sequentially.
+ * auxFiles should be [FLUX_VAE, FLUX_CLIP_L, FLUX_T5_Q4 | FLUX_T5_Q8].
+ * Already-downloaded files emit a single done:true event immediately.
+ */
+export async function* downloadFluxModel(
+  spec: FluxSpec,
+  auxFiles: FluxAuxFile[],
+): AsyncGenerator<FluxDownloadProgress> {
+  // 1. Main model
+  if (!isFluxDownloaded(spec)) {
+    yield* downloadFluxFileGen(
+      spec.hfRepo, spec.hfFile, fluxModelPath(spec),
+      spec.sizeBytes, spec.modelId, spec.label, 'flux-main',
+    );
+  } else {
+    yield { fileId: spec.modelId, phase: 'flux-main', label: spec.label,
+            bytesReceived: spec.sizeBytes, bytesTotal: spec.sizeBytes, done: true };
+  }
+
+  // 2. Aux files
+  for (const aux of auxFiles) {
+    if (!isFluxAuxDownloaded(aux)) {
+      yield* downloadFluxFileGen(
+        aux.hfRepo, aux.hfFile, fluxAuxPath(aux),
+        aux.sizeBytes, aux.id, aux.label, 'flux-aux',
+      );
+    } else {
+      yield { fileId: aux.id, phase: 'flux-aux', label: aux.label,
+              bytesReceived: aux.sizeBytes, bytesTotal: aux.sizeBytes, done: true };
+    }
+  }
+}
+
+// ── Binary resolution ─────────────────────────────────────────────────────────
 
 export function resolveLlamaServerBin(): string {
   const platform = process.platform;
@@ -758,7 +1201,7 @@ export function resolveLlamaServerBin(): string {
   const name     = `llama-server-${platform}-${arch}${ext}`;
 
   const seaDir   = path.dirname(process.execPath);
-  const repoRoot = path.resolve(_dirname, '..', '..');
+  const repoRoot = path.resolve(_dirname, '..');
 
   const seaPath = path.join(seaDir, name);
   if (fs.existsSync(seaPath)) return seaPath;
@@ -766,15 +1209,56 @@ export function resolveLlamaServerBin(): string {
   if (fs.existsSync(devPath)) return devPath;
 
   throw new Error(
-    `llama-server binary not found.\n` +
-    `Expected at:\n  ${seaPath}\n  ${devPath}\n` +
+    `llama-server binary not found.\nExpected at:\n  ${seaPath}\n  ${devPath}\n` +
     `Run scripts/fetch-llamacpp.js to download binaries.`
   );
 }
 
 /**
- * Deletes a downloaded GGUF file from disk.
+ * Resolves the sd-server binary for the current platform.
+ * Windows preference: CUDA (best) -> Vulkan (primary GPU) -> CPU AVX2 (last resort)
+ * Linux/macOS: single binary, fetched as Vulkan/Metal build by fetch-sd-cpp.js
  */
+export function resolveSdServerBin(): string {
+  const platform = process.platform;
+  const arch     = process.arch;
+  const seaDir   = path.dirname(process.execPath);
+  const binDir   = path.join(path.resolve(_dirname, '..'), 'bin');
+
+  // Windows: each sd build lives in its own subdir to avoid DLL conflicts with llama-cpp.
+  // Preference: CUDA -> Vulkan -> CPU.  Legacy flat-bin layout included as fallback.
+  // Linux/macOS: single binary at bin/sd-server-<platform>-<arch>
+  type Candidate = { file: string; dir: string };
+  const candidates: Candidate[] = platform === 'win32'
+    ? [
+        { file: `sd-server-${platform}-${arch}-cuda.exe`, dir: path.join(binDir, 'sd-cuda')   },
+        { file: `sd-server-${platform}-${arch}.exe`,      dir: path.join(binDir, 'sd-vulkan') },
+        { file: `sd-server-${platform}-${arch}-cpu.exe`,  dir: path.join(binDir, 'sd-cpu')    },
+        { file: `sd-server-${platform}-${arch}-cuda.exe`, dir: seaDir },
+        { file: `sd-server-${platform}-${arch}-cuda.exe`, dir: binDir },
+        { file: `sd-server-${platform}-${arch}.exe`,      dir: seaDir },
+        { file: `sd-server-${platform}-${arch}.exe`,      dir: binDir },
+      ]
+    : [
+        { file: `sd-server-${platform}-${arch}`, dir: seaDir },
+        { file: `sd-server-${platform}-${arch}`, dir: binDir },
+      ];
+
+  for (const { file, dir } of candidates) {
+    const p = path.join(dir, file);
+    if (fs.existsSync(p)) return p;
+  }
+
+  throw new Error(
+    `sd-server binary not found for ${platform}-${arch}.\n` +
+    `Expected in bin/sd-cuda/, bin/sd-vulkan/, or bin/sd-cpu/\n` +
+    `Run scripts/fetch-sd-cpp.js to download binaries.`
+  );
+}
+
+
+// ── Model deletion ────────────────────────────────────────────────────────────
+
 export function deleteModel(modelId: string): boolean {
   const spec = getSpec(modelId);
   if (!spec) throw new Error(`Unknown model ID: ${modelId}`);

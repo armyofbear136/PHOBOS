@@ -30,6 +30,7 @@ mkdirSync(WORKSPACES_ROOT, { recursive: true });
 
 async function buildServer() {
   const fastify = Fastify({
+    disableRequestLogging: process.env.PHOBOS_DEBUG !== '1',
     logger: {
       level: process.env.LOG_LEVEL ?? 'info',
     },

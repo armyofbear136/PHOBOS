@@ -3,6 +3,9 @@ import { MessageStore } from '../db/MessageStore.js';
 import { ThreadStore } from '../db/ThreadStore.js';
 import { DocumentStore } from '../db/DocumentStore.js';
 import { DatabaseManager } from '../db/DatabaseManager.js';
+
+const DEBUG = process.env.PHOBOS_DEBUG === '1' || process.env.PHOBOS_DEBUG === 'true';
+const dbg = (...args: unknown[]) => { if (DEBUG) console.log(...args); };
 import { DispatchLogStore } from '../db/DispatchLogStore.js';
 import { MessageEventStore } from '../db/MessageEventStore.js';
 import { ThinkingSegmentStore } from '../db/ThinkingSegmentStore.js';
@@ -17,6 +20,9 @@ import { ThinkingStripper } from '../context/ThinkingStripper.js';
 import type { IntentType } from '../ai/IntentClassifier.js';
 import type { ClassificationContext } from '../ai/IntentClassifier.js';
 import { ENGINE_MODEL, COORDINATOR_MODEL as COORD_MODEL_REF, COORDINATOR_PROVIDER, getThinkingStrategy, setLogContext, clearLogContext } from '../ai/clients.js';
+import * as fs from 'fs';
+import * as path from 'path';
+import { exec, execFile, spawn } from 'child_process';
 
 export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   const db = DatabaseManager.getInstance();
@@ -109,6 +115,41 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
     }
   );
 
+  // GET /api/threads/:id/workspace-media
+  // Returns the list of image files in the thread's images/ subdirectory.
+  // Used on conversation load to restore media thumbnails without replaying SSE events.
+  fastify.get<{ Params: { id: string } }>(
+    '/api/threads/:id/workspace-media',
+    async (req, reply) => {
+      const threadId = req.params.id;
+      const workspacesRoot = process.env.WORKSPACES_ROOT
+        ? path.resolve(process.env.WORKSPACES_ROOT)
+        : path.resolve(process.cwd(), 'workspaces');
+
+      const imagesDir = path.join(workspacesRoot, threadId, 'images');
+      const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+
+      if (!fs.existsSync(imagesDir)) {
+        return reply.send({ files: [] });
+      }
+
+      try {
+        const entries = fs.readdirSync(imagesDir, { withFileTypes: true });
+        const files = entries
+          .filter((e) => e.isFile() && IMAGE_EXTS.has(path.extname(e.name).toLowerCase()))
+          .map((e) => ({
+            filename: e.name,
+            absolutePath: path.join(imagesDir, e.name),
+            createdAt: fs.statSync(path.join(imagesDir, e.name)).mtime.toISOString(),
+          }))
+          .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        return reply.send({ files });
+      } catch {
+        return reply.send({ files: [] });
+      }
+    }
+  );
+
   // GET /api/threads/:id/workspace/:filename
   // Returns the content of a specific file in the workspace.
   fastify.get<{ Params: { id: string; filename: string } }>(
@@ -154,6 +195,136 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
       return reply.status(204).send();
     }
   );
+
+  // ── Media file serving ────────────────────────────────────────────────────
+  // GET /api/workspace/file/:threadId/:filename
+  // Serves binary files (images, etc.) from the thread's workspace.
+  // The path mirrors ImageGenerationHandler: workspaces/<threadId>/images/<filename>
+  // Supports an optional ?dir= query param for subdirectories (defaults to 'images').
+  fastify.get<{
+    Params: { threadId: string; filename: string };
+    Querystring: { dir?: string };
+  }>('/api/workspace/file/:threadId/:filename', async (req, reply) => {
+    const { threadId, filename } = req.params;
+    const subdir = req.query.dir ?? 'images';
+
+    // Sanitise — no path traversal
+    if (filename.includes('..') || filename.includes('/') || subdir.includes('..')) {
+      return reply.status(400).send({ error: 'Invalid filename' });
+    }
+
+    const workspacesRoot = process.env.WORKSPACES_ROOT
+      ? path.resolve(process.env.WORKSPACES_ROOT)
+      : path.resolve(process.cwd(), 'workspaces');
+
+    const filePath = path.join(workspacesRoot, threadId, subdir, filename);
+
+    if (!fs.existsSync(filePath)) {
+      return reply.status(404).send({ error: 'File not found' });
+    }
+
+    const ext = path.extname(filename).toLowerCase();
+    const mimeTypes: Record<string, string> = {
+      '.png':  'image/png',
+      '.jpg':  'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.webp': 'image/webp',
+      '.gif':  'image/gif',
+    };
+    const contentType = mimeTypes[ext] ?? 'application/octet-stream';
+
+    reply.header('Content-Type', contentType);
+    reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+    return reply.send(fs.readFileSync(filePath));
+  });
+
+  // POST /api/workspace/open-native
+  // Opens a file with its default application, or reveals it in the file manager.
+  // Body: { path: string; mode?: 'open' | 'reveal' }
+  //   open   (default) — launches the file with the OS default app
+  //   reveal            — highlights the file in Explorer/Finder without opening it
+  fastify.post<{ Body: { path: string; mode?: 'open' | 'reveal' } }>(
+    '/api/workspace/open-native',
+    async (req, reply) => {
+      const targetPath = req.body?.path;
+      const mode = req.body?.mode ?? 'open';
+      if (!targetPath) return reply.status(400).send({ error: 'path is required' });
+
+      // Resolve and verify the path exists
+      const resolved = path.resolve(targetPath);
+      if (!fs.existsSync(resolved)) {
+        return reply.status(404).send({ error: 'Path not found', path: resolved });
+      }
+
+      if (process.platform === 'win32') {
+        if (mode === 'reveal') {
+          // /select, highlights the file in Explorer without opening it
+          spawn('explorer.exe', ['/select,' + resolved], { detached: true, stdio: 'ignore' }).unref();
+        } else {
+          // 'start' opens the file with its default app — must go through cmd /c
+          // because 'start' is a shell built-in, not an executable
+          spawn('cmd.exe', ['/c', 'start', '', resolved], { detached: true, stdio: 'ignore' }).unref();
+        }
+      } else if (process.platform === 'darwin') {
+        if (mode === 'reveal') {
+          execFile('open', ['-R', resolved], (err) => {
+            if (err) console.warn(`[open-native] ${err.message}`);
+          });
+        } else {
+          execFile('open', [resolved], (err) => {
+            if (err) console.warn(`[open-native] ${err.message}`);
+          });
+        }
+      } else {
+        // Linux — xdg-open handles both files and directories
+        execFile('xdg-open', [resolved], (err) => {
+          if (err) console.warn(`[open-native] ${err.message}`);
+        });
+      }
+
+      return reply.send({ ok: true, path: resolved, mode });
+    }
+  );
+
+  // POST /api/workspace/upload-media/:threadId
+  // Accepts a base64-encoded image and writes it to the thread's images/ subdir.
+  // Body: { filename: string; data: string (base64) }
+  fastify.post<{
+    Params: { threadId: string };
+    Body: { filename: string; data: string };
+  }>('/api/workspace/upload-media/:threadId', async (req, reply) => {
+    const { threadId } = req.params;
+    const { filename, data } = req.body ?? {};
+
+    if (!filename || !data) {
+      return reply.status(400).send({ error: 'filename and data are required' });
+    }
+
+    // Sanitise — no path traversal
+    const safeName = path.basename(filename);
+    if (!safeName || safeName.includes('..')) {
+      return reply.status(400).send({ error: 'Invalid filename' });
+    }
+
+    const ALLOWED_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+    if (!ALLOWED_EXT.has(path.extname(safeName).toLowerCase())) {
+      return reply.status(400).send({ error: 'Only image files are accepted' });
+    }
+
+    const workspacesRoot = process.env.WORKSPACES_ROOT
+      ? path.resolve(process.env.WORKSPACES_ROOT)
+      : path.resolve(process.cwd(), 'workspaces');
+
+    const imagesDir = path.join(workspacesRoot, threadId, 'images');
+    fs.mkdirSync(imagesDir, { recursive: true });
+
+    const destPath = path.join(imagesDir, safeName);
+    const buf = Buffer.from(data, 'base64');
+    fs.writeFileSync(destPath, buf);
+
+    console.log(`[upload-media] Saved ${safeName} (${(buf.length / 1024).toFixed(1)} KB) → ${destPath}`);
+    return reply.send({ ok: true, filename: safeName, absolutePath: destPath });
+  });
 
   // GET /api/copilot/overview
   // Returns the system-wide workspace overview for the Copilot panel.
@@ -334,7 +505,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
       };
 
       // Route based on intent routing signal
-      if (!pendingClarity && intent.routing === 'ANSWER_DIRECTLY') {
+      if (!pendingClarity && intent.routing === 'ANSWER_DIRECTLY' && intent.type !== 'IMAGE_REQUEST') {
         trackingsendEvent({ type: 'status', content: 'Answering directly via coordinator…' });
         const directMsgId = await handleDirectResponse(
           threadId,
@@ -397,6 +568,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           buildCommand: build_command ?? extractBuildCommand(docs.claudeMd),
           projectRoot: workspaceDir,
           workspaceDir: workspaceDir,
+          threadId: threadId,
           skipBuild: skip_build ?? !hasBuildCommand(docs.claudeMd),
           maxAttempts: 3,
           persistEvent: async (eventType, payload) => {
@@ -424,6 +596,26 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           onAgentState: (event) => {
             // agent_state already written to SSE by AgentStateManager — persist for replay
             eventStore.insert(threadId, 'agent_state', event, assistantMsg.id).catch(() => {});
+          },
+          onImageStatus: (status) => {
+            // Stream image generation phase updates to frontend as they happen.
+            // 'generating' phase locks chat input; 'done'/'error' unlocks it.
+            sendEvent({ type: 'image_status', phase: status.phase, message: status.message, estSeconds: status.estSeconds });
+            if (status.phase === 'done' && status.result) {
+              sendEvent({
+                type: 'image_complete',
+                outputPath: status.result.outputPath,
+                seed: status.result.seed,
+                elapsedMs: status.result.elapsedMs,
+              });
+              // Persist for replay
+              eventStore.insert(threadId, 'image_complete', {
+                type: 'image_complete',
+                outputPath: status.result.outputPath,
+                seed: status.result.seed,
+                elapsedMs: status.result.elapsedMs,
+              }, assistantMsg.id).catch(() => {});
+            }
           },
         });
 
@@ -684,7 +876,7 @@ async function handleDirectResponse(
   const { applyThinkingStrategy: applyStrat } = await import('../ai/clients.js');
   const { messages: stratMessages } = applyStrat(rawMessages, systemPrompt, COORD_PROV, COORDINATOR_MODEL, 'think');
 
-  console.log(`[handleDirect:config] provider=${COORD_PROV} model=${COORDINATOR_MODEL} thinkingPath=${strategy.thinkingPath} systemSuffix=${JSON.stringify(strategy.systemSuffix.slice(0, 40))}`);
+  dbg(`[handleDirect:config] provider=${COORD_PROV} model=${COORDINATOR_MODEL} thinkingPath=${strategy.thinkingPath} systemSuffix=${JSON.stringify(strategy.systemSuffix.slice(0, 40))}`);
 
   // Pre-create the assistant message so we have an ID to attach stream chunks to.
   // Content and thinking_trace are updated at the end with the full result.
@@ -717,7 +909,7 @@ async function handleDirectResponse(
   try {
     const { getThinkingExtraBody: getExtra } = await import('../ai/clients.js');
     const coordExtraBody = getExtra(COORD_PROV, COORDINATOR_MODEL, 'think');
-    console.log(`[handleDirect:extraBody] ${JSON.stringify(coordExtraBody)}`);
+    dbg(`[handleDirect:extraBody] ${JSON.stringify(coordExtraBody)}`);
     const coordMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
       { role: 'system', content: systemPrompt },
       ...stratMessages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
@@ -735,7 +927,7 @@ async function handleDirectResponse(
       });
     } catch (streamCreateErr: unknown) {
       console.error(`[handleDirect:createError] ${streamCreateErr instanceof Error ? streamCreateErr.message : String(streamCreateErr)}`);
-      console.log('[handleDirect:retry] Retrying without extra_body...');
+      dbg('[handleDirect:retry] Retrying without extra_body...');
       stream = await coordinatorClient.chat.completions.create({
         model: COORDINATOR_MODEL,
         messages: coordMessages,
@@ -761,7 +953,7 @@ async function handleDirectResponse(
           thinkToken = thinkToken.replace(/<\/?think>/g, '');
           if (thinkToken) {
             _dbgCount++;
-            if (_dbgCount <= 3) console.log(`[handleDirect:think:${_dbgCount}] field=${JSON.stringify(thinkToken.slice(0, 80))}`);
+            if (_dbgCount <= 3) dbg(`[handleDirect:think:${_dbgCount}] field=${JSON.stringify(thinkToken.slice(0, 80))}`);
             thinkingBuf += thinkToken;
             await appendToSegment(thinkToken);
             sendEvent({ type: 'think_token', token: thinkToken, source: 'coordinator' });
@@ -777,7 +969,7 @@ async function handleDirectResponse(
         if (rawContent != null) {
           _dbgCount++;
           if (_dbgCount <= 3 || rawContent.includes('<think') || rawContent.includes('</think')) {
-            console.log(`[handleDirect:${_dbgCount}] raw=${JSON.stringify(rawContent.slice(0, 100))}`);
+            dbg(`[handleDirect:${_dbgCount}] raw=${JSON.stringify(rawContent.slice(0, 100))}`);
           }
         }
 

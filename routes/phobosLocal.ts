@@ -26,6 +26,8 @@ import {
   downloadFluxModel,
   fluxModelPath,
   fluxAuxPath,
+  cancelImageDownload,
+  cancelLlmDownload,
 } from '../phobos/PhobosLocalManager.js';
 import {
   startServer,
@@ -294,24 +296,6 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         return reply.status(400).send({ error: `Unknown image model: ${modelId}` });
       }
 
-      const hw        = await detectHardware();
-      const _bScore   = (g: typeof hw.gpus[0]): number =>
-        (g.unifiedMemory || g.index >= 100) ? 0
-        : g.backend === 'cuda'  ? 3
-        : g.backend === 'metal' ? 2
-        : 1;
-      const bestGpu   = [...hw.gpus].sort((a, b) => { const d = _bScore(b) - _bScore(a); return d !== 0 ? d : b.vramGb - a.vramGb; })[0] ?? null;
-      const totalVram = bestGpu?.vramGb ?? 0;
-      const isUnified = bestGpu?.unifiedMemory === true || (bestGpu?.index ?? 0) >= 100;
-
-      let auxFiles: typeof FLUX_AUX_REQUIRED;
-      if (spec.runnerProfile === 'flux') {
-        const t5 = recommendT5Encoder(spec, totalVram, isUnified);
-        auxFiles = [...FLUX_AUX_REQUIRED, t5];
-      } else {
-        auxFiles = [...SDXL_AUX_REQUIRED];
-      }
-
       reply.hijack();
       reply.raw.writeHead(200, {
         'Content-Type':                'text/event-stream',
@@ -321,20 +305,39 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       });
 
       const send = (data: object) => {
-        reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+        try { reply.raw.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* socket closed */ }
       };
 
       try {
+        const hw        = await detectHardware();
+        const _bScore   = (g: typeof hw.gpus[0]): number =>
+          (g.unifiedMemory || g.index >= 100) ? 0
+          : g.backend === 'cuda'  ? 3
+          : g.backend === 'metal' ? 2
+          : 1;
+        const bestGpu   = [...hw.gpus].sort((a, b) => { const d = _bScore(b) - _bScore(a); return d !== 0 ? d : b.vramGb - a.vramGb; })[0] ?? null;
+        const totalVram = bestGpu?.vramGb ?? 0;
+        const isUnified = bestGpu?.unifiedMemory === true || (bestGpu?.index ?? 0) >= 100;
+
+        let auxFiles: typeof FLUX_AUX_REQUIRED;
+        if (spec.runnerProfile === 'flux') {
+          const t5 = recommendT5Encoder(spec, totalVram, isUnified);
+          auxFiles = [...FLUX_AUX_REQUIRED, t5];
+        } else {
+          auxFiles = [...SDXL_AUX_REQUIRED];
+        }
+
         for await (const progress of downloadFluxModel(spec, auxFiles)) {
           send(progress);
           if (progress.error) break;
         }
         send({ fileId: 'complete', phase: 'complete', label: 'Done', bytesReceived: 0, bytesTotal: 0, done: true });
       } catch (err) {
+        console.error(`[phobosLocal] image download error (${modelId}): ${err}`);
         send({ fileId: 'error', phase: 'error', label: String(err), bytesReceived: 0, bytesTotal: 0, done: true, error: String(err) });
+      } finally {
+        try { reply.raw.end(); } catch { /* already closed */ }
       }
-
-      reply.raw.end();
     }
   );
 
@@ -348,6 +351,43 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       const fs = await import('fs');
       if (!fs.existsSync(p)) return reply.status(404).send({ error: 'File not found' });
       fs.unlinkSync(p);
+      return reply.send({ ok: true });
+    }
+  );
+
+  // DELETE /api/phobos/image/download/cancel?modelId=<id>
+  // Cleans up in-progress .download temp files when the user cancels an image download.
+  fastify.delete<{ Querystring: { modelId: string } }>(
+    '/api/phobos/image/download/cancel',
+    async (req, reply) => {
+      const spec = getImageModelSpec(req.query.modelId);
+      if (!spec) return reply.status(400).send({ error: 'Unknown image model' });
+
+      const hw        = await detectHardware().catch(() => ({ gpus: [] }));
+      const bestGpu   = [...hw.gpus].sort((a, b) => b.vramGb - a.vramGb)[0] ?? null;
+      const totalVram = bestGpu?.vramGb ?? 0;
+      const isUnified = bestGpu?.unifiedMemory === true || (bestGpu?.index ?? 0) >= 100;
+
+      let auxFiles: typeof FLUX_AUX_REQUIRED;
+      if (spec.runnerProfile === 'flux') {
+        const t5 = recommendT5Encoder(spec, totalVram, isUnified);
+        auxFiles = [...FLUX_AUX_REQUIRED, t5];
+      } else {
+        auxFiles = [...SDXL_AUX_REQUIRED];
+      }
+
+      cancelImageDownload(spec, auxFiles);
+      return reply.send({ ok: true });
+    }
+  );
+
+  // DELETE /api/phobos/download/cancel?sayon=<id>&seren=<id>
+  // Cleans up in-progress .download temp files when the user cancels an LLM download.
+  fastify.delete<{ Querystring: { sayon?: string; seren?: string } }>(
+    '/api/phobos/download/cancel',
+    async (req, reply) => {
+      const ids = [req.query.sayon, req.query.seren].filter(Boolean) as string[];
+      cancelLlmDownload(...ids);
       return reply.send({ ok: true });
     }
   );

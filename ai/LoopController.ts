@@ -620,7 +620,7 @@ export class LoopController {
           continue;
         }
 
-        const writtenFiles = toolResults.filter(r => r.success && r.content && r.tool !== 'read_file');
+        const writtenFiles = toolResults.filter(r => r.success && r.content && r.tool !== 'read_file' && r.tool !== 'generate_image');
         await this.persistAndSend(reply, {
           type: 'patches_applied',
           count: writtenFiles.length,

@@ -295,16 +295,16 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
   {
     modelId: 'magistral-8b-q4', label: 'Magistral 8B Q4', family: 'Mistral',
     role: 'seren', thinkingTokens: true, jinjaTemplate: true,
-    hfRepo: 'bartowski/Magistral-Small-2506-GGUF',
-    hfFile: 'Magistral-Small-2506-Q4_K_M.gguf',
+    hfRepo: 'bartowski/mistralai_Magistral-Small-2506-GGUF',
+    hfFile: 'mistralai_Magistral-Small-2506-Q4_K_M.gguf',
     sizeBytes: 14_400_000_000, ramRequiredGb: 16, contextWindow: 131072,
   },
   // ── DeepSeek-R1 family ───────────────────────────────────────────────────────
   {
     modelId: 'deepseek-r1-8b-q4', label: 'DeepSeek-R1 8B Q4', family: 'DeepSeek-R1',
     role: 'seren', thinkingTokens: true, jinjaTemplate: true,
-    hfRepo: 'bartowski/DeepSeek-R1-0528-Qwen3-8B-GGUF',
-    hfFile: 'DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf',
+    hfRepo: 'bartowski/deepseek-ai_DeepSeek-R1-0528-Qwen3-8B-GGUF',
+    hfFile: 'deepseek-ai_DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf',
     sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 32768,
   },
   {
@@ -513,10 +513,10 @@ export const FLUX_CATALOGUE: FluxSpec[] = [
     runnerProfile:    'flux',
     category:         'realistic',
     variant:          'dev',
-    quantization:     'Q4_K_M',
+    quantization:     'Q4_0',
     hfRepo:           'city96/FLUX.1-dev-gguf',
-    hfFile:           'flux1-dev-Q4_K_M.gguf',
-    sizeBytes:        6_800_000_000,
+    hfFile:           'flux1-dev-Q4_0.gguf',
+    sizeBytes:        6_790_000_000,
     vramRequiredGb:   8,
     estSecondsCuda:   90,
     estSecondsVulkan: 300,
@@ -549,6 +549,8 @@ export const FLUX_CATALOGUE: FluxSpec[] = [
 // No additional downloads if schnell is already installed.
 
 export const CHROMA_CATALOGUE: ImageModelSpec[] = [
+  // ── Chroma1-HD — FLUX-architecture, uncensored realistic ─────────────────
+  // Reuses FLUX aux pool (VAE + T5). No CLIP-L needed. Apache 2.0.
   {
     modelId:          'chroma-q4',
     label:            'Chroma1-HD Q4',
@@ -557,9 +559,9 @@ export const CHROMA_CATALOGUE: ImageModelSpec[] = [
     category:         'nsfw-realistic',
     variant:          'chroma',
     quantization:     'Q4_0',
-    hfRepo:           'silveroxides/Chroma-GGUF',
+    hfRepo:           'silveroxides/Chroma1-HD-GGUF',
     hfFile:           'Chroma1-HD-Q4_0.gguf',
-    sizeBytes:        5_570_000_000,
+    sizeBytes:        5_430_000_000,
     vramRequiredGb:   8,
     estSecondsCuda:   14,
     estSecondsVulkan: 50,
@@ -572,6 +574,7 @@ export const CHROMA_CATALOGUE: ImageModelSpec[] = [
 // ── SDXL shared aux files ─────────────────────────────────────────────────────
 // Downloaded once, shared by ALL SDXL models.
 // SDXL_CLIP_L re-uses the same file as FLUX — if FLUX is installed it's already present.
+// VAE is baked into all GGUF models in the SDXL catalogue — no separate download needed.
 
 export const SDXL_CLIP_L: FluxAuxFile = {
   id:        'sdxl-clip-l',
@@ -587,12 +590,12 @@ export const SDXL_CLIP_L: FluxAuxFile = {
 export const SDXL_CLIP_G: FluxAuxFile = {
   id:        'sdxl-clip-g',
   label:     'SDXL CLIP-G encoder',
-  hfRepo:    'Comfy-Org/stable-diffusion-3.5-fp8',
-  hfFile:    'text_encoders/clip_g.safetensors',
+  hfRepo:    'second-state/stable-diffusion-3.5-large-GGUF',
+  hfFile:    'clip_g.safetensors',
   sizeBytes: 1_390_000_000,
   cliFlag:   '--clip_g',
   license:    'Apache-2.0',
-  licenseUrl: 'https://huggingface.co/Comfy-Org/stable-diffusion-3.5-fp8/blob/main/LICENSE',
+  licenseUrl: 'https://huggingface.co/second-state/stable-diffusion-3.5-large-GGUF/blob/main/LICENSE',
 };
 
 export const SDXL_VAE: FluxAuxFile = {
@@ -606,53 +609,35 @@ export const SDXL_VAE: FluxAuxFile = {
   licenseUrl: 'https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/blob/main/LICENSE',
 };
 
-/** Always-required SDXL aux files. Shared by all SDXL models. */
-export const SDXL_AUX_REQUIRED: FluxAuxFile[] = [SDXL_CLIP_L, SDXL_CLIP_G, SDXL_VAE];
+/** Always-required SDXL aux files. VAE omitted — baked into all GGUF models in catalogue. */
+export const SDXL_AUX_REQUIRED: FluxAuxFile[] = [SDXL_CLIP_L, SDXL_CLIP_G];
 
 // ── SDXL catalogue ────────────────────────────────────────────────────────────
-// VAE is baked into each GGUF so sd.cpp uses -m (single file) + --clip_l + --clip_g.
-// The SDXL_VAE aux is kept for servers that prefer external VAE; baked-in is fine too.
+// VAE is baked into each GGUF. sd.cpp invocation: -m <model> --clip_l --clip_g
 
 export const SDXL_CATALOGUE: ImageModelSpec[] = [
   // ── Realistic ────────────────────────────────────────────────────────────
   {
-    modelId:          'juggernaut-xl-q4',
-    label:            'Juggernaut XL v11 Q4',
-    displayName:      'Juggernaut XL',
+    modelId:          'realvis-xl-v5-q4',
+    label:            'RealVisXL V5.0 Q4',
+    displayName:      'RealVisXL V5',
     runnerProfile:    'sdxl',
     category:         'realistic',
     variant:          'sdxl',
     quantization:     'Q4_0',
     hfRepo:           'hum-ma/SDXL-models-GGUF',
-    hfFile:           'Juggernaut-XI-v11-Q4_0.gguf',
-    sizeBytes:        4_280_000_000,
-    vramRequiredGb:   6,
+    hfFile:           'RealVisXL_V5.0-Q4_0.gguf',
+    sizeBytes:        1_490_000_000,
+    vramRequiredGb:   4,
     estSecondsCuda:   10,
     estSecondsVulkan: 35,
     estSecondsCpu:    360,
     license:          'creativeml-openrail-m',
-    licenseUrl:       'https://huggingface.co/RunDiffusion/Juggernaut-XL-v9/blob/main/LICENSE.md',
+    licenseUrl:       'https://huggingface.co/SG161222/RealVisXL_V5.0/blob/main/LICENSE.md',
   },
-  // ── Anime ────────────────────────────────────────────────────────────────
-  {
-    modelId:          'pony-diffusion-v6-q4',
-    label:            'Pony Diffusion V6 XL Q4',
-    displayName:      'Pony Diffusion V6',
-    runnerProfile:    'sdxl',
-    category:         'anime',
-    variant:          'pony',
-    quantization:     'Q4_0',
-    hfRepo:           'hum-ma/SDXL-models-GGUF',
-    hfFile:           'PonyDiffusionV6XL-Q4_0.gguf',
-    sizeBytes:        4_280_000_000,
-    vramRequiredGb:   6,
-    estSecondsCuda:   10,
-    estSecondsVulkan: 35,
-    estSecondsCpu:    360,
-    license:          'FAIPL-1.0-SD',
-    licenseUrl:       'https://huggingface.co/AstraliteHeart/pony-diffusion-v6/blob/main/LICENSE.md',
-  },
-  // ── NSFW Realistic ───────────────────────────────────────────────────────
+  // ── Anime ─────────────────────────────────────────────────────────────────
+  // nsfw-anime slot covered by Chroma1-HD in CHROMA_CATALOGUE (FLUX runner, Apache 2.0).
+  // ── NSFW Realistic ────────────────────────────────────────────────────────
   {
     modelId:          'cyberrealistic-pony-q4',
     label:            'CyberRealistic Pony V12 Q4',
@@ -663,7 +648,7 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     quantization:     'Q4_0',
     hfRepo:           'Green-Sky/CyberRealisticPony-GGUF',
     hfFile:           'CyberRealisticPony_V12.7-vae_f16-q4_0.gguf',
-    sizeBytes:        4_300_000_000,
+    sizeBytes:        2_600_000_000,
     vramRequiredGb:   6,
     estSecondsCuda:   10,
     estSecondsVulkan: 35,
@@ -671,25 +656,9 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     license:          'creativeml-openrail-m',
     licenseUrl:       'https://huggingface.co/cyberdelia/CyberRealisticPony/blob/main/LICENSE.md',
   },
-  // ── NSFW Anime ───────────────────────────────────────────────────────────
-  {
-    modelId:          'wai-nsfw-illustrious-q4',
-    label:            'WAI-NSFW-Illustrious SDXL v11 Q4',
-    displayName:      'WAI-NSFW-Illustrious',
-    runnerProfile:    'sdxl',
-    category:         'nsfw-anime',
-    variant:          'sdxl',
-    quantization:     'Q4_0',
-    hfRepo:           'kekusprod/WAI-NSFW-illustrious-SDXL-v110-GGUF',
-    hfFile:           'wai-nsfw-illustrious-v110-Q4_0.gguf',
-    sizeBytes:        4_280_000_000,
-    vramRequiredGb:   6,
-    estSecondsCuda:   10,
-    estSecondsVulkan: 35,
-    estSecondsCpu:    360,
-    license:          'creativeml-openrail-m',
-    licenseUrl:       'https://huggingface.co/wai-nsfw-illustrious/WAI-NSFW-illustrious-SDXL/blob/main/LICENSE.md',
-  },
+  // ── NSFW Anime ────────────────────────────────────────────────────────────
+  // WAI-NSFW-Illustrious removed: requires custom Illustrious CLIP encoders
+  // incompatible with standard SDXL aux files. nsfw-anime covered by Chroma.
 ];
 
 /** Combined catalogue — all image models across all runner profiles */
@@ -791,6 +760,33 @@ export function deleteFluxModel(modelId: string): boolean {
   if (!fs.existsSync(p)) return false;
   fs.unlinkSync(p);
   return true;
+}
+
+/**
+ * Deletes in-progress .download temp files for an image model and its aux files.
+ * Called on cancel so partial downloads don't occupy disk space.
+ * Silently skips files that don't exist — safe to call at any point.
+ */
+export function cancelImageDownload(spec: ImageModelSpec, auxFiles: FluxAuxFile[]): void {
+  const mainTmp = fluxModelPath(spec) + '.download';
+  try { if (fs.existsSync(mainTmp)) fs.unlinkSync(mainTmp); } catch { /* ignore */ }
+  for (const aux of auxFiles) {
+    const auxTmp = fluxAuxPath(aux) + '.download';
+    try { if (fs.existsSync(auxTmp)) fs.unlinkSync(auxTmp); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Deletes in-progress .download temp files for LLM model(s).
+ * modelIds may be one or both of sayon/seren.
+ */
+export function cancelLlmDownload(...modelIds: string[]): void {
+  for (const modelId of modelIds) {
+    const spec = getSpec(modelId);
+    if (!spec) continue;
+    const tmp = modelPath(spec) + '.download';
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* ignore */ }
+  }
 }
 
 // ── Model recommendation ──────────────────────────────────────────────────────
@@ -1162,16 +1158,41 @@ async function* downloadFluxFileGen(
  * Downloads a FLUX model + all required aux files sequentially.
  * auxFiles should be [FLUX_VAE, FLUX_CLIP_L, FLUX_T5_Q4 | FLUX_T5_Q8].
  * Already-downloaded files emit a single done:true event immediately.
+ * Each file is individually guarded — a 404 on one file emits an error
+ * event for that file and continues to the next rather than crashing the stream.
  */
 export async function* downloadFluxModel(
   spec: FluxSpec,
   auxFiles: FluxAuxFile[],
 ): AsyncGenerator<FluxDownloadProgress> {
+  // ── Helper: wrap a single file generator with per-file error handling ───────
+  async function* safeDownloadFile(
+    gen: AsyncGenerator<FluxDownloadProgress>,
+    fileId: string,
+    label: string,
+    phase: FluxDownloadPhase,
+    sizeBytes: number,
+  ): AsyncGenerator<FluxDownloadProgress> {
+    try {
+      yield* gen;
+    } catch (err) {
+      yield {
+        fileId,
+        phase,
+        label,
+        bytesReceived: 0,
+        bytesTotal:    sizeBytes,
+        done:          true,
+        error:         err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
   // 1. Main model
   if (!isFluxDownloaded(spec)) {
-    yield* downloadFluxFileGen(
-      spec.hfRepo, spec.hfFile, fluxModelPath(spec),
-      spec.sizeBytes, spec.modelId, spec.label, 'flux-main',
+    yield* safeDownloadFile(
+      downloadFluxFileGen(spec.hfRepo, spec.hfFile, fluxModelPath(spec), spec.sizeBytes, spec.modelId, spec.label, 'flux-main'),
+      spec.modelId, spec.label, 'flux-main', spec.sizeBytes,
     );
   } else {
     yield { fileId: spec.modelId, phase: 'flux-main', label: spec.label,
@@ -1181,9 +1202,9 @@ export async function* downloadFluxModel(
   // 2. Aux files
   for (const aux of auxFiles) {
     if (!isFluxAuxDownloaded(aux)) {
-      yield* downloadFluxFileGen(
-        aux.hfRepo, aux.hfFile, fluxAuxPath(aux),
-        aux.sizeBytes, aux.id, aux.label, 'flux-aux',
+      yield* safeDownloadFile(
+        downloadFluxFileGen(aux.hfRepo, aux.hfFile, fluxAuxPath(aux), aux.sizeBytes, aux.id, aux.label, 'flux-aux'),
+        aux.id, aux.label, 'flux-aux', aux.sizeBytes,
       );
     } else {
       yield { fileId: aux.id, phase: 'flux-aux', label: aux.label,

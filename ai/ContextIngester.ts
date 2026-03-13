@@ -38,7 +38,7 @@ export interface IngestionResult {
   /**
    * Inline content blocks extracted from the user message (fenced code blocks,
    * large HTML blocks). Each has been written to a temp file in the workspace
-   * so ALLMIND can receive them verbatim via loadedFiles injection.
+   * so SEREN can receive them verbatim via loadedFiles injection.
    */
   extractedFiles: Array<{ path: string; content: string }>;
 }
@@ -77,7 +77,7 @@ export class ContextIngester {
   ): Promise<IngestionResult> {
     // ── Pre-step: Extract inline content blocks from user message ───────────
     // If the user pasted a code block or HTML directly into the chat, SAYON's
-    // rewrite would summarise it away before ALLMIND ever sees it. We pull those
+    // rewrite would summarise it away before SEREN ever sees it. We pull those
     // blocks out first, write them as temp files, and replace them in the message
     // with a reference. The rewrite then only operates on the instructional prose.
     const { cleanedMessage, extractedFiles } = await this.extractInlineContent(userMessage);
@@ -252,7 +252,7 @@ export class ContextIngester {
       // ── Mode 2: Clarification synthesis ──────────────────────────────────────
       rewritePrompt =
         clarificationHistoryBlock +
-        `You are preparing a task brief for ALLMIND, a coding execution engine. ` +
+        `You are preparing a task brief for SEREN, a coding execution engine. ` +
         `Rewrite the user's message into a precise, unambiguous task description. ` +
         `Resolve any vague references using the available context (exact function names, ` +
         `file paths, line numbers if relevant).\n\n` +
@@ -286,7 +286,7 @@ export class ContextIngester {
         : '';
 
       rewritePrompt =
-        `You are preparing a question brief for ALLMIND, an AI reasoning engine. ` +
+        `You are preparing a question brief for SEREN, an AI reasoning engine. ` +
         `The user is asking a question or having a conversation — there are no files to modify.\n\n` +
         `Your job: rewrite the question to be precise and unambiguous. ` +
         `If it references something vague (e.g. "that function", "my config"), resolve it using ` +
@@ -310,7 +310,7 @@ export class ContextIngester {
     } else {
       // ── Mode 3: Execution (CODE_REQUEST / PLAN_REQUEST) ─────────────────────────────
       rewritePrompt =
-        `You are preparing a task brief for ALLMIND, a coding execution engine. ` +
+        `You are preparing a task brief for SEREN, a coding execution engine. ` +
         `Rewrite the user's message into a precise, unambiguous task description. ` +
         `Resolve any vague references using the available context (exact function names, ` +
         `file paths, line numbers if relevant).\n\n` +
@@ -362,14 +362,14 @@ export class ContextIngester {
   /**
    * Detect and extract inline content blocks from the user message before the
    * rewrite step. Without this, SAYON's rewrite compresses pasted code/HTML into
-   * a one-liner and ALLMIND never sees the actual content.
+   * a one-liner and SEREN never sees the actual content.
    *
    * Detected patterns:
    *   - Fenced code blocks: ```lang\n...\n``` (any language, min 3 lines)
    *   - Bare HTML blocks: large structural HTML not wrapped in fences
    *
    * Each extracted block is written to a temp file in the workspace so it flows
-   * into ALLMIND via the existing loadedFiles → <loaded_files> injection path.
+   * into SEREN via the existing loadedFiles → <loaded_files> injection path.
    * The cleaned message replaces the block with a short reference note.
    */
   private async extractInlineContent(

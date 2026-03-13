@@ -32,7 +32,7 @@ import {
   stopServer,
   getServerStatus,
   SAYON_PORT,
-  ALLMIND_PORT,
+  SEREN_PORT,
 } from '../phobos/LlamaServerManager.js';
 
 export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> {
@@ -72,22 +72,22 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
     });
   });
 
-  // GET /api/phobos/download?sayon=<modelId>&allmind=<modelId>
+  // GET /api/phobos/download?sayon=<modelId>&seren=<modelId>
   // SSE stream — downloads both GGUFs sequentially, emits progress.
   fastify.get<{
-    Querystring: { sayon: string; allmind: string };
+    Querystring: { sayon: string; seren: string };
   }>('/api/phobos/download', async (req, reply) => {
-    const { sayon: sayonId, allmind: allmindId } = req.query;
+    const { sayon: sayonId, seren: serenId } = req.query;
 
-    if (!sayonId || !allmindId) {
-      return reply.status(400).send({ error: 'sayon and allmind query params required' });
+    if (!sayonId || !serenId) {
+      return reply.status(400).send({ error: 'sayon and seren query params required' });
     }
 
     const sayonSpec   = getSpec(sayonId);
-    const allmindSpec = getSpec(allmindId);
+    const serenSpec = getSpec(serenId);
 
     if (!sayonSpec)   return reply.status(400).send({ error: `Unknown model: ${sayonId}` });
-    if (!allmindSpec) return reply.status(400).send({ error: `Unknown model: ${allmindId}` });
+    if (!serenSpec) return reply.status(400).send({ error: `Unknown model: ${serenId}` });
 
     reply.raw.writeHead(200, {
       'Content-Type':                'text/event-stream',
@@ -100,7 +100,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
     };
 
-    const downloadPhase = async (spec: typeof sayonSpec, phase: 'sayon' | 'allmind') => {
+    const downloadPhase = async (spec: typeof sayonSpec, phase: 'sayon' | 'seren') => {
       try {
         for await (const progress of downloadModel(spec, phase)) {
           emit(progress as unknown as Record<string, unknown>);
@@ -118,7 +118,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
     };
 
     await downloadPhase(sayonSpec, 'sayon');
-    await downloadPhase(allmindSpec, 'allmind');
+    await downloadPhase(serenSpec, 'seren');
 
     emit({ phase: 'complete', done: true });
     reply.raw.end();
@@ -126,16 +126,16 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
 
   // POST /api/phobos/start
   // Body: { sayon: { modelId, gpuLayers?, contextSize?, threads?, deviceIndex?, gpuBackend? },
-  //         allmind: { ... } }
+  //         seren: { ... } }
   fastify.post<{
     Body: {
       sayon:   { modelId: string; gpuLayers?: number; contextSize?: number; threads?: number; deviceIndex?: number; gpuBackend?: string };
-      allmind: { modelId: string; gpuLayers?: number; contextSize?: number; threads?: number; deviceIndex?: number; gpuBackend?: string };
+      seren: { modelId: string; gpuLayers?: number; contextSize?: number; threads?: number; deviceIndex?: number; gpuBackend?: string };
     };
   }>('/api/phobos/start', async (req, reply) => {
-    const { sayon, allmind } = req.body;
+    const { sayon, seren } = req.body;
 
-    const [sayonErr, allmindErr] = await Promise.allSettled([
+    const [sayonErr, serenErr] = await Promise.allSettled([
       startServer('sayon', {
         modelId:     sayon.modelId,
         port:        SAYON_PORT,
@@ -145,20 +145,20 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         deviceIndex: sayon.deviceIndex,
         gpuBackend:  sayon.gpuBackend as 'cuda' | 'vulkan' | 'metal' | undefined,
       }),
-      startServer('allmind', {
-        modelId:     allmind.modelId,
-        port:        ALLMIND_PORT,
-        gpuLayers:   allmind.gpuLayers   ?? 99,
-        contextSize: allmind.contextSize ?? 4096,
-        threads:     allmind.threads     ?? 0,
-        deviceIndex: allmind.deviceIndex,
-        gpuBackend:  allmind.gpuBackend as 'cuda' | 'vulkan' | 'metal' | undefined,
+      startServer('seren', {
+        modelId:     seren.modelId,
+        port:        SEREN_PORT,
+        gpuLayers:   seren.gpuLayers   ?? 99,
+        contextSize: seren.contextSize ?? 4096,
+        threads:     seren.threads     ?? 0,
+        deviceIndex: seren.deviceIndex,
+        gpuBackend:  seren.gpuBackend as 'cuda' | 'vulkan' | 'metal' | undefined,
       }),
     ]);
 
     const errors: string[] = [];
     if (sayonErr.status   === 'rejected') errors.push(`sayon: ${sayonErr.reason}`);
-    if (allmindErr.status === 'rejected') errors.push(`allmind: ${allmindErr.reason}`);
+    if (serenErr.status === 'rejected') errors.push(`seren: ${serenErr.reason}`);
 
     return reply.send({
       ok:     errors.length === 0,
@@ -169,7 +169,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
 
   // POST /api/phobos/stop
   fastify.post('/api/phobos/stop', async (_req, reply) => {
-    await Promise.all([stopServer('sayon'), stopServer('allmind')]);
+    await Promise.all([stopServer('sayon'), stopServer('seren')]);
     return reply.send({ ok: true, status: getServerStatus() });
   });
 

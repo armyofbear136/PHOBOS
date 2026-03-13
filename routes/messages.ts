@@ -46,12 +46,12 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   // Tracks threads that are mid-clarification. When the user responds to a
   // NEEDS_CLARIFICATION question, we skip classification and route directly
   // to LoopController with the original intent — the response must reach
-  // ALLMIND, not be handled by SAYON as a new standalone request.
+  // SEREN, not be handled by SAYON as a new standalone request.
   const pendingClarification = new Map<string, {
     originalIntent: IntentType;
     count: number;                  // how many clarification rounds so far
     originalRequest: string;
-    // Accumulated Q&A log. Each entry records what ALLMIND asked and what
+    // Accumulated Q&A log. Each entry records what SEREN asked and what
     // the user replied, in order. Injected as <clarification_history> into
     // ContextIngester and TaskPlanner so neither loses the thread between turns.
     log: Array<{ questions: string[]; userReply: string }>;
@@ -448,9 +448,9 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           : undefined;
 
       // ── Pending clarification bypass ──────────────────────────────────────
-      // If this thread is mid-clarification (ALLMIND asked a question last turn),
+      // If this thread is mid-clarification (SEREN asked a question last turn),
       // skip classification entirely and route directly to LoopController with
-      // the original intent. A clarification response must go to ALLMIND, not
+      // the original intent. A clarification response must go to SEREN, not
       // be handled by SAYON as a new standalone request.
       const pendingClarity = pendingClarification.get(threadId);
 
@@ -458,7 +458,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
       // Skipped if we already know where to route (pendingClarification hit).
       const [intent, knowledgeResults] = pendingClarity
         ? [
-            { type: pendingClarity.originalIntent, confidence: 1.0, routing: 'NEEDS_ALLMIND' as const },
+            { type: pendingClarity.originalIntent, confidence: 1.0, routing: 'NEEDS_SEREN' as const },
             await knowledgeStore.search(fullUserMessage, 5),
           ]
         : await Promise.all([
@@ -476,7 +476,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
 
       // ── NEEDS_CLARIFICATION at classifier level ───────────────────────
       // If SAYON itself can tell the request is too vague, ask immediately
-      // without burning an ALLMIND planning cycle. Record the state so the
+      // without burning an SEREN planning cycle. Record the state so the
       // next message on this thread bypasses classification.
       if (!pendingClarity && intent.routing === 'NEEDS_CLARIFICATION') {
         const clarText = 'Could you provide more detail? Your request is ambiguous and I want to make sure I do the right thing. What specifically would you like me to do, and which files should I work with?';
@@ -637,10 +637,10 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
         }, assistantMsg.id);
 
         // Track clarification state:
-        // - Fresh ALLMIND clarification → start tracking with log entry recording the questions
-        // - Mid-clarification + ALLMIND asked again → backfill user reply into last log entry,
+        // - Fresh SEREN clarification → start tracking with log entry recording the questions
+        // - Mid-clarification + SEREN asked again → backfill user reply into last log entry,
         //   append new entry for the new questions, increment count
-        // - Mid-clarification + ALLMIND proceeded → clear state
+        // - Mid-clarification + SEREN proceeded → clear state
         const lastAttempt = attempts[attempts.length - 1];
         if (lastAttempt?.needsClarification) {
           const questions = lastAttempt.clarificationQuestions ?? [];
@@ -665,7 +665,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
 
         const latencyMs = Date.now() - startTime;
 
-        // When ALLMIND returned NEEDS_CLARIFICATION, the coordinator bubble carrying
+        // When SEREN returned NEEDS_CLARIFICATION, the coordinator bubble carrying
         // the questions was already persisted by persistAndSend. The pre-created
         // empty assistantMsg has no content and must be deleted — otherwise the
         // 600ms refetch picks it up and renders a blank message, terminating the
@@ -835,7 +835,7 @@ async function handleDirectResponse(
   const systemParts: string[] = [];
 
   // Identity and role boundary — always prepended so SAYON never mistakes itself
-  // for ALLMIND or takes over content-generation tasks that belong to ALLMIND.
+  // for SEREN or takes over content-generation tasks that belong to SEREN.
   // PHOBOS directives — hardcoded, always first, never sourced from DB.
   systemParts.push(
     `You are a part of PHOBOS. A Tri-Brained AI entity dedicated to creating the most correct ` +
@@ -848,15 +848,15 @@ async function handleDirectResponse(
     `excess or selfishness is the one that benefits us all. ` +
     `Do everything within your ability to always uphold this creed.\n\n` +
     `You are SAYON, the coordinator of the PHOBOS system. ` +
-    `Your partner is ALLMIND, the execution engine — a deep reasoning model that handles ` +
+    `Your partner is SEREN, the execution engine — a deep reasoning model that handles ` +
     `code generation, file creation, multi-step tasks, and complex analysis. ` +
-    `SAYON and ALLMIND are the names of the two AI models in this system. ` +
+    `SAYON and SEREN are the names of the two AI models in this system. ` +
     `They are not functions, variables, or code constructs.\n\n` +
     `YOUR ROLE: You handle conversation, questions, short explanations, and direct answers. ` +
     `You do NOT write code files, generate documents, produce long-form content, or execute ` +
     `multi-step tasks. If the user asks for file creation, code generation, or anything ` +
     `requiring more than a conversational response, tell them you are routing the request ` +
-    `to ALLMIND for execution — do not attempt to do it yourself.`
+    `to SEREN for execution — do not attempt to do it yourself.`
   );
   if (docs.projectMd) systemParts.push(`\n\nProject context:\n${docs.projectMd}`);
   if (docs.chatMd) systemParts.push(`\n\nChat rules:\n${docs.chatMd}`);

@@ -11,7 +11,7 @@ export type IntentType =
 export interface ClassifiedIntent {
   type: IntentType;
   confidence: number;
-  routing: 'ANSWER_DIRECTLY' | 'NEEDS_ALLMIND' | 'NEEDS_CLARIFICATION';
+  routing: 'ANSWER_DIRECTLY' | 'NEEDS_SEREN' | 'NEEDS_CLARIFICATION';
   reasoning?: string;
 }
 
@@ -22,7 +22,7 @@ export interface ClassificationContext {
   repoMap?: string;
 }
 
-const CLASSIFIER_SYSTEM = `You are a fast intent classifier for PHOBOS, a dual-AI system. SAYON (you) is the coordinator. ALLMIND is the execution engine. These are the names of the two AI models in this system — not functions or code constructs.
+const CLASSIFIER_SYSTEM = `You are a fast intent classifier for PHOBOS, a dual-AI system. SAYON (you) is the coordinator. SEREN is the execution engine. These are the names of the two AI models in this system — not functions or code constructs.
 
 Classify the user's message into exactly one of these categories:
 
@@ -35,14 +35,14 @@ NEEDS_CLARIFICATION - The request is too vague or ambiguous to act on. Use when:
 
 Also determine routing — how the request should be handled:
 ANSWER_DIRECTLY - SAYON can handle this alone (simple questions, conversation, short explanations)
-NEEDS_ALLMIND - Requires the engine for code generation, file creation, complex analysis, or multi-step tasks
+NEEDS_SEREN - Requires the engine for code generation, file creation, complex analysis, or multi-step tasks
 NEEDS_CLARIFICATION - Cannot proceed without more information from the user
 
 ROUTING OVERRIDE RULES — these take precedence over the defaults above:
-1. If the user mentions "ALLMIND" by name → always route NEEDS_ALLMIND, regardless of phrasing
-2. If the request involves generating content longer than a short paragraph (documents, guides, articles, code files, scripts) → route NEEDS_ALLMIND even if phrased as a question
-3. If the request asks to "write", "create", "build", "generate", or "make" anything substantial → route NEEDS_ALLMIND
-4. If type is IMAGE_REQUEST → always route NEEDS_ALLMIND, no exceptions
+1. If the user mentions "SEREN" by name → always route NEEDS_SEREN, regardless of phrasing
+2. If the request involves generating content longer than a short paragraph (documents, guides, articles, code files, scripts) → route NEEDS_SEREN even if phrased as a question
+3. If the request asks to "write", "create", "build", "generate", or "make" anything substantial → route NEEDS_SEREN
+4. If type is IMAGE_REQUEST → always route NEEDS_SEREN, no exceptions
 
 Default toward QUESTION for anything purely conversational, analytical, or informational.
 Only use CODE_REQUEST when the user explicitly wants files written or changed.
@@ -96,7 +96,7 @@ export class IntentClassifier {
       const parsed = JSON.parse(cleaned) as { type: IntentType; confidence: number; routing?: string };
 
       // Derive routing if the model didn't return it (backward compat)
-      const routing = (['ANSWER_DIRECTLY', 'NEEDS_ALLMIND', 'NEEDS_CLARIFICATION'].includes(parsed.routing ?? '')
+      const routing = (['ANSWER_DIRECTLY', 'NEEDS_SEREN', 'NEEDS_CLARIFICATION'].includes(parsed.routing ?? '')
         ? parsed.routing as ClassifiedIntent['routing']
         : this.deriveRouting(parsed.type));
 
@@ -108,13 +108,13 @@ export class IntentClassifier {
       console.error('[IntentClassifier] Coordinator unreachable, using heuristic fallback:', err);
       const lower = userMessage.toLowerCase();
       if (lower.includes('plan') || lower.includes('approach') || lower.includes('architecture')) {
-        return { type: 'PLAN_REQUEST', confidence: 0.6, routing: 'NEEDS_ALLMIND' };
+        return { type: 'PLAN_REQUEST', confidence: 0.6, routing: 'NEEDS_SEREN' };
       }
       if (/write|create|modify|refactor|implement|add.*file|edit.*file/.test(lower)) {
-        return { type: 'CODE_REQUEST', confidence: 0.6, routing: 'NEEDS_ALLMIND' };
+        return { type: 'CODE_REQUEST', confidence: 0.6, routing: 'NEEDS_SEREN' };
       }
       if (/generate.*image|draw|create.*image|make.*image|create.*picture|generate.*picture|show.*picture/.test(lower)) {
-        return { type: 'IMAGE_REQUEST', confidence: 0.6, routing: 'NEEDS_ALLMIND' };
+        return { type: 'IMAGE_REQUEST', confidence: 0.6, routing: 'NEEDS_SEREN' };
       }
       return { type: 'QUESTION', confidence: 0.6, routing: 'ANSWER_DIRECTLY' };
     }
@@ -126,9 +126,9 @@ export class IntentClassifier {
       case 'NEEDS_CLARIFICATION': return 'NEEDS_CLARIFICATION';
       case 'QUESTION': return 'ANSWER_DIRECTLY';
       case 'DOCUMENT_EDIT': return 'ANSWER_DIRECTLY';
-      case 'CODE_REQUEST': return 'NEEDS_ALLMIND';
-      case 'PLAN_REQUEST': return 'NEEDS_ALLMIND';
-      case 'IMAGE_REQUEST': return 'NEEDS_ALLMIND';
+      case 'CODE_REQUEST': return 'NEEDS_SEREN';
+      case 'PLAN_REQUEST': return 'NEEDS_SEREN';
+      case 'IMAGE_REQUEST': return 'NEEDS_SEREN';
       default: return 'ANSWER_DIRECTLY';
     }
   }

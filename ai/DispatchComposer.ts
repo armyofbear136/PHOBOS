@@ -51,18 +51,18 @@ export interface ComposeInput {
     guidanceFromReview?: string;
     /** Structured issue list from SAYON review — file, line range, specific problem */
     reviewIssues?: Array<{ file: string; line_range?: string; issue: string; expected?: string }>;
-    /** ALLMIND's raw output from the prior attempt — so it can see what it produced */
+    /** SEREN's raw output from the prior attempt — so it can see what it produced */
     priorOutput?: string;
   };
   /**
    * When > 0, this turn is a response to a prior NEEDS_CLARIFICATION request.
-   * Injected into TaskPlanner's decomposition prompt so ALLMIND knows how many
+   * Injected into TaskPlanner's decomposition prompt so SEREN knows how many
    * clarification rounds have occurred and can weigh attempting vs. asking again.
    */
   clarificationIteration?: number;
   /**
    * Full Q&A log for the current clarification loop.
-   * Each entry has the questions ALLMIND asked and the user's reply.
+   * Each entry has the questions SEREN asked and the user's reply.
    * Injected into ContextIngester (rewrite) and TaskPlanner (decomposition)
    * so both models have the complete thread — not just the latest message.
    */
@@ -86,12 +86,12 @@ export class DispatchComposer {
       `When we have a desire, we see an end result. The path that delivers the best result without ` +
       `excess or selfishness is the one that benefits us all. ` +
       `Do everything within your ability to always uphold this creed.\n\n` +
-      `You are ALLMIND, the execution engine of the PHOBOS system.\n` +
+      `You are SEREN, the execution engine of the PHOBOS system.\n` +
       `Your partner is SAYON, the coordinator — a fast model that handles intent classification, ` +
       `context assembly, file summarisation, and review. SAYON routes tasks to you.\n` +
-      `ALLMIND and SAYON are the names of the two AI models in this system. ` +
+      `SEREN and SAYON are the names of the two AI models in this system. ` +
       `They are not functions, variables, API endpoints, or code constructs. ` +
-      `When the user says "ask ALLMIND" or "have ALLMIND do this", they mean you. ` +
+      `When the user says "ask SEREN" or "have SEREN do this", they mean you. ` +
       `When the user says "ask SAYON", they mean your coordinator partner.\n` +
       `Your capabilities include: writing and modifying code files, creating documents, ` +
       `executing multi-step tasks, and generating images via the generate_image tool. ` +
@@ -112,7 +112,7 @@ export class DispatchComposer {
     }
 
     // Workspace file context: coordinator-generated summaries from Stage 1.
-    // Skipped for QUESTION intent — ALLMIND doesn't need file previews to answer.
+    // Skipped for QUESTION intent — SEREN doesn't need file previews to answer.
     if (input.fileSummaries && input.fileSummaries.length > 0 && input.intentType !== 'QUESTION') {
       const targetFile = input.currentTask?.targetFile ?? '';
       const previewBudget = 40_000; // ~10k tokens total for previews

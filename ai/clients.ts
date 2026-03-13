@@ -24,7 +24,7 @@ export function clearLogContext(): void {
 }
 
 async function writePromptLog(opts: {
-  role: 'sayon' | 'allmind';
+  role: 'sayon' | 'seren';
   stage: PromptStage;
   model: string;
   prompt: string;
@@ -109,7 +109,7 @@ export async function reconfigureClients(): Promise<void> {
   ENGINE_PROVIDER = engine.provider;
 
   console.log(`[clients] Sayon:   ${coordinator.provider} / ${coordinator.endpoint}  (${COORDINATOR_MODEL})`);
-  console.log(`[clients] ALLMIND: ${engine.provider} / ${engine.endpoint}  (${ENGINE_MODEL})`);
+  console.log(`[clients] SEREN: ${engine.provider} / ${engine.endpoint}  (${ENGINE_MODEL})`);
 
   // Start/stop llama-server if either role is on the phobos provider.
   // Thread device assignment from ModelConfigStore through to LlamaServerManager.
@@ -558,7 +558,7 @@ export async function coordinatorStream(opts: {
 }
 
 /**
- * Streaming engine (ALLMIND) call with thinking strategy applied.
+ * Streaming engine (SEREN) call with thinking strategy applied.
  *
  * Mirrors coordinatorStream but targets the engine client.
  * For phobos provider, uses raw fetch+SSE to avoid the OpenAI SDK
@@ -654,7 +654,7 @@ export async function engineStream(opts: {
     }
     const _esPhobosResult = outputBuf.trim();
     await writePromptLog({
-      role: 'allmind',
+      role: 'seren',
       stage: opts.stage ?? 'other',
       model: liveModel,
       prompt: formatPromptForLog(allMessages as Array<{ role: string; content: string }>),
@@ -712,7 +712,7 @@ export async function engineStream(opts: {
 
   const _esResult = outputBuf.trim();
   await writePromptLog({
-    role: 'allmind',
+    role: 'seren',
     stage: opts.stage ?? 'other',
     model: liveModel,
     prompt: formatPromptForLog(allMessages as Array<{ role: string; content: string }>),

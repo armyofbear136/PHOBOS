@@ -12,8 +12,8 @@ import type { FileSummary } from './ContextIngester.js';
  *     The coordinator is cheap and fast. It knows the workspace and the user's
  *     intent. It decides which files matter and pulls out the relevant facts.
  *
- *   ALLMIND (engine) — task decomposition
- *     ALLMIND receives the fully assembled context package from SAYON and does
+ *   SEREN (engine) — task decomposition
+ *     SEREN receives the fully assembled context package from SAYON and does
  *     the planning. It produces a tight, scoped task list. Keeping decomposition
  *     on the engine means the same model that will execute the tasks also plans
  *     them — it knows its own tools and won't over-decompose simple requests.
@@ -21,7 +21,7 @@ import type { FileSummary } from './ContextIngester.js';
  * Pipeline:
  *   1. SAYON builds a discovery roadmap (which files to read)
  *   2. SAYON reads those files and extracts task-relevant facts
- *   3. ALLMIND receives the assembled context package and decomposes into tasks
+ *   3. SEREN receives the assembled context package and decomposes into tasks
  */
 
 export interface Task {
@@ -50,9 +50,9 @@ export interface TaskPlan {
   tasks: Task[];
   /** One-line plan description emitted as coordinator bubble */
   planSummary: string;
-  /** When true, ALLMIND determined it cannot proceed without user input */
+  /** When true, SEREN determined it cannot proceed without user input */
   needsClarification?: boolean;
-  /** Specific questions ALLMIND needs answered before it can plan */
+  /** Specific questions SEREN needs answered before it can plan */
   clarificationQuestions?: string[];
 }
 
@@ -64,14 +64,14 @@ const OVERLAP_CHARS = Math.floor(PAGE_SIZE_CHARS * 0.12);
 const MAX_DISCOVERY_FILES = 8;
 /** Max chars of extracted context per task */
 const MAX_TASK_CONTEXT_CHARS = 8_000;
-/** Hard cap on tasks ALLMIND can produce — safety valve */
+/** Hard cap on tasks SEREN can produce — safety valve */
 const MAX_TASKS = 8;
 /**
- * Max total chars of raw file content injected into ALLMIND's planning context.
+ * Max total chars of raw file content injected into SEREN's planning context.
  * ~80k chars ≈ 20k tokens. Leaves room for system prompt, summaries, and thinking.
  * Files beyond this budget get extraction-only treatment.
  */
-const ALLMIND_CONTEXT_BUDGET = 80_000;
+const SEREN_CONTEXT_BUDGET = 80_000;
 
 export class TaskPlanner {
   constructor(private workspaceDir: string) {}
@@ -84,7 +84,7 @@ export class TaskPlanner {
    * @param repoMap  Workspace index string
    * @param sendStatus  Emits status pills to the client
    * @param sendThinking  Streams coordinator thinking tokens to the SAYON panel
-   * @param sendEngineThinking  Streams engine thinking tokens to the ALLMIND panel
+   * @param sendEngineThinking  Streams engine thinking tokens to the SEREN panel
    */
   async plan(
     userMessage: string,
@@ -113,8 +113,8 @@ export class TaskPlanner {
       );
     }
 
-    // ── Step 3: ALLMIND — Task decomposition ───────────────────────────────
-    sendStatus('ALLMIND planning tasks…');
+    // ── Step 3: SEREN — Task decomposition ───────────────────────────────
+    sendStatus('SEREN planning tasks…');
     const plan = await this.decomposeTasks(
       userMessage, fileSummaries, completeContext, repoMap,
       sendEngineThinking ?? sendThinking,
@@ -174,7 +174,7 @@ export class TaskPlanner {
   /**
    * SAYON Step 2: Read each discovered file and extract task-relevant facts.
    * Large files are paginated with overlap.
-   * Returns a single assembled context string for ALLMIND that includes both
+   * Returns a single assembled context string for SEREN that includes both
    * SAYON's extraction AND the raw file content (budget-gated).
    *
    * Also populates discoveredFileContents so decomposeTasks can enrich
@@ -189,7 +189,7 @@ export class TaskPlanner {
   ): Promise<string> {
     const contextParts: string[] = [];
     this.discoveredFileContents.clear();
-    let rawBudgetRemaining = ALLMIND_CONTEXT_BUDGET;
+    let rawBudgetRemaining = SEREN_CONTEXT_BUDGET;
 
     for (const filename of filenames) {
       const absPath = path.resolve(this.workspaceDir, filename);
@@ -283,10 +283,10 @@ export class TaskPlanner {
   }
 
   /**
-   * ALLMIND Step 3: Decompose the request into ordered, atomic, file-scoped tasks.
+   * SEREN Step 3: Decompose the request into ordered, atomic, file-scoped tasks.
    *
-   * ALLMIND receives a fully assembled context package from SAYON and produces
-   * a tight task list. Scope rules are enforced in the prompt — ALLMIND must not
+   * SEREN receives a fully assembled context package from SAYON and produces
+   * a tight task list. Scope rules are enforced in the prompt — SEREN must not
    * expand a simple request into infrastructure scaffolding.
    */
   private async decomposeTasks(
@@ -358,7 +358,7 @@ export class TaskPlanner {
 
     // In synthesis mode (clarificationIteration > 0), the "ask if unsure" rule
     // is replaced with "attempt using best interpretation". The BEFORE PLANNING
-    // check is the primary reason ALLMIND loops identically — it fires even when
+    // check is the primary reason SEREN loops identically — it fires even when
     // the user has already answered, because the three-question test still fails
     // on unresolved details the user deliberately left open ("just create something").
     const beforePlanningRule = (clarificationIteration && clarificationIteration > 0)
@@ -372,7 +372,7 @@ export class TaskPlanner {
         `to ask one question and get it right than to produce work the user has to redo.\n\n`;
 
     const prompt =
-      `You are ALLMIND, a coding execution engine. Decompose the request below into ` +
+      `You are SEREN, a coding execution engine. Decompose the request below into ` +
       `ordered, atomic, file-scoped tasks that you will execute yourself. ` +
       `Each task targets exactly one file and performs one clear operation. ` +
       `For each task write a precise self-contained prompt — include exact function names, ` +
@@ -414,7 +414,7 @@ export class TaskPlanner {
         ? `- If the request is ambiguous about which files, what approach, or what the outcome should be — use NEEDS_CLARIFICATION`
         : `- User has already answered questions — make your best creative choices and proceed with BUILD_QUEUE`);
 
-    console.log(`[planner:allmind:decompose] task="${userMessage.slice(0, 120).replace(/\n/g, ' ')}" simple=${isLikelySimple}`);
+    console.log(`[planner:seren:decompose] task="${userMessage.slice(0, 120).replace(/\n/g, ' ')}" simple=${isLikelySimple}`);
 
     try {
       const clean = await engineStream({
@@ -472,7 +472,7 @@ export class TaskPlanner {
           }));
 
           // ── Enrich: inject full target file content into each task ───────
-          // ALLMIND's context field from planning is a 400-word summary.
+          // SEREN's context field from planning is a 400-word summary.
           // For modify/analyze operations, replace it with the actual file
           // so the engine has the real code during execution.
           this.enrichTasksWithFileContent(tasks, fileSummaries);
@@ -484,7 +484,7 @@ export class TaskPlanner {
         }
       }
     } catch (err) {
-      console.warn('[TaskPlanner] ALLMIND task decomposition failed, falling back to single task:', err);
+      console.warn('[TaskPlanner] SEREN task decomposition failed, falling back to single task:', err);
     }
 
     // Fallback: send the whole request as one task
@@ -503,9 +503,9 @@ export class TaskPlanner {
 
   /**
    * Post-plan enrichment: for each task that targets an existing file,
-   * replace the ALLMIND-generated 400-word context summary with the actual
+   * replace the SEREN-generated 400-word context summary with the actual
    * file content. The target file always gets full injection regardless of
-   * budget — this is the file ALLMIND is about to edit.
+   * budget — this is the file SEREN is about to edit.
    *
    * Sources checked in order:
    *   1. discoveredFileContents — files read during SAYON discovery (Step 2)
@@ -532,8 +532,8 @@ export class TaskPlanner {
 
       if (!fullContent) continue;
 
-      // Preserve ALLMIND's extracted constraints as a preamble, then append full file.
-      // The constraints tell ALLMIND what to focus on; the file gives it the real code.
+      // Preserve SEREN's extracted constraints as a preamble, then append full file.
+      // The constraints tell SEREN what to focus on; the file gives it the real code.
       const enriched =
         task.context +
         `\n\n<target_file path="${task.targetFile}">\n` +
@@ -548,7 +548,7 @@ export class TaskPlanner {
   /**
    * Heuristic: does this request look simple enough to warrant a strict
    * single-file scope guard? Used to set the SCOPE instruction in the
-   * ALLMIND decomposition prompt.
+   * SEREN decomposition prompt.
    *
    * Simple signals:
    * - Short request text (< 120 chars)

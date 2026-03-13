@@ -6,7 +6,7 @@ import { resolveLlamaServerBin, modelPath, getSpec, detectHardware, buildRecomme
 
 // ── Ports — permanent wire contract ──────────────────────────────────────────
 export const SAYON_PORT   = 52626;   // coordinator
-export const ALLMIND_PORT = 52627;   // engine
+export const SEREN_PORT = 52627;   // engine
 
 export interface ServerConfig {
   modelId: string;
@@ -29,9 +29,9 @@ interface ManagedServer {
 
 // ── Singleton manager ─────────────────────────────────────────────────────────
 
-const servers: Record<'sayon' | 'allmind', ManagedServer> = {
+const servers: Record<'sayon' | 'seren', ManagedServer> = {
   sayon:   { config: { modelId: '', port: SAYON_PORT,   gpuLayers: 0,  contextSize: 4096, threads: 4 }, process: null, state: 'stopped', error: null },
-  allmind: { config: { modelId: '', port: ALLMIND_PORT, gpuLayers: 99, contextSize: 4096, threads: 4 }, process: null, state: 'stopped', error: null },
+  seren: { config: { modelId: '', port: SEREN_PORT, gpuLayers: 99, contextSize: 4096, threads: 4 }, process: null, state: 'stopped', error: null },
 };
 
 function waitForPort(port: number, timeoutMs = 30_000): Promise<void> {
@@ -50,7 +50,7 @@ function waitForPort(port: number, timeoutMs = 30_000): Promise<void> {
   });
 }
 
-export async function startServer(role: 'sayon' | 'allmind', cfg: ServerConfig): Promise<void> {
+export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): Promise<void> {
   const managed = servers[role];
 
   // Stop existing process if model or device changed
@@ -99,7 +99,7 @@ export async function startServer(role: 'sayon' | 'allmind', cfg: ServerConfig):
   // Covers: Qwen3 family, Magistral, DeepSeek-R1 Qwen3 distills (8B, 14B).
   // Not applied to Llama-architecture models (Llama 3, Gemma 3, DeepSeek-R1 70B)
   // which use tag-based thinking or no thinking at all.
-  if (role === 'allmind' && spec.jinjaTemplate) {
+  if (role === 'seren' && spec.jinjaTemplate) {
     args.push('--jinja', '--reasoning-format', 'deepseek');
   }
 
@@ -177,7 +177,7 @@ export async function startServer(role: 'sayon' | 'allmind', cfg: ServerConfig):
   }
 }
 
-export async function stopServer(role: 'sayon' | 'allmind'): Promise<void> {
+export async function stopServer(role: 'sayon' | 'seren'): Promise<void> {
   const managed = servers[role];
   if (!managed.process) return;
   managed.process.kill('SIGTERM');
@@ -189,7 +189,7 @@ export async function stopServer(role: 'sayon' | 'allmind'): Promise<void> {
   managed.state   = 'stopped';
 }
 
-export function getServerStatus(): Record<'sayon' | 'allmind', {
+export function getServerStatus(): Record<'sayon' | 'seren', {
   state: string;
   modelId: string;
   port: number;
@@ -206,19 +206,19 @@ export function getServerStatus(): Record<'sayon' | 'allmind', {
       deviceIndex: servers.sayon.config.deviceIndex,
       gpuBackend:  servers.sayon.config.gpuBackend,
     },
-    allmind: {
-      state:       servers.allmind.state,
-      modelId:     servers.allmind.config.modelId,
-      port:        ALLMIND_PORT,
-      error:       servers.allmind.error,
-      deviceIndex: servers.allmind.config.deviceIndex,
-      gpuBackend:  servers.allmind.config.gpuBackend,
+    seren: {
+      state:       servers.seren.state,
+      modelId:     servers.seren.config.modelId,
+      port:        SEREN_PORT,
+      error:       servers.seren.error,
+      deviceIndex: servers.seren.config.deviceIndex,
+      gpuBackend:  servers.seren.config.gpuBackend,
     },
   };
 }
 
 export async function stopAllServers(): Promise<void> {
-  await Promise.all([stopServer('sayon'), stopServer('allmind')]);
+  await Promise.all([stopServer('sayon'), stopServer('seren')]);
 }
 
 /**
@@ -272,25 +272,25 @@ export async function reconcilePhobosServers(config: {
   }
 
   if (config.engine.provider === 'phobos') {
-    const deviceIndex = config.engine.deviceIndex ?? (rec ? (rec.allmindDevice === 'cpu' ? undefined : rec.allmindDevice) : undefined);
+    const deviceIndex = config.engine.deviceIndex ?? (rec ? (rec.serenDevice === 'cpu' ? undefined : rec.serenDevice) : undefined);
     const gpuBackend  = config.engine.gpuBackend ?? (deviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === deviceIndex)?.backend : undefined);
     const gpuLayers   = config.engine.gpuLayers ?? (deviceIndex !== undefined ? 99 : 0);
 
     tasks.push(
-      startServer('allmind', {
+      startServer('seren', {
         modelId:     config.engine.model,
-        port:        ALLMIND_PORT,
+        port:        SEREN_PORT,
         gpuLayers,
         contextSize: 32768,
         threads:     0,
         deviceIndex,
         gpuBackend:  gpuBackend as ServerConfig['gpuBackend'],
       }).catch(err => {
-        console.error(`[reconcile] allmind start failed: ${err.message}`);
+        console.error(`[reconcile] seren start failed: ${err.message}`);
       })
     );
-  } else if (servers.allmind.state === 'running') {
-    tasks.push(stopServer('allmind'));
+  } else if (servers.seren.state === 'running') {
+    tasks.push(stopServer('seren'));
   }
 
   await Promise.all(tasks);

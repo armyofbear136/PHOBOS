@@ -28,9 +28,9 @@ export function imageOutputPath(threadId: string, filename: string): string {
 // ── SSE event types ───────────────────────────────────────────────────────────
 
 export type ImageGenPhase =
-  | 'stopping_allmind'
+  | 'stopping_seren'
   | 'generating'
-  | 'restarting_allmind'
+  | 'restarting_seren'
   | 'done'
   | 'error';
 
@@ -50,9 +50,9 @@ export function debugLog(tag: string, ...args: unknown[]): void {
   if (DEBUG) console.log(`[${tag}]`, ...args);
 }
 
-// ── Server snapshot (generic — sayon OR allmind, whichever is on the target GPU)
+// ── Server snapshot (generic — sayon OR seren, whichever is on the target GPU)
 
-type ServerRole = 'sayon' | 'allmind';
+type ServerRole = 'sayon' | 'seren';
 
 interface ServerSnapshot {
   role:        ServerRole;
@@ -66,7 +66,7 @@ interface ServerSnapshot {
 }
 
 /** @deprecated Use snapshotServerOnDevice() instead */
-interface AllmindSnapshot extends ServerSnapshot {}
+interface SerenSnapshot extends ServerSnapshot {}
 
 // ── Time estimates ────────────────────────────────────────────────────────────
 
@@ -85,9 +85,9 @@ function estimateSeconds(modelId: string, backend: string | undefined): number {
 // ── Core swap + generate ──────────────────────────────────────────────────────
 //
 // CLI mode swap sequence (simpler than server mode):
-//   1. Stop ALLMIND  — frees VRAM for sd-cli
+//   1. Stop SEREN  — frees VRAM for sd-cli
 //   2. Run sd-cli    — spawns, generates, exits automatically
-//   3. Restart ALLMIND
+//   3. Restart SEREN
 //
 // No explicit "stop sd-server" phase — sd-cli exits on its own when done.
 
@@ -116,13 +116,13 @@ export async function* generateWithFlux(
     }
   }
 
-  // ── Detect which server (sayon or allmind) is occupying the target device ──
+  // ── Detect which server (sayon or seren) is occupying the target device ──
   const targetDevice = sdCfgPrelim.deviceIndex;
   const snap = snapshotServerOnDevice(targetDevice);
   const roleLabel = snap ? snap.role.toUpperCase() : 'LLM server';
 
   // ── Stop the server occupying our GPU ──────────────────────────────────────
-  yield { phase: 'stopping_allmind', message: `Pausing ${roleLabel}…` };
+  yield { phase: 'stopping_seren', message: `Pausing ${roleLabel}…` };
   if (snap) {
     try {
       await stopServer(snap.role);
@@ -199,7 +199,7 @@ export async function* generateWithFlux(
   } finally {
     // ── Restart whichever server we stopped (always) ───────────────────────
     if (snap?.modelId) {
-      yield { phase: 'restarting_allmind', message: `Reloading ${roleLabel}…` };
+      yield { phase: 'restarting_seren', message: `Reloading ${roleLabel}…` };
       try {
         await startServer(snap.role, {
           modelId:     snap.modelId,
@@ -238,14 +238,14 @@ export async function* generateWithFlux(
 // ── Server snapshot helpers ───────────────────────────────────────────────────
 
 /**
- * Returns a snapshot of whichever server (sayon or allmind) is currently
+ * Returns a snapshot of whichever server (sayon or seren) is currently
  * running on the given device index.  If deviceIndex is undefined (CPU),
- * we fall back to checking allmind then sayon.
+ * we fall back to checking seren then sayon.
  * Returns null if no server is running on that device.
  */
 export function snapshotServerOnDevice(deviceIndex?: number): ServerSnapshot | null {
   const status = getServerStatus();
-  const roles: ServerRole[] = ['allmind', 'sayon'];
+  const roles: ServerRole[] = ['seren', 'sayon'];
 
   for (const role of roles) {
     const s = status[role];
@@ -271,12 +271,12 @@ export function snapshotServerOnDevice(deviceIndex?: number): ServerSnapshot | n
 }
 
 /** @deprecated Use snapshotServerOnDevice() instead */
-export function snapshotAllmind(): ServerSnapshot | null {
+export function snapshotSeren(): ServerSnapshot | null {
   const status = getServerStatus();
-  const s = status.allmind;
+  const s = status.seren;
   if (s.state !== 'running' || !s.modelId) return null;
   return {
-    role:        'allmind',
+    role:        'seren',
     modelId:     s.modelId,
     port:        s.port,
     gpuLayers:   99,

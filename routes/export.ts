@@ -14,7 +14,7 @@ import { PromptLogStore } from '../db/PromptLogStore.js';
  *
  *   - Every user message and assistant reply
  *   - Every coordinator bubble (SAYON summaries, clarification questions)
- *   - Every internal prompt sent to SAYON and ALLMIND (thinking traces)
+ *   - Every internal prompt sent to SAYON and SEREN (thinking traces)
  *   - Every file written to the workspace (write_file tool calls)
  *   - Patches applied, build results, review scores
  *   - Dispatch metadata: model, tokens, latency, result
@@ -185,7 +185,7 @@ export async function exportRoute(fastify: FastifyInstance): Promise<void> {
         // ── Prompt log: every internal AI call for this message ───────────
         const msgPrompts = promptsByMsg.get(msg.id) ?? [];
         for (const p of msgPrompts) {
-          const roleLabel = p.role === 'sayon' ? '🔵 SAYON' : '🟠 ALLMIND';
+          const roleLabel = p.role === 'sayon' ? '🔵 SAYON' : '🟠 SEREN';
           const stageLabel = p.stage.toUpperCase();
           lines.push('');
           lines.push(mid());
@@ -233,7 +233,7 @@ export async function exportRoute(fastify: FastifyInstance): Promise<void> {
 
             } else if (ev.event_type === 'thinking_complete') {
               const source = String(payload.source ?? 'unknown');
-              const label  = source === 'coordinator' ? 'SAYON THINKING' : 'ALLMIND THINKING';
+              const label  = source === 'coordinator' ? 'SAYON THINKING' : 'SEREN THINKING';
               const content = String(payload.content ?? '');
               lines.push(`  ${label} (via event)  [${fmt(ev.created_at)}]`);
               lines.push(thin());
@@ -253,7 +253,7 @@ export async function exportRoute(fastify: FastifyInstance): Promise<void> {
         if (msgSegs.length > 0) {
           for (const seg of msgSegs) {
             if (!seg.content?.trim()) continue;
-            const label = seg.phase === 'coordinator' ? 'SAYON REASONING' : 'ALLMIND REASONING';
+            const label = seg.phase === 'coordinator' ? 'SAYON REASONING' : 'SEREN REASONING';
             const dur = seg.completed_at
               ? `${Math.round((new Date(seg.completed_at).getTime() - new Date(seg.started_at).getTime()) / 1000)}s`
               : 'incomplete';
@@ -275,7 +275,7 @@ export async function exportRoute(fastify: FastifyInstance): Promise<void> {
         lines.push('  UNTAGGED PROMPT LOGS (fired before message ID was assigned)');
         lines.push(heavy());
         for (const p of untaggedPrompts) {
-          const roleLabel = p.role === 'sayon' ? '🔵 SAYON' : '🟠 ALLMIND';
+          const roleLabel = p.role === 'sayon' ? '🔵 SAYON' : '🟠 SEREN';
           lines.push(`${roleLabel}  ·  stage: ${p.stage.toUpperCase()}  ·  ${fmt(p.created_at)}  ·  ${p.latency_ms}ms`);
           lines.push(mid());
           lines.push(p.prompt.trim());

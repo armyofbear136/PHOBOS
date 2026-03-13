@@ -193,7 +193,7 @@ export interface GGUFSpec {
   modelId: string;
   label: string;
   family: string;
-  role: 'sayon' | 'allmind' | 'both';
+  role: 'sayon' | 'seren' | 'both';
   thinkingTokens: boolean;
   jinjaTemplate: boolean;
   hfRepo: string;
@@ -251,35 +251,35 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
   // ── Qwen3 family ─────────────────────────────────────────────────────────────
   {
     modelId: 'qwen3-4b-q4', label: 'Qwen3 4B Q4', family: 'Qwen3',
-    role: 'allmind', thinkingTokens: true, jinjaTemplate: true,
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3-4B-GGUF',
     hfFile: 'Qwen_Qwen3-4B-Q4_K_M.gguf',
     sizeBytes: 2_580_000_000, ramRequiredGb: 3, contextWindow: 32768,
   },
   {
     modelId: 'qwen3-8b-q4', label: 'Qwen3 8B Q4', family: 'Qwen3',
-    role: 'allmind', thinkingTokens: true, jinjaTemplate: true,
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3-8B-GGUF',
     hfFile: 'Qwen_Qwen3-8B-Q4_K_M.gguf',
     sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 32768,
   },
   {
     modelId: 'qwen3-14b-q4', label: 'Qwen3 14B Q4', family: 'Qwen3',
-    role: 'allmind', thinkingTokens: true, jinjaTemplate: true,
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3-14B-GGUF',
     hfFile: 'Qwen_Qwen3-14B-Q4_K_M.gguf',
     sizeBytes: 9_000_000_000, ramRequiredGb: 11, contextWindow: 32768,
   },
   {
     modelId: 'qwen3-30b-a3b-q4', label: 'Qwen3 30B-A3B Q4', family: 'Qwen3',
-    role: 'allmind', thinkingTokens: true, jinjaTemplate: true,
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3-30B-A3B-GGUF',
     hfFile: 'Qwen_Qwen3-30B-A3B-Q4_K_M.gguf',
     sizeBytes: 18_400_000_000, ramRequiredGb: 20, contextWindow: 32768,
   },
   {
     modelId: 'qwen3-coder-8b-q4', label: 'Qwen3 Coder 8B Q4', family: 'Qwen3',
-    role: 'allmind', thinkingTokens: true, jinjaTemplate: true,
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3-Coder-8B-GGUF',
     hfFile: 'Qwen_Qwen3-Coder-8B-Q4_K_M.gguf',
     sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 32768,
@@ -287,14 +287,14 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
   // ── Mistral family ───────────────────────────────────────────────────────────
   {
     modelId: 'mistral-7b-q4', label: 'Mistral 7B v0.3 Q4', family: 'Mistral',
-    role: 'allmind', thinkingTokens: false, jinjaTemplate: false,
+    role: 'seren', thinkingTokens: false, jinjaTemplate: false,
     hfRepo: 'bartowski/Mistral-7B-Instruct-v0.3-GGUF',
     hfFile: 'Mistral-7B-Instruct-v0.3-Q4_K_M.gguf',
     sizeBytes: 4_370_000_000, ramRequiredGb: 6, contextWindow: 32768,
   },
   {
     modelId: 'magistral-8b-q4', label: 'Magistral 8B Q4', family: 'Mistral',
-    role: 'allmind', thinkingTokens: true, jinjaTemplate: true,
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/Magistral-Small-2506-GGUF',
     hfFile: 'Magistral-Small-2506-Q4_K_M.gguf',
     sizeBytes: 14_400_000_000, ramRequiredGb: 16, contextWindow: 131072,
@@ -302,21 +302,21 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
   // ── DeepSeek-R1 family ───────────────────────────────────────────────────────
   {
     modelId: 'deepseek-r1-8b-q4', label: 'DeepSeek-R1 8B Q4', family: 'DeepSeek-R1',
-    role: 'allmind', thinkingTokens: true, jinjaTemplate: true,
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/DeepSeek-R1-0528-Qwen3-8B-GGUF',
     hfFile: 'DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf',
     sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 32768,
   },
   {
     modelId: 'deepseek-r1-14b-q4', label: 'DeepSeek-R1 14B Q4', family: 'DeepSeek-R1',
-    role: 'allmind', thinkingTokens: true, jinjaTemplate: true,
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF',
     hfFile: 'DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf',
     sizeBytes: 9_050_000_000, ramRequiredGb: 11, contextWindow: 65536,
   },
   {
     modelId: 'deepseek-r1-70b-q4', label: 'DeepSeek-R1 70B Q4', family: 'DeepSeek-R1',
-    role: 'allmind', thinkingTokens: true, jinjaTemplate: false,
+    role: 'seren', thinkingTokens: true, jinjaTemplate: false,
     hfRepo: 'bartowski/DeepSeek-R1-Distill-Llama-70B-GGUF',
     hfFile: 'DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf',
     sizeBytes: 42_520_000_000, ramRequiredGb: 48, contextWindow: 65536,
@@ -797,11 +797,11 @@ export function deleteFluxModel(modelId: string): boolean {
 
 export interface ModelRecommendation {
   sayon: GGUFSpec;
-  allmind: GGUFSpec;
+  seren: GGUFSpec;
   sayonDevice: 'cpu' | number;
-  allmindDevice: 'cpu' | number;
+  serenDevice: 'cpu' | number;
   sayonGpuLayers: number;
-  allmindGpuLayers: number;
+  serenGpuLayers: number;
   reasoning: string;
 }
 
@@ -810,7 +810,7 @@ const SAYON_CANDIDATES = [
   'llama3.2-3b-q4', 'gemma3-1b-q4',  'llama3.2-1b-q4',
 ];
 
-const ALLMIND_CANDIDATES = [
+const SEREN_CANDIDATES = [
   'deepseek-r1-70b-q4',
   'qwen3-30b-a3b-q4',
   'magistral-8b-q4',
@@ -839,28 +839,28 @@ export function buildRecommendation(hw: HardwareProfile): ModelRecommendation {
   const HEADROOM = 0.80;
 
   let sayon: GGUFSpec;
-  let allmind: GGUFSpec;
+  let seren: GGUFSpec;
   let sayonDevice: 'cpu' | number;
-  let allmindDevice: 'cpu' | number;
+  let serenDevice: 'cpu' | number;
   let sayonGpuLayers: number;
-  let allmindGpuLayers: number;
+  let serenGpuLayers: number;
 
   if (hasUnifiedMemory && bestGpu) {
     const pool          = Math.floor(hw.ramGb * HEADROOM);
-    const allmindBudget = Math.floor(pool * 0.75);
+    const serenBudget = Math.floor(pool * 0.75);
     const sayonBudget   = Math.floor(pool * 0.35);
-    allmind          = pickBestFit(ALLMIND_CANDIDATES, allmindBudget);
+    seren          = pickBestFit(SEREN_CANDIDATES, serenBudget);
     sayon            = pickBestFit(SAYON_CANDIDATES,   sayonBudget);
-    allmindDevice    = bestGpu.index;
+    serenDevice    = bestGpu.index;
     sayonDevice      = bestGpu.index;
-    allmindGpuLayers = 99;
+    serenGpuLayers = 99;
     sayonGpuLayers   = 99;
 
   } else if (bestGpu && bestGpu.vramGb >= 3) {
-    const allmindBudget = Math.floor(bestGpu.vramGb * HEADROOM);
-    allmind          = pickBestFit(ALLMIND_CANDIDATES, allmindBudget);
-    allmindDevice    = bestGpu.index;
-    allmindGpuLayers = 99;
+    const serenBudget = Math.floor(bestGpu.vramGb * HEADROOM);
+    seren          = pickBestFit(SEREN_CANDIDATES, serenBudget);
+    serenDevice    = bestGpu.index;
+    serenGpuLayers = 99;
 
     if (secondGpu && secondGpu.vramGb >= 2 && !secondGpu.unifiedMemory) {
       sayon          = pickBestFit(SAYON_CANDIDATES, Math.floor(secondGpu.vramGb * HEADROOM));
@@ -874,11 +874,11 @@ export function buildRecommendation(hw: HardwareProfile): ModelRecommendation {
 
   } else {
     const pool       = Math.floor(hw.ramGb * HEADROOM);
-    allmind          = pickBestFit(ALLMIND_CANDIDATES, Math.floor(pool * 0.60));
+    seren          = pickBestFit(SEREN_CANDIDATES, Math.floor(pool * 0.60));
     sayon            = pickBestFit(SAYON_CANDIDATES,   Math.floor(pool * 0.40));
-    allmindDevice    = 'cpu';
+    serenDevice    = 'cpu';
     sayonDevice      = 'cpu';
-    allmindGpuLayers = 0;
+    serenGpuLayers = 0;
     sayonGpuLayers   = 0;
   }
 
@@ -894,16 +894,16 @@ export function buildRecommendation(hw: HardwareProfile): ModelRecommendation {
     `GPUs: ${gpuStr}.` +
     (hasUnifiedMemory ? ` Unified memory — both models share the same ${hw.ramGb} GB pool.` : '') +
     ` SAYON → ${sayon.label} on ${deviceName(sayonDevice)} (${sayonGpuLayers > 0 ? 'GPU' : 'CPU'}).` +
-    ` ALLMIND → ${allmind.label} on ${deviceName(allmindDevice)} (${allmindGpuLayers > 0 ? 'GPU' : 'CPU'}).`;
+    ` SEREN → ${seren.label} on ${deviceName(serenDevice)} (${serenGpuLayers > 0 ? 'GPU' : 'CPU'}).`;
 
-  return { sayon, allmind, sayonDevice, allmindDevice, sayonGpuLayers, allmindGpuLayers, reasoning };
+  return { sayon, seren, sayonDevice, serenDevice, sayonGpuLayers, serenGpuLayers, reasoning };
 }
 
 // ── GGUF download ─────────────────────────────────────────────────────────────
 
 export interface DownloadProgress {
   modelId: string;
-  phase: 'sayon' | 'allmind';
+  phase: 'sayon' | 'seren';
   bytesReceived: number;
   bytesTotal: number;
   done: boolean;
@@ -917,7 +917,7 @@ function hfUrl(spec: GGUFSpec): string {
 
 export async function* downloadModel(
   spec: GGUFSpec,
-  phase: 'sayon' | 'allmind',
+  phase: 'sayon' | 'seren',
 ): AsyncGenerator<DownloadProgress> {
   fs.mkdirSync(MODELS_DIR, { recursive: true });
 

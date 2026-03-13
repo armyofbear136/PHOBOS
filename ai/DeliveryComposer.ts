@@ -26,12 +26,12 @@ export interface DeliveryInput {
     approved: boolean;
     failReason?: string;
   }>;
-  /** Optional: ALLMIND's final validation result (from Stage 4.5) */
+  /** Optional: SEREN's final validation result (from Stage 4.5) */
   validationSummary?: string;
 }
 
 /**
- * Stage 5: ALLMIND composes the final delivery message.
+ * Stage 5: SEREN composes the final delivery message.
  *
  * Uses engineStream() which handles the phobos raw-fetch path correctly,
  * avoiding the OpenAI SDK stripping reasoning_content that caused Bug 8.1.

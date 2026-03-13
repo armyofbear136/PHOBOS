@@ -23,7 +23,7 @@ const dbg = (...args: unknown[]) => { if (DEBUG) console.log(...args); };
 /**
  * ToolTagFilter — streaming XML suppressor for file tool calls.
  *
- * ALLMIND emits tool calls as raw XML in the output stream, e.g.:
+ * SEREN emits tool calls as raw XML in the output stream, e.g.:
  *   <write_file path="foo.ts">\nfull contents\n</write_file>
  *
  * These must never reach the frontend as output_token events.
@@ -176,9 +176,9 @@ export interface AttemptResult {
   reviewScore: number;
   approved: boolean;
   errorOutput?: string;
-  /** True when ALLMIND determined it needs more info from the user before executing */
+  /** True when SEREN determined it needs more info from the user before executing */
   needsClarification?: boolean;
-  /** The questions ALLMIND asked — populated when needsClarification is true */
+  /** The questions SEREN asked — populated when needsClarification is true */
   clarificationQuestions?: string[];
 }
 
@@ -345,7 +345,7 @@ export class LoopController {
 
     // Update composeInput with Stage 1 outputs.
     // Merge any inline content blocks extracted from the user message into
-    // loadedFiles so they reach ALLMIND via the <loaded_files> injection path
+    // loadedFiles so they reach SEREN via the <loaded_files> injection path
     // in DispatchComposer — exactly the same path as user-uploaded files.
     const mergedLoadedFiles = [
       ...(composeInput.loadedFiles ?? []),
@@ -392,7 +392,7 @@ export class LoopController {
         composeInput.repoMap ?? '',
         sendStatus,
         sendThinking,            // SAYON: discovery + extraction thinking → coordinator panel
-        sendEngineThinking,      // ALLMIND: decomposition thinking → engine panel
+        sendEngineThinking,      // SEREN: decomposition thinking → engine panel
         this.options.onThinkPhaseComplete,  // closes the planning engine segment in DB
         composeInput.clarificationIteration,  // weight system for clarification loop
         composeInput.clarificationLog         // full Q&A transcript for this loop
@@ -417,7 +417,7 @@ export class LoopController {
       }
 
       // ── NEEDS_CLARIFICATION exit ───────────────────────────────────────────
-      // ALLMIND determined it cannot proceed without more information from the user.
+      // SEREN determined it cannot proceed without more information from the user.
       // Emit the questions as a coordinator bubble and a structured event, then
       // return empty results. The frontend keeps the input open so the user can
       // respond, and their next message re-enters the pipeline with the
@@ -459,7 +459,7 @@ export class LoopController {
       }
     } else if (composeInput.intentType === 'IMAGE_REQUEST') {
       // Image generation path — bypass planning entirely.
-      // Inject a fixed directive so ALLMIND emits <generate_image .../> immediately
+      // Inject a fixed directive so SEREN emits <generate_image .../> immediately
       // without re-reasoning about file formats, parameters, or clarifications.
       const imagePrompt = ingestion.rewrittenUserMessage;
       tasks = [{
@@ -738,8 +738,8 @@ export class LoopController {
       this.budgetMonitor.reset(taskId);
     } // end task loop
 
-    // ── Stage 4.5: ALLMIND Final Validation ──────────────────────────────────
-    // For multi-task plans or plans with failures, ALLMIND reviews all completed
+    // ── Stage 4.5: SEREN Final Validation ──────────────────────────────────
+    // For multi-task plans or plans with failures, SEREN reviews all completed
     // work holistically. Single approved tasks skip this — the per-task review
     // already covered them.
     let overallApproved = taskResults.length > 0 && taskResults.every(r => r.approved);
@@ -751,7 +751,7 @@ export class LoopController {
 
     if (needsFinalValidation && allChangedFiles.length > 0) {
       agentState.transition('reviewing', 'Final validation');
-      sendStatus('ALLMIND validating all changes…');
+      sendStatus('SEREN validating all changes…');
 
       try {
         validationSummary = await this.runFinalValidation(
@@ -819,7 +819,7 @@ export class LoopController {
   }
 
   /**
-   * Stage 5: Ask ALLMIND to assemble a final natural-language summary,
+   * Stage 5: Ask SEREN to assemble a final natural-language summary,
    * then emit it as a coordinator-type SSE event (which the frontend renders
    * as the assistant's chat message content).
    */
@@ -858,9 +858,9 @@ export class LoopController {
   }
 
   /**
-   * Stage 4.5: ALLMIND holistic validation of all completed work.
+   * Stage 4.5: SEREN holistic validation of all completed work.
    *
-   * Reads the final state of all changed files from disk and asks ALLMIND
+   * Reads the final state of all changed files from disk and asks SEREN
    * to review them as a coherent whole against the original request.
    * Returns a validation summary string that feeds into delivery.
    *
@@ -909,7 +909,7 @@ export class LoopController {
       .join('\n');
 
     const prompt =
-      `You are ALLMIND performing final validation. Review ALL completed work as a coherent whole.\n\n` +
+      `You are SEREN performing final validation. Review ALL completed work as a coherent whole.\n\n` +
       `ORIGINAL REQUEST:\n${originalRequest.slice(0, 2_000)}\n\n` +
       `TASK OUTCOMES:\n${taskOutcomes}\n\n` +
       `FINAL FILE STATE:\n${fileContents.join('\n\n')}\n\n` +

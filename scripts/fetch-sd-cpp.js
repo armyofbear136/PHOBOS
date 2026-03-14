@@ -281,7 +281,7 @@ export async function fetchSdBinaries({ all = false } = {}) {
   // Prefer Vulkan build (GPU support); fall back to plain CPU build.
   if (all || (p === 'linux' && a === 'x64')) {
     const chmodAll = async (archive) => {
-      const files = await extractAllFromTarGz(archive, BIN_DIR);
+      const files = await extractAllFromZip(archive, BIN_DIR);
       for (const e of fs.readdirSync(BIN_DIR)) {
         const ep = path.join(BIN_DIR, e);
         if (fs.statSync(ep).isFile()) fs.chmodSync(ep, 0o755);
@@ -326,7 +326,7 @@ export async function fetchSdBinaries({ all = false } = {}) {
       'sd-server-linux-arm64',
       dl(fn), tmp(fn), outPath,
       async (archive) => {
-        const files = await extractAllFromTarGz(archive, BIN_DIR);
+        const files = await extractAllFromZip(archive, BIN_DIR);
         for (const e of fs.readdirSync(BIN_DIR)) {
           const ep = path.join(BIN_DIR, e);
           if (fs.statSync(ep).isFile()) fs.chmodSync(ep, 0o755);

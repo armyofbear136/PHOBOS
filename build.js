@@ -269,21 +269,29 @@ export async function buildForPlatform({
     log('  ✅ .env (generated from CI environment)');
   }
 
-  // llama-server — stage all platform binaries present in bin/ into dist/
-  // Copies everything: llama-server binaries, dylibs (.dylib), shared objects (.so),
-  // DLLs (.dll), and any other companion files llama-server links against.
+  // llama-server + sd-cli — stage all platform binaries present in bin/ into dist/
+  // Copies everything recursively: binaries, dylibs, DLLs, and subdirectories
+  // (sd-cuda/, sd-vulkan/, sd-cpu/ for Windows sd-cli isolation).
   const binDir = path.join(__dirname, 'bin');
   if (fs.existsSync(binDir)) {
     let staged = 0;
-    for (const entry of fs.readdirSync(binDir)) {
-      const src = path.join(binDir, entry);
-      if (!fs.statSync(src).isFile()) continue;
-      const dst = path.join(distDir, entry);
-      fs.copyFileSync(src, dst);
-      if (!entry.endsWith('.exe') && !entry.endsWith('.dll')) fs.chmodSync(dst, 0o755);
-      staged++;
-    }
-    if (staged > 0) log(`  ✅ bin/ (${staged} files staged)`);
+    const stageBinDir = (srcDir, dstDir) => {
+      fs.mkdirSync(dstDir, { recursive: true });
+      for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+        if (entry.name === '.tmp') continue;
+        const src = path.join(srcDir, entry.name);
+        const dst = path.join(dstDir, entry.name);
+        if (entry.isDirectory()) {
+          stageBinDir(src, dst);
+        } else {
+          fs.copyFileSync(src, dst);
+          if (!entry.name.endsWith('.exe') && !entry.name.endsWith('.dll')) fs.chmodSync(dst, 0o755);
+          staged++;
+        }
+      }
+    };
+    stageBinDir(binDir, distDir);
+    if (staged > 0) log(`  ✅ bin/ (${staged} files staged, including subdirs)`);
     else            log('  ⚠️  llama-server — no binaries in bin/ (run: node scripts/fetch-llamacpp.js)');
   } else {
     log('  ⚠️  bin/ missing — run: node scripts/fetch-llamacpp.js');

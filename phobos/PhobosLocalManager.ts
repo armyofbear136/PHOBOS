@@ -1278,14 +1278,21 @@ export function resolveSdServerBin(): string {
   const binDir   = path.join(path.resolve(_dirname, '..'), 'bin');
 
   // Windows: each sd build lives in its own subdir to avoid DLL conflicts with llama-cpp.
-  // Preference: CUDA -> Vulkan -> CPU.  Legacy flat-bin layout included as fallback.
-  // Linux/macOS: single binary at bin/sd-server-<platform>-<arch>
+  // Preference: CUDA -> Vulkan -> CPU.
+  // Check both dev layout (bin/sd-cuda/) and SEA layout (dist/sd-cuda/ = seaDir/sd-cuda/).
+  // Linux/macOS: single binary, flat layout.
   type Candidate = { file: string; dir: string };
   const candidates: Candidate[] = platform === 'win32'
     ? [
+        // SEA build: sd-cuda/ etc live alongside the executable
+        { file: `sd-server-${platform}-${arch}-cuda.exe`, dir: path.join(seaDir, 'sd-cuda')   },
+        { file: `sd-server-${platform}-${arch}.exe`,      dir: path.join(seaDir, 'sd-vulkan') },
+        { file: `sd-server-${platform}-${arch}-cpu.exe`,  dir: path.join(seaDir, 'sd-cpu')    },
+        // Dev layout: bin/sd-cuda/ etc
         { file: `sd-server-${platform}-${arch}-cuda.exe`, dir: path.join(binDir, 'sd-cuda')   },
         { file: `sd-server-${platform}-${arch}.exe`,      dir: path.join(binDir, 'sd-vulkan') },
         { file: `sd-server-${platform}-${arch}-cpu.exe`,  dir: path.join(binDir, 'sd-cpu')    },
+        // Flat fallback (legacy or custom builds)
         { file: `sd-server-${platform}-${arch}-cuda.exe`, dir: seaDir },
         { file: `sd-server-${platform}-${arch}-cuda.exe`, dir: binDir },
         { file: `sd-server-${platform}-${arch}.exe`,      dir: seaDir },
@@ -1303,7 +1310,7 @@ export function resolveSdServerBin(): string {
 
   throw new Error(
     `sd-server binary not found for ${platform}-${arch}.\n` +
-    `Expected in bin/sd-cuda/, bin/sd-vulkan/, or bin/sd-cpu/\n` +
+    `Expected in sd-cuda/, sd-vulkan/, or sd-cpu/ (alongside executable or in bin/)\n` +
     `Run scripts/fetch-sd-cpp.js to download binaries.`
   );
 }

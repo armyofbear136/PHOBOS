@@ -749,6 +749,16 @@ export function recommendFluxModel(vramGb: number): FluxSpec | null {
   return null;
 }
 
+/**
+ * Returns the best downloaded image model across all catalogues.
+ * Chroma is checked first (it is now the default); FLUX is the fallback.
+ * SDXL is excluded — it requires convert.py-produced GGUFs not currently in catalogue.
+ */
+export function recommendImageModel(vramGb: number): ImageModelSpec | null {
+  const ordered = [...CHROMA_CATALOGUE, ...FLUX_CATALOGUE];
+  return ordered.find(m => m.vramRequiredGb <= vramGb && isImageModelDownloaded(m)) ?? null;
+}
+
 
 /**
  * Returns the best T5 encoder that fits with comfortable headroom.

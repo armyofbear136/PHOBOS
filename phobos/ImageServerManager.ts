@@ -8,6 +8,7 @@ import {
   getImageModelSpec,
   isImageModelDownloaded,
   recommendFluxModel,
+  recommendImageModel,
   recommendT5Encoder,
   FLUX_AUX_REQUIRED,
   CHROMA_AUX_REQUIRED,
@@ -208,13 +209,19 @@ function buildEnv(cfg: SdServerConfig): NodeJS.ProcessEnv {
   }
 
   if (cfg.gpuBackend === 'cuda') {
-    if (cfg.deviceIndex !== undefined && cfg.deviceIndex < 100) {
-      env.CUDA_VISIBLE_DEVICES = String(cfg.deviceIndex);
-    }
+    // Always set explicitly. An inherited CUDA_VISIBLE_DEVICES="" from the parent
+    // process (e.g. set by llama-server) will override a missing assignment and
+    // tell the CUDA runtime no GPUs are visible, silently forcing CPU execution.
+    env.CUDA_VISIBLE_DEVICES =
+      cfg.deviceIndex !== undefined && cfg.deviceIndex < 100
+        ? String(cfg.deviceIndex)
+        : '0'; // default to first device if index somehow missing
     return env;
   }
 
-  // Vulkan — do NOT touch CUDA_VISIBLE_DEVICES
+  // Vulkan — remove CUDA_VISIBLE_DEVICES entirely so an inherited value
+  // does not confuse drivers that check it even in non-CUDA paths.
+  delete env.CUDA_VISIBLE_DEVICES;
   return env;
 }
 
@@ -360,7 +367,7 @@ export async function buildSdConfig(
     }
   }
   if (!spec) {
-    spec = recommendFluxModel(totalVramGb);
+    spec = recommendImageModel(totalVramGb);
   }
   if (!spec) {
     console.warn('[ImageServerManager] No image model available — cannot build config');

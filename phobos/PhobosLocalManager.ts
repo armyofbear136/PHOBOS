@@ -18,8 +18,15 @@ const _dirname: string = (() => {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-export const MODELS_DIR      = path.join(os.homedir(), '.phobos', 'models');
-export const FLUX_MODELS_DIR = path.join(os.homedir(), '.phobos', 'models', 'flux');
+export const MODELS_DIR       = path.join(os.homedir(), '.phobos', 'models');
+/** Shared encoder/aux files — used by multiple runner profiles (VAE, CLIP-L, T5, CLIP-G) */
+export const IMAGE_SHARED_DIR = path.join(os.homedir(), '.phobos', 'models', 'image');
+/** FLUX and Chroma model GGUFs */
+export const IMAGE_FLUX_DIR   = path.join(os.homedir(), '.phobos', 'models', 'image', 'flux');
+/** SDXL model GGUFs */
+export const IMAGE_SDXL_DIR   = path.join(os.homedir(), '.phobos', 'models', 'image', 'sdxl');
+/** @deprecated use IMAGE_FLUX_DIR — kept so any external references survive */
+export const FLUX_MODELS_DIR  = IMAGE_FLUX_DIR;
 
 // ── Hardware detection ────────────────────────────────────────────────────────
 
@@ -465,6 +472,9 @@ export const FLUX_T5_Q8: FluxAuxFile = {
 /** Always-required aux files (VAE + CLIP-L). T5 encoder chosen separately. */
 export const FLUX_AUX_REQUIRED: FluxAuxFile[] = [FLUX_VAE, FLUX_CLIP_L];
 
+/** Chroma aux files — VAE only, no CLIP-L (trained without CLIP-L conditioning). T5 chosen separately. */
+export const CHROMA_AUX_REQUIRED: FluxAuxFile[] = [FLUX_VAE];
+
 // ── FLUX catalogue ────────────────────────────────────────────────────────────
 
 export const FLUX_CATALOGUE: FluxSpec[] = [
@@ -556,7 +566,7 @@ export const CHROMA_CATALOGUE: ImageModelSpec[] = [
     label:            'Chroma1-HD Q4',
     displayName:      'Chroma1-HD',
     runnerProfile:    'flux',
-    category:         'nsfw-realistic',
+    category:         'realistic',
     variant:          'chroma',
     quantization:     'Q4_0',
     hfRepo:           'silveroxides/Chroma1-HD-GGUF',
@@ -613,7 +623,10 @@ export const SDXL_VAE: FluxAuxFile = {
 export const SDXL_AUX_REQUIRED: FluxAuxFile[] = [SDXL_CLIP_L, SDXL_CLIP_G];
 
 // ── SDXL catalogue ────────────────────────────────────────────────────────────
-// VAE is baked into each GGUF. sd.cpp invocation: -m <model> --clip_l --clip_g
+// hum-ma GGUFs are ComfyUI-only (city96 tensor naming, incompatible with sd.cpp loader).
+// SDXL infrastructure (types, paths, arg builder, aux constants) remains in place.
+// Re-enable by adding ...SDXL_CATALOGUE back to IMAGE_MODEL_CATALOGUE once a
+// sd.cpp-compatible GGUF source is available.
 
 export const SDXL_CATALOGUE: ImageModelSpec[] = [
   // ── Realistic ────────────────────────────────────────────────────────────
@@ -663,9 +676,9 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
 
 /** Combined catalogue — all image models across all runner profiles */
 export const IMAGE_MODEL_CATALOGUE: ImageModelSpec[] = [
-  ...FLUX_CATALOGUE,
   ...CHROMA_CATALOGUE,
-  ...SDXL_CATALOGUE,
+  ...FLUX_CATALOGUE,
+  // SDXL_CATALOGUE omitted — hum-ma GGUFs incompatible with sd.cpp loader (city96 tensor naming)
 ];
 
 export function getImageModelSpec(modelId: string): ImageModelSpec | undefined {
@@ -691,12 +704,19 @@ export function getFluxSpec(modelId: string): FluxSpec | undefined {
   return FLUX_CATALOGUE.find(s => s.modelId === modelId);
 }
 
+// ── Image model path resolution ───────────────────────────────────────────────
+// Models:  flux/chroma GGUFs → IMAGE_FLUX_DIR
+//          sdxl GGUFs        → IMAGE_SDXL_DIR
+// Aux:     all encoders/VAE  → IMAGE_SHARED_DIR
+//          (VAE, CLIP-L, T5, CLIP-G are shared across runner profiles)
+
 export function fluxModelPath(spec: FluxSpec): string {
-  return path.join(FLUX_MODELS_DIR, spec.hfFile);
+  const dir = spec.runnerProfile === 'sdxl' ? IMAGE_SDXL_DIR : IMAGE_FLUX_DIR;
+  return path.join(dir, spec.hfFile);
 }
 
 export function fluxAuxPath(aux: FluxAuxFile): string {
-  return path.join(FLUX_MODELS_DIR, aux.hfFile);
+  return path.join(IMAGE_SHARED_DIR, aux.hfFile);
 }
 
 export function isFluxDownloaded(spec: FluxSpec): boolean {
@@ -729,29 +749,40 @@ export function recommendFluxModel(vramGb: number): FluxSpec | null {
   return null;
 }
 
+
 /**
- * Returns the best T5 encoder given remaining VRAM after the main FLUX model
- * and fixed aux (VAE ~0.4 GB + CLIP-L ~0.3 GB). Falls back to Q4.
+ * Returns the best T5 encoder that fits with comfortable headroom.
+ *
+ * VRAM budget math (from sd-cli logs):
+ *   Chroma Q4 diffusion: 5180 MB, VAE: 95 MB, no CLIP-L
+ *   FLUX schnell Q4 diffusion: 6694 MB, VAE: 95 MB, CLIP-L: 230 MB
+ *   T5 Q3: ~2300 MB, T5 Q4: ~2900 MB, T5 Q8: ~5060 MB
+ *
+ * We require ≥2 GB headroom for CUDA working memory (attention caches,
+ * temporary allocations during T5 forward pass). Without this, the GPU
+ * swaps tensors to system RAM via VMM, causing 10-100x slowdowns.
  */
 export function recommendT5Encoder(fluxSpec: FluxSpec, totalVramGb: number, isUnifiedMemory = false): FluxAuxFile {
-  // Never use large encoders on unified/shared memory devices.
   if (isUnifiedMemory) return FLUX_T5_Q3;
 
-  // Select based on TOTAL VRAM (physical card capacity), not free VRAM.
-  // On CUDA VMM-enabled devices, nvidia-smi free VRAM underreports available memory
-  // because the driver reports conservatively — sd-cli consistently loads everything
-  // to VRAM even when free VRAM appears insufficient. Use card total for tier selection.
-  //
-  // Known fit budget (loaded sizes from sd-cli logs):
-  //   schnell Q4_K_M diffusion: 6693 MB
-  //   VAE: 95 MB, CLIP-L: ~230 MB
-  //   T5 Q4_K_M (2.9 GB): total ~9.9 GB → fits on 10 GB ✓
-  //   T5 Q8_0   (5.1 GB): total ~12.1 GB → needs 12 GB+
-  if (totalVramGb >= 16) return FLUX_T5_Q8;
-  if (totalVramGb >= 10) return FLUX_T5_Q4;
+  const totalVramMb = totalVramGb * 1024;
+  const HEADROOM_MB = 2048; // 2 GB minimum for fast inference
+
+  // Estimate base model VRAM (diffusion + VAE + optional CLIP-L)
+  const isChroma = fluxSpec.variant === 'chroma';
+  // Use vramRequiredGb as a proxy for diffusion model size, convert to MB
+  const diffusionMb = fluxSpec.vramRequiredGb * 1024;
+  const vaeMb = 95;
+  const clipMb = isChroma ? 0 : 230; // Chroma doesn't use CLIP-L
+  const baseMb = diffusionMb + vaeMb + clipMb;
+
+  const availableForT5 = totalVramMb - baseMb - HEADROOM_MB;
+
+  // T5 sizes: Q3 ~2300 MB, Q4 ~2900 MB, Q8 ~5060 MB
+  if (availableForT5 >= 5060) return FLUX_T5_Q8;
+  if (availableForT5 >= 2900) return FLUX_T5_Q4;
   return FLUX_T5_Q3;
 }
-
 
 export function deleteFluxModel(modelId: string): boolean {
   const spec = getFluxSpec(modelId);
@@ -1051,7 +1082,7 @@ async function* downloadFluxFileGen(
   label: string,
   phase: FluxDownloadPhase,
 ): AsyncGenerator<FluxDownloadProgress> {
-  fs.mkdirSync(FLUX_MODELS_DIR, { recursive: true });
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
 
   const tmp           = destPath + '.download';
   const existingBytes = fs.existsSync(tmp) ? fs.statSync(tmp).size : 0;

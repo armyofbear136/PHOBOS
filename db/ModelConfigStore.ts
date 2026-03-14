@@ -163,7 +163,7 @@ export class ModelConfigStore {
         parsed.provider = parsed.endpoint?.includes('11434') ? 'ollama' : 'fastflowllm';
       }
       // Migrate stale phobos engine configs that were saved with the coordinator port (52626).
-      // Engine must use ALLMIND port 52627; coordinator uses SAYON port 52626.
+      // Engine must use SEREN port 52627; coordinator uses SAYON port 52626.
       if (parsed.provider === 'phobos' && parsed.endpoint?.includes('52626')) {
         parsed.endpoint = parsed.endpoint.replace('52626', '52627');
       }

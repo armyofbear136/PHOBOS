@@ -10,6 +10,7 @@ node_modules/
 
 # License generation output
 output/
+test-outputs/
 
 # Environment secrets
 .env

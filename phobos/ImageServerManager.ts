@@ -5,21 +5,24 @@ import {
   resolveSdServerBin,
   fluxModelPath,
   fluxAuxPath,
-  getFluxSpec,
+  getImageModelSpec,
+  isImageModelDownloaded,
   recommendFluxModel,
   recommendT5Encoder,
   FLUX_AUX_REQUIRED,
+  CHROMA_AUX_REQUIRED,
+  SDXL_AUX_REQUIRED,
   detectHardware,
-  type FluxSpec,
+  type ImageModelSpec,
   type FluxAuxFile,
 } from './PhobosLocalManager.js';
 
-export type SdModelType = 'flux'; // 'sdxl' added in Phase 8 (Pony)
+export type SdModelType = 'flux' | 'chroma' | 'sdxl';
 
 export interface SdServerConfig {
   modelType:    SdModelType;
-  fluxSpec:     FluxSpec;
-  auxFiles:     FluxAuxFile[];  // [VAE, CLIP-L, T5]
+  fluxSpec:     ImageModelSpec;  // unified — covers flux, chroma, and sdxl specs
+  auxFiles:     FluxAuxFile[];
   deviceIndex?: number;
   gpuBackend?:  'cuda' | 'vulkan' | 'metal';
   freeVramGb?:  number;         // live free VRAM at config-build time (for polling/logging)
@@ -37,6 +40,14 @@ export interface GenerateImageOptions {
   height?:         number;
   seed?:           number;
   sampler?:        string;
+  // Workflow node extensions — img2img, inpaint, ControlNet, upscale
+  initImg?:        string;   // --init-img path (img2img / inpaint source)
+  strength?:       number;   // --strength (denoising, 0–1)
+  maskPath?:       string;   // --mask path (inpaint mask)
+  controlImage?:   string;   // --control-image path (ControlNet conditioning)
+  controlScale?:   number;   // --control-strength (ControlNet guidance scale)
+  upscaleInput?:   string;   // input image for upscale (--input)
+  upscaleFactor?:  number;   // --upscale-repeats (factor)
 }
 
 export interface GenerateImageResult {
@@ -45,48 +56,137 @@ export interface GenerateImageResult {
   elapsedMs:  number;
 }
 
-// ── Build CLI args ────────────────────────────────────────────────────────────
-// sd-cli generates directly to a file — no server, no HTTP.
-// Full arg reference confirmed from --help output.
+// ── CLI arg builders ──────────────────────────────────────────────────────────
+// ── Shared workflow CLI flags ─────────────────────────────────────────────────
+// Appended to any runner's arg list when the corresponding option is present.
 
-function buildArgs(
-  cfg:      SdServerConfig,
-  opts:     GenerateImageOptions,
-  outPath:  string,
+function appendWorkflowFlags(args: string[], opts: GenerateImageOptions): void {
+  if (opts.upscaleInput) {
+    // Upscale is a separate mode — --input overrides normal generation
+    args.push('--input', opts.upscaleInput);
+    if (opts.upscaleFactor) args.push('--upscale-repeats', String(opts.upscaleFactor));
+    return; // upscale mode — don't mix with img2img/mask/control flags
+  }
+  if (opts.initImg)      args.push('--init-img', opts.initImg);
+  if (opts.strength !== undefined) args.push('--strength', String(opts.strength));
+  if (opts.maskPath)     args.push('--mask', opts.maskPath);
+  if (opts.controlImage) args.push('--control-image', opts.controlImage);
+  if (opts.controlScale !== undefined) args.push('--control-strength', String(opts.controlScale));
+}
+
+// Each runner profile has its own builder. buildArgs() dispatches by modelType.
+
+function buildFluxArgs(
+  cfg:     SdServerConfig,
+  opts:    GenerateImageOptions,
+  outPath: string,
 ): string[] {
   const spec   = cfg.fluxSpec;
+  // schnell is designed for 4 steps; dev benefits from 20-28
   const steps  = opts.steps  ?? cfg.steps  ?? (spec.variant === 'schnell' ? 4 : 20);
   const width  = opts.width  ?? cfg.width  ?? 1024;
   const height = opts.height ?? cfg.height ?? 1024;
   const seed   = opts.seed   ?? 42;
 
   const args: string[] = [
-    // Model files
     '--diffusion-model', fluxModelPath(spec),
     '--vae',             fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--vae')!),
     '--clip_l',          fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--clip_l')!),
     '--t5xxl',           fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--t5xxl')!),
-
-    // Generation params
     '--prompt',          opts.prompt,
     '--steps',           String(steps),
     '--width',           String(width),
     '--height',          String(height),
     '--seed',            String(seed),
     '--sampling-method', opts.sampler ?? 'euler',
-
-    // FLUX ignores cfg-scale internally but we pass guidance instead
     '--guidance',        '3.5',
-
-    // Output
-    '--output',          outPath,
+    '-o',                outPath,
+    '--rng',    'cuda',  // GPU-side RNG — avoids CPU→GPU transfer per step
   ];
 
-  if (opts.negativePrompt) {
-    args.push('--negative-prompt', opts.negativePrompt);
-  }
-
+  if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
+  appendWorkflowFlags(args, opts);
   return args;
+}
+
+function buildChromaArgs(
+  cfg:     SdServerConfig,
+  opts:    GenerateImageOptions,
+  outPath: string,
+): string[] {
+  const spec   = cfg.fluxSpec;
+  // Chroma benefits from 20 steps; can go as low as 12 for speed at mild quality cost
+  const steps  = opts.steps  ?? cfg.steps  ?? 20;
+  const width  = opts.width  ?? cfg.width  ?? 1024;
+  const height = opts.height ?? cfg.height ?? 1024;
+  const seed   = opts.seed   ?? 42;
+
+  // Chroma differences from FLUX:
+  //   - no --clip_l (trained without CLIP-L conditioning pathway)
+  //   - --guidance 0 (unconditional — CFG disabled by design)
+  const args: string[] = [
+    '--diffusion-model', fluxModelPath(spec),
+    '--vae',             fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--vae')!),
+    '--t5xxl',           fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--t5xxl')!),
+    '--prompt',          opts.prompt,
+    '--steps',           String(steps),
+    '--width',           String(width),
+    '--height',          String(height),
+    '--seed',            String(seed),
+    '--sampling-method', opts.sampler ?? 'euler',
+    '--guidance',        '0',
+    '-o',                outPath,
+    '--rng',    'cuda',  // GPU-side RNG
+  ];
+
+  if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
+  appendWorkflowFlags(args, opts);
+  return args;
+}
+
+function buildSdxlArgs(
+  cfg:     SdServerConfig,
+  opts:    GenerateImageOptions,
+  outPath: string,
+): string[] {
+  const steps  = opts.steps  ?? cfg.steps  ?? 25;
+  const width  = opts.width  ?? cfg.width  ?? 1024;
+  const height = opts.height ?? cfg.height ?? 1024;
+  const seed   = opts.seed   ?? 42;
+
+  // SDXL differences from FLUX:
+  //   - -m instead of --diffusion-model (single-file format, VAE baked in)
+  //   - --clip_l + --clip_g (no --t5xxl, no --vae)
+  //   - --cfg-scale instead of --guidance
+  //   - euler_a sampler preferred
+  const args: string[] = [
+    '-m',                fluxModelPath(cfg.fluxSpec),
+    '--clip_l',          fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--clip_l')!),
+    '--clip_g',          fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--clip_g')!),
+    '--prompt',          opts.prompt,
+    '--steps',           String(steps),
+    '--width',           String(width),
+    '--height',          String(height),
+    '--seed',            String(seed),
+    '--sampling-method', opts.sampler ?? 'euler_a',
+    '--cfg-scale',       String(cfg.cfgScale ?? 7.0),
+    '-o',                outPath,
+    '--rng',    'cuda',  // GPU-side RNG
+  ];
+
+  if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
+  appendWorkflowFlags(args, opts);
+  return args;
+}
+
+function buildArgs(
+  cfg:     SdServerConfig,
+  opts:    GenerateImageOptions,
+  outPath: string,
+): string[] {
+  if (cfg.modelType === 'chroma') return buildChromaArgs(cfg, opts, outPath);
+  if (cfg.modelType === 'sdxl')   return buildSdxlArgs(cfg, opts, outPath);
+  return buildFluxArgs(cfg, opts, outPath);
 }
 
 // ── GPU device selection notes ────────────────────────────────────────────────
@@ -99,31 +199,22 @@ function buildArgs(
 // For CUDA binary: CUDA_VISIBLE_DEVICES env var selects which NVIDIA GPU.
 // For Vulkan binary: no reliable single-device env var — uses first Vulkan device.
 // resolveSdServerBin() already picks the best binary (CUDA > Vulkan > CPU).
-// The --rng flag only affects the noise RNG source, not the compute device.
-
-// ── Build environment for GPU targeting ───────────────────────────────────────
-// Mirrors LlamaServerManager env construction exactly.
 
 function buildEnv(cfg: SdServerConfig): NodeJS.ProcessEnv {
   const env = { ...process.env };
 
   if (cfg.gpuBackend === 'metal') {
-    // macOS Metal — binary handles this automatically, no env vars needed
-    return env;
+    return env; // macOS Metal — binary handles this automatically
   }
 
   if (cfg.gpuBackend === 'cuda') {
-    // NVIDIA CUDA — select specific GPU via env var
     if (cfg.deviceIndex !== undefined && cfg.deviceIndex < 100) {
       env.CUDA_VISIBLE_DEVICES = String(cfg.deviceIndex);
     }
-    // Do NOT set CUDA_VISIBLE_DEVICES=-1 — that disables CUDA entirely
     return env;
   }
 
-  // Vulkan (AMD iGPU, index >= 100) — do NOT touch CUDA_VISIBLE_DEVICES.
-  // The CUDA binary will fall back to Vulkan/CPU if CUDA is unavailable on the device.
-  // HSA vars only apply to ROCm builds, not CUDA builds.
+  // Vulkan — do NOT touch CUDA_VISIBLE_DEVICES
   return env;
 }
 
@@ -132,15 +223,15 @@ function buildEnv(cfg: SdServerConfig): NodeJS.ProcessEnv {
 /**
  * Spawns sd-cli, waits for it to complete, returns the output file path.
  * sd-cli is a one-shot CLI tool — no persistent process, no HTTP.
- * Each call spawns a fresh process and exits when the image is written.
  */
 export async function generateImage(
   outputPath: string,
   cfg:        SdServerConfig,
   opts:       GenerateImageOptions,
+  onProgress?: (line: string) => void,
 ): Promise<GenerateImageResult> {
-  const spec = getFluxSpec(cfg.fluxSpec.modelId);
-  if (!spec) throw new Error(`Unknown FLUX model ID: ${cfg.fluxSpec.modelId}`);
+  const spec = getImageModelSpec(cfg.fluxSpec.modelId);
+  if (!spec) throw new Error(`Unknown image model ID: ${cfg.fluxSpec.modelId}`);
 
   // Verify all files exist before spawning
   const missing: string[] = [];
@@ -152,11 +243,10 @@ export async function generateImage(
     throw new Error(`sd-cli cannot run — missing files:\n  ${missing.join('\n  ')}`);
   }
 
-  // Resolve to absolute path — sd-cli resolves relative paths from its own cwd (bin/)
   outputPath = path.resolve(outputPath);
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
-  const bin  = resolveSdServerBin();
+  const bin = resolveSdServerBin();
   if (process.platform !== 'win32') {
     try { fs.chmodSync(bin, 0o755); } catch { /* ignore */ }
   }
@@ -165,7 +255,7 @@ export async function generateImage(
   const args = buildArgs(cfg, { ...opts, seed }, outputPath);
   const env  = buildEnv(cfg);
 
-  console.log(`[ImageServerManager] Spawning sd-cli — ${spec.label}`);
+  console.log(`[ImageServerManager] Spawning sd-cli — ${spec.label} (${cfg.modelType})`);
   console.log(`[ImageServerManager] ${bin} ${args.join(' ')}`);
 
   const startMs = Date.now();
@@ -174,12 +264,15 @@ export async function generateImage(
     const proc = spawn(bin, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       env,
-      cwd: path.dirname(bin), // so companion DLLs (stable-diffusion.dll etc.) are found
+      cwd: path.dirname(bin), // so companion DLLs are found
     });
 
     proc.stdout?.on('data', (d: Buffer) => {
       const line = d.toString().trim();
-      if (line) console.log(`[sd-cli] ${line}`);
+      if (line) {
+        console.log(`[sd-cli] ${line}`);
+        onProgress?.(line);
+      }
     });
     proc.stderr?.on('data', (d: Buffer) => {
       const line = d.toString().trim();
@@ -187,11 +280,8 @@ export async function generateImage(
     });
 
     proc.on('exit', (code, signal) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`sd-cli exited with code ${code} (signal: ${signal})`));
-      }
+      if (code === 0) resolve();
+      else reject(new Error(`sd-cli exited with code ${code} (signal: ${signal})`));
     });
 
     proc.on('error', reject);
@@ -222,7 +312,7 @@ export function getSdServerStatus(): {
 // ── Auto-configure from hardware ──────────────────────────────────────────────
 
 export async function buildSdConfig(
-  overrides: Partial<SdServerConfig> = {},
+  overrides: Partial<SdServerConfig> & { modelId?: string } = {},
 ): Promise<SdServerConfig | null> {
   let totalVramGb     = 0;
   let freeVramGb      = 0;
@@ -232,30 +322,22 @@ export async function buildSdConfig(
 
   try {
     const hw = await detectHardware();
-    // Sort priority: discrete CUDA/Metal > discrete Vulkan > UMA/unified.
-    // UMA devices (index >= 100 or unifiedMemory=true) report shared system RAM as VRAM
-    // which makes them sort above real discrete GPUs when sorted by raw VRAM alone.
     const backendScore = (g: typeof hw.gpus[0]): number =>
       (g.unifiedMemory || g.index >= 100) ? 0
       : g.backend === 'cuda'   ? 3
       : g.backend === 'metal'  ? 2
-      : 1; // vulkan discrete
-    const gpusByVram = [...hw.gpus].sort((a, b) => {
+      : 1;
+    const gpusByPriority = [...hw.gpus].sort((a, b) => {
       const scoreDiff = backendScore(b) - backendScore(a);
       return scoreDiff !== 0 ? scoreDiff : b.vramGb - a.vramGb;
     });
-    const bestGpu = gpusByVram[0];
+    const bestGpu = gpusByPriority[0];
     if (bestGpu) {
       totalVramGb     = bestGpu.vramGb;
       deviceIndex     = bestGpu.index;
       gpuBackend      = bestGpu.backend;
       isUnifiedMemory = bestGpu.unifiedMemory === true || bestGpu.index >= 100;
-
-      // Use live free VRAM for encoder budgeting if available (CUDA only via nvidia-smi).
-      // For non-CUDA devices or if the query failed, fall back to total minus a 1.5 GB
-      // reserve for background GPU processes (browser, Discord, ALLMIND Vulkan context,
-      // OS compositor, etc.) that consume VRAM invisibly from our perspective.
-      freeVramGb = bestGpu.freeVramGb ?? Math.max(0, totalVramGb - 1.5);
+      freeVramGb      = bestGpu.freeVramGb ?? Math.max(0, totalVramGb - 1.5);
 
       console.log(
         `[ImageServerManager] VRAM budget: ${freeVramGb.toFixed(1)} GB free` +
@@ -268,24 +350,44 @@ export async function buildSdConfig(
     console.warn(`[ImageServerManager] Hardware detect failed: ${(err as Error).message}`);
   }
 
-  // Model selection uses total VRAM — the model must physically fit.
-  const fluxSpec = recommendFluxModel(totalVramGb);
-  if (!fluxSpec) {
-    console.warn('[ImageServerManager] No FLUX model downloaded — cannot build config');
+  // If a specific modelId was requested, look it up directly instead of auto-recommending
+  let spec: ImageModelSpec | null = null;
+  if (overrides.modelId) {
+    spec = getImageModelSpec(overrides.modelId) ?? null;
+    if (spec && !isImageModelDownloaded(spec)) {
+      console.warn(`[ImageServerManager] Requested model ${overrides.modelId} is not downloaded`);
+      spec = null;
+    }
+  }
+  if (!spec) {
+    spec = recommendFluxModel(totalVramGb);
+  }
+  if (!spec) {
+    console.warn('[ImageServerManager] No image model available — cannot build config');
     return null;
   }
 
-  // T5 encoder selection uses TOTAL VRAM — on CUDA VMM devices, free VRAM from
-  // nvidia-smi underreports what CUDA can actually access. Total card capacity
-  // is the reliable signal for whether a model tier will fit.
-  const t5       = recommendT5Encoder(fluxSpec, totalVramGb, isUnifiedMemory);
-  const auxFiles = [...FLUX_AUX_REQUIRED, t5];
+  // Aux selection by runner profile
+  let auxFiles: FluxAuxFile[];
+  if (spec.runnerProfile === 'sdxl') {
+    auxFiles = [...SDXL_AUX_REQUIRED];
+    console.log(`[ImageServerManager] Selected model: ${spec.label} (SDXL runner)`);
+  } else {
+    // flux and chroma both use T5 — chroma skips CLIP-L
+    const t5 = recommendT5Encoder(spec, totalVramGb, isUnifiedMemory);
+    const baseAux = spec.variant === 'chroma' ? CHROMA_AUX_REQUIRED : FLUX_AUX_REQUIRED;
+    auxFiles  = [...baseAux, t5];
+    console.log(`[ImageServerManager] Selected model: ${spec.label} (${spec.runnerProfile} runner) · T5: ${t5.label}`);
+  }
 
-  console.log(`[ImageServerManager] Selected T5: ${t5.label} (total VRAM: ${totalVramGb} GB, free: ${freeVramGb.toFixed(1)} GB)`);
+  const modelType: SdModelType =
+    spec.runnerProfile === 'sdxl'  ? 'sdxl'
+    : spec.variant    === 'chroma' ? 'chroma'
+    : 'flux';
 
   return {
-    modelType: 'flux',
-    fluxSpec,
+    modelType,
+    fluxSpec: spec,
     auxFiles,
     deviceIndex,
     gpuBackend,

@@ -13,7 +13,7 @@ import { randomUUID } from 'crypto';
  * a full chronological transcript showing exactly what each model saw and said.
  */
 
-export type PromptRole = 'sayon' | 'allmind';
+export type PromptRole = 'sayon' | 'seren';
 
 /**
  * Stage labels — what was this call doing in the pipeline?
@@ -23,11 +23,11 @@ export type PromptRole = 'sayon' | 'allmind';
  *   summarise     ContextIngester — file summarisation batch
  *   discover      TaskPlanner step 1 — which files to read
  *   extract       TaskPlanner step 2 — extract constraints from files
- *   decompose     TaskPlanner step 3 — ALLMIND task decomposition
- *   dispatch      LoopController — per-task ALLMIND execution call
- *   review        LoopController — SAYON review of ALLMIND output
+ *   decompose     TaskPlanner step 3 — SEREN task decomposition
+ *   dispatch      LoopController — per-task SEREN execution call
+ *   review        LoopController — SAYON review of SEREN output
  *   validate      LoopController — final holistic validation
- *   deliver       DeliveryComposer — ALLMIND final summary
+ *   deliver       DeliveryComposer — SEREN final summary
  *   summarize_chat ChatSummaryStore — rolling conversation summary
  *   direct        handleDirectResponse — SAYON direct answer
  *   other         anything else

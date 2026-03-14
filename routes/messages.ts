@@ -15,7 +15,6 @@ import { KnowledgeStore } from '../db/KnowledgeStore.js';
 import { IntentClassifier } from '../ai/IntentClassifier.js';
 import { LoopController } from '../ai/LoopController.js';
 import { ThreadWorkspace } from '../context/ThreadWorkspace.js';
-import { CopilotIndex } from '../context/CopilotIndex.js';
 import { ThinkingStripper } from '../context/ThinkingStripper.js';
 import type { IntentType } from '../ai/IntentClassifier.js';
 import type { ClassificationContext } from '../ai/IntentClassifier.js';
@@ -38,10 +37,9 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   const classifier = new IntentClassifier();
   const stripper = new ThinkingStripper();
 
-  // Workspace and copilot index are module-level singletons —
-  // they cache internally so no per-request filesystem walks.
+  // Workspace is a module-level singleton —
+  // it caches internally so no per-request filesystem walks.
   const workspace = new ThreadWorkspace(db);
-  const copilotIndex = new CopilotIndex(db);
 
   // Tracks threads that are mid-clarification. When the user responds to a
   // NEEDS_CLARIFICATION question, we skip classification and route directly
@@ -326,27 +324,6 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
     return reply.send({ ok: true, filename: safeName, absolutePath: destPath });
   });
 
-  // GET /api/copilot/overview
-  // Returns the system-wide workspace overview for the Copilot panel.
-  fastify.get('/api/copilot/overview', async (_req, reply) => {
-    const overview = await copilotIndex.renderSystemOverview();
-    return reply.send({ overview });
-  });
-
-  // GET /api/copilot/search?q=...
-  // Search workspace file notes across all threads.
-  fastify.get<{ Querystring: { q?: string; content?: string } }>(
-    '/api/copilot/search',
-    async (req, reply) => {
-      const query = req.query.q ?? '';
-      if (!query) return reply.send({ results: [] });
-      const results = req.query.content === 'true'
-        ? await copilotIndex.searchContents(query)
-        : await copilotIndex.searchNotes(query);
-      return reply.send({ results });
-    }
-  );
-
   /**
    * POST /api/threads/:id/messages
    *
@@ -505,7 +482,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
       };
 
       // Route based on intent routing signal
-      if (!pendingClarity && intent.routing === 'ANSWER_DIRECTLY' && intent.type !== 'IMAGE_REQUEST') {
+      if (!pendingClarity && intent.routing === 'ANSWER_DIRECTLY') {
         trackingsendEvent({ type: 'status', content: 'Answering directly via coordinator…' });
         const directMsgId = await handleDirectResponse(
           threadId,
@@ -724,11 +701,13 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
       await threadStore.touch(threadId);
 
       // Generate rolling summary — blocks done so it's always current before next turn.
-      // Fire-and-forget on error (never fail a turn just because summarisation failed).
-      try {
-        await generateAndPersistSummary(threadId, messageStore, summaryStore, configStore);
-      } catch (summaryErr) {
-        console.error('[messagesRoute] Summary generation failed (non-fatal):', summaryErr);
+      // Skip for IMAGE_REQUEST — SAYON is about to be killed for VRAM, summary would ECONNRESET.
+      if (intent.type !== 'IMAGE_REQUEST') {
+        try {
+          await generateAndPersistSummary(threadId, messageStore, summaryStore, configStore);
+        } catch (summaryErr) {
+          console.error('[messagesRoute] Summary generation failed (non-fatal):', summaryErr);
+        }
       }
     } catch (err: unknown) {
       console.error('[messagesRoute] Error:', err);
@@ -742,73 +721,6 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
       reply.raw.end();
     }
   });
-
-  /**
-   * POST /api/copilot/messages
-   * Direct coordinator access for the Copilot panel.
-   * Injects the system-wide overview so the Copilot has full context.
-   */
-  fastify.post<{ Body: { content: string } }>(
-    '/api/copilot/messages',
-    async (req, reply) => {
-      const { content } = req.body;
-
-      const globalThreadId = 'copilot-global';
-      const thread = await threadStore.getById(globalThreadId);
-      if (!thread) {
-        await threadStore.insert({
-          id: globalThreadId,
-          title: 'Copilot Global Chat',
-          project_id: 'default',
-        });
-      }
-
-      reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-        'Access-Control-Allow-Origin': '*',
-      });
-
-      const sendEvent = (data: Record<string, unknown>): void => {
-        reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
-      };
-
-      try {
-        // Load system overview for copilot context
-        const systemOverview = await copilotIndex.renderSystemOverview();
-        const docs = await documentStore.loadContextBundle('default', globalThreadId);
-
-        await handleDirectResponse(
-          globalThreadId,
-          content,
-          'QUESTION',
-          {
-            ...docs,
-            // Prepend system overview to claudeMd so the copilot sees all workspaces
-            claudeMd: `${docs.claudeMd}\n\n${systemOverview}`,
-          },
-          [],
-          messageStore,
-          eventStore,
-          segmentStore,
-          (event: Record<string, unknown>) => {
-            if (event.type === 'output_token') {
-              sendEvent({ type: 'token', token: event.token });
-            } else {
-              sendEvent(event);
-            }
-          }
-        );
-      } catch (err) {
-        console.error('[CopilotRoute] Error:', err);
-        sendEvent({ type: 'error', message: 'Coordinator unavailable' });
-      } finally {
-        reply.raw.end();
-      }
-    }
-  );
 }
 
 
@@ -907,6 +819,130 @@ async function handleDirectResponse(
   };
 
   try {
+    // ── IMAGE_REQUEST: SAYON enhances prompt → create workflow → start generation ──
+    if (intentType === 'IMAGE_REQUEST') {
+      sendEvent({ type: 'status', content: 'Preparing image generation…' });
+
+      const imageSystemPrompt =
+        `You are SAYON, the image generation coordinator for PHOBOS.\n\n` +
+        `The user wants an image. Your job is to take their request and create an enhanced, detailed prompt ` +
+        `optimized for Chroma (a photorealistic FLUX-architecture image model).\n\n` +
+        `Rules:\n` +
+        `- Expand the user's description into a detailed, vivid prompt with style, lighting, composition, and quality keywords\n` +
+        `- Create a negative prompt listing things to avoid\n` +
+        `- The system ALWAYS prepends "bad quality, blurred, faded, fuzzy, out of focus, watermark" to the negative prompt automatically — do NOT include these in your negative prompt\n` +
+        `- Keep prompts under 200 words\n` +
+        `- Respond with ONLY valid JSON, no markdown, no explanation:\n` +
+        `{"prompt": "your enhanced prompt", "negativePrompt": "your additional negative terms"}`;
+
+      const imageMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        { role: 'system', content: imageSystemPrompt },
+        { role: 'user', content: userMessage },
+      ];
+
+      let enhancedPrompt = userMessage;
+      let enhancedNegative = '';
+
+      try {
+        const completion = await coordinatorClient.chat.completions.create({
+          model: COORDINATOR_MODEL,
+          messages: imageMessages,
+          max_tokens: 1024,
+          temperature: 0.7,
+          stream: false,
+        });
+
+        const raw = (completion as any).choices?.[0]?.message?.content ?? '';
+        // Strip markdown fences if present
+        const cleaned = raw.replace(/```json\s*|```/g, '').trim();
+        try {
+          const parsed = JSON.parse(cleaned);
+          if (parsed.prompt) enhancedPrompt = parsed.prompt;
+          if (parsed.negativePrompt) enhancedNegative = parsed.negativePrompt;
+        } catch {
+          // SAYON didn't return valid JSON — use raw as prompt
+          enhancedPrompt = raw.trim() || userMessage;
+        }
+      } catch (err) {
+        console.warn('[handleDirect:image] SAYON prompt enhancement failed, using raw user prompt:', (err as Error).message);
+      }
+
+      // Prepend standard negative terms
+      const fullNegative = 'bad quality, blurred, faded, fuzzy, out of focus, watermark'
+        + (enhancedNegative ? ', ' + enhancedNegative : '');
+
+      // Create workflow and start generation
+      const { createSession } = await import('../phobos/WorkflowEngine.js');
+      const { buildSdConfig } = await import('../phobos/ImageServerManager.js');
+
+      let modelId = 'chroma-q4';
+      try {
+        const cfg = await buildSdConfig({ modelId });
+        if (!cfg) {
+          // Chroma not available, try auto-detect
+          const fallbackCfg = await buildSdConfig();
+          modelId = fallbackCfg?.fluxSpec?.modelId ?? 'unknown';
+        }
+      } catch { /* use chroma-q4 */ }
+
+      const session = createSession(
+        threadId,
+        userMessage.slice(0, 40).trim() || 'Image',
+        modelId,
+        [{
+          type: 'Generate' as const,
+          label: 'Generate',
+          params: {
+            prompt:         enhancedPrompt,
+            negativePrompt: fullNegative,
+            steps:          20,
+            width:          1024,
+            height:         1024,
+            seed:           -1,
+            sampler:        'euler',
+          },
+        }],
+      );
+
+      // Tell the frontend about the new workflow
+      sendEvent({ type: 'status', content: `Created workflow: ${session.name}` });
+      sendEvent({
+        type: 'image_workflow_created',
+        workflowId: session.workflowId,
+        threadId,
+        name: session.name,
+        prompt: enhancedPrompt,
+        negativePrompt: fullNegative,
+      });
+
+      // Start generation via the /run endpoint logic (fire and forget)
+      try {
+        const runUrl = `http://localhost:${process.env.PORT ?? '3001'}/api/threads/${threadId}/workflows/${session.workflowId}/run`;
+        const fetchMod = await import('node:http');
+        const postData = JSON.stringify({ targetNodeIndex: 0, forceNodeIndex: 0 });
+        const req = fetchMod.request(runUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) },
+        }, () => { /* response ignored — fire and forget */ });
+        req.write(postData);
+        req.end();
+      } catch (runErr) {
+        console.warn('[handleDirect:image] Failed to start generation:', (runErr as Error).message);
+      }
+
+      // Save the message with SAYON's enhanced prompt
+      const msg = await messageStore.insert({
+        thread_id: threadId,
+        role: 'assistant',
+        content: `Starting image generation with Chroma.\n\n**Prompt:** ${enhancedPrompt}\n\n**Negative:** ${fullNegative}`,
+        thinking_trace: null,
+      });
+
+      sendEvent({ type: 'complete', approved: true, bestAttempt: 1 });
+      return msg.id;
+    }
+
+    // ── Normal direct response (non-image) ──────────────────────────────────
     const { getThinkingExtraBody: getExtra } = await import('../ai/clients.js');
     const coordExtraBody = getExtra(COORD_PROV, COORDINATOR_MODEL, 'think');
     dbg(`[handleDirect:extraBody] ${JSON.stringify(coordExtraBody)}`);

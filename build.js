@@ -102,10 +102,26 @@ export async function buildForPlatform({
     target:   'node22',
     format:   'cjs',
     outfile:  bundlePath,
+    // SEA resolution: native addon packages (onnxruntime, sharp, @xenova/transformers,
+    // @imgly/background-removal-node) are marked external so esbuild doesn't try to
+    // bundle their .node binaries. At runtime, the require() calls need to find the
+    // staged copies in dist/node_modules/. This banner prepends the exe-adjacent
+    // node_modules to Module's global paths so require() resolves correctly in SEA mode.
+    banner: {
+      js: `try{const _p=require("path"),_m=require("module");` +
+          `const _d=_p.join(_p.dirname(process.execPath),"node_modules");` +
+          `if(!_m.globalPaths.includes(_d))_m.globalPaths.unshift(_d);}catch{}`,
+    },
     alias: {
       'duckdb':      './sea-native-duckdb.cjs',
       'tree-sitter': './sea-native-treesitter.cjs',
     },
+    external: [
+      'onnxruntime-node',
+      '@xenova/transformers',
+      '@imgly/background-removal-node',
+      'sharp',
+    ],
   });
   log('✅ Bundle complete');
 
@@ -191,6 +207,53 @@ export async function buildForPlatform({
     copyDir(tsSrc, dest);
     writeFake(dest, 'node-gyp-build', FAKE_NODE_GYP_BUILD);
     log(`  ✅ tree-sitter/`);
+  }
+
+  // onnxruntime-node — native ONNX runtime (VisionProcessor face/hand/depth detection)
+  // Only staged if installed — VisionProcessor lazy-imports and throws a clear message if absent.
+  const onnxSrc = path.join(__dirname, 'node_modules', 'onnxruntime-node');
+  if (fs.existsSync(onnxSrc)) {
+    const dest = path.join(distDir, 'node_modules', 'onnxruntime-node');
+    copyDir(onnxSrc, dest);
+    log(`  ✅ onnxruntime-node/`);
+  } else {
+    log('  ⚠️  onnxruntime-node not installed — VisionProcessor will be unavailable');
+  }
+
+  // @xenova/transformers — ML pipeline framework (VisionProcessor detection/depth models)
+  const xenovaSrc = path.join(__dirname, 'node_modules', '@xenova', 'transformers');
+  if (fs.existsSync(xenovaSrc)) {
+    const dest = path.join(distDir, 'node_modules', '@xenova', 'transformers');
+    copyDir(xenovaSrc, dest);
+    log(`  ✅ @xenova/transformers/`);
+  } else {
+    log('  ⚠️  @xenova/transformers not installed — VisionProcessor will be unavailable');
+  }
+
+  // sharp — image processing (used by VisionProcessor for PNG read/write)
+  const sharpSrc = path.join(__dirname, 'node_modules', 'sharp');
+  if (fs.existsSync(sharpSrc)) {
+    const dest = path.join(distDir, 'node_modules', 'sharp');
+    copyDir(sharpSrc, dest);
+    log(`  ✅ sharp/`);
+  } else {
+    log('  ⚠️  sharp not installed — some vision features may be unavailable');
+  }
+
+  // @imgly/background-removal-node — optional (RemoveBg node only)
+  const imglySrc = path.join(__dirname, 'node_modules', '@imgly', 'background-removal-node');
+  if (fs.existsSync(imglySrc)) {
+    const dest = path.join(distDir, 'node_modules', '@imgly', 'background-removal-node');
+    copyDir(imglySrc, dest);
+    // imgly bundles its own onnxruntime-node — stage that too
+    const imglyOnnx = path.join(imglySrc, 'node_modules', 'onnxruntime-node');
+    if (fs.existsSync(imglyOnnx)) {
+      const onnxDest = path.join(dest, 'node_modules', 'onnxruntime-node');
+      copyDir(imglyOnnx, onnxDest);
+    }
+    log(`  ✅ @imgly/background-removal-node/`);
+  } else {
+    log('  ⚠️  @imgly/background-removal-node not installed — RemoveBg node unavailable');
   }
 
   if (fs.existsSync(path.join(__dirname, '.env'))) {

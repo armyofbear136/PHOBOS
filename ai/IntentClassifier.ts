@@ -42,7 +42,7 @@ ROUTING OVERRIDE RULES — these take precedence over the defaults above:
 1. If the user mentions "SEREN" by name → always route NEEDS_SEREN, regardless of phrasing
 2. If the request involves generating content longer than a short paragraph (documents, guides, articles, code files, scripts) → route NEEDS_SEREN even if phrased as a question
 3. If the request asks to "write", "create", "build", "generate", or "make" anything substantial → route NEEDS_SEREN
-4. If type is IMAGE_REQUEST → always route NEEDS_SEREN, no exceptions
+4. If type is IMAGE_REQUEST → always route ANSWER_DIRECTLY (SAYON handles workflow creation)
 
 Default toward QUESTION for anything purely conversational, analytical, or informational.
 Only use CODE_REQUEST when the user explicitly wants files written or changed.
@@ -128,7 +128,7 @@ export class IntentClassifier {
       case 'DOCUMENT_EDIT': return 'ANSWER_DIRECTLY';
       case 'CODE_REQUEST': return 'NEEDS_SEREN';
       case 'PLAN_REQUEST': return 'NEEDS_SEREN';
-      case 'IMAGE_REQUEST': return 'NEEDS_SEREN';
+      case 'IMAGE_REQUEST': return 'ANSWER_DIRECTLY';
       default: return 'ANSWER_DIRECTLY';
     }
   }

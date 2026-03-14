@@ -9,14 +9,13 @@ import {
   GGUF_CATALOGUE,
   FLUX_CATALOGUE,
   FLUX_AUX_REQUIRED,
+  CHROMA_AUX_REQUIRED,
   FLUX_T5_Q3,
   FLUX_T5_Q4,
   FLUX_T5_Q8,
   SDXL_AUX_REQUIRED,
   IMAGE_MODEL_CATALOGUE,
   CHROMA_CATALOGUE,
-  SDXL_CATALOGUE,
-  getFluxSpec,
   getImageModelSpec,
   isFluxDownloaded,
   isImageModelDownloaded,
@@ -242,7 +241,8 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       if (spec.runnerProfile === 'flux') {
         const t5 = recommendT5Encoder(spec, totalVramGb, isUnified);
         recommendedT5 = t5.id;
-        auxFiles = [...FLUX_AUX_REQUIRED, t5];
+        const baseAux = spec.variant === 'chroma' ? CHROMA_AUX_REQUIRED : FLUX_AUX_REQUIRED;
+        auxFiles = [...baseAux, t5];
       } else {
         auxFiles = [...SDXL_AUX_REQUIRED];
       }
@@ -322,7 +322,8 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         let auxFiles: typeof FLUX_AUX_REQUIRED;
         if (spec.runnerProfile === 'flux') {
           const t5 = recommendT5Encoder(spec, totalVram, isUnified);
-          auxFiles = [...FLUX_AUX_REQUIRED, t5];
+          const baseAux = spec.variant === 'chroma' ? CHROMA_AUX_REQUIRED : FLUX_AUX_REQUIRED;
+          auxFiles = [...baseAux, t5];
         } else {
           auxFiles = [...SDXL_AUX_REQUIRED];
         }
@@ -371,7 +372,8 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       let auxFiles: typeof FLUX_AUX_REQUIRED;
       if (spec.runnerProfile === 'flux') {
         const t5 = recommendT5Encoder(spec, totalVram, isUnified);
-        auxFiles = [...FLUX_AUX_REQUIRED, t5];
+        const baseAux = spec.variant === 'chroma' ? CHROMA_AUX_REQUIRED : FLUX_AUX_REQUIRED;
+        auxFiles = [...baseAux, t5];
       } else {
         auxFiles = [...SDXL_AUX_REQUIRED];
       }

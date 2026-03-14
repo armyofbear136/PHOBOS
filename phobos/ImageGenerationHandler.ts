@@ -72,10 +72,13 @@ interface SerenSnapshot extends ServerSnapshot {}
 
 function estimateSeconds(modelId: string, backend: string | undefined): number {
   const estimates: Record<string, Record<string, number>> = {
-    'flux-schnell-q4': { cuda: 12,  vulkan: 45,  metal: 30,  cpu: 480  },
-    'flux-schnell-q8': { cuda: 15,  vulkan: 60,  metal: 40,  cpu: 600  },
-    'flux-dev-q4':     { cuda: 90,  vulkan: 300, metal: 200, cpu: 3600 },
-    'flux-dev-q8':     { cuda: 110, vulkan: 380, metal: 250, cpu: 4200 },
+    'flux-schnell-q4':        { cuda: 12,  vulkan: 45,  metal: 30,  cpu: 480  },
+    'flux-schnell-q8':        { cuda: 15,  vulkan: 60,  metal: 40,  cpu: 600  },
+    'flux-dev-q4':            { cuda: 90,  vulkan: 300, metal: 200, cpu: 3600 },
+    'flux-dev-q8':            { cuda: 110, vulkan: 380, metal: 250, cpu: 4200 },
+    'chroma-q4':              { cuda: 170, vulkan: 500, metal: 350, cpu: 5000 },
+    'realvis-xl-v5-q4':       { cuda: 10,  vulkan: 35,  metal: 25,  cpu: 360  },
+    'cyberrealistic-pony-q4': { cuda: 10,  vulkan: 35,  metal: 25,  cpu: 360  },
   };
   const row = estimates[modelId];
   if (!row) return 60;
@@ -109,8 +112,8 @@ export async function* generateWithFlux(
     if (!sdCfgPrelim) {
       yield {
         phase:   'error',
-        message: 'No FLUX model is downloaded. Please download a model from the Image Models panel.',
-        error:   'NO_FLUX_MODEL',
+        message: 'No image model is downloaded. Please download a model from the Image Models panel.',
+        error:   'NO_IMAGE_MODEL',
       };
       return;
     }
@@ -163,7 +166,7 @@ export async function* generateWithFlux(
     }
 
     if (!sdCfg) {
-      yield { phase: 'error', message: 'Hardware config lost after server stop.', error: 'NO_FLUX_MODEL' };
+      yield { phase: 'error', message: 'Hardware config lost after server stop.', error: 'NO_IMAGE_MODEL' };
       return;
     }
   }

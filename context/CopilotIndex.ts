@@ -57,7 +57,7 @@ export class CopilotIndex {
       project_id: string | null;
     }>(
       `SELECT id, title, project_id FROM threads
-       WHERE id != 'copilot-global'
+       WHERE id NOT IN ('copilot-global', 'copilot-sayon', 'copilot-seren')
        ORDER BY updated_at DESC`
     );
 

@@ -25,7 +25,9 @@ export class ThreadStore {
 
   async getAll(): Promise<Thread[]> {
     return this.db.query<Thread>(
-      `SELECT * FROM threads ORDER BY updated_at DESC`
+      `SELECT * FROM threads
+       WHERE id NOT IN ('copilot-global', 'copilot-sayon', 'copilot-seren')
+       ORDER BY updated_at DESC`
     );
   }
 

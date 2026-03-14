@@ -179,7 +179,7 @@ CREATE TABLE IF NOT EXISTS prompt_log (
   id          VARCHAR PRIMARY KEY,
   thread_id   VARCHAR NOT NULL REFERENCES threads(id),
   message_id  VARCHAR,
-  role        VARCHAR NOT NULL,   -- 'sayon' | 'allmind'
+  role        VARCHAR NOT NULL,   -- 'sayon' | 'seren'
   stage       VARCHAR NOT NULL,   -- 'classify' | 'rewrite' | 'summarise' | 'discover' | 'extract' | 'decompose' | 'dispatch' | 'review' | 'validate' | 'deliver' | 'summarize_chat' | 'direct' | 'other'
   model       VARCHAR NOT NULL,
   prompt      TEXT    NOT NULL,

@@ -57,7 +57,9 @@ export class ThreadWorkspace {
   private static IGNORE_PATTERNS = [
     'node_modules', '.git', '__pycache__', '.venv', 'venv',
     'dist', 'build', '.next', 'coverage', '.DS_Store',
-    'images',  // media files are tracked separately via addMediaFile, not the text workspace index
+    'images',          // media files are tracked separately via addMediaFile
+    'workflows',       // workflow engine cache — managed by WorkflowEngine, not workspace index
+    'vision-scratch',  // temporary VisionProcessor artifacts — cleaned after each workflow run
   ];
 
   constructor(private db: DatabaseManager) {}

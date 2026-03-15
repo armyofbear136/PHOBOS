@@ -24,6 +24,7 @@ import {
 
 import {
   snapshotServerOnDevice,
+  snapshotAllServersOnDevice,
 } from '../phobos/ImageGenerationHandler.js';
 
 import {
@@ -490,32 +491,39 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
 
       // Run everything in background
       (async () => {
-        let snap: ReturnType<typeof snapshotServerOnDevice> = null;
+        let snaps: ReturnType<typeof snapshotAllServersOnDevice> = [];
 
         try {
           if (needsRender) {
             const targetDevice = sdCfg!.deviceIndex;
-            snap = snapshotServerOnDevice(targetDevice);
+            snaps = snapshotAllServersOnDevice(targetDevice);
 
-            if (snap) {
-              pushPhase('stopping_llm', `Pausing ${snap.role.toUpperCase()}…`);
-              try { await stopServer(snap.role); } catch { /* warn */ }
+            if (snaps.length > 0) {
+              pushPhase('stopping_llm', `Pausing ${snaps.map(s => s.role.toUpperCase()).join(' + ')}…`);
+              for (const snap of snaps) {
+                try { await stopServer(snap.role); } catch { /* warn */ }
+              }
             }
 
-            // Re-query VRAM after stop settles
+            // Re-query VRAM after stop settles.
+            // Poll until free VRAM stops rising (stable = driver finished reclaiming).
+            // Never use an absolute threshold — a CPU llama-server holding a CUDA context
+            // permanently reduces peak free VRAM and an absolute target may never fire.
             const SETTLE_POLL_MS = 500;
             const SETTLE_MAX_MS  = 5000;
             const SETTLE_START   = Date.now();
-            const FREE_VRAM_THRESHOLD_GB = 5;
+            let lastFreeGb = sdCfg!.freeVramGb ?? 0;
 
             while (true) {
               await new Promise(r => setTimeout(r, SETTLE_POLL_MS));
               const candidate = await buildSdConfig({ modelId: session.modelId });
               if (candidate) {
                 sdCfg = candidate;
-                const free = candidate.freeVramGb ?? 0;
+                const free    = candidate.freeVramGb ?? 0;
                 const elapsed = Date.now() - SETTLE_START;
-                if (free >= FREE_VRAM_THRESHOLD_GB || elapsed >= SETTLE_MAX_MS) break;
+                const stable  = free <= lastFreeGb;
+                lastFreeGb    = free;
+                if (stable || elapsed >= SETTLE_MAX_MS) break;
               } else if (Date.now() - SETTLE_START >= SETTLE_MAX_MS) {
                 break;
               }
@@ -553,20 +561,22 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
         } catch (err) {
           status.error = (err as Error).message;
         } finally {
-          // Restart LLM server
-          if (snap?.modelId) {
-            pushPhase('restarting_llm', `Reloading ${snap.role.toUpperCase()}…`);
-            try {
-              await startServer(snap.role, {
-                modelId:     snap.modelId,
-                port:        snap.port,
-                gpuLayers:   snap.gpuLayers,
-                contextSize: snap.contextSize,
-                threads:     snap.threads,
-                deviceIndex: snap.deviceIndex,
-                gpuBackend:  snap.gpuBackend,
-              });
-            } catch { /* non-fatal */ }
+          // Restart all LLM servers that were stopped
+          if (snaps.length > 0) {
+            pushPhase('restarting_llm', `Reloading ${snaps.map(s => s.role.toUpperCase()).join(' + ')}…`);
+            for (const snap of snaps) {
+              try {
+                await startServer(snap.role, {
+                  modelId:     snap.modelId,
+                  port:        snap.port,
+                  gpuLayers:   snap.gpuLayers,
+                  contextSize: snap.contextSize,
+                  threads:     snap.threads,
+                  deviceIndex: snap.deviceIndex,
+                  gpuBackend:  snap.gpuBackend,
+                });
+              } catch { /* non-fatal */ }
+            }
           }
           status.generating = false;
           status.completedAt = Date.now();

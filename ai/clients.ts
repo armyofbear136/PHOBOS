@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 import { ModelConfigStore, PROVIDERS, type RoleConfig } from '../db/ModelConfigStore.js';
-import { reconcilePhobosServers } from '../phobos/LlamaServerManager.js';
+import { reconcilePhobosServers, getServerStatus } from '../phobos/LlamaServerManager.js';
 import { getSpec } from '../phobos/PhobosLocalManager.js';
 import { PromptLogStore, type PromptStage } from '../db/PromptLogStore.js';
 
@@ -135,11 +135,18 @@ export async function reconfigureClients(): Promise<void> {
 
 export async function checkBackendHealth(): Promise<{
   coordinator: 'connected' | 'disconnected';
-  engine: 'connected' | 'disconnected';
+  engine:      'connected' | 'disconnected';
 }> {
+  // If a phobos server is mid-restart (state === 'starting'), skip the HTTP probe
+  // and report it as connected. Probing a port that is not yet listening returns
+  // disconnected, which flashes the offline screen during image generation restart.
+  const phobosStatus   = getServerStatus();
+  const coordStarting  = phobosStatus.sayon.state  === 'starting';
+  const engineStarting = phobosStatus.seren.state === 'starting';
+
   const [coordOk, engineOk] = await Promise.all([
-    coordinatorClient.models.list().then(() => true).catch(() => false),
-    engineClient.models.list().then(() => true).catch(() => false),
+    coordStarting  ? Promise.resolve(true) : coordinatorClient.models.list().then(() => true).catch(() => false),
+    engineStarting ? Promise.resolve(true) : engineClient.models.list().then(() => true).catch(() => false),
   ]);
   return {
     coordinator: coordOk ? 'connected' : 'disconnected',

@@ -119,47 +119,52 @@ export async function* generateWithFlux(
     }
   }
 
-  // ── Detect which server (sayon or seren) is occupying the target device ──
+  // ── Detect ALL servers occupying the target device and stop them ──────────
+  // Both sayon and seren may be on the same GPU in single-GPU configs.
+  // Stopping only one leaves the other holding VRAM, causing stalls at step 12.
   const targetDevice = sdCfgPrelim.deviceIndex;
-  const snap = snapshotServerOnDevice(targetDevice);
-  const roleLabel = snap ? snap.role.toUpperCase() : 'LLM server';
+  const snaps = snapshotAllServersOnDevice(targetDevice);
+  const roleLabel = snaps.length > 0 ? snaps.map(s => s.role.toUpperCase()).join(' + ') : 'LLM server';
 
-  // ── Stop the server occupying our GPU ──────────────────────────────────────
   yield { phase: 'stopping_seren', message: `Pausing ${roleLabel}…` };
-  if (snap) {
+  for (const snap of snaps) {
     try {
       await stopServer(snap.role);
       debugLog('ImageGenerationHandler', `stopped ${snap.role} on device ${targetDevice ?? 'cpu'}`);
     } catch (err) {
       console.warn(`[ImageGenerationHandler] stopServer(${snap.role}) warning: ${(err as Error).message}`);
     }
-  } else {
-    debugLog('ImageGenerationHandler', 'no server running on target device — skipping stop');
+  }
+  if (snaps.length === 0) {
+    debugLog('ImageGenerationHandler', 'no servers running on target device — skipping stop');
   }
 
   // ── Re-query VRAM now that the LLM has freed its memory ───────────────────
   // nvidia-smi reports stale numbers immediately after a process dies — the GPU
-  // driver takes up to ~2s to reclaim and update accounting. We poll until free
-  // VRAM rises above the LLM's footprint (~2.5 GB for sayon), giving the driver
-  // up to 5 seconds to settle before giving up and using whatever we got.
+  // driver takes up to ~2s to reclaim and update accounting.
+  // Strategy: poll until free VRAM stops rising (two consecutive equal readings),
+  // which means the driver has finished reclaiming. Fall back to 5s max timeout.
+  // We do NOT use an absolute threshold — on machines where a CPU-only llama-server
+  // holds a CUDA context (typically ~1-2 GB overhead on Windows), the theoretical
+  // peak free VRAM is permanently reduced and an absolute threshold may never fire.
   if (!sdCfg) {
     const SETTLE_POLL_MS = 500;
     const SETTLE_MAX_MS  = 5000;
     const SETTLE_START   = Date.now();
-    // sayon (llama3.2-3b-q4) holds ~2.5 GB; once free VRAM clears this we know
-    // the driver has reclaimed the memory. Use 5 GB as a conservative threshold
-    // — well above background noise, well below the full 10 GB.
-    const FREE_VRAM_THRESHOLD_GB = 5;
+    let lastFreeGb       = sdCfgPrelim.freeVramGb ?? 0;
 
     while (true) {
       await new Promise(r => setTimeout(r, SETTLE_POLL_MS));
       const candidate = await buildSdConfig();
       if (candidate) {
         sdCfg = candidate;
-        const free = candidate.freeVramGb ?? 0;
+        const free    = candidate.freeVramGb ?? 0;
         const elapsed = Date.now() - SETTLE_START;
         console.log(`[ImageGenerationHandler] Post-stop VRAM: ${free.toFixed(1)} GB free (${elapsed}ms elapsed)`);
-        if (free >= FREE_VRAM_THRESHOLD_GB || elapsed >= SETTLE_MAX_MS) break;
+        // Stable = free VRAM has not risen since last poll — driver is done reclaiming
+        const stable = free <= lastFreeGb;
+        lastFreeGb = free;
+        if (stable || elapsed >= SETTLE_MAX_MS) break;
       } else if (Date.now() - SETTLE_START >= SETTLE_MAX_MS) {
         break;
       }
@@ -200,25 +205,27 @@ export async function* generateWithFlux(
     generationError = (err as Error).message;
     console.error(`[ImageGenerationHandler] Generation failed: ${generationError}`);
   } finally {
-    // ── Restart whichever server we stopped (always) ───────────────────────
-    if (snap?.modelId) {
+    // ── Restart all servers we stopped (always) ────────────────────────────
+    if (snaps.length > 0) {
       yield { phase: 'restarting_seren', message: `Reloading ${roleLabel}…` };
-      try {
-        await startServer(snap.role, {
-          modelId:     snap.modelId,
-          port:        snap.port,
-          gpuLayers:   snap.gpuLayers,
-          contextSize: snap.contextSize,
-          threads:     snap.threads,
-          deviceIndex: snap.deviceIndex,
-          gpuBackend:  snap.gpuBackend,
-        });
-        debugLog('ImageGenerationHandler', `restarted ${snap.role}`);
-      } catch (err) {
-        console.error(`[ImageGenerationHandler] ${snap.role} restart failed: ${(err as Error).message}`);
+      for (const snap of snaps) {
+        try {
+          await startServer(snap.role, {
+            modelId:     snap.modelId,
+            port:        snap.port,
+            gpuLayers:   snap.gpuLayers,
+            contextSize: snap.contextSize,
+            threads:     snap.threads,
+            deviceIndex: snap.deviceIndex,
+            gpuBackend:  snap.gpuBackend,
+          });
+          debugLog('ImageGenerationHandler', `restarted ${snap.role}`);
+        } catch (err) {
+          console.error(`[ImageGenerationHandler] ${snap.role} restart failed: ${(err as Error).message}`);
+        }
       }
     } else {
-      debugLog('ImageGenerationHandler', 'no server to restart — skipping');
+      debugLog('ImageGenerationHandler', 'no servers to restart — skipping');
     }
   }
 
@@ -246,31 +253,47 @@ export async function* generateWithFlux(
  * we fall back to checking seren then sayon.
  * Returns null if no server is running on that device.
  */
-export function snapshotServerOnDevice(deviceIndex?: number): ServerSnapshot | null {
+/**
+ * Returns ALL running servers on the target device.
+ * When both sayon and seren are on the same GPU (e.g. one-GPU configs where
+ * sayon is manually pinned to the same device as seren), stopping only one
+ * leaves the other holding VRAM throughout generation. Both must be stopped.
+ */
+export function snapshotAllServersOnDevice(deviceIndex?: number): ServerSnapshot[] {
   const status = getServerStatus();
   const roles: ServerRole[] = ['seren', 'sayon'];
+  const snaps: ServerSnapshot[] = [];
 
   for (const role of roles) {
     const s = status[role];
     if (s.state !== 'running' || !s.modelId) continue;
 
-    // Match by device index when both are defined
+    // Only stop a server if it is actually occupying the target GPU:
+    //   1. gpuLayers must be > 0 — ngl=0 means CPU-only, holds no VRAM, never stop it.
+    //   2. deviceIndex must match the target device when both are defined.
+    // A server on CPU (ngl=0 or deviceIndex=undefined) is never a VRAM competitor.
+    if (s.gpuLayers === 0) continue;
+
     if (deviceIndex !== undefined && s.deviceIndex !== undefined) {
       if (s.deviceIndex !== deviceIndex) continue;
     }
-    // CPU path: accept any running server when no device specified
-    return {
+    snaps.push({
       role,
       modelId:     s.modelId,
       port:        s.port,
-      gpuLayers:   99,
+      gpuLayers:   s.gpuLayers,
       contextSize: 32768,
       threads:     0,
       deviceIndex: s.deviceIndex as number | undefined,
       gpuBackend:  s.gpuBackend as ServerSnapshot['gpuBackend'],
-    };
+    });
   }
-  return null;
+  return snaps;
+}
+
+/** @deprecated Use snapshotAllServersOnDevice() instead */
+export function snapshotServerOnDevice(deviceIndex?: number): ServerSnapshot | null {
+  return snapshotAllServersOnDevice(deviceIndex)[0] ?? null;
 }
 
 /** @deprecated Use snapshotServerOnDevice() instead */

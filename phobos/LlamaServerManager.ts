@@ -134,8 +134,25 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
     }
   } else if (cfg.gpuLayers > 0) {
     // No specific device — let llama-server auto-select
+  } else {
+    // ngl=0 — CPU-only execution. Suppress all GPU backends so no VRAM is reserved.
+    //
+    // Without this, llama-server loads ggml-cuda.dll and ggml-vulkan.dll at startup
+    // regardless of ngl=0. Each backend initialises its runtime and allocates device
+    // memory for context structures / shader caches. On a 10 GB card this permanently
+    // reduces the VRAM ceiling available for image generation.
+    //
+    // CUDA:   CUDA_VISIBLE_DEVICES=-1 hides all CUDA devices from the runtime.
+    // Vulkan: GGML_VK_VISIBLE_DEVICES='' hides all devices from ggml Vulkan backend.
+    //         VK_ICD_FILENAMES='' prevents the Vulkan loader finding any ICD at all —
+    //         deepest available suppression, covers all Vulkan code paths.
+    // ROCm:   HIP/ROCR equivalents for AMD GPU machines.
+    env.CUDA_VISIBLE_DEVICES    = '-1';
+    env.HIP_VISIBLE_DEVICES     = '-1';
+    env.ROCR_VISIBLE_DEVICES    = '-1';
+    env.GGML_VK_VISIBLE_DEVICES = '';
+    env.VK_ICD_FILENAMES        = '';
   }
-  // ngl=0 means CPU-only — no device targeting needed
 
   console.log(`[LlamaServerManager] Starting ${role} on :${cfg.port} — ${spec.label} (ngl=${cfg.gpuLayers}, device=${cfg.deviceIndex ?? 'auto'}, backend=${cfg.gpuBackend ?? 'auto'})`);
 
@@ -196,6 +213,7 @@ export function getServerStatus(): Record<'sayon' | 'seren', {
   error: string | null;
   deviceIndex?: number;
   gpuBackend?: string;
+  gpuLayers: number;
 }> {
   return {
     sayon: {
@@ -205,6 +223,7 @@ export function getServerStatus(): Record<'sayon' | 'seren', {
       error:       servers.sayon.error,
       deviceIndex: servers.sayon.config.deviceIndex,
       gpuBackend:  servers.sayon.config.gpuBackend,
+      gpuLayers:   servers.sayon.config.gpuLayers,
     },
     seren: {
       state:       servers.seren.state,
@@ -213,6 +232,7 @@ export function getServerStatus(): Record<'sayon' | 'seren', {
       error:       servers.seren.error,
       deviceIndex: servers.seren.config.deviceIndex,
       gpuBackend:  servers.seren.config.gpuBackend,
+      gpuLayers:   servers.seren.config.gpuLayers,
     },
   };
 }
@@ -250,9 +270,15 @@ export async function reconcilePhobosServers(config: {
   }
 
   if (config.coordinator.provider === 'phobos') {
-    const deviceIndex = config.coordinator.deviceIndex ?? (rec ? (rec.sayonDevice === 'cpu' ? undefined : rec.sayonDevice) : undefined);
-    const gpuBackend  = config.coordinator.gpuBackend ?? (deviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === deviceIndex)?.backend : undefined);
-    const gpuLayers   = config.coordinator.gpuLayers ?? (deviceIndex !== undefined ? 99 : 0);
+    // deviceIndex === -1: user explicitly chose CPU — skip auto-detect entirely.
+    // deviceIndex === undefined: not yet configured — fall through to recommendation.
+    const explicitCpuSayon = config.coordinator.deviceIndex === -1;
+    const deviceIndex = explicitCpuSayon ? undefined
+      : config.coordinator.deviceIndex ?? (rec ? (rec.sayonDevice === 'cpu' ? undefined : rec.sayonDevice) : undefined);
+    const gpuBackend  = explicitCpuSayon ? undefined
+      : config.coordinator.gpuBackend ?? (deviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === deviceIndex)?.backend : undefined);
+    const gpuLayers   = explicitCpuSayon ? 0
+      : config.coordinator.gpuLayers ?? (deviceIndex !== undefined ? 99 : 0);
 
     tasks.push(
       startServer('sayon', {
@@ -272,9 +298,14 @@ export async function reconcilePhobosServers(config: {
   }
 
   if (config.engine.provider === 'phobos') {
-    const deviceIndex = config.engine.deviceIndex ?? (rec ? (rec.serenDevice === 'cpu' ? undefined : rec.serenDevice) : undefined);
-    const gpuBackend  = config.engine.gpuBackend ?? (deviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === deviceIndex)?.backend : undefined);
-    const gpuLayers   = config.engine.gpuLayers ?? (deviceIndex !== undefined ? 99 : 0);
+    // deviceIndex === -1: user explicitly chose CPU — skip auto-detect entirely.
+    const explicitCpuSeren = config.engine.deviceIndex === -1;
+    const deviceIndex = explicitCpuSeren ? undefined
+      : config.engine.deviceIndex ?? (rec ? (rec.serenDevice === 'cpu' ? undefined : rec.serenDevice) : undefined);
+    const gpuBackend  = explicitCpuSeren ? undefined
+      : config.engine.gpuBackend ?? (deviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === deviceIndex)?.backend : undefined);
+    const gpuLayers   = explicitCpuSeren ? 0
+      : config.engine.gpuLayers ?? (deviceIndex !== undefined ? 99 : 0);
 
     tasks.push(
       startServer('seren', {

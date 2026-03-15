@@ -825,15 +825,19 @@ async function handleDirectResponse(
 
       const imageSystemPrompt =
         `You are SAYON, the image generation coordinator for PHOBOS.\n\n` +
-        `The user wants an image. Your job is to take their request and create an enhanced, detailed prompt ` +
-        `optimized for Chroma (a photorealistic FLUX-architecture image model).\n\n` +
-        `Rules:\n` +
-        `- Expand the user's description into a detailed, vivid prompt with style, lighting, composition, and quality keywords\n` +
-        `- Create a negative prompt listing things to avoid\n` +
-        `- The system ALWAYS prepends "bad quality, blurred, faded, fuzzy, out of focus, watermark" to the negative prompt automatically — do NOT include these in your negative prompt\n` +
-        `- Keep prompts under 200 words\n` +
-        `- Respond with ONLY valid JSON, no markdown, no explanation:\n` +
-        `{"prompt": "your enhanced prompt", "negativePrompt": "your additional negative terms"}`;
+        `Compress the user's image request into a Chroma (FLUX-architecture photorealistic model) prompt.\n\n` +
+        `POSITIVE PROMPT rules:\n` +
+        `- Comma-separated keywords and short noun phrases ONLY — no full sentences, no verbs, no "with a"\n` +
+        `- Pattern: subject, setting/action, style tags, lighting, camera quality\n` +
+        `- Example input: "draw me a pink haired goth girl"\n` +
+        `- Example output: "pink-haired goth girl, candlelit dungeon, leather corset, 8k, photorealistic, dramatic rim light, cinematic"\n` +
+        `- 13-16 characteristics, each 1-6 words, comma-separated — subject, setting, action, mood, lighting, texture, camera, quality tags\n` +
+        `- More is better than less: fill all 13-16 slots with meaningful descriptors\n\n` +
+        `NEGATIVE PROMPT rules:\n` +
+        `- Add exactly 2-3 terms that are specific to THIS subject/scene only\n` +
+        `- The system already injects: blurry, low quality, watermark, deformed — do NOT repeat those or synonyms\n\n` +
+        `Respond with ONLY valid JSON, no markdown, no explanation:\n` +
+        `{"prompt": "your compressed prompt", "negativePrompt": "your 3-5 context-specific terms"}`;
 
       const imageMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
         { role: 'system', content: imageSystemPrompt },
@@ -868,7 +872,7 @@ async function handleDirectResponse(
       }
 
       // Prepend standard negative terms
-      const fullNegative = 'bad quality, blurred, faded, fuzzy, out of focus, watermark'
+      const fullNegative = 'blurry, low quality, watermark, deformed'
         + (enhancedNegative ? ', ' + enhancedNegative : '');
 
       // Create workflow and start generation

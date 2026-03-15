@@ -776,12 +776,19 @@ export function recommendT5Encoder(fluxSpec: FluxSpec, totalVramGb: number, isUn
   if (isUnifiedMemory) return FLUX_T5_Q3;
 
   const totalVramMb = totalVramGb * 1024;
-  const HEADROOM_MB = 2048; // 2 GB minimum for fast inference
+  // 1.5 GB headroom for CUDA working memory, attention caches, and OS.
+  // Do NOT inflate this — Q4_0/Q4_K_M map directly to CUDA tensor core wmma
+  // operations and are FASTER than Q3_K_M on CUDA despite being larger.
+  // Q3_K_M requires software dequantization on the GPU (80x slower conditioning
+  // on RTX 3080). Use the smallest headroom that avoids VMM paging.
+  const HEADROOM_MB = 2200; // enough to exclude cuBLASLt workspace (~630MB) + T5 attention buffers
 
-  // Estimate base model VRAM (diffusion + VAE + optional CLIP-L)
+  // Use actual measured diffusion model sizes from sd-cli logs, not vramRequiredGb.
+  // vramRequiredGb is the total system requirement (diffusion + all aux + headroom),
+  // using it as a diffusion proxy inflates the estimate by ~3 GB and always forces Q3.
   const isChroma = fluxSpec.variant === 'chroma';
-  // Use vramRequiredGb as a proxy for diffusion model size, convert to MB
-  const diffusionMb = fluxSpec.vramRequiredGb * 1024;
+  // Chroma Q4: 5180 MB, FLUX schnell/dev Q4: ~6700 MB (approximate for other variants)
+  const diffusionMb = isChroma ? 5180 : Math.round(fluxSpec.vramRequiredGb * 1024 * 0.72);
   const vaeMb = 95;
   const clipMb = isChroma ? 0 : 230; // Chroma doesn't use CLIP-L
   const baseMb = diffusionMb + vaeMb + clipMb;
@@ -789,6 +796,7 @@ export function recommendT5Encoder(fluxSpec: FluxSpec, totalVramGb: number, isUn
   const availableForT5 = totalVramMb - baseMb - HEADROOM_MB;
 
   // T5 sizes: Q3 ~2300 MB, Q4 ~2900 MB, Q8 ~5060 MB
+  // Prefer Q4 over Q3 on CUDA — Q4_K_M uses tensor core ops directly.
   if (availableForT5 >= 5060) return FLUX_T5_Q8;
   if (availableForT5 >= 2900) return FLUX_T5_Q4;
   return FLUX_T5_Q3;

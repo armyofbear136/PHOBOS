@@ -930,13 +930,16 @@ async function handleDirectResponse(
         console.warn('[handleDirect:image] Failed to start generation:', (runErr as Error).message);
       }
 
-      // Save the message with SAYON's enhanced prompt
-      const msg = await messageStore.insert({
-        thread_id: threadId,
-        role: 'assistant',
-        content: `Starting image generation with Chroma.\n\n**Prompt:** ${enhancedPrompt}\n\n**Negative:** ${fullNegative}`,
-        thinking_trace: null,
-      });
+      // Update the pre-created message (from line ~795) instead of inserting a duplicate.
+      // The outer `msg` was created empty — fill it with SAYON's response content.
+      const responseContent = `Starting image generation with Chroma.\n\n**Prompt:** ${enhancedPrompt}\n\n**Negative:** ${fullNegative}`;
+      await messageStore.update(msg.id, { content: responseContent });
+
+      // Emit as coordinator bubble so it appears immediately in chat
+      // (IMAGE_REQUEST doesn't stream output_tokens, so without this the
+      // text only shows after the 600ms refetch — and on 2nd+ requests the
+      // refetch can miss it if the pre-created empty row already exists).
+      sendEvent({ type: 'coordinator', content: responseContent, source: 'coordinator' });
 
       sendEvent({ type: 'complete', approved: true, bestAttempt: 1 });
       return msg.id;

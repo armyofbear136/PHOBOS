@@ -149,7 +149,7 @@ export async function* generateWithFlux(
   // peak free VRAM is permanently reduced and an absolute threshold may never fire.
   if (!sdCfg) {
     const SETTLE_POLL_MS = 500;
-    const SETTLE_MAX_MS  = 5000;
+    const SETTLE_MAX_MS  = 8000; // extra time for cuBLASLt workspace release after sd-cli exits
     const SETTLE_START   = Date.now();
     let lastFreeGb       = sdCfgPrelim.freeVramGb ?? 0;
 

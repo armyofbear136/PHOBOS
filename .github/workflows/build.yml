@@ -73,6 +73,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Fetch sd.cpp binaries
+        # linux-arm64 skipped — no sd.cpp arm64 release binary exists
+        if: "!matrix.build-llama"
+        run: node scripts/fetch-sd-cpp.js
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build llama-server from source (linux-arm64)
         if: matrix.build-llama == 'linux-arm64'
         run: |

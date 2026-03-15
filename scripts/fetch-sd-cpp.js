@@ -280,8 +280,11 @@ export async function fetchSdBinaries({ all = false } = {}) {
   // ── Linux x64 ───────────────────────────────────────────────────────────────
   // Prefer Vulkan build (GPU support); fall back to plain CPU build.
   if (all || (p === 'linux' && a === 'x64')) {
+    // sd.cpp Linux releases are .zip files (not .tar.gz like llama.cpp).
+    // Extract binary (no extension) + companion .so files for Vulkan GPU support.
     const chmodAll = async (archive) => {
-      const files = await extractAllFromZip(archive, BIN_DIR);
+      const filter = n => !n.includes('.') || n.endsWith('.so') || n.endsWith('.so.0');
+      const files = await extractAllFromZip(archive, BIN_DIR, filter);
       for (const e of fs.readdirSync(BIN_DIR)) {
         const ep = path.join(BIN_DIR, e);
         if (fs.statSync(ep).isFile()) fs.chmodSync(ep, 0o755);
@@ -323,10 +326,11 @@ export async function fetchSdBinaries({ all = false } = {}) {
     const fn      = `sd-master-${shortHash}-bin-Linux-Ubuntu-24.04-aarch64.zip`;
     const outPath = bin('sd-server-linux-arm64');
     await fetchAsset(
-      'sd-server-linux-arm64',
+      'sd-server-linux-arm64 (best-guess — 404 expected, no arm64 release)',
       dl(fn), tmp(fn), outPath,
       async (archive) => {
-        const files = await extractAllFromZip(archive, BIN_DIR);
+        const filter = n => !n.includes('.') || n.endsWith('.so') || n.endsWith('.so.0');
+        const files = await extractAllFromZip(archive, BIN_DIR, filter);
         for (const e of fs.readdirSync(BIN_DIR)) {
           const ep = path.join(BIN_DIR, e);
           if (fs.statSync(ep).isFile()) fs.chmodSync(ep, 0o755);
@@ -404,16 +408,23 @@ export async function fetchSdBinaries({ all = false } = {}) {
       extractTo(SD_CUDA_DIR), ['sd-cli.exe', 'sd.exe'],
     );
 
-    // CUDA runtime DLLs — must live alongside the CUDA binary in sd-cuda/
+    // CUDA runtime — extract cudart64_12.dll only (needed for Blackwell PTX JIT).
+    // cublas64_12.dll ships in the cuda zip but is resolved from the system CUDA install.
+    // cublasLt64_12.dll must NOT be present — it pre-allocates ~630MB on DLL load
+    // which prevents consecutive generations on 10GB cards (second run hangs at TXT2IMG).
+    // Cache-skip is intentional: if cudart64_12.dll is already present, never re-extract.
     const cudaRtFn   = 'cudart-sd-bin-win-cu12-x64.zip';
     const cudaRtPath = path.join(SD_CUDA_DIR, 'cudart64_12.dll');
+    // Remove stale cublasLt if a previous fetch left it behind
+    const staleLt = path.join(SD_CUDA_DIR, 'cublasLt64_12.dll');
+    if (fs.existsSync(staleLt)) { fs.unlinkSync(staleLt); console.log('  removed stale cublasLt64_12.dll'); }
     if (fs.existsSync(cudaRtPath)) {
       console.log(`✓  CUDA runtime DLLs in sd-cuda/ (already present)`);
     } else {
       await fetchAsset(
-        'CUDA runtime DLLs',
+        'cudart64_12.dll (Blackwell PTX JIT)',
         dl(cudaRtFn), tmp(cudaRtFn), cudaRtPath,
-        archive => extractAllFromZip(archive, SD_CUDA_DIR, n => n.endsWith('.dll')),
+        archive => extractAllFromZip(archive, SD_CUDA_DIR, n => n === 'cudart64_12.dll'),
         null,
       );
     }

@@ -27,6 +27,7 @@ export interface SdServerConfig {
   deviceIndex?: number;
   gpuBackend?:  'cuda' | 'vulkan' | 'metal';
   freeVramGb?:  number;         // live free VRAM at config-build time (for polling/logging)
+  needsPtxJit?: boolean;        // true for Blackwell+ GPUs lacking native cubins in sd-cli
   steps?:       number;
   cfgScale?:    number;
   width?:       number;
@@ -216,6 +217,22 @@ function buildEnv(cfg: SdServerConfig): NodeJS.ProcessEnv {
       cfg.deviceIndex !== undefined && cfg.deviceIndex < 100
         ? String(cfg.deviceIndex)
         : '0'; // default to first device if index somehow missing
+
+    // Force PTX JIT compilation ONLY on Blackwell+ GPUs (sm_120, RTX 5080/5090).
+    // The sd.cpp cuda12 release binary was compiled before CUDA 12.8 and contains
+    // no sm_120 native cubin. Without this flag the CUDA runtime finds no matching
+    // code and silently falls back to CPU. With it, PTX is JIT-compiled at startup.
+    //
+    // CRITICAL: Do NOT set this unconditionally. On GPUs that already have native
+    // cubins (e.g. sm_86 for RTX 3080), CUDA_FORCE_PTX_JIT=1 forces the JIT
+    // compiler to re-compile ALL PTX kernels anyway. The JIT compiler allocates
+    // GPU workspace memory for compilation, and on tight-VRAM cards (10 GB) this
+    // pushes total usage past the limit, causing cublasCreate_v2 to fail with
+    // "CUDA error: the resource allocation failed" during model init.
+    if (cfg.needsPtxJit) {
+      env.CUDA_FORCE_PTX_JIT = '1';
+    }
+
     return env;
   }
 
@@ -253,9 +270,68 @@ export async function generateImage(
   outputPath = path.resolve(outputPath);
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
+  // ── Pre-flight VRAM check ──────────────────────────────────────────────────
+  // Estimate total model footprint and compare against live free VRAM.
+  // Catches OOM before the slow (~5s) model load instead of crashing at cublas init.
+  if (cfg.freeVramGb !== undefined && cfg.freeVramGb > 0 && cfg.gpuBackend === 'cuda') {
+    const diffusionMb = Math.ceil(spec.sizeBytes / (1024 * 1024));
+    const t5Aux       = cfg.auxFiles.find(a => a.cliFlag === '--t5xxl');
+    const t5Mb        = t5Aux ? Math.ceil(t5Aux.sizeBytes / (1024 * 1024)) : 0;
+    const vaeMb       = 160; // img2img VAE is 160 MB (worst case)
+    const clipAux     = cfg.auxFiles.find(a => a.cliFlag === '--clip_l');
+    const clipMb      = clipAux ? Math.ceil(clipAux.sizeBytes / (1024 * 1024)) : 0;
+    const cublasMb    = 512; // cuBLASLt workspace reservation + attention caches
+    const totalNeeded = diffusionMb + t5Mb + vaeMb + clipMb + cublasMb;
+    const freeMb      = Math.round(cfg.freeVramGb * 1024);
+
+    console.log(
+      `[ImageServerManager] Pre-flight VRAM: need ~${totalNeeded} MB ` +
+      `(diffusion ${diffusionMb} + T5 ${t5Mb} + VAE ${vaeMb} + CLIP ${clipMb} + cublas ${cublasMb}), ` +
+      `have ${freeMb} MB free`
+    );
+
+    if (totalNeeded > freeMb) {
+      throw new Error(
+        `Not enough VRAM: model needs ~${(totalNeeded / 1024).toFixed(1)} GB ` +
+        `but only ${cfg.freeVramGb.toFixed(1)} GB is free. ` +
+        `Try closing other GPU applications, or use a smaller model.`
+      );
+    }
+  }
+
   const bin = resolveSdServerBin();
   if (process.platform !== 'win32') {
     try { fs.chmodSync(bin, 0o755); } catch { /* ignore */ }
+  }
+
+  // Wait for CUDA driver to reclaim VRAM from any previous sd-cli process.
+  // The cuBLASLt workspace (~630 MB) can remain held for 10-30s after process
+  // exit. nvidia-smi reports stale numbers during this window, making the
+  // pre-flight check pass while the actual available VRAM is lower.
+  // Poll until free VRAM is stable AND above the threshold needed by this run,
+  // or fall back after 30s max.
+  if (cfg.gpuBackend === 'cuda' && cfg.freeVramGb !== undefined) {
+    const diffusionMb = Math.ceil(spec.sizeBytes / (1024 * 1024));
+    const t5Aux       = cfg.auxFiles.find(a => a.cliFlag === '--t5xxl');
+    const t5Mb        = t5Aux ? Math.ceil(t5Aux.sizeBytes / (1024 * 1024)) : 0;
+    const minFreeMb   = diffusionMb + t5Mb + 500; // model + 500 MB safety margin
+    const minFreeGb   = minFreeMb / 1024;
+    const POLL_MS     = 1000;
+    const MAX_WAIT_MS = 30000;
+    const waitStart   = Date.now();
+    let lastFreeGb    = cfg.freeVramGb;
+
+    while (Date.now() - waitStart < MAX_WAIT_MS) {
+      await new Promise(r => setTimeout(r, POLL_MS));
+      try {
+        const hw  = await detectHardware();
+        const gpu = hw.gpus.find(g => g.index === (cfg.deviceIndex ?? 0));
+        if (!gpu) break;
+        const freeGb = gpu.freeVramGb ?? 0;
+        if (freeGb >= minFreeGb && freeGb <= lastFreeGb + 0.1) break; // stable and sufficient
+        lastFreeGb = freeGb;
+      } catch { break; }
+    }
   }
 
   const seed = opts.seed ?? 42;
@@ -326,6 +402,7 @@ export async function buildSdConfig(
   let deviceIndex: number | undefined;
   let gpuBackend: SdServerConfig['gpuBackend'] | undefined;
   let isUnifiedMemory = false;
+  let needsPtxJit     = false;
 
   try {
     const hw = await detectHardware();
@@ -346,11 +423,19 @@ export async function buildSdConfig(
       isUnifiedMemory = bestGpu.unifiedMemory === true || bestGpu.index >= 100;
       freeVramGb      = bestGpu.freeVramGb ?? Math.max(0, totalVramGb - 1.5);
 
+      // Blackwell GPUs (RTX 5060/5070/5080/5090) need PTX JIT because
+      // sd.cpp release binaries lack native sm_120 cubins.
+      // DO NOT enable on Ampere/Ada — the JIT compiler workspace allocation
+      // consumes VRAM and causes OOM on tight cards like the RTX 3080.
+      needsPtxJit = bestGpu.backend === 'cuda' &&
+        /\b50[6789]0\b|\bblackwell\b/i.test(bestGpu.name ?? '');
+
       console.log(
         `[ImageServerManager] VRAM budget: ${freeVramGb.toFixed(1)} GB free` +
         (bestGpu.freeVramGb !== undefined
           ? ` (live, total ${totalVramGb} GB)`
-          : ` (estimated: total ${totalVramGb} GB − 1.5 GB reserve)`)
+          : ` (estimated: total ${totalVramGb} GB − 1.5 GB reserve)`) +
+        (needsPtxJit ? ' [Blackwell — PTX JIT enabled]' : '')
       );
     }
   } catch (err) {
@@ -381,7 +466,13 @@ export async function buildSdConfig(
     console.log(`[ImageServerManager] Selected model: ${spec.label} (SDXL runner)`);
   } else {
     // flux and chroma both use T5 — chroma skips CLIP-L
-    const t5 = recommendT5Encoder(spec, totalVramGb, isUnifiedMemory);
+    // Use freeVramGb (live reading after SAYON is stopped) when available —
+    // totalVramGb ignores driver overhead, Windows display VRAM, and
+    // persistent CUDA contexts that permanently reduce usable capacity.
+    // On a 10 GB card this overhead is 1-2 GB and makes the difference
+    // between fitting and OOM on cublas workspace allocation.
+    const t5VramBudget = freeVramGb > 0 ? freeVramGb : totalVramGb;
+    const t5 = recommendT5Encoder(spec, t5VramBudget, isUnifiedMemory);
     const baseAux = spec.variant === 'chroma' ? CHROMA_AUX_REQUIRED : FLUX_AUX_REQUIRED;
     auxFiles  = [...baseAux, t5];
     console.log(`[ImageServerManager] Selected model: ${spec.label} (${spec.runnerProfile} runner) · T5: ${t5.label}`);
@@ -399,6 +490,7 @@ export async function buildSdConfig(
     deviceIndex,
     gpuBackend,
     freeVramGb,
+    needsPtxJit,
     ...overrides,
   };
 }

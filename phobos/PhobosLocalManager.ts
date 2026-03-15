@@ -754,9 +754,9 @@ export function recommendFluxModel(vramGb: number): FluxSpec | null {
  * Chroma is checked first (it is now the default); FLUX is the fallback.
  * SDXL is excluded — it requires convert.py-produced GGUFs not currently in catalogue.
  */
-export function recommendImageModel(vramGb: number): ImageModelSpec | null {
+export function recommendImageModel(vramGb: number, ignoreVramGate = false): ImageModelSpec | null {
   const ordered = [...CHROMA_CATALOGUE, ...FLUX_CATALOGUE];
-  return ordered.find(m => m.vramRequiredGb <= vramGb && isImageModelDownloaded(m)) ?? null;
+  return ordered.find(m => (ignoreVramGate || m.vramRequiredGb <= vramGb) && isImageModelDownloaded(m)) ?? null;
 }
 
 

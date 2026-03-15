@@ -436,6 +436,7 @@ async function* runGenerate(
   cfg:        SdServerConfig,
   opts:       GenerateImageOptions,
   nodeIndex:  number,
+  onAbortRegister?: (killFn: () => void) => void,
 ): AsyncGenerator<WorkflowEvent> {
   const totalSteps = opts.steps ?? 20;
   const eventQueue = new AsyncQueue<WorkflowEvent>();
@@ -444,7 +445,7 @@ async function* runGenerate(
   const genPromise = generateImage(outputPath, cfg, opts, (line: string) => {
     const evt = classifySdLine(line, nodeIndex);
     if (evt) eventQueue.push(evt);
-  }).then(() => {
+  }, onAbortRegister).then(() => {
     eventQueue.push({ phase: 'render_progress', nodeIndex, step: totalSteps, totalSteps });
     eventQueue.finish();
   }).catch((err) => {
@@ -467,6 +468,7 @@ async function* executeGenerate(
   inputPath: string | null,   // null for first Generate node
   outPath:   string,
   cfg:       SdServerConfig,
+  onAbortRegister?: (killFn: () => void) => void,
 ): AsyncGenerator<WorkflowEvent> {
   const p = node.params as GenerateParams;
   yield* runGenerate(outPath, cfg, {
@@ -477,7 +479,7 @@ async function* executeGenerate(
     height:         p.height,
     seed:           p.seed,
     sampler:        p.sampler,
-  }, node.index);
+  }, node.index, onAbortRegister);
 }
 
 async function* executeVarySeed(
@@ -696,6 +698,7 @@ export async function* run(
   targetNodeIndex: number,
   cfg:             SdServerConfig,
   isFinal:         boolean = false,
+  onAbortRegister?: (killFn: () => void) => void,
 ): AsyncGenerator<WorkflowEvent> {
 
   // ── Guard: model still installed ──────────────────────────────────────────
@@ -781,7 +784,7 @@ export async function* run(
         }
 
         case 'Generate':
-          yield* executeGenerate(node, inputPath, outPath, cfg);
+          yield* executeGenerate(node, inputPath, outPath, cfg, onAbortRegister);
           break;
 
         case 'VarySeed':

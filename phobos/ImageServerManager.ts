@@ -253,6 +253,7 @@ export async function generateImage(
   cfg:        SdServerConfig,
   opts:       GenerateImageOptions,
   onProgress?: (line: string) => void,
+  onAbortRegister?: (killFn: () => void) => void,
 ): Promise<GenerateImageResult> {
   const spec = getImageModelSpec(cfg.fluxSpec.modelId);
   if (!spec) throw new Error(`Unknown image model ID: ${cfg.fluxSpec.modelId}`);
@@ -349,6 +350,7 @@ export async function generateImage(
       env,
       cwd: path.dirname(bin), // so companion DLLs are found
     });
+    if (onAbortRegister) onAbortRegister(() => { try { proc.kill('SIGTERM'); } catch { /* already gone */ } });
 
     proc.stdout?.on('data', (d: Buffer) => {
       const line = d.toString().trim();
@@ -363,7 +365,7 @@ export async function generateImage(
     });
 
     proc.on('exit', (code, signal) => {
-      if (code === 0) resolve();
+      if (code === 0 || signal === 'SIGTERM' || signal === 'SIGKILL') resolve();
       else reject(new Error(`sd-cli exited with code ${code} (signal: ${signal})`));
     });
 

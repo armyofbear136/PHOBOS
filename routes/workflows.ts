@@ -338,37 +338,18 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
   );
 
   // ── GET /api/threads/:threadId/workflows/:workflowId/thumbnail ───────────
-  // Serves the thumbnail for a workflow.
-  // Priority: index thumbPath (set at workflow completion) → last node with
-  // an outputPath (set per-node as each finishes, same signal as markNodeDone).
-  // This means the thumbnail updates as each node completes, matching the
-  // main preview panel behaviour.
+  // Serves the thumbnail image for a workflow (final.png or last node output).
   fastify.get<{ Params: { threadId: string; workflowId: string } }>(
     '/api/threads/:threadId/workflows/:workflowId/thumbnail',
     async (req, reply) => {
       const { threadId, workflowId } = req.params;
-
-      // 1. Try the index thumbPath first (written at end of full run)
       const entries = readIndex(threadId);
       const entry   = entries.find((e) => e.workflowId === workflowId);
-      if (entry?.thumbPath && fs.existsSync(entry.thumbPath)) {
-        return reply.type('image/png').send(fs.createReadStream(entry.thumbPath));
+      if (!entry?.thumbPath || !fs.existsSync(entry.thumbPath)) {
+        return reply.status(404).send({ error: 'No thumbnail yet' });
       }
-
-      // 2. Fallback: read session and serve the last node that has finished
-      //    (outputPath set). This fires as soon as markNodeDone updates the
-      //    session, so the thumbnail tracks generation progress node-by-node.
-      const session = readSession(threadId, workflowId);
-      if (session) {
-        const lastDone = [...session.nodes].reverse().find(
-          (n) => n.outputPath && fs.existsSync(n.outputPath)
-        );
-        if (lastDone?.outputPath) {
-          return reply.type('image/png').send(fs.createReadStream(lastDone.outputPath));
-        }
-      }
-
-      return reply.status(404).send({ error: 'No thumbnail yet' });
+      const stream = fs.createReadStream(entry.thumbPath);
+      return reply.type('image/png').send(stream);
     }
   );
 
@@ -388,6 +369,71 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
       }
       const stream = fs.createReadStream(node.outputPath);
       return reply.type('image/png').send(stream);
+    }
+  );
+
+  // ── POST /api/threads/:threadId/workflows/:workflowId/abort ─────────────────
+  // Kills the in-progress sd-cli process immediately. Safe to call at any time —
+  // if nothing is generating it's a no-op.
+  fastify.post<{ Params: { threadId: string; workflowId: string } }>(
+    '/api/threads/:threadId/workflows/:workflowId/abort',
+    async (req, reply) => {
+      const { workflowId } = req.params;
+      const status = runStatus.get(workflowId);
+      if (!status?.generating) {
+        return reply.send({ ok: true, message: 'Not generating' });
+      }
+      if (status.abort) {
+        status.abort();
+      }
+      status.aborted   = true;
+      status.generating = false;
+      status.error = 'Aborted by user';
+      status.completedAt = Date.now();
+      return reply.send({ ok: true, message: 'Aborted' });
+    }
+  );
+
+  // ── POST /api/threads/:threadId/workflows/:workflowId/nodes/:nodeId/save-batch-output ──
+  // Called after each batch step completes. Copies the node's current output.png
+  // to the workspace images dir using the batch naming convention:
+  //   {workflowName}-{nodeIndex:02d}-output-{N}.png
+  // where N is auto-incremented from whatever already exists in the images dir.
+  fastify.post<{ Params: { threadId: string; workflowId: string; nodeId: string } }>(
+    '/api/threads/:threadId/workflows/:workflowId/nodes/:nodeId/save-batch-output',
+    async (req, reply) => {
+      const { threadId, workflowId, nodeId } = req.params;
+      const session = readSession(threadId, workflowId);
+      if (!session) return reply.status(404).send({ error: 'Workflow not found' });
+
+      const node = session.nodes.find((n) => n.id === nodeId);
+      if (!node) return reply.status(404).send({ error: 'Node not found' });
+      if (!node.outputPath || !fs.existsSync(node.outputPath)) {
+        return reply.status(404).send({ error: 'No output yet for this node' });
+      }
+
+      const imagesDir = path.join(resolveWorkspacesRoot(), threadId, 'images');
+      fs.mkdirSync(imagesDir, { recursive: true });
+
+      const safeName = session.name.replace(/[^a-z0-9_\-]/gi, '_').slice(0, 48);
+      const nodeIdx  = String(node.index).padStart(2, '0');
+      const prefix   = `${safeName}-${nodeIdx}-output-`;
+
+      let maxN = 0;
+      try {
+        for (const f of fs.readdirSync(imagesDir)) {
+          if (f.startsWith(prefix) && f.endsWith('.png')) {
+            const n = parseInt(f.slice(prefix.length, -4), 10);
+            if (!isNaN(n) && n > maxN) maxN = n;
+          }
+        }
+      } catch { /* images dir may be empty */ }
+
+      const destFilename = `${prefix}${maxN + 1}.png`;
+      const destPath     = path.join(imagesDir, destFilename);
+      fs.copyFileSync(node.outputPath, destPath);
+
+      return reply.send({ filename: destFilename, n: maxN + 1 });
     }
   );
 
@@ -425,6 +471,8 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
     activeNode:   number;
     error:        string | null;
     completedAt:  number | null;  // Date.now() when done — cleared after frontend reads it
+    abort:        (() => void) | null;  // call to kill the sd-cli process immediately
+    aborted:      boolean;              // set early so pre-spawn phases can exit cleanly
   }>();
 
   // GET /api/threads/:threadId/workflows/:workflowId/run-status
@@ -492,11 +540,13 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
       // Initialize status
       const status = {
         generating:  true,
+        aborted:     false,              // set by abort endpoint, checked at each wait point
         phases:      [] as { renderPhase: string; detail: string; done: boolean }[],
         progress:    null as { nodeIndex: number; step: number; totalSteps: number } | null,
         activeNode:  resolvedTarget,
         error:       null as string | null,
         completedAt: null as number | null,
+        abort:       null as (() => void) | null,
       };
       runStatus.set(workflowId, status);
 
@@ -524,6 +574,8 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
               }
             }
 
+            if (status.aborted) return;
+
             // Re-query VRAM after stop settles.
             // Poll until free VRAM stops rising (stable = driver finished reclaiming).
             // Never use an absolute threshold — a CPU llama-server holding a CUDA context
@@ -535,6 +587,7 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
 
             while (true) {
               await new Promise(r => setTimeout(r, SETTLE_POLL_MS));
+              if (status.aborted) break;
               const candidate = await buildSdConfig({ modelId: session.modelId });
               if (candidate) {
                 sdCfg = candidate;
@@ -556,8 +609,10 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
             }
           }
 
+          if (status.aborted) return;
+
           // Run the workflow engine — update status map as events arrive
-          for await (const evt of runWorkflow(session, resolvedTarget, sdCfg!, isFinal)) {
+          for await (const evt of runWorkflow(session, resolvedTarget, sdCfg!, isFinal, (killFn) => { status.abort = killFn; })) {
             if (evt.phase === 'node_start') {
               status.activeNode = evt.nodeIndex;
               // Clear phases for new node

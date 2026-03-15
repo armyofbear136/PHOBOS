@@ -338,18 +338,37 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
   );
 
   // ── GET /api/threads/:threadId/workflows/:workflowId/thumbnail ───────────
-  // Serves the thumbnail image for a workflow (final.png or last node output).
+  // Serves the thumbnail for a workflow.
+  // Priority: index thumbPath (set at workflow completion) → last node with
+  // an outputPath (set per-node as each finishes, same signal as markNodeDone).
+  // This means the thumbnail updates as each node completes, matching the
+  // main preview panel behaviour.
   fastify.get<{ Params: { threadId: string; workflowId: string } }>(
     '/api/threads/:threadId/workflows/:workflowId/thumbnail',
     async (req, reply) => {
       const { threadId, workflowId } = req.params;
+
+      // 1. Try the index thumbPath first (written at end of full run)
       const entries = readIndex(threadId);
       const entry   = entries.find((e) => e.workflowId === workflowId);
-      if (!entry?.thumbPath || !fs.existsSync(entry.thumbPath)) {
-        return reply.status(404).send({ error: 'No thumbnail yet' });
+      if (entry?.thumbPath && fs.existsSync(entry.thumbPath)) {
+        return reply.type('image/png').send(fs.createReadStream(entry.thumbPath));
       }
-      const stream = fs.createReadStream(entry.thumbPath);
-      return reply.type('image/png').send(stream);
+
+      // 2. Fallback: read session and serve the last node that has finished
+      //    (outputPath set). This fires as soon as markNodeDone updates the
+      //    session, so the thumbnail tracks generation progress node-by-node.
+      const session = readSession(threadId, workflowId);
+      if (session) {
+        const lastDone = [...session.nodes].reverse().find(
+          (n) => n.outputPath && fs.existsSync(n.outputPath)
+        );
+        if (lastDone?.outputPath) {
+          return reply.type('image/png').send(fs.createReadStream(lastDone.outputPath));
+        }
+      }
+
+      return reply.status(404).send({ error: 'No thumbnail yet' });
     }
   );
 

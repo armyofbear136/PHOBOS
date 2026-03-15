@@ -117,6 +117,16 @@ export class ThreadStore {
   }
 
   async delete(id: string): Promise<void> {
-    await this.db.run(`DELETE FROM threads WHERE id = ?`, [id]);
+    // Delete all child records first — no ON DELETE CASCADE in schema.
+    // Order matters: leaf tables before parent tables before threads.
+    // Only delete from tables that actually have a thread_id column
+    await this.db.run(`DELETE FROM message_events    WHERE thread_id = ?`, [id]);
+    await this.db.run(`DELETE FROM thinking_segments WHERE thread_id = ?`, [id]);
+    await this.db.run(`DELETE FROM prompt_log        WHERE thread_id = ?`, [id]);
+    await this.db.run(`DELETE FROM chat_summaries    WHERE thread_id = ?`, [id]);
+    await this.db.run(`DELETE FROM workspace_files   WHERE thread_id = ?`, [id]);
+    await this.db.run(`DELETE FROM files             WHERE thread_id = ?`, [id]);
+    await this.db.run(`DELETE FROM messages          WHERE thread_id = ?`, [id]);
+    await this.db.run(`DELETE FROM threads           WHERE id = ?`,        [id]);
   }
 }

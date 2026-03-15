@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { ThreadStore } from '../db/ThreadStore.js';
 import { DatabaseManager } from '../db/DatabaseManager.js';
+import fs   from 'node:fs';
+import path from 'node:path';
 
 export async function threadsRoute(fastify: FastifyInstance): Promise<void> {
   const db = DatabaseManager.getInstance();
@@ -70,7 +72,19 @@ export async function threadsRoute(fastify: FastifyInstance): Promise<void> {
   fastify.delete<{ Params: { id: string } }>(
     '/api/threads/:id',
     async (req, reply) => {
-      await store.delete(req.params.id);
+      try {
+        await store.delete(req.params.id);
+      } catch (err) {
+        fastify.log.error(err, `Failed to delete thread ${req.params.id}`);
+        return reply.status(500).send({ error: 'Failed to delete thread' });
+      }
+      // Clean up workspace directory on disk
+      try {
+        const workspacesRoot = process.env.WORKSPACES_ROOT
+          ?? path.join(process.env.PHOBOS_DATA_DIR ?? path.join(process.env.HOME ?? '', '.phobos'), 'workspaces');
+        const dir = path.join(workspacesRoot, req.params.id);
+        if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+      } catch { /* non-fatal — DB record is gone, disk cleanup is best-effort */ }
       return reply.status(204).send();
     }
   );

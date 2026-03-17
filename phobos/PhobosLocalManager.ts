@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as https from 'https';
+import * as http  from 'http';
 import { fileURLToPath } from 'url';
 
 const execFileAsync = promisify(execFile);
@@ -27,6 +28,7 @@ export const IMAGE_FLUX_DIR   = path.join(os.homedir(), '.phobos', 'models', 'im
 export const IMAGE_SDXL_DIR   = path.join(os.homedir(), '.phobos', 'models', 'image', 'sdxl');
 /** @deprecated use IMAGE_FLUX_DIR — kept so any external references survive */
 export const FLUX_MODELS_DIR  = IMAGE_FLUX_DIR;
+export const UPSCALE_MODELS_DIR = path.join(os.homedir(), '.phobos', 'models', 'upscale');
 
 // ── Hardware detection ────────────────────────────────────────────────────────
 
@@ -754,9 +756,9 @@ export function recommendFluxModel(vramGb: number): FluxSpec | null {
  * Chroma is checked first (it is now the default); FLUX is the fallback.
  * SDXL is excluded — it requires convert.py-produced GGUFs not currently in catalogue.
  */
-export function recommendImageModel(vramGb: number, ignoreVramGate = false): ImageModelSpec | null {
+export function recommendImageModel(vramGb: number): ImageModelSpec | null {
   const ordered = [...CHROMA_CATALOGUE, ...FLUX_CATALOGUE];
-  return ordered.find(m => (ignoreVramGate || m.vramRequiredGb <= vramGb) && isImageModelDownloaded(m)) ?? null;
+  return ordered.find(m => m.vramRequiredGb <= vramGb && isImageModelDownloaded(m)) ?? null;
 }
 
 
@@ -1333,6 +1335,151 @@ export function resolveSdServerBin(): string {
   );
 }
 
+
+// ── ESRGAN upscale model catalogue ───────────────────────────────────────────
+
+export interface EsrganSpec {
+  id:        string;
+  label:     string;
+  filename:  string;   // .pth filename placed in UPSCALE_MODELS_DIR
+  url:       string;   // direct download URL (GitHub releases)
+  sizeBytes: number;
+}
+
+export const ESRGAN_MODELS: EsrganSpec[] = [
+  {
+    id:        'realesrgan-x4plus',
+    label:     'RealESRGAN x4+ (general, ~67 MB)',
+    filename:  'RealESRGAN_x4plus.pth',
+    url:       'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth',
+    sizeBytes: 67_040_989,
+  },
+  {
+    id:        'realesrgan-x4plus-anime',
+    label:     'RealESRGAN x4+ Anime (~17 MB)',
+    filename:  'RealESRGAN_x4plus_anime_6B.pth',
+    url:       'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth',
+    sizeBytes: 17_938_799,
+  },
+  {
+    id:        'realesrgan-x2plus',
+    label:     'RealESRGAN x2+ (general, ~67 MB)',
+    filename:  'RealESRGAN_x2plus.pth',
+    url:       'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth',
+    sizeBytes: 67_040_989,
+  },
+];
+
+export function esrganModelPath(spec: EsrganSpec): string {
+  return path.join(UPSCALE_MODELS_DIR, spec.filename);
+}
+
+export function isEsrganDownloaded(spec: EsrganSpec): boolean {
+  return fs.existsSync(esrganModelPath(spec));
+}
+
+export function listDownloadedEsrgan(): EsrganSpec[] {
+  return ESRGAN_MODELS.filter(isEsrganDownloaded);
+}
+
+export interface EsrganDownloadProgress {
+  id:            string;
+  bytesReceived: number;
+  bytesTotal:    number;
+  done:          boolean;
+  error?:        string;
+}
+
+export async function* downloadEsrgan(
+  spec: EsrganSpec,
+): AsyncGenerator<EsrganDownloadProgress> {
+  fs.mkdirSync(UPSCALE_MODELS_DIR, { recursive: true });
+
+  const dest = esrganModelPath(spec);
+  const tmp  = dest + '.download';
+
+  const existingBytes = fs.existsSync(tmp) ? fs.statSync(tmp).size : 0;
+  let bytesReceived   = existingBytes;
+  let bytesTotal      = spec.sizeBytes;
+
+  yield { id: spec.id, bytesReceived, bytesTotal, done: false };
+
+  type QItem =
+    | { kind: 'progress'; bytesReceived: number; bytesTotal: number }
+    | { kind: 'done' }
+    | { kind: 'error'; err: Error };
+
+  const queue: QItem[] = [];
+  let notify: (() => void) | null = null;
+  const push = (item: QItem) => { queue.push(item); notify?.(); };
+
+  const THROTTLE_MS    = 250;
+  const THROTTLE_BYTES = 1 * 1024 * 1024;
+  let lastEmitBytes = existingBytes;
+  let lastEmitTime  = Date.now();
+
+  const reqHeaders: Record<string, string> = {};
+  if (existingBytes > 0) reqHeaders['Range'] = `bytes=${existingBytes}-`;
+
+  const downloadPromise = new Promise<void>((resolve, reject) => {
+    const follow = (targetUrl: string, redirectCount = 0) => {
+      if (redirectCount > 5) { reject(new Error('Too many redirects')); return; }
+      const parsed = new URL(targetUrl);
+      const isHttps = parsed.protocol === 'https:';
+      const mod = isHttps ? https : http;
+      const req = (mod as typeof https).get(
+        { hostname: parsed.hostname, path: parsed.pathname + parsed.search, headers: reqHeaders },
+        (res) => {
+          if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) {
+            follow(res.headers.location!, redirectCount + 1);
+            return;
+          }
+          if (res.statusCode !== 200 && res.statusCode !== 206) {
+            const err = new Error(`HTTP ${res.statusCode} for ${targetUrl}`);
+            push({ kind: 'error', err }); reject(err); return;
+          }
+          const contentLength = res.headers['content-length'];
+          if (contentLength) bytesTotal = existingBytes + parseInt(contentLength, 10);
+          const writeStream = fs.createWriteStream(tmp, { flags: existingBytes > 0 ? 'a' : 'w' });
+          res.on('data', (chunk: Buffer) => {
+            bytesReceived += chunk.length;
+            const now = Date.now();
+            if (bytesReceived - lastEmitBytes >= THROTTLE_BYTES || now - lastEmitTime >= THROTTLE_MS) {
+              push({ kind: 'progress', bytesReceived, bytesTotal });
+              lastEmitBytes = bytesReceived; lastEmitTime = now;
+            }
+          });
+          res.pipe(writeStream);
+          writeStream.on('finish', () => { push({ kind: 'done' }); resolve(); });
+          writeStream.on('error', (err) => { push({ kind: 'error', err }); reject(err); });
+        }
+      );
+      req.on('error', (err) => { push({ kind: 'error', err }); reject(err); });
+    };
+    follow(spec.url);
+  });
+
+  while (true) {
+    if (queue.length > 0) {
+      const item = queue.shift()!;
+      if (item.kind === 'progress') {
+        yield { id: spec.id, bytesReceived: item.bytesReceived, bytesTotal: item.bytesTotal, done: false };
+      } else if (item.kind === 'done') {
+        break;
+      } else {
+        yield { id: spec.id, bytesReceived, bytesTotal, done: false, error: item.err.message };
+        return;
+      }
+    } else {
+      await new Promise<void>(r => { notify = r; });
+      notify = null;
+    }
+  }
+
+  try { await downloadPromise; } catch { /* already yielded error */ }
+  fs.renameSync(tmp, dest);
+  yield { id: spec.id, bytesReceived: bytesTotal, bytesTotal, done: true };
+}
 
 // ── Model deletion ────────────────────────────────────────────────────────────
 

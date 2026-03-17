@@ -245,11 +245,49 @@ export async function buildForPlatform({
   if (fs.existsSync(imglySrc)) {
     const dest = path.join(distDir, 'node_modules', '@imgly', 'background-removal-node');
     copyDir(imglySrc, dest);
-    // imgly bundles its own onnxruntime-node — stage that too
+    // Point imgly at the TOP-LEVEL staged onnxruntime-node rather than its own
+    // bundled copy. imgly's bundled .node binary may be a different napi ABI than
+    // the one the SEA executable was built with, causing "cannot run %1" on Windows.
+    // Symlinking (or copying) from the top-level staged version ensures ABI consistency.
+    // Keep imgly's own onnxruntime-node (1.17.3) — do NOT junction to top-level 1.14.0.
+    // imgly's ONNX model requires ops from 1.17.x; using 1.14.0 crashes the process.
+    // We stage imgly's own copy and patch its index.js to force CPU execution provider,
+    // preventing the CUDA init crash that happens in the SEA binary context.
     const imglyOnnx = path.join(imglySrc, 'node_modules', 'onnxruntime-node');
     if (fs.existsSync(imglyOnnx)) {
       const onnxDest = path.join(dest, 'node_modules', 'onnxruntime-node');
       copyDir(imglyOnnx, onnxDest);
+      // Patch the staged onnxruntime-node index.js to force CPU execution provider.
+      // This prevents the CUDA provider init crash in SEA context on NVIDIA hardware.
+      // Find and patch onnxruntime-node entry point to force CPU execution provider.
+      // onnxruntime 1.17.x tries CUDA first which crashes the SEA process on NVIDIA hardware.
+      const ortPkgPath = path.join(onnxDest, 'package.json');
+      const ortCandidates = [
+        path.join(onnxDest, 'dist', 'cjs', 'onnxruntime-node.js'),
+        path.join(onnxDest, 'dist', 'cjs', 'backend-onnxruntime-node.js'),
+        path.join(onnxDest, 'dist', 'cjs', 'index.js'),
+        path.join(onnxDest, 'lib', 'index.js'),
+        path.join(onnxDest, 'index.js'),
+      ];
+      if (fs.existsSync(ortPkgPath)) {
+        try {
+          const ortPkg = JSON.parse(fs.readFileSync(ortPkgPath, 'utf8'));
+          const ortMain = ortPkg.main || 'index.js';
+          ortCandidates.unshift(path.join(onnxDest, ortMain));
+        } catch {}
+      }
+      const cpuPatch = '\n// SEA patch: force CPU execution provider\nif (typeof exports !== "undefined" && exports.InferenceSession) { const _oc = exports.InferenceSession.create.bind(exports.InferenceSession); exports.InferenceSession.create = async (m,o) => _oc(m, Object.assign({},o||{},{executionProviders:[\'cpu\']})); }\n';
+      for (const ortIndex of ortCandidates) {
+        if (!fs.existsSync(ortIndex)) continue;
+        try {
+          let ortSrc = fs.readFileSync(ortIndex, 'utf8');
+          if (!ortSrc.includes('SEA patch') && ortSrc.includes('InferenceSession')) {
+            fs.writeFileSync(ortIndex, ortSrc + cpuPatch);
+            log('  🔧 Patched ' + path.basename(ortIndex) + ' (imgly onnxruntime CPU-only)');
+            break;
+          }
+        } catch {}
+      }
     }
     log(`  ✅ @imgly/background-removal-node/`);
   } else {

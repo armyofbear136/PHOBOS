@@ -7,6 +7,7 @@ import * as crypto from 'crypto';
 import {
   createSession,
   readSession,
+  writeSession,
   readIndex,
   run as runWorkflow,
   type WorkflowSession,
@@ -437,6 +438,35 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
     }
   );
 
+  // ── DELETE /api/threads/:threadId/workflows/:workflowId/nodes/:nodeId ──────────
+  // Deletes the last node in the workflow. Only allowed when it's not a Generate
+  // or Source node (those are permanent). Caller should verify this before calling.
+  fastify.delete<{ Params: { threadId: string; workflowId: string; nodeId: string } }>(
+    '/api/threads/:threadId/workflows/:workflowId/nodes/:nodeId',
+    async (req, reply) => {
+      const { threadId, workflowId, nodeId } = req.params;
+      const session = readSession(threadId, workflowId);
+      if (!session) return reply.status(404).send({ error: 'Workflow not found' });
+
+      const idx = session.nodes.findIndex((n) => n.id === nodeId);
+      if (idx < 0) return reply.status(404).send({ error: 'Node not found' });
+
+      const node = session.nodes[idx];
+      if (node.type === 'Generate' || node.type === 'Source') {
+        return reply.status(400).send({ error: 'Cannot delete Generate or Source nodes' });
+      }
+      if (idx !== session.nodes.length - 1) {
+        return reply.status(400).send({ error: 'Can only delete the last node' });
+      }
+
+      // Remove node from session and persist
+      session.nodes.splice(idx, 1);
+      writeSession(session);
+
+      return reply.send({ ok: true });
+    }
+  );
+
   // ── DELETE /api/threads/:threadId/workflows/:workflowId ────────────────────
   // Deletes a workflow session and all its cached files.
   fastify.delete<{ Params: { threadId: string; workflowId: string } }>(
@@ -613,7 +643,13 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
 
           // Run the workflow engine — update status map as events arrive
           for await (const evt of runWorkflow(session, resolvedTarget, sdCfg!, isFinal, (killFn) => { status.abort = killFn; })) {
+            // Check abort between every yielded event — this catches aborts that
+            // happen between nodes (after one node's proc was killed, before next spawns)
+            if (status.aborted) break;
             if (evt.phase === 'node_start') {
+              // Also clear the kill function between nodes so a stale proc handle
+              // from the previous node doesn't get called on the new node's process
+              status.abort = null;
               status.activeNode = evt.nodeIndex;
               // Clear phases for new node
               status.phases = [];

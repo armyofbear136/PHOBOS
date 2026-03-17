@@ -95,6 +95,7 @@ export interface Img2imgRefineParams extends GenerateParams {
 }
 
 export interface FaceFixParams extends GenerateParams {
+  width?:        number; // square output size (width = height, default 1024)
   strength:      number; // sd-cli --strength for inpaint
   bboxDilation?: number; // VisionProcessor dilation px (default 40)
   feather?:      number; // mask feather px (default 10)
@@ -116,7 +117,7 @@ export interface DepthControlNetParams extends GenerateParams {
 }
 
 export interface RemoveBgParams {
-  model?:                  'u2net' | 'isnet-general-use' | 'u2net_human_seg';
+  model?:                  'small' | 'medium' | 'large';  // imgly v1.4+ API
   alphaMatting?:           boolean;
   alphaMattingFgThreshold?: number;
   alphaMattingBgThreshold?: number;
@@ -124,7 +125,12 @@ export interface RemoveBgParams {
 }
 
 export interface UpscaleParams {
-  upscaleFactor?: number; // passed to sd-cli --upscale-model
+  upscaleRepeats?:  number;  // --upscale-repeats: number of upscaler passes (default 1)
+                             // RealESRGAN_x4plus = 4x per pass. 1 pass = 4x, 2 passes = 16x (rarely useful)
+  upscaleModel?:    string;  // ESRGAN model filename (default: RealESRGAN_x4plus.pth)
+  upscaleTileSize?: number;  // --upscale-tile-size px (default 128)
+  width?:           number;  // passed as --width to sd-cli upscale mode (optional, for crop/resize hint)
+  height?:          number;  // passed as --height
 }
 
 export type WorkflowNodeParams =
@@ -251,7 +257,7 @@ class AsyncQueue<T> {
 
 // ── Session persistence ───────────────────────────────────────────────────────
 
-function writeSession(session: WorkflowSession): void {
+export function writeSession(session: WorkflowSession): void {
   const dir  = sessionDir(session.threadId, session.workflowId);
   const file = path.join(dir, 'session.json');
   const tmp  = file + '.tmp';
@@ -488,6 +494,7 @@ async function* executeVarySeed(
   outPath:   string,
   cfg:       SdServerConfig,
   session:   WorkflowSession,
+  onAbortRegister?: (killFn: () => void) => void,
 ): AsyncGenerator<WorkflowEvent> {
   const p = node.params as VarySeedParams;
   // Find base seed from upstream Generate node
@@ -506,7 +513,7 @@ async function* executeVarySeed(
     height:         p.height,
     seed:           baseSeed + (p.seedOffset ?? 1),
     sampler:        p.sampler,
-  }, node.index);
+  }, node.index, onAbortRegister);
 }
 
 async function* executeImg2imgRefine(
@@ -514,19 +521,22 @@ async function* executeImg2imgRefine(
   inputPath: string,
   outPath:   string,
   cfg:       SdServerConfig,
+  onAbortRegister?: (killFn: () => void) => void,
 ): AsyncGenerator<WorkflowEvent> {
   const p = node.params as Img2imgRefineParams;
+  const width  = p.width  ?? 1024;
+  const height = p.height ?? 1024;
   yield* runGenerate(outPath, cfg, {
     prompt:         p.prompt,
     negativePrompt: p.negativePrompt,
     steps:          p.steps,
-    width:          p.width,
-    height:         p.height,
+    width,
+    height,
     seed:           p.seed,
     sampler:        p.sampler,
     initImg:        inputPath,
     strength:       p.strength,
-  }, node.index);
+  }, node.index, onAbortRegister);
 }
 
 async function* executeFaceFix(
@@ -535,6 +545,7 @@ async function* executeFaceFix(
   outPath:   string,
   cfg:       SdServerConfig,
   threadId:  string,
+  onAbortRegister?: (killFn: () => void) => void,
 ): AsyncGenerator<WorkflowEvent> {
   const p = node.params as FaceFixParams;
 
@@ -555,16 +566,20 @@ async function* executeFaceFix(
     yield { phase: 'vision_done', nodeIndex: node.index, artifactPath: maskPath };
   }
 
+  // sd-cli crops non-square images — always pass square dimensions
+  const faceSize = p.width ?? p.height ?? 1024;
   yield* runGenerate(outPath, cfg, {
     prompt:         p.prompt,
     negativePrompt: p.negativePrompt,
     steps:          p.steps,
+    width:          faceSize,
+    height:         faceSize,
     seed:           p.seed,
     sampler:        p.sampler,
     initImg:        inputPath,
     strength:       p.strength,
     maskPath,
-  }, node.index);
+  }, node.index, onAbortRegister);
 }
 
 async function* executeHandFix(
@@ -573,6 +588,7 @@ async function* executeHandFix(
   outPath:   string,
   cfg:       SdServerConfig,
   threadId:  string,
+  onAbortRegister?: (killFn: () => void) => void,
 ): AsyncGenerator<WorkflowEvent> {
   const p = node.params as HandFixParams;
 
@@ -599,16 +615,20 @@ async function* executeHandFix(
     return;
   }
 
+  // sd-cli crops non-square images — always pass square dimensions
+  const handSize = p.width ?? p.height ?? 1024;
   yield* runGenerate(outPath, cfg, {
     prompt:         p.prompt,
     negativePrompt: p.negativePrompt,
     steps:          p.steps,
+    width:          handSize,
+    height:         handSize,
     seed:           p.seed,
     sampler:        p.sampler,
     initImg:        inputPath,
     strength:       p.strength,
     maskPath,
-  }, node.index);
+  }, node.index, onAbortRegister);
 }
 
 async function* executeDepthControlNet(
@@ -617,6 +637,7 @@ async function* executeDepthControlNet(
   outPath:   string,
   cfg:       SdServerConfig,
   threadId:  string,
+  onAbortRegister?: (killFn: () => void) => void,
 ): AsyncGenerator<WorkflowEvent> {
   const p = node.params as DepthControlNetParams;
 
@@ -644,7 +665,7 @@ async function* executeDepthControlNet(
     strength:       p.strength,
     controlImage:   depthPath,
     controlScale:   p.controlScale ?? 1.0,
-  }, node.index);
+  }, node.index, onAbortRegister);
 }
 
 async function* executeRemoveBg(
@@ -655,7 +676,17 @@ async function* executeRemoveBg(
 ): AsyncGenerator<WorkflowEvent> {
   const p = node.params as RemoveBgParams;
   yield { phase: 'vision_start', nodeIndex: node.index, step: 'bg_remove' };
-  const result = await removeBackground(inputPath, threadId, {
+  // Pre-process to a clean standard RGB PNG. imgly/sharp rejects some PNG
+  // variants (interlaced, unusual color profiles, RGBA). flattenAlpha re-encodes
+  // to a plain RGBA PNG that sharp can always handle.
+  const scratchRoot = path.join(
+    process.env.WORKSPACES_ROOT ?? path.join(os.homedir(), '.phobos', 'workspaces'),
+    threadId, 'vision-scratch'
+  );
+  fs.mkdirSync(scratchRoot, { recursive: true });
+  const cleanInput = path.join(scratchRoot, `removebg-in-${Date.now()}.png`);
+  try { flattenAlpha(inputPath, cleanInput); } catch { fs.copyFileSync(inputPath, cleanInput); }
+  const result = await removeBackground(cleanInput, threadId, {
     model:                   p.model,
     alphaMatting:            p.alphaMatting,
     alphaMattingFgThreshold: p.alphaMattingFgThreshold,
@@ -664,6 +695,7 @@ async function* executeRemoveBg(
   });
   // Copy RGBA result to stable node output path
   fs.copyFileSync(result.outputPath, outPath);
+  try { fs.unlinkSync(cleanInput); } catch { /* non-fatal */ }
   yield { phase: 'vision_done', nodeIndex: node.index, artifactPath: outPath };
 }
 
@@ -672,13 +704,28 @@ async function* executeUpscale(
   inputPath: string,
   outPath:   string,
   cfg:       SdServerConfig,
+  onAbortRegister?: (killFn: () => void) => void,
 ): AsyncGenerator<WorkflowEvent> {
   const p = node.params as UpscaleParams;
+  // Resolve ESRGAN model path — lives in ~/.phobos/models/upscale/
+  const upscaleModelsDir = path.join(os.homedir(), '.phobos', 'models', 'upscale');
+  const modelFile = p.upscaleModel ?? 'RealESRGAN_x4plus.pth';
+  const modelPath = path.join(upscaleModelsDir, modelFile);
+  if (!fs.existsSync(modelPath)) {
+    yield { phase: 'error', nodeIndex: node.index,
+      message: `ESRGAN model not found: ${modelPath}. Download RealESRGAN_x4plus.pth to ~/.phobos/models/upscale/`,
+      fatal: false };
+    return;
+  }
   yield* runGenerate(outPath, cfg, {
-    prompt:       '',
-    upscaleInput: inputPath,
-    upscaleFactor: p.upscaleFactor ?? 4,
-  }, node.index);
+    prompt:          '',
+    upscaleInput:    inputPath,
+    upscaleModel:    modelPath,
+    upscaleFactor:   p.upscaleRepeats  ?? 1,   // 1 pass = 4x with x4plus model
+    upscaleTileSize: p.upscaleTileSize ?? 128,
+    width:           p.width,
+    height:          p.height,
+  }, node.index, onAbortRegister);
 }
 
 // ── Main entry point ──────────────────────────────────────────────────────────
@@ -693,6 +740,20 @@ async function* executeUpscale(
  *   false (default) — Generate button: run dirty nodes up to target, no workspace save
  *   true            — Final button: run dirty nodes up to last node, save to workspace
  */
+// Returns the next available N for {prefix}-{N}.png in imagesDir
+function nextFinalN(imagesDir: string, prefix: string): number {
+  let maxN = 0;
+  try {
+    for (const f of fs.readdirSync(imagesDir)) {
+      if (f.startsWith(prefix + '-') && f.endsWith('.png')) {
+        const n = parseInt(f.slice(prefix.length + 1, -4), 10);
+        if (!isNaN(n) && n > maxN) maxN = n;
+      }
+    }
+  } catch { /* dir may not exist yet */ }
+  return maxN + 1;
+}
+
 export async function* run(
   session:         WorkflowSession,
   targetNodeIndex: number,
@@ -722,7 +783,8 @@ export async function* run(
       const workspaceImagesDir = path.join(workspacesRoot(), threadId, 'images');
       fs.mkdirSync(workspaceImagesDir, { recursive: true });
       const sanitisedName = session.name.replace(/[^a-z0-9_\-]/gi, '_').slice(0, 64);
-      const workspaceOut  = path.join(workspaceImagesDir, `${sanitisedName}.png`);
+      const n = nextFinalN(workspaceImagesDir, sanitisedName);
+      const workspaceOut  = path.join(workspaceImagesDir, `${sanitisedName}-${n}.png`);
       fs.copyFileSync(lastOutput, workspaceOut);
       updateIndex(threadId, {
         workflowId: session.workflowId,
@@ -788,27 +850,27 @@ export async function* run(
           break;
 
         case 'VarySeed':
-          yield* executeVarySeed(node, inputPath, outPath, cfg, session);
+          yield* executeVarySeed(node, inputPath, outPath, cfg, session, onAbortRegister);
           break;
 
         case 'Img2imgRefine':
           if (!inputPath) throw new Error('Img2imgRefine requires an upstream node with output');
-          yield* executeImg2imgRefine(node, inputPath, outPath, cfg);
+          yield* executeImg2imgRefine(node, inputPath, outPath, cfg, onAbortRegister);
           break;
 
         case 'FaceFix':
           if (!inputPath) throw new Error('FaceFix requires an upstream node with output');
-          yield* executeFaceFix(node, inputPath, outPath, cfg, threadId);
+          yield* executeFaceFix(node, inputPath, outPath, cfg, threadId, onAbortRegister);
           break;
 
         case 'HandFix':
           if (!inputPath) throw new Error('HandFix requires an upstream node with output');
-          yield* executeHandFix(node, inputPath, outPath, cfg, threadId);
+          yield* executeHandFix(node, inputPath, outPath, cfg, threadId, onAbortRegister);
           break;
 
         case 'DepthControlNet':
           if (!inputPath) throw new Error('DepthControlNet requires an upstream node with output');
-          yield* executeDepthControlNet(node, inputPath, outPath, cfg, threadId);
+          yield* executeDepthControlNet(node, inputPath, outPath, cfg, threadId, onAbortRegister);
           break;
 
         case 'RemoveBg':
@@ -818,7 +880,7 @@ export async function* run(
 
         case 'Upscale':
           if (!inputPath) throw new Error('Upscale requires an upstream node with output');
-          yield* executeUpscale(node, inputPath, outPath, cfg);
+          yield* executeUpscale(node, inputPath, outPath, cfg, onAbortRegister);
           break;
 
         default:
@@ -888,7 +950,8 @@ export async function* run(
     const workspaceImagesDir = path.join(workspacesRoot(), threadId, 'images');
     fs.mkdirSync(workspaceImagesDir, { recursive: true });
     const sanitisedName = session.name.replace(/[^a-z0-9_\-]/gi, '_').slice(0, 64);
-    const workspaceOut  = path.join(workspaceImagesDir, `${sanitisedName}.png`);
+    const n = nextFinalN(workspaceImagesDir, sanitisedName);
+    const workspaceOut  = path.join(workspaceImagesDir, `${sanitisedName}-${n}.png`);
     fs.copyFileSync(lastOutputPath, workspaceOut);
 
     // Update index thumbnail

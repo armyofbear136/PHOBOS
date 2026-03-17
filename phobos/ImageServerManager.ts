@@ -48,8 +48,10 @@ export interface GenerateImageOptions {
   maskPath?:       string;   // --mask path (inpaint mask)
   controlImage?:   string;   // --control-image path (ControlNet conditioning)
   controlScale?:   number;   // --control-strength (ControlNet guidance scale)
-  upscaleInput?:   string;   // input image for upscale (--input)
-  upscaleFactor?:  number;   // --upscale-repeats (factor)
+  upscaleInput?:    string;   // input image for upscale mode
+  upscaleModel?:    string;   // --upscale-model path (ESRGAN .pth file)
+  upscaleFactor?:   number;   // --upscale-repeats
+  upscaleTileSize?: number;   // --upscale-tile-size (default 128)
 }
 
 export interface GenerateImageResult {
@@ -64,9 +66,17 @@ export interface GenerateImageResult {
 
 function appendWorkflowFlags(args: string[], opts: GenerateImageOptions): void {
   if (opts.upscaleInput) {
-    // Upscale is a separate mode — --input overrides normal generation
-    args.push('--input', opts.upscaleInput);
+    // Upscale is a separate sd-cli mode — must use -M upscale + --upscale-model + -i
+    // The --input flag does not exist; the correct flags are:
+    //   -M upscale  —  switches sd-cli to upscale mode (no diffusion)
+    //   --upscale-model <path>  —  ESRGAN model file
+    //   -i / --init-img <path>  —  input image to upscale
+    //   --upscale-repeats <n>   —  number of upscale passes
+    args.push('-M', 'upscale');
+    args.push('-i', opts.upscaleInput);
+    if (opts.upscaleModel) args.push('--upscale-model', opts.upscaleModel);
     if (opts.upscaleFactor) args.push('--upscale-repeats', String(opts.upscaleFactor));
+    if (opts.upscaleTileSize) args.push('--upscale-tile-size', String(opts.upscaleTileSize));
     return; // upscale mode — don't mix with img2img/mask/control flags
   }
   if (opts.initImg)      args.push('--init-img', opts.initImg);
@@ -255,6 +265,16 @@ export async function generateImage(
   onProgress?: (line: string) => void,
   onAbortRegister?: (killFn: () => void) => void,
 ): Promise<GenerateImageResult> {
+  // Register an abort function immediately so the caller can cancel us even
+  // before sd-cli spawns (e.g. during the VRAM settle poll loop).
+  let aborted = false;
+  let killProc: (() => void) | null = null;
+  if (onAbortRegister) {
+    onAbortRegister(() => {
+      aborted = true;
+      killProc?.();
+    });
+  }
   const spec = getImageModelSpec(cfg.fluxSpec.modelId);
   if (!spec) throw new Error(`Unknown image model ID: ${cfg.fluxSpec.modelId}`);
 
@@ -324,6 +344,7 @@ export async function generateImage(
 
     while (Date.now() - waitStart < MAX_WAIT_MS) {
       await new Promise(r => setTimeout(r, POLL_MS));
+      if (aborted) return { outputPath, seed: -1, elapsedMs: 0 }; // abort during VRAM settle
       try {
         const hw  = await detectHardware();
         const gpu = hw.gpus.find(g => g.index === (cfg.deviceIndex ?? 0));
@@ -334,6 +355,8 @@ export async function generateImage(
       } catch { break; }
     }
   }
+
+  if (aborted) return { outputPath, seed: -1, elapsedMs: 0 }; // abort before spawn
 
   const seed = opts.seed ?? 42;
   const args = buildArgs(cfg, { ...opts, seed }, outputPath);
@@ -350,7 +373,9 @@ export async function generateImage(
       env,
       cwd: path.dirname(bin), // so companion DLLs are found
     });
-    if (onAbortRegister) onAbortRegister(() => { try { proc.kill('SIGTERM'); } catch { /* already gone */ } });
+    // Register proc kill — onAbortRegister was already called above with the pre-spawn abort
+    killProc = () => { try { proc.kill('SIGTERM'); } catch { /* already gone */ } };
+    if (aborted) { killProc(); } // abort was pressed between poll and spawn
 
     proc.stdout?.on('data', (d: Buffer) => {
       const line = d.toString().trim();

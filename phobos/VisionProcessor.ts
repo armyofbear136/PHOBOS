@@ -24,9 +24,14 @@ export const VISION_MODELS_DIR = path.join(os.homedir(), '.phobos', 'models', 'v
 // All models are downloaded once on first use via @xenova/transformers.
 // Sizes are approximate post-quantization download sizes.
 
-const MODEL_FACE  = 'arnabdhar/YOLOv8-Face-Detection';   // ~6 MB  — face bbox detection
-const MODEL_HAND  = 'Xenova/yolov8n';                     // ~6 MB  — hand/object bbox detection
-const MODEL_DEPTH = 'Xenova/depth-anything-small-hf';     // ~97 MB — monocular depth estimation
+// Public models — no HuggingFace auth required.
+// Both use Xenova/yolos-tiny (fully public COCO object detector, ~25 MB).
+// Intentionally use DIFFERENT cache keys so a face pipeline OOM doesn't
+// poison the hand pipeline cache entry.
+// Face/hand detection uses heuristic masks only — onnxruntime object-detection
+// crashes the SEA process (dynamic-shape allocation bug in onnxruntime-node 1.14.0).
+// Depth estimation works because it uses a fixed-shape model.
+const MODEL_DEPTH = 'Xenova/depth-anything-small-hf';  // ~97 MB — depth estimation (works in SEA)
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -252,106 +257,62 @@ export async function generateFaceMask(
   threadId:  string,
   opts:      FaceMaskOptions = {},
 ): Promise<MaskResult> {
-  const dilation  = opts.bboxDilation ?? 40;
-  const feather   = opts.feather      ?? 10;
-  const threshold = opts.threshold    ?? 0.5;
-
-  const detector = await getPipeline('object-detection', MODEL_FACE);
-  const raw = await (detector as any)(imagePath, { threshold });
-
+  const dilation = opts.bboxDilation ?? 40;
+  const feather  = opts.feather      ?? 10;
   const { width, height } = readPngDimensions(imagePath);
-  const detections: BoundingBox[] = (raw as any[]).map((d: any) => ({
-    xmin:  d.box.xmin,
-    ymin:  d.box.ymin,
-    xmax:  d.box.xmax,
-    ymax:  d.box.ymax,
-    score: d.score,
-    label: d.label,
-  }));
+
+  // Heuristic mask: upper-centre 60%×45% of image covers face in most portrait shots.
+  // onnxruntime object-detection pipelines crash the Node.js SEA process due to
+  // dynamic-shape allocation bugs in onnxruntime-node 1.14.0 — heuristic is safer
+  // and sufficient for inpaint quality (prompt + strength matter more than bbox precision).
+  const fw = width * 0.6, fh = height * 0.45;
+  const detections: BoundingBox[] = [{
+    xmin: (width - fw) / 2, ymin: 0,
+    xmax: (width + fw) / 2, ymax: fh,
+    score: 1, label: 'heuristic',
+  }];
+  console.log(`[VisionProcessor] Face heuristic mask: upper-centre ${Math.round(fw)}×${Math.round(fh)} on ${width}×${height}`);
 
   const maskPath = path.join(scratchDir(threadId), `face-mask-${Date.now()}.png`);
   renderMaskPng(maskPath, detections, width, height, dilation, feather);
-
-  console.log(`[VisionProcessor] Face mask: ${detections.length} detection(s) → ${path.basename(maskPath)}`);
   return { maskPath, detections };
 }
-
-// ── Hand detection ────────────────────────────────────────────────────────────
 
 export interface HandMaskOptions {
   bboxDilation?: number;   // px to expand each detection box (default: 30)
   feather?:      number;   // mask edge blur radius px (default: 8)
-  threshold?:    number;   // min detection confidence 0–1 (default: 0.5)
-  maxHands?:     number;   // cap detections (default: 4)
+  threshold?:    number;   // min detection confidence 0–1 (default: 0.5) — reserved
+  maxHands?:     number;   // cap detections (default: 4) — reserved
 }
 
-/**
- * Detects hands in `imagePath` using YOLOv8n, renders a combined mask PNG,
- * and writes it to the thread's vision-scratch directory.
- *
- * YOLOv8n is a COCO model — filters to 'hand' label if the face-specific
- * variant is unavailable, otherwise all detections from MODEL_HAND are used
- * since the model is tuned for hands.
- *
- * The mask PNG is used as sd-cli `--mask` input for the hand inpaint pass.
- */
 export async function generateHandMask(
   imagePath: string,
   threadId:  string,
   opts:      HandMaskOptions = {},
 ): Promise<MaskResult> {
-  const dilation  = opts.bboxDilation ?? 30;
-  const feather   = opts.feather      ?? 8;
-  const threshold = opts.threshold    ?? 0.5;
-  const maxHands  = opts.maxHands     ?? 4;
-
-  const detector = await getPipeline('object-detection', MODEL_HAND);
-  const raw = await (detector as any)(imagePath, { threshold });
-
+  const dilation = opts.bboxDilation ?? 30;
+  const feather  = opts.feather      ?? 8;
   const { width, height } = readPngDimensions(imagePath);
 
-  // Filter to hand-related labels and cap count
-  const detections: BoundingBox[] = (raw as any[])
-    .filter((d: any) => {
-      const label = (d.label as string).toLowerCase();
-      // Accept anything that looks hand/person related from COCO
-      // YOLOv8n tuned for hands will return 'hand' label directly
-      return label.includes('hand') || label === 'person';
-    })
-    .slice(0, maxHands)
-    .map((d: any) => ({
-      xmin:  d.box.xmin,
-      ymin:  d.box.ymin,
-      xmax:  d.box.xmax,
-      ymax:  d.box.ymax,
-      score: d.score,
-      label: d.label,
-    }));
+  // Heuristic mask: lower 65% of image covers hands/arms in most portrait compositions.
+  // Same rationale as FaceMask — avoids onnxruntime SEA crash.
+  const handH = height * 0.65;
+  const detections: BoundingBox[] = [{
+    xmin: 0, ymin: height - handH,
+    xmax: width, ymax: height,
+    score: 1, label: 'heuristic',
+  }];
+  console.log(`[VisionProcessor] Hand heuristic mask: lower ${Math.round(handH)}px on ${width}×${height}`);
 
   const maskPath = path.join(scratchDir(threadId), `hand-mask-${Date.now()}.png`);
   renderMaskPng(maskPath, detections, width, height, dilation, feather);
-
-  console.log(`[VisionProcessor] Hand mask: ${detections.length} detection(s) → ${path.basename(maskPath)}`);
   return { maskPath, detections };
 }
-
-// ── Depth map generation ──────────────────────────────────────────────────────
 
 export interface DepthMapOptions {
   preBlur?: number;   // gaussian blur radius on output depth map (0 = none, default: 0)
 }
 
-/**
- * Generates a grayscale depth map PNG from `imagePath` using Depth Anything V2.
- * Brighter pixels = closer to camera. The depth map is written to the thread's
- * vision-scratch directory.
- *
- * The depth PNG is passed to sd-cli as `--control-image` for depth ControlNet passes.
- *
- * @xenova/transformers pipeline('depth-estimation') output:
- *   { depth: { data: Float32Array [0–1], width: number, height: number } }
- *   where 0 = far, 1 = close.
- */
 export async function generateDepthMap(
   imagePath: string,
   threadId:  string,
@@ -421,7 +382,7 @@ export async function generateDepthMap(
 // ── Background removal ────────────────────────────────────────────────────────
 
 export interface BgRemovalOptions {
-  model?:                   'u2net' | 'isnet-general-use' | 'u2net_human_seg';
+  model?:                   'small' | 'medium' | 'large';  // imgly v1.4+ API
   alphaMatting?:            boolean;
   alphaMattingFgThreshold?: number;  // 0–255, default 240
   alphaMattingBgThreshold?: number;  // 0–255, default 10
@@ -445,23 +406,29 @@ export async function removeBackground(
   threadId:  string,
   opts:      BgRemovalOptions = {},
 ): Promise<BgRemovalResult> {
-  // Lazy import so the rest of VisionProcessor works even if this package
-  // is not yet installed.
-  let removeBg: (input: ArrayBuffer | string, config?: object) => Promise<Blob>;
+  // Load @imgly/background-removal-node via createRequire so the SEA build
+  // resolves from dist/node_modules/ via Module.globalPaths.
+  const { createRequire } = require('module') as typeof import('module');
+  const req = createRequire(path.join(path.dirname(process.execPath), '_entry.js'));
+  let removeBg: (input: ArrayBuffer, config?: object) => Promise<Blob>;
   try {
-    const mod = await import('@imgly/background-removal-node');
+    const mod = req('@imgly/background-removal-node');
     removeBg = mod.removeBackground ?? mod.default;
-  } catch {
+  } catch (err) {
     throw new Error(
-      '[VisionProcessor] @imgly/background-removal-node is not installed. ' +
-      'Run: npm install @imgly/background-removal-node'
+      `[VisionProcessor] @imgly/background-removal-node could not be loaded: ${(err as Error).message}`
     );
   }
 
+  const outputPath = path.join(scratchDir(threadId), `no-bg-${Date.now()}.png`);
+
   const config: Record<string, unknown> = {
-    model:         opts.model        ?? 'u2net',
-    debug:         false,
-    proxyToWorker: false,
+    model: opts.model ?? 'medium',
+    debug: false,
+    // Force CPU execution provider to avoid GPU/CUDA provider crashes in SEA context.
+    // onnxruntime-node 1.17.x tries CUDA first by default; on some systems this
+    // crashes the process before JS error handlers can fire.
+    executionProviders: ['cpu'],
   };
   if (opts.alphaMatting) {
     config.alphaMatting = true;
@@ -470,11 +437,12 @@ export async function removeBackground(
     config.alphaMattingErodeSize           = opts.alphaMattingErodeSize   ?? 10;
   }
 
-  const inputBuffer = fs.readFileSync(imagePath);
-  const blob        = await removeBg(inputBuffer.buffer as ArrayBuffer, config);
-  const outBuffer   = Buffer.from(await blob.arrayBuffer());
-
-  const outputPath = path.join(scratchDir(threadId), `no-bg-${Date.now()}.png`);
+  // Pass the file path as a URL string — imgly accepts string|ArrayBuffer|URL.
+  // This avoids all ArrayBuffer pool/offset issues entirely.
+  // Convert Windows path to file:// URL so imgly's internal fetch can read it.
+  const fileUrl = 'file:///' + imagePath.replace(/\\/g, '/');
+  const blob = await removeBg(fileUrl as any, config);
+  const outBuffer = Buffer.from(await blob.arrayBuffer());
   fs.writeFileSync(outputPath, outBuffer);
 
   console.log(`[VisionProcessor] Background removed → ${path.basename(outputPath)}`);
@@ -573,8 +541,7 @@ export async function prefetchVisionModels(
   models: ('face' | 'hand' | 'depth')[] = [],
 ): Promise<void> {
   const tasks: [string, string][] = [];
-  if (models.includes('face'))  tasks.push(['object-detection', MODEL_FACE]);
-  if (models.includes('hand'))  tasks.push(['object-detection', MODEL_HAND]);
+  // Face/hand use heuristic masks only — no model to prefetch
   if (models.includes('depth')) tasks.push(['depth-estimation', MODEL_DEPTH]);
 
   for (const [task, model] of tasks) {

@@ -27,6 +27,11 @@ import {
   fluxAuxPath,
   cancelImageDownload,
   cancelLlmDownload,
+  ESRGAN_MODELS,
+  downloadEsrgan,
+  isEsrganDownloaded,
+  esrganModelPath,
+  type EsrganSpec,
 } from '../phobos/PhobosLocalManager.js';
 import {
   startServer,
@@ -379,6 +384,65 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       }
 
       cancelImageDownload(spec, auxFiles);
+      return reply.send({ ok: true });
+    }
+  );
+
+  // ── ESRGAN upscale model routes ──────────────────────────────────────────────
+
+  // GET /api/phobos/upscale/models
+  fastify.get('/api/phobos/upscale/models', async (_req, reply) => {
+    return reply.send({
+      models: ESRGAN_MODELS.map((m) => ({
+        ...m,
+        downloaded: isEsrganDownloaded(m),
+      })),
+    });
+  });
+
+  // GET /api/phobos/upscale/download?id=<id>  — SSE stream
+  fastify.get<{ Querystring: { id: string } }>(
+    '/api/phobos/upscale/download',
+    async (req, reply) => {
+      const spec = ESRGAN_MODELS.find((m) => m.id === req.query.id);
+      if (!spec) return reply.status(400).send({ error: `Unknown ESRGAN model: ${req.query.id}` });
+
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        'Content-Type':                'text/event-stream',
+        'Cache-Control':               'no-cache',
+        'Connection':                  'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+      });
+
+      const send = (data: object) => {
+        try { reply.raw.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* socket closed */ }
+      };
+
+      try {
+        for await (const progress of downloadEsrgan(spec)) {
+          send(progress);
+          if (progress.error) break;
+        }
+        send({ id: 'complete', bytesReceived: 0, bytesTotal: 0, done: true });
+      } catch (err) {
+        send({ id: 'error', error: String(err), done: true });
+      } finally {
+        try { reply.raw.end(); } catch { /* already closed */ }
+      }
+    }
+  );
+
+  // DELETE /api/phobos/upscale/:id
+  fastify.delete<{ Params: { id: string } }>(
+    '/api/phobos/upscale/:id',
+    async (req, reply) => {
+      const spec = ESRGAN_MODELS.find((m) => m.id === req.params.id);
+      if (!spec) return reply.status(404).send({ error: 'Unknown ESRGAN model' });
+      const p = esrganModelPath(spec);
+      const fs = await import('fs');
+      if (!fs.existsSync(p)) return reply.status(404).send({ error: 'Not downloaded' });
+      fs.unlinkSync(p);
       return reply.send({ ok: true });
     }
   );

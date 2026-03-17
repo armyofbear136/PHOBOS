@@ -18,6 +18,14 @@ export interface ServerConfig {
   deviceIndex?: number;
   /** Backend for the target device — determines binary + env vars */
   gpuBackend?: 'cuda' | 'vulkan' | 'metal';
+  /**
+   * Physical Vulkan enumeration index from GpuRunnerProfile.vulkanIndex.
+   * NVIDIA = nvidia-smi index. Non-NVIDIA = nvidiaCount + wmiPosition.
+   * Used for GGML_VK_VISIBLE_DEVICES. After filtering, device is always Vulkan0.
+   */
+  vulkanIndex?: number;
+  /** Runner kind from GpuRunnerProfile — used for diagnostic logging */
+  runnerKind?: string;
 }
 
 interface ManagedServer {
@@ -121,15 +129,60 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
     if (cfg.gpuBackend === 'metal') {
       // Metal on macOS — llama-server auto-selects the only GPU via Metal.
       // Do NOT pass --device VulkanN — the macos-arm64 binary has no Vulkan backend.
-      // No env vars needed; Metal is the default and only GPU backend on Apple Silicon.
-    } else if (cfg.deviceIndex >= 100) {
-      // AMD iGPU as primary (Vulkan) — match Ollama's multi-GPU approach
-      env.CUDA_VISIBLE_DEVICES = '-1';
-      env.HSA_OVERRIDE_GFX_VERSION = '11.0.0';
-      args.push('--device', 'Vulkan1');
+
+    } else if (cfg.gpuBackend === 'cuda' && cfg.deviceIndex < 100) {
+      // NVIDIA GPU targeting.
+      //
+      // Path A — ggml-cuda.dll present (native CUDA build):
+      //   Use CUDA_VISIBLE_DEVICES. Works on all CUDA-capable NVIDIA GPUs.
+      //   Suppress Vulkan to prevent the iGPU from stealing the Vulkan slot.
+      //
+      // Path B — Vulkan-only build (no ggml-cuda.dll):
+      //   Standard: RTX 3080/5080 etc. — appear as Vulkan devices, use GGML_VK_VISIBLE_DEVICES.
+      //   Legacy: Maxwell/Kepler (Quadro M*, GTX 9xx) — may not have Vulkan ICD registered.
+      //     CUDA 12 Windows prebuilt requires sm_60+ on Windows, so no CUDA option either.
+      //     We still attempt Vulkan targeting; if the Vulkan ICD is registered it will work.
+      //     If not, llama-server will exit code 1 and the server falls back to CPU.
+      const binDir      = path.dirname(bin);
+      const cudaDll     = path.join(binDir, 'ggml-cuda.dll');
+      const cudartDll   = path.join(binDir, 'cudart64_12.dll');
+      // CUDA backend requires both ggml-cuda.dll AND the CUDA runtime (cudart64_12.dll).
+      // ggml-cuda.dll depends on cudart64_12.dll, cublas64_12.dll, cublasLt64_12.dll.
+      // Without the runtime DLLs, ggml-cuda.dll silently fails to load and llama-server
+      // falls back to CPU with no error. We detect this by checking for cudart64_12.dll
+      // (the primary runtime dep) alongside ggml-cuda.dll.
+      // Runtime DLLs are fetched by fetch-win32-x64.js from the cudart-llama release zip.
+      const hasCudaDll    = process.platform === 'win32' && fs.existsSync(cudaDll);
+      const hasCudaRuntime = process.platform === 'win32' && fs.existsSync(cudartDll);
+      const hasCuda       = hasCudaDll && hasCudaRuntime;
+
+      if (hasCuda) {
+        // Native CUDA path — ggml-cuda.dll + cudart runtime both present
+        env.CUDA_VISIBLE_DEVICES    = String(cfg.deviceIndex);
+        env.GGML_VK_VISIBLE_DEVICES = ''; // suppress Vulkan iGPU interference
+        console.log(`[LlamaServerManager] ${role}: NVIDIA CUDA path (ggml-cuda.dll + cudart runtime found)`);
+      } else {
+        // Vulkan path for NVIDIA — either no CUDA DLLs, or missing cudart runtime.
+        if (hasCudaDll && !hasCudaRuntime) {
+          console.warn(`[LlamaServerManager] ${role}: ggml-cuda.dll found but cudart64_12.dll missing — CUDA runtime not installed. Falling back to Vulkan. Run fetch-win32-x64.js to fetch runtime DLLs.`);
+        }
+        const vkIdx = cfg.vulkanIndex ?? cfg.deviceIndex;
+        env.GGML_VK_VISIBLE_DEVICES = String(vkIdx);
+        args.push('--device', 'Vulkan0');
+        if ((cfg as any).runnerKind === 'nvidia-legacy') {
+          console.log(`[LlamaServerManager] ${role}: NVIDIA legacy GPU — attempting Vulkan${vkIdx}. If ICD not registered, will fall to CPU.`);
+        }
+      }
+
     } else {
-      // NVIDIA discrete GPU (Vulkan/CUDA)
-      env.GGML_VK_VISIBLE_DEVICES = String(cfg.deviceIndex);
+      // Non-NVIDIA Vulkan GPU (AMD discrete, AMD iGPU, Intel iGPU).
+      // GGML_VK_VISIBLE_DEVICES filters to one device; it becomes Vulkan0.
+      const vkIdx = cfg.vulkanIndex ??
+        (cfg.deviceIndex >= 100 ? (cfg.deviceIndex - 100) : cfg.deviceIndex);
+
+      env.CUDA_VISIBLE_DEVICES    = '-1'; // hide CUDA — no NVIDIA context overhead
+      env.HIP_VISIBLE_DEVICES     = '-1'; // hide ROCm
+      env.GGML_VK_VISIBLE_DEVICES = String(vkIdx);
       args.push('--device', 'Vulkan0');
     }
   } else if (cfg.gpuLayers > 0) {
@@ -177,6 +230,22 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
     managed.state   = code === 0 ? 'stopped' : 'error';
     if (code !== 0 && code !== null) {
       managed.error = `Exited with code ${code}`;
+    }
+
+    // GPU device not found (exit code 1 during startup, before port was ready) —
+    // auto-retry as CPU. Handles GPUs that have neither CUDA dll nor Vulkan ICD
+    // (e.g. Quadro M2000 on a system without ggml-cuda.dll).
+    if (code === 1 && cfg.gpuLayers > 0 && managed.state === 'error') {
+      console.warn(`[LlamaServerManager] ${role} failed to start on GPU — retrying as CPU`);
+      managed.state = 'stopped';
+      startServer(role, {
+        ...cfg,
+        gpuLayers:   0,
+        deviceIndex: undefined,
+        gpuBackend:  undefined,
+      }).catch(err => {
+        console.error(`[LlamaServerManager] ${role} CPU fallback also failed: ${err.message}`);
+      });
     }
   });
 
@@ -289,6 +358,8 @@ export async function reconcilePhobosServers(config: {
         threads:     0,
         deviceIndex,
         gpuBackend:  gpuBackend as ServerConfig['gpuBackend'],
+        vulkanIndex: deviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === deviceIndex)?.runner?.vulkanIndex : undefined,
+        runnerKind:  deviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === deviceIndex)?.runner?.kind : undefined,
       }).catch(err => {
         console.error(`[reconcile] sayon start failed: ${err.message}`);
       })
@@ -316,6 +387,8 @@ export async function reconcilePhobosServers(config: {
         threads:     0,
         deviceIndex,
         gpuBackend:  gpuBackend as ServerConfig['gpuBackend'],
+        vulkanIndex: deviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === deviceIndex)?.runner?.vulkanIndex : undefined,
+        runnerKind:  deviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === deviceIndex)?.runner?.kind : undefined,
       }).catch(err => {
         console.error(`[reconcile] seren start failed: ${err.message}`);
       })

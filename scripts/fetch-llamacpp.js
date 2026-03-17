@@ -464,17 +464,9 @@ const TARGETS = [
     outName:    'llama-server-linux-x64',
     extractAll: true,
   },
-  {
-    platform:   'linux',
-    arch:       'arm64',
-    variants: [
-      { suffix: 'ubuntu-arm64',        ext: '.tar.gz' },
-      { suffix: 'ubuntu-vulkan-arm64', ext: '.tar.gz' },
-    ],
-    binInZip:   'llama-server',
-    outName:    'llama-server-linux-arm64',
-    extractAll: true,
-  },
+  // linux-arm64: llama.cpp does not ship a prebuilt arm64 binary in GitHub releases.
+  // Linux arm64 users (e.g. Raspberry Pi, Jetson) must build from source.
+  // Leaving this entry out avoids a guaranteed 404 on every fetch run.
   {
     platform:   'darwin',
     arch:       'arm64',
@@ -514,16 +506,44 @@ const TARGETS = [
 
 // Windows CUDA backend DLL — extracted separately from the CUDA release archive.
 // llama-server.exe loads this dynamically at runtime if it exists in the same directory.
+// CUDA runtime variants shared by ggml-cuda.dll and the cudart runtime entries
+const CUDA_VARIANTS = [
+  { suffix: 'win-cuda-12.4-x64', ext: '.zip' },
+  { suffix: 'win-cuda-12.8-x64', ext: '.zip' },
+  { suffix: 'win-cuda-12.2-x64', ext: '.zip' },
+  { suffix: 'win-cuda-12.6-x64', ext: '.zip' },
+];
+
 const CUDA_DLL_TARGETS = [
+  // ggml-cuda.dll — the CUDA compute backend for llama-server
   {
-    variants: [
-      { suffix: 'win-cuda-12.4-x64',   ext: '.zip' },
-      { suffix: 'win-cuda-12.8-x64',   ext: '.zip' },
-      { suffix: 'win-cuda-12.2-x64',   ext: '.zip' },
-      { suffix: 'win-cuda-12.6-x64',   ext: '.zip' },
-    ],
+    variants: CUDA_VARIANTS,
     dllInZip: 'ggml-cuda.dll',
     outName:  'ggml-cuda.dll',
+  },
+
+  // CUDA runtime DLLs — required by ggml-cuda.dll at load time.
+  // ggml-cuda.dll depends on cudart64_12.dll, cublas64_12.dll, cublasLt64_12.dll.
+  // These are NOT included in the NVIDIA display driver — only the CUDA Toolkit.
+  // Without them ggml-cuda.dll silently fails to load and llama-server falls to CPU.
+  // Fetched from the separate cudart-llama release zip in llama.cpp CI.
+  {
+    variants:     CUDA_VARIANTS,
+    dllInZip:     'cudart64_12.dll',
+    outName:      'cudart64_12.dll',
+    cudartPrefix: 'cudart-llama',
+  },
+  {
+    variants:     CUDA_VARIANTS,
+    dllInZip:     'cublas64_12.dll',
+    outName:      'cublas64_12.dll',
+    cudartPrefix: 'cudart-llama',
+  },
+  {
+    variants:     CUDA_VARIANTS,
+    dllInZip:     'cublasLt64_12.dll',
+    outName:      'cublasLt64_12.dll',
+    cudartPrefix: 'cudart-llama',
   },
 ];
 
@@ -710,35 +730,41 @@ export async function fetchBinaries(targets, cudaTargets = []) {
 
     let downloaded = false;
     for (const { suffix, ext } of cudaTarget.variants) {
-      const archiveName = `llama-${version}-bin-${suffix}${ext}`;
+      // cudartPrefix targets use 'cudart-llama-bin-...' naming, not 'llama-...-bin-...'
+      const prefix      = cudaTarget.cudartPrefix ? `${cudaTarget.cudartPrefix}-bin` : `llama-${version}-bin`;
+      const archiveName = `${prefix}-${suffix}${ext}`;
       const url         = `https://github.com/ggml-org/llama.cpp/releases/download/${version}/${archiveName}`;
       const archiveDest = path.join(TMP_DIR, archiveName);
 
-      console.log(`   trying: ${url}`);
-
-      let result;
-      try {
-        result = await downloadFile(url, archiveDest);
-      } catch (err) {
-        console.error(`   ✗ Download error: ${err.message}`);
-        continue;
-      }
-
-      if (result.status === 404) {
-        console.log(`   ✗ 404 — trying next variant...`);
-        continue;
+      // Reuse cached archive if a previous entry already downloaded it (avoids re-fetching
+      // the 391 MB cudart zip for each of the three runtime DLLs it contains).
+      if (!fs.existsSync(archiveDest)) {
+        console.log(`   trying: ${url}`);
+        let result;
+        try {
+          result = await downloadFile(url, archiveDest);
+        } catch (err) {
+          console.error(`   ✗ Download error: ${err.message}`);
+          continue;
+        }
+        if (result.status === 404) {
+          console.log(`   ✗ 404 — trying next variant...`);
+          continue;
+        }
+      } else {
+        console.log(`   reusing cached: ${archiveName}`);
       }
 
       try {
         await extractSingleFile(archiveDest, cudaTarget.dllInZip, outPath);
       } catch (err) {
         console.error(`   ✗ Extract failed: ${err.message}`);
-        if (fs.existsSync(archiveDest)) fs.unlinkSync(archiveDest);
-        if (fs.existsSync(outPath))     fs.unlinkSync(outPath);
+        if (fs.existsSync(outPath)) fs.unlinkSync(outPath);
         continue;
       }
 
-      fs.unlinkSync(archiveDest);
+      // Do NOT delete archiveDest here — other cudaTargets may reuse the same zip.
+      // TMP_DIR is wiped at the end of fetchBinaries().
       console.log(`   ✓  ${cudaTarget.outName}`);
       downloaded = true;
       break;

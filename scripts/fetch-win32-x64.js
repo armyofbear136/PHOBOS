@@ -17,6 +17,8 @@ await fetchBinaries(
     },
   ],
   [
+    // ── ggml-cuda.dll — the CUDA compute backend for llama-server ──────────────
+    // Extracted from the llama CUDA release zip (contains only ggml-cuda.dll).
     {
       variants: [
         { suffix: 'win-cuda-12.4-x64', ext: '.zip' },
@@ -26,6 +28,48 @@ await fetchBinaries(
       ],
       dllInZip: 'ggml-cuda.dll',
       outName:  'ggml-cuda.dll',
+    },
+
+    // ── CUDA runtime DLLs — required by ggml-cuda.dll at load time ─────────────
+    // ggml-cuda.dll depends on cudart64_12.dll, cublas64_12.dll, cublasLt64_12.dll.
+    // These are NOT included in the normal NVIDIA display driver — only the CUDA
+    // Toolkit installs them. Without them, ggml-cuda.dll silently fails to load
+    // and llama-server falls back to CPU with no error message.
+    //
+    // The cudart-llama zip is a separate release asset from llama.cpp CI that
+    // packages only these three runtime DLLs for redistribution.
+    {
+      variants: [
+        { suffix: 'win-cuda-12.4-x64', ext: '.zip', cudartZip: true },
+        { suffix: 'win-cuda-12.8-x64', ext: '.zip', cudartZip: true },
+        { suffix: 'win-cuda-12.2-x64', ext: '.zip', cudartZip: true },
+        { suffix: 'win-cuda-12.6-x64', ext: '.zip', cudartZip: true },
+      ],
+      dllInZip: 'cudart64_12.dll',
+      outName:  'cudart64_12.dll',
+      cudartPrefix: 'cudart-llama', // uses cudart-llama-bin-win-cuda-X.Y-x64.zip naming
+    },
+    {
+      variants: [
+        { suffix: 'win-cuda-12.4-x64', ext: '.zip', cudartZip: true },
+        { suffix: 'win-cuda-12.8-x64', ext: '.zip', cudartZip: true },
+        { suffix: 'win-cuda-12.2-x64', ext: '.zip', cudartZip: true },
+        { suffix: 'win-cuda-12.6-x64', ext: '.zip', cudartZip: true },
+      ],
+      dllInZip: 'cublas64_12.dll',
+      outName:  'cublas64_12.dll',
+      cudartPrefix: 'cudart-llama',
+    },
+    {
+      variants: [
+        { suffix: 'win-cuda-12.4-x64', ext: '.zip', cudartZip: true },
+        { suffix: 'win-cuda-12.8-x64', ext: '.zip', cudartZip: true },
+        { suffix: 'win-cuda-12.2-x64', ext: '.zip', cudartZip: true },
+        { suffix: 'win-cuda-12.6-x64', ext: '.zip', cudartZip: true },
+      ],
+      dllInZip: 'cublasLt64_12.dll',
+      outName:  'cublasLt64_12.dll',
+      cudartPrefix: 'cudart-llama',
     },
   ],
 );

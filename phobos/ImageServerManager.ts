@@ -28,6 +28,8 @@ export interface SdServerConfig {
   gpuBackend?:  'cuda' | 'vulkan' | 'metal';
   freeVramGb?:  number;         // live free VRAM at config-build time (for polling/logging)
   needsPtxJit?: boolean;        // true for Blackwell+ GPUs lacking native cubins in sd-cli
+  /** Which sd-cli binary to use — from GpuRunnerProfile.sdBinary */
+  sdBinary?:    'cuda' | 'vulkan' | 'cpu';
   steps?:       number;
   cfgScale?:    number;
   width?:       number;
@@ -320,7 +322,7 @@ export async function generateImage(
     }
   }
 
-  const bin = resolveSdServerBin();
+  const bin = resolveSdServerBin(cfg.sdBinary ?? (cfg.gpuBackend === 'cuda' ? 'cuda' : cfg.gpuBackend === 'vulkan' ? 'vulkan' : 'cpu'));
   if (process.platform !== 'win32') {
     try { fs.chmodSync(bin, 0o755); } catch { /* ignore */ }
   }
@@ -430,6 +432,7 @@ export async function buildSdConfig(
   let gpuBackend: SdServerConfig['gpuBackend'] | undefined;
   let isUnifiedMemory = false;
   let needsPtxJit     = false;
+  let sdBinaryChoice: 'cuda' | 'vulkan' | 'cpu' = 'cuda';
 
   try {
     const hw = await detectHardware();
@@ -448,6 +451,7 @@ export async function buildSdConfig(
       deviceIndex     = bestGpu.index;
       gpuBackend      = bestGpu.backend;
       isUnifiedMemory = bestGpu.unifiedMemory === true || bestGpu.index >= 100;
+      sdBinaryChoice  = bestGpu.runner?.sdBinary ?? (bestGpu.backend === 'cuda' ? 'cuda' : bestGpu.backend === 'vulkan' ? 'vulkan' : 'cpu');
       freeVramGb      = bestGpu.freeVramGb ?? Math.max(0, totalVramGb - 1.5);
 
       // Blackwell GPUs (RTX 5060/5070/5080/5090) need PTX JIT because
@@ -518,6 +522,7 @@ export async function buildSdConfig(
     gpuBackend,
     freeVramGb,
     needsPtxJit,
+    sdBinary: sdBinaryChoice,
     ...overrides,
   };
 }

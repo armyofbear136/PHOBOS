@@ -32,6 +32,50 @@ export const UPSCALE_MODELS_DIR = path.join(os.homedir(), '.phobos', 'models', '
 
 // ── Hardware detection ────────────────────────────────────────────────────────
 
+/**
+ * Runner profile — computed once at detection time, stored on GpuDevice.
+ * Encapsulates everything needed to spawn llama-server and sd-cli on a
+ * specific GPU without any per-spawn re-derivation.
+ *
+ * kind:
+ *   'nvidia-vulkan'  NVIDIA GPU in a Vulkan-only llama.cpp build (no ggml-cuda.dll)
+ *   'nvidia-cuda'    NVIDIA GPU with native ggml-cuda.dll present
+ *   'amd-discrete'   AMD discrete GPU (Vulkan)
+ *   'amd-igpu'       AMD APU / iGPU — unified memory, Vulkan
+ *   'intel-igpu'     Intel integrated GPU — Vulkan
+ *   'apple-metal'    Apple Silicon — Metal unified memory
+ *   'cpu'            No GPU or below minimum threshold
+ *
+ * vulkanIndex:
+ *   0-based Vulkan enumeration position for this device.
+ *   NVIDIA devices enumerate FIRST in Vulkan (index = nvidia-smi index).
+ *   Non-NVIDIA devices follow: vulkanIndex = nvidiaCount + wmiPositionIndex.
+ *   Used for GGML_VK_VISIBLE_DEVICES and --device VulkanN.
+ *   After setting GGML_VK_VISIBLE_DEVICES=vulkanIndex, the device is
+ *   always Vulkan0 from llama-server's filtered perspective.
+ *
+ * sdBinary:
+ *   Which sd-cli binary to use for image generation on this device.
+ *   'cuda' → sd-cuda binary (CUDA compute, NVIDIA only)
+ *   'vulkan' → sd-vulkan binary (Vulkan compute, AMD / Intel)
+ *   'cpu' → sd-cpu binary (no GPU)
+ */
+export type GpuRunnerKind =
+  | 'nvidia-vulkan'   // NVIDIA, Vulkan-only llama.cpp build
+  | 'nvidia-cuda'     // NVIDIA, native ggml-cuda.dll present
+  | 'nvidia-legacy'   // NVIDIA Maxwell/Kepler sm<60 — no CUDA 12 Windows support
+  | 'amd-discrete'
+  | 'amd-igpu'
+  | 'intel-igpu'
+  | 'apple-metal'
+  | 'cpu';
+
+export interface GpuRunnerProfile {
+  kind:        GpuRunnerKind;
+  vulkanIndex: number;   // physical Vulkan enumeration index
+  sdBinary:    'cuda' | 'vulkan' | 'cpu';
+}
+
 export interface GpuDevice {
   /** Free VRAM in GB at detection time (undefined if unknown — non-CUDA devices) */
   freeVramGb?: number;
@@ -48,6 +92,12 @@ export interface GpuDevice {
    * single shared pool.
    */
   unifiedMemory?: boolean;
+  /**
+   * Runner profile — computed by detectHardware() after all GPUs are assembled.
+   * Contains everything needed to spawn llama-server and sd-cli on this device.
+   * Undefined only on cpu-fallback placeholder entries.
+   */
+  runner?: GpuRunnerProfile;
 }
 
 export interface HardwareProfile {
@@ -180,6 +230,59 @@ async function detectAppleSilicon(): Promise<GpuDevice[]> {
 
 // ── Aggregated detection ──────────────────────────────────────────────────────
 
+/**
+ * Assigns a GpuRunnerProfile to every detected GPU.
+ *
+ * Vulkan enumeration order on Windows:
+ *   - NVIDIA GPUs enumerate FIRST (position = nvidia-smi index)
+ *   - Non-NVIDIA GPUs follow in WMI order (position = nvidiaCount + wmiIndex)
+ *
+ * After setting GGML_VK_VISIBLE_DEVICES=<vulkanIndex>, llama-server sees
+ * only one device which it calls Vulkan0. We always pass --device Vulkan0.
+ */
+function assignRunnerProfiles(gpus: GpuDevice[]): void {
+  const nvidiaCount = gpus.filter(g => g.backend === 'cuda').length;
+
+  for (const gpu of gpus) {
+    if (gpu.backend === 'metal') {
+      gpu.runner = { kind: 'apple-metal', vulkanIndex: 0, sdBinary: 'cpu' };
+      continue;
+    }
+
+    if (gpu.backend === 'cuda') {
+      // NVIDIA: Vulkan position = nvidia-smi index (NVIDIA always first in Vulkan)
+      const vulkanIndex = gpu.index; // nvidia-smi index IS the Vulkan position
+      // Maxwell/Kepler classification:
+      // CUDA 12 prebuilt Windows binaries require sm_60+ (CUDA atomics need sm_70+ on Windows).
+      // Quadro M-series, GTX 900-series, GTX 600-series, Quadro K-series are Maxwell/Kepler.
+      // These use 'nvidia-legacy' — attempt Vulkan, fall to CPU if ICD not registered.
+      const isLegacy = /Quadro M|GTX 9[0-9][0-9]|GTX 7[0-9][0-9].*Ti|GTX 6[0-9][0-9]|Quadro K/i.test(gpu.name);
+      gpu.runner = {
+        kind:        isLegacy ? 'nvidia-legacy' : 'nvidia-vulkan',
+        vulkanIndex,
+        sdBinary:    'cuda', // sd-cli always uses CUDA binary for NVIDIA image gen
+      };
+      continue;
+    }
+
+    // Non-NVIDIA Vulkan device
+    // WMI position index = (gpu.index - 100)
+    const wmiIndex   = gpu.index - 100;
+    const vulkanIndex = nvidiaCount + wmiIndex;
+    const isAmd      = /AMD|Radeon|ATI/i.test(gpu.name);
+    const isIntel    = /Intel/i.test(gpu.name);
+    const isUnified  = gpu.unifiedMemory === true;
+
+    let kind: GpuRunnerKind;
+    if (isAmd && isUnified)  kind = 'amd-igpu';
+    else if (isAmd)          kind = 'amd-discrete';
+    else if (isIntel)        kind = 'intel-igpu';
+    else                     kind = 'amd-discrete'; // unknown non-NVIDIA, treat as discrete Vulkan
+
+    gpu.runner = { kind, vulkanIndex, sdBinary: 'vulkan' };
+  }
+}
+
 export async function detectHardware(): Promise<HardwareProfile> {
   const ramGb    = Math.floor(os.totalmem() / (1024 ** 3));
   const cpuCores = os.cpus().length;
@@ -193,6 +296,7 @@ export async function detectHardware(): Promise<HardwareProfile> {
   ]);
 
   const gpus = [...nvidiaGpus, ...nonNvidiaWin, ...nonNvidiaLinux, ...appleGpus];
+  assignRunnerProfiles(gpus);
   return { ramGb, cpuCores, cpuName, gpus };
 }
 
@@ -1291,45 +1395,72 @@ export function resolveLlamaServerBin(): string {
  * Windows preference: CUDA (best) -> Vulkan (primary GPU) -> CPU AVX2 (last resort)
  * Linux/macOS: single binary, fetched as Vulkan/Metal build by fetch-sd-cpp.js
  */
-export function resolveSdServerBin(): string {
+/**
+ * Resolves the sd-cli binary path based on the runner profile's sdBinary field.
+ *
+ * sdBinary routing (Windows):
+ *   'cuda'   → sd-cuda/   binary — NVIDIA CUDA compute. NEVER use on non-NVIDIA.
+ *   'vulkan' → sd-vulkan/ binary — Vulkan compute (AMD/Intel). No CUDA DLLs.
+ *   'cpu'    → sd-cpu/    binary — CPU-only fallback.
+ *
+ * This prevents the critical failure mode where sd-cuda is selected on a
+ * non-NVIDIA system and hangs indefinitely trying to init a CUDA runtime.
+ *
+ * Linux/macOS: single binary handles all backends via env vars.
+ */
+export function resolveSdServerBin(sdBinary: 'cuda' | 'vulkan' | 'cpu' = 'cuda'): string {
   const platform = process.platform;
   const arch     = process.arch;
   const seaDir   = path.dirname(process.execPath);
   const binDir   = path.join(path.resolve(_dirname, '..'), 'bin');
 
-  // Windows: each sd build lives in its own subdir to avoid DLL conflicts with llama-cpp.
-  // Preference: CUDA -> Vulkan -> CPU.
-  // Check both dev layout (bin/sd-cuda/) and SEA layout (dist/sd-cuda/ = seaDir/sd-cuda/).
-  // Linux/macOS: single binary, flat layout.
-  type Candidate = { file: string; dir: string };
-  const candidates: Candidate[] = platform === 'win32'
-    ? [
-        // SEA build: sd-cuda/ etc live alongside the executable
-        { file: `sd-server-${platform}-${arch}-cuda.exe`, dir: path.join(seaDir, 'sd-cuda')   },
-        { file: `sd-server-${platform}-${arch}.exe`,      dir: path.join(seaDir, 'sd-vulkan') },
-        { file: `sd-server-${platform}-${arch}-cpu.exe`,  dir: path.join(seaDir, 'sd-cpu')    },
-        // Dev layout: bin/sd-cuda/ etc
-        { file: `sd-server-${platform}-${arch}-cuda.exe`, dir: path.join(binDir, 'sd-cuda')   },
-        { file: `sd-server-${platform}-${arch}.exe`,      dir: path.join(binDir, 'sd-vulkan') },
-        { file: `sd-server-${platform}-${arch}-cpu.exe`,  dir: path.join(binDir, 'sd-cpu')    },
-        // Flat fallback (legacy or custom builds)
-        { file: `sd-server-${platform}-${arch}-cuda.exe`, dir: seaDir },
-        { file: `sd-server-${platform}-${arch}-cuda.exe`, dir: binDir },
-        { file: `sd-server-${platform}-${arch}.exe`,      dir: seaDir },
-        { file: `sd-server-${platform}-${arch}.exe`,      dir: binDir },
-      ]
-    : [
-        { file: `sd-server-${platform}-${arch}`, dir: seaDir },
-        { file: `sd-server-${platform}-${arch}`, dir: binDir },
-      ];
+  // Linux/macOS: single binary, flat layout
+  if (platform !== 'win32') {
+    for (const dir of [seaDir, binDir]) {
+      const p = path.join(dir, `sd-server-${platform}-${arch}`);
+      if (fs.existsSync(p)) return p;
+    }
+    throw new Error(`sd-server binary not found for ${platform}-${arch}. Run scripts/fetch-sd-cpp.js.`);
+  }
 
-  for (const { file, dir } of candidates) {
+  // Windows: strict binary routing — no cross-backend fallback
+  type Candidate = { file: string; dir: string };
+  const byCandidates = (dirs: string[], file: string): Candidate[] =>
+    dirs.map(dir => ({ file, dir }));
+
+  const searchDirs = [seaDir, binDir];
+  const cudaCandidates: Candidate[] = [
+    ...byCandidates(searchDirs.map(d => path.join(d, 'sd-cuda')), `sd-server-${platform}-${arch}-cuda.exe`),
+    ...byCandidates(searchDirs, `sd-server-${platform}-${arch}-cuda.exe`), // flat fallback
+  ];
+  const vulkanCandidates: Candidate[] = [
+    ...byCandidates(searchDirs.map(d => path.join(d, 'sd-vulkan')), `sd-server-${platform}-${arch}.exe`),
+    ...byCandidates(searchDirs, `sd-server-${platform}-${arch}.exe`),
+  ];
+  const cpuCandidates: Candidate[] = [
+    ...byCandidates(searchDirs.map(d => path.join(d, 'sd-cpu')), `sd-server-${platform}-${arch}-cpu.exe`),
+    ...byCandidates(searchDirs, `sd-server-${platform}-${arch}-cpu.exe`),
+  ];
+
+  // Try the requested binary type first, then cpu as last resort (never cross cuda/vulkan)
+  const preferred = sdBinary === 'cuda' ? cudaCandidates
+    : sdBinary === 'vulkan'             ? vulkanCandidates
+    : cpuCandidates;
+
+  for (const { file, dir } of preferred) {
     const p = path.join(dir, file);
     if (fs.existsSync(p)) return p;
   }
+  // CPU is always the safe fallback if preferred binary not installed
+  if (sdBinary !== 'cpu') {
+    for (const { file, dir } of cpuCandidates) {
+      const p = path.join(dir, file);
+      if (fs.existsSync(p)) return p;
+    }
+  }
 
   throw new Error(
-    `sd-server binary not found for ${platform}-${arch}.\n` +
+    `sd-server binary not found for ${platform}-${arch} (sdBinary: ${sdBinary}).\n` +
     `Expected in sd-cuda/, sd-vulkan/, or sd-cpu/ (alongside executable or in bin/)\n` +
     `Run scripts/fetch-sd-cpp.js to download binaries.`
   );

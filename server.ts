@@ -45,7 +45,9 @@ async function buildServer() {
         !origin || 
         origin.includes('localhost') || 
         origin.includes('127.0.0.1') || 
-        origin.includes('autarch.net')
+        origin.includes('autarch.net') ||
+        origin.includes('onrender.com') ||
+        origin.includes('10.0.0.')  // local network subnet
       ) {
         cb(null, true);
       } else {

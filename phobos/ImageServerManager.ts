@@ -249,6 +249,14 @@ function buildEnv(cfg: SdServerConfig): NodeJS.ProcessEnv {
       env.CUDA_FORCE_PTX_JIT = '1';
     }
 
+    // Suppress cuBLASLt autotuning workspace on tight-VRAM cards.
+    // cublasLt64_12.dll pre-allocates ~500-674 MB on load for autotuning.
+    // On ≤12 GB cards this is the difference between fitting and OOM.
+    if (cfg.freeVramGb !== undefined && cfg.freeVramGb <= 12) {
+      env.CUBLAS_WORKSPACE_CONFIG = ':0:0';
+      env.CUBLASLT_WORKSPACE_SIZE = '0';
+    }
+
     return env;
   }
 
@@ -305,15 +313,15 @@ export async function generateImage(
 
   // ── Pre-flight VRAM check ──────────────────────────────────────────────────
   // Estimate total model footprint and compare against available VRAM.
-  // Applies to discrete GPU paths (CUDA + Vulkan discrete).
-  // Skipped for: CPU binary (no VRAM), unified memory (offload uses RAM pool).
+  // Applies to discrete GPU paths (CUDA + Vulkan).
+  // Skipped for: CPU binary (no VRAM), unified memory (RAM pool, no discrete gate).
   const isDiscreteGpuPath = (cfg.gpuBackend === 'cuda' || cfg.gpuBackend === 'vulkan')
-    && !cfg.offloadToCpu
     && cfg.sdBinary !== 'cpu';
   if (isDiscreteGpuPath && cfg.freeVramGb !== undefined && cfg.freeVramGb > 0) {
     const diffusionMb = Math.ceil(spec.sizeBytes / (1024 * 1024));
+    // When offloading to CPU, T5 lives in system RAM — exclude from VRAM budget.
     const t5Aux       = cfg.auxFiles.find(a => a.cliFlag === '--t5xxl');
-    const t5Mb        = t5Aux ? Math.ceil(t5Aux.sizeBytes / (1024 * 1024)) : 0;
+    const t5Mb        = (cfg.offloadToCpu || false) ? 0 : (t5Aux ? Math.ceil(t5Aux.sizeBytes / (1024 * 1024)) : 0);
     const vaeMb       = 160;
     const clipAux     = cfg.auxFiles.find(a => a.cliFlag === '--clip_l');
     const clipMb      = clipAux ? Math.ceil(clipAux.sizeBytes / (1024 * 1024)) : 0;
@@ -322,8 +330,8 @@ export async function generateImage(
     const freeMb      = Math.round(cfg.freeVramGb * 1024);
 
     console.log(
-      `[ImageServerManager] Pre-flight VRAM (${cfg.gpuBackend}): need ~${totalNeeded} MB ` +
-      `(diffusion ${diffusionMb} + T5 ${t5Mb} + VAE ${vaeMb} + CLIP ${clipMb} + working ${workingMb}), ` +
+      `[ImageServerManager] Pre-flight VRAM (${cfg.gpuBackend}${cfg.offloadToCpu ? ', T5 offloaded' : ''}): need ~${totalNeeded} MB ` +
+      `(diffusion ${diffusionMb}${t5Mb > 0 ? ` + T5 ${t5Mb}` : ''} + VAE ${vaeMb} + CLIP ${clipMb} + working ${workingMb}), ` +
       `have ${freeMb} MB free`
     );
 
@@ -331,7 +339,9 @@ export async function generateImage(
       throw new Error(
         `Not enough VRAM for GPU generation: model needs ~${(totalNeeded / 1024).toFixed(1)} GB ` +
         `but only ${cfg.freeVramGb.toFixed(1)} GB is free. ` +
-        `Flux and Chroma require at least 8 GB discrete VRAM.`
+        (cfg.offloadToCpu
+          ? `Even with T5 offloaded to CPU, the diffusion model alone exceeds available VRAM.`
+          : `Flux and Chroma require at least 8 GB discrete VRAM.`)
       );
     }
   }
@@ -350,7 +360,7 @@ export async function generateImage(
   if (cfg.gpuBackend === 'cuda' && cfg.sdBinary !== 'cpu' && cfg.freeVramGb !== undefined) {
     const diffusionMb = Math.ceil(spec.sizeBytes / (1024 * 1024));
     const t5Aux       = cfg.auxFiles.find(a => a.cliFlag === '--t5xxl');
-    const t5Mb        = t5Aux ? Math.ceil(t5Aux.sizeBytes / (1024 * 1024)) : 0;
+    const t5Mb        = (cfg.offloadToCpu) ? 0 : (t5Aux ? Math.ceil(t5Aux.sizeBytes / (1024 * 1024)) : 0);
     const minFreeMb   = diffusionMb + t5Mb + 500; // model + 500 MB safety margin
     const minFreeGb   = minFreeMb / 1024;
     const POLL_MS     = 1000;
@@ -550,6 +560,28 @@ export async function buildSdConfig(
     return null;
   }
 
+  // ── Tight-VRAM offload for discrete CUDA ──────────────────────────────────
+  // On 8 GB cards Windows eats 1+ GB for display/driver, leaving ~7 GB free.
+  // Chroma Q4 diffusion (5.18 GB) + T5 Q3 (2.3 GB) + VAE + working > 7 GB.
+  // --offload-to-cpu moves the T5 text encoder to system RAM. The T5 forward
+  // pass runs once per generation on CPU (~3-5s penalty), then all 20 diffusion
+  // steps run fully on GPU. Net impact: <5% slower, fits in 8 GB cards.
+  if (
+    !offloadToCpu &&
+    !isUnifiedMemory &&
+    gpuBackend === 'cuda' &&
+    sdBinaryChoice === 'cuda' &&
+    spec.runnerProfile !== 'sdxl' &&
+    freeVramGb > 0 &&
+    freeVramGb < spec.vramRequiredGb
+  ) {
+    offloadToCpu = true;
+    console.log(
+      `[ImageServerManager] Tight VRAM (${freeVramGb.toFixed(1)} GB free, model needs ${spec.vramRequiredGb} GB) ` +
+      `— enabling --offload-to-cpu (T5 encoder → system RAM)`
+    );
+  }
+
   // Aux selection by runner profile
   let auxFiles: FluxAuxFile[];
   if (spec.runnerProfile === 'sdxl') {
@@ -563,10 +595,10 @@ export async function buildSdConfig(
     // On a 10 GB card this overhead is 1-2 GB and makes the difference
     // between fitting and OOM on cublas workspace allocation.
     const t5VramBudget = freeVramGb > 0 ? freeVramGb : totalVramGb;
-    const t5 = recommendT5Encoder(spec, t5VramBudget, isUnifiedMemory);
+    const t5 = recommendT5Encoder(spec, t5VramBudget, isUnifiedMemory || offloadToCpu);
     const baseAux = spec.variant === 'chroma' ? CHROMA_AUX_REQUIRED : FLUX_AUX_REQUIRED;
     auxFiles  = [...baseAux, t5];
-    console.log(`[ImageServerManager] Selected model: ${spec.label} (${spec.runnerProfile} runner) · T5: ${t5.label}`);
+    console.log(`[ImageServerManager] Selected model: ${spec.label} (${spec.runnerProfile} runner) · T5: ${t5.label}${offloadToCpu ? ' (CPU offload)' : ''}`);
   }
 
   const modelType: SdModelType =

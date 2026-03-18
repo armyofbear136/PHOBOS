@@ -355,7 +355,7 @@ export async function fetchSdBinaries({ all = false } = {}) {
         fn = `sd-master-${shortHash}-bin-Darwin-macOS-${macVersions[0]}-arm64.zip`;
         console.log(`   Note: macOS asset version varies per release. Set GITHUB_TOKEN env for exact discovery.`);
       }
-      await fetchAsset(
+      const ok = await fetchAsset(
         'sd-server-darwin-arm64',
         dl(fn), tmp(fn), outPath,
         async (archive) => {
@@ -368,6 +368,22 @@ export async function fetchSdBinaries({ all = false } = {}) {
         },
         ['sd-cli', 'sd'],
       );
+      // The CI-built binary has LC_RPATH pointing to the GitHub runner's build dir
+      // (/Users/runner/work/stable-diffusion.cpp/...). On user machines this path
+      // doesn't exist, causing dyld to fail loading libstable-diffusion.dylib.
+      // Add @executable_path as an rpath so it finds the dylib alongside the binary.
+      if (ok && fs.existsSync(outPath) && p === 'darwin') {
+        try {
+          const { execFileSync } = await import('node:child_process');
+          execFileSync('install_name_tool', ['-add_rpath', '@executable_path', outPath]);
+          console.log('   ✓  patched rpath → @executable_path');
+        } catch (rpathErr) {
+          // -add_rpath fails if @executable_path is already present — that's fine.
+          if (!rpathErr.message?.includes('would duplicate')) {
+            console.warn(`   ⚠️  rpath patch failed: ${rpathErr.message}`);
+          }
+        }
+      }
     }
   }
 

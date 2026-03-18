@@ -228,7 +228,7 @@ function buildEnv(cfg: SdServerConfig): NodeJS.ProcessEnv {
   const env = { ...process.env };
 
   if (cfg.gpuBackend === 'metal') {
-    return env; // macOS Metal — binary handles this automatically
+    return env; // macOS Metal — DYLD_LIBRARY_PATH set at spawn site
   }
 
   if (cfg.gpuBackend === 'cuda') {
@@ -402,6 +402,15 @@ export async function generateImage(
   const seed = opts.seed ?? 42;
   const args = buildArgs(cfg, { ...opts, seed }, outputPath);
   const env  = buildEnv(cfg);
+
+  // macOS: the CI-built sd-cli binary has @rpath baked to the GitHub runner's
+  // build directory, which doesn't exist on user machines. DYLD_LIBRARY_PATH
+  // tells dyld to also search the binary's own directory for companion dylibs
+  // (libstable-diffusion.dylib). Harmless no-op on Linux/Windows.
+  const binDir = path.dirname(bin);
+  if (process.platform === 'darwin') {
+    env.DYLD_LIBRARY_PATH = binDir + (env.DYLD_LIBRARY_PATH ? `:${env.DYLD_LIBRARY_PATH}` : '');
+  }
 
   console.log(`[ImageServerManager] Spawning sd-cli — ${spec.label} (${cfg.modelType})`);
   console.log(`[ImageServerManager] ${bin} ${args.join(' ')}`);

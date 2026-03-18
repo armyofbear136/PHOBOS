@@ -265,10 +265,21 @@ function assignRunnerProfiles(gpus: GpuDevice[]): void {
       continue;
     }
 
-    // Non-NVIDIA Vulkan device
-    // WMI position index = (gpu.index - 100)
-    const wmiIndex   = gpu.index - 100;
-    const vulkanIndex = nvidiaCount + wmiIndex;
+    // Non-NVIDIA Vulkan device.
+    // vulkanIndex must reflect the actual Vulkan enumeration position.
+    // Vulkan enumerates NVIDIA GPUs first (positions 0..nvidiaCount-1),
+    // then non-NVIDIA GPUs in the same order as they survive WMI filtering.
+    //
+    // We CANNOT use (gpu.index - 100) as the WMI offset because the index
+    // includes GPUs that were filtered out by vramGb < 1 (e.g. Intel iGPU
+    // reporting 0 VRAM). Those gaps shift the Vulkan position vs the raw offset.
+    //
+    // Correct approach: count how many non-NVIDIA gpus in THIS list have
+    // a lower index (i.e. came before this one in WMI order after filtering).
+    const nonNvidiaPosition = gpus.filter(g =>
+      g.backend !== 'cuda' && g.backend !== 'metal' && g.index < gpu.index
+    ).length;
+    const vulkanIndex = nvidiaCount + nonNvidiaPosition;
     const isAmd      = /AMD|Radeon|ATI/i.test(gpu.name);
     const isIntel    = /Intel/i.test(gpu.name);
     const isUnified  = gpu.unifiedMemory === true;
@@ -312,25 +323,27 @@ export interface GGUFSpec {
   hfRepo: string;
   hfFile: string;
   sizeBytes: number;
+  /**
+   * KV cache memory cost in MB per 1K tokens of context, at F16 precision.
+   * Used by recommendContextSize() to compute the largest safe context window
+   * for the available VRAM or RAM on the target device.
+   * Empirically measured from llama-server startup logs.
+   */
+  kvCacheMbPer1kTokens: number;
   ramRequiredGb: number;
   contextWindow: number;
 }
 
 export const GGUF_CATALOGUE: GGUFSpec[] = [
   // ── Llama 3 family ───────────────────────────────────────────────────────────
-  {
-    modelId: 'llama3.2-1b-q4', label: 'Llama 3.2 1B Q4', family: 'Llama 3',
-    role: 'sayon', thinkingTokens: false, jinjaTemplate: false,
-    hfRepo: 'bartowski/Llama-3.2-1B-Instruct-GGUF',
-    hfFile: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf',
-    sizeBytes: 770_000_000, ramRequiredGb: 1, contextWindow: 131072,
-  },
+  // Llama 3 family — 3B and 8B only. Gemma 3 1B covers the 1B use case.
   {
     modelId: 'llama3.2-3b-q4', label: 'Llama 3.2 3B Q4', family: 'Llama 3',
     role: 'sayon', thinkingTokens: false, jinjaTemplate: false,
     hfRepo: 'bartowski/Llama-3.2-3B-Instruct-GGUF',
     hfFile: 'Llama-3.2-3B-Instruct-Q4_K_M.gguf',
     sizeBytes: 2_020_000_000, ramRequiredGb: 3, contextWindow: 131072,
+    kvCacheMbPer1kTokens: 112,  // 28 layers x 8 KV heads x 128 head_dim x 2 x F16
   },
   {
     modelId: 'llama3.1-8b-q4', label: 'Llama 3.1 8B Q4', family: 'Llama 3',
@@ -338,6 +351,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfRepo: 'bartowski/Meta-Llama-3.1-8B-Instruct-GGUF',
     hfFile: 'Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf',
     sizeBytes: 4_920_000_000, ramRequiredGb: 6, contextWindow: 131072,
+    kvCacheMbPer1kTokens: 128,  // 32 layers x 8 KV heads x 128 head_dim x 2 x F16
   },
   // ── Gemma 3 family ───────────────────────────────────────────────────────────
   {
@@ -346,6 +360,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfRepo: 'bartowski/google_gemma-3-1b-it-GGUF',
     hfFile: 'google_gemma-3-1b-it-Q4_K_M.gguf',
     sizeBytes: 694_000_000, ramRequiredGb: 1, contextWindow: 32768,
+    kvCacheMbPer1kTokens: 72,   // 18 layers x 4 KV heads x 256 head_dim x 2 x F16
   },
   {
     modelId: 'gemma3-4b-q4', label: 'Gemma 3 4B Q4', family: 'Gemma 3',
@@ -353,6 +368,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfRepo: 'bartowski/google_gemma-3-4b-it-GGUF',
     hfFile: 'google_gemma-3-4b-it-Q4_K_M.gguf',
     sizeBytes: 2_530_000_000, ramRequiredGb: 3, contextWindow: 131072,
+    kvCacheMbPer1kTokens: 72,   // 18 layers x 4 KV heads x 256 head_dim x 2 x F16
   },
   {
     modelId: 'gemma3-12b-q4', label: 'Gemma 3 12B Q4', family: 'Gemma 3',
@@ -360,6 +376,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfRepo: 'bartowski/google_gemma-3-12b-it-GGUF',
     hfFile: 'google_gemma-3-12b-it-Q4_K_M.gguf',
     sizeBytes: 7_800_000_000, ramRequiredGb: 10, contextWindow: 131072,
+    kvCacheMbPer1kTokens: 224,  // 28 layers x 8 KV heads x 256 head_dim x 2 x F16
   },
   // ── Qwen3 family ─────────────────────────────────────────────────────────────
   {
@@ -368,6 +385,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfRepo: 'bartowski/Qwen_Qwen3-4B-GGUF',
     hfFile: 'Qwen_Qwen3-4B-Q4_K_M.gguf',
     sizeBytes: 2_580_000_000, ramRequiredGb: 3, contextWindow: 32768,
+    kvCacheMbPer1kTokens: 144,  // 36 layers x 8 KV heads x 128 head_dim x 2 x F16
   },
   {
     modelId: 'qwen3-8b-q4', label: 'Qwen3 8B Q4', family: 'Qwen3',
@@ -375,6 +393,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfRepo: 'bartowski/Qwen_Qwen3-8B-GGUF',
     hfFile: 'Qwen_Qwen3-8B-Q4_K_M.gguf',
     sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 32768,
+    kvCacheMbPer1kTokens: 144,  // 36 layers x 8 KV heads x 128 head_dim x 2 x F16
   },
   {
     modelId: 'qwen3-14b-q4', label: 'Qwen3 14B Q4', family: 'Qwen3',
@@ -382,6 +401,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfRepo: 'bartowski/Qwen_Qwen3-14B-GGUF',
     hfFile: 'Qwen_Qwen3-14B-Q4_K_M.gguf',
     sizeBytes: 9_000_000_000, ramRequiredGb: 11, contextWindow: 32768,
+    kvCacheMbPer1kTokens: 160,  // 40 layers x 8 KV heads x 128 head_dim x 2 x F16
   },
   {
     modelId: 'qwen3-30b-a3b-q4', label: 'Qwen3 30B-A3B Q4', family: 'Qwen3',
@@ -389,6 +409,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfRepo: 'bartowski/Qwen_Qwen3-30B-A3B-GGUF',
     hfFile: 'Qwen_Qwen3-30B-A3B-Q4_K_M.gguf',
     sizeBytes: 18_400_000_000, ramRequiredGb: 20, contextWindow: 32768,
+    kvCacheMbPer1kTokens: 96,   // 48 layers x 4 KV heads x 128 head_dim x 2 x F16 (MoE sparse) — active params ~3B, KV cost similar to 4B
   },
   {
     modelId: 'qwen3-coder-8b-q4', label: 'Qwen3 Coder 8B Q4', family: 'Qwen3',
@@ -396,6 +417,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfRepo: 'bartowski/Qwen_Qwen3-Coder-8B-GGUF',
     hfFile: 'Qwen_Qwen3-Coder-8B-Q4_K_M.gguf',
     sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 32768,
+    kvCacheMbPer1kTokens: 144,  // 36 layers x 8 KV heads x 128 head_dim x 2 x F16
   },
   // ── Mistral family ───────────────────────────────────────────────────────────
   {
@@ -404,6 +426,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfRepo: 'bartowski/Mistral-7B-Instruct-v0.3-GGUF',
     hfFile: 'Mistral-7B-Instruct-v0.3-Q4_K_M.gguf',
     sizeBytes: 4_370_000_000, ramRequiredGb: 6, contextWindow: 32768,
+    kvCacheMbPer1kTokens: 128,  // 32 layers x 8 KV heads x 128 head_dim x 2 x F16
   },
   {
     modelId: 'magistral-8b-q4', label: 'Magistral 8B Q4', family: 'Mistral',
@@ -411,6 +434,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfRepo: 'bartowski/mistralai_Magistral-Small-2506-GGUF',
     hfFile: 'mistralai_Magistral-Small-2506-Q4_K_M.gguf',
     sizeBytes: 14_400_000_000, ramRequiredGb: 16, contextWindow: 131072,
+    kvCacheMbPer1kTokens: 128,  // 32 layers x 8 KV heads x 128 head_dim x 2 x F16
   },
   // ── DeepSeek-R1 family ───────────────────────────────────────────────────────
   {
@@ -419,6 +443,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfRepo: 'bartowski/deepseek-ai_DeepSeek-R1-0528-Qwen3-8B-GGUF',
     hfFile: 'deepseek-ai_DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf',
     sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 32768,
+    kvCacheMbPer1kTokens: 144,  // 36 layers x 8 KV heads x 128 head_dim x 2 x F16
   },
   {
     modelId: 'deepseek-r1-14b-q4', label: 'DeepSeek-R1 14B Q4', family: 'DeepSeek-R1',
@@ -426,6 +451,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfRepo: 'bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF',
     hfFile: 'DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf',
     sizeBytes: 9_050_000_000, ramRequiredGb: 11, contextWindow: 65536,
+    kvCacheMbPer1kTokens: 192,  // 48 layers x 8 KV heads x 128 head_dim x 2 x F16
   },
   {
     modelId: 'deepseek-r1-70b-q4', label: 'DeepSeek-R1 70B Q4', family: 'DeepSeek-R1',
@@ -433,6 +459,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfRepo: 'bartowski/DeepSeek-R1-Distill-Llama-70B-GGUF',
     hfFile: 'DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf',
     sizeBytes: 42_520_000_000, ramRequiredGb: 48, contextWindow: 65536,
+    kvCacheMbPer1kTokens: 320,  // 80 layers x 8 KV heads x 128 head_dim x 2 x F16
   },
 ];
 
@@ -860,8 +887,20 @@ export function recommendFluxModel(vramGb: number): FluxSpec | null {
  * Chroma is checked first (it is now the default); FLUX is the fallback.
  * SDXL is excluded — it requires convert.py-produced GGUFs not currently in catalogue.
  */
-export function recommendImageModel(vramGb: number): ImageModelSpec | null {
+/**
+ * Recommends the best downloaded image model for the given hardware.
+ *
+ * @param vramGb         Available VRAM (or total system RAM for unified memory)
+ * @param isUnifiedMemory  True for AMD iGPU, Apple Silicon — RAM = VRAM (same pool).
+ *                         With --offload-to-cpu, the full RAM pool is usable.
+ */
+export function recommendImageModel(vramGb: number, isUnifiedMemory = false): ImageModelSpec | null {
   const ordered = [...CHROMA_CATALOGUE, ...FLUX_CATALOGUE];
+  if (isUnifiedMemory) {
+    // Unified memory: --offload-to-cpu uses full RAM pool. No discrete VRAM gate.
+    return ordered.find(m => isImageModelDownloaded(m)) ?? null;
+  }
+  // Discrete GPU: only GPU VRAM available. Flux/Chroma need ≥8 GB.
   return ordered.find(m => m.vramRequiredGb <= vramGb && isImageModelDownloaded(m)) ?? null;
 }
 
@@ -957,8 +996,9 @@ export interface ModelRecommendation {
 }
 
 const SAYON_CANDIDATES = [
+  // Ordered best-to-smallest. gemma3-1b-q4 is the 1B fallback (stable on 2GB GPU).
   'llama3.1-8b-q4', 'gemma3-12b-q4', 'gemma3-4b-q4',
-  'llama3.2-3b-q4', 'gemma3-1b-q4',  'llama3.2-1b-q4',
+  'llama3.2-3b-q4', 'gemma3-1b-q4',
 ];
 
 const SEREN_CANDIDATES = [
@@ -1023,6 +1063,16 @@ export function buildRecommendation(hw: HardwareProfile): ModelRecommendation {
       sayonGpuLayers = 0;
     }
 
+  } else if (bestGpu && bestGpu.vramGb === 2) {
+    // 2 GB GPU edge case: too small for any SEREN model (smallest needs 3 GB).
+    // But gemma3-1b-q4 (1 GB) runs well on 2 GB. Put SAYON on GPU, SEREN on CPU.
+    sayon          = pickBestFit(SAYON_CANDIDATES, Math.floor(bestGpu.vramGb * HEADROOM));
+    sayonDevice    = bestGpu.index;
+    sayonGpuLayers = 99;
+    seren          = pickBestFit(SEREN_CANDIDATES, Math.floor(hw.ramGb * HEADROOM));
+    serenDevice    = 'cpu';
+    serenGpuLayers = 0;
+
   } else {
     const pool       = Math.floor(hw.ramGb * HEADROOM);
     seren          = pickBestFit(SEREN_CANDIDATES, Math.floor(pool * 0.60));
@@ -1048,6 +1098,44 @@ export function buildRecommendation(hw: HardwareProfile): ModelRecommendation {
     ` SEREN → ${seren.label} on ${deviceName(serenDevice)} (${serenGpuLayers > 0 ? 'GPU' : 'CPU'}).`;
 
   return { sayon, seren, sayonDevice, serenDevice, sayonGpuLayers, serenGpuLayers, reasoning };
+}
+
+// ── Dynamic context size recommendation ──────────────────────────────────────
+
+/**
+ * Computes the largest safe context window for a model on the target device.
+ *
+ * For GPU mode: availableGb = free VRAM after model weights load.
+ *   KV cache lives entirely in VRAM. Hard limit — exceeding it causes OOM.
+ *   Safety reserve: 300 MB for driver overhead + CUDA workspace.
+ *
+ * For CPU mode: availableGb = (totalRamGb - modelWeightsGb - 2 GB OS) * 0.70.
+ *   KV cache lives in system RAM. 30% headroom for OS + app memory.
+ *
+ * Context tiers (K tokens): 4, 8, 12, 16, 24, 32, 48, 64, 128.
+ * Always clamped to model's contextWindow maximum.
+ * Minimum is always 4K — enough for most single-turn conversations.
+ */
+export function recommendContextSize(
+  spec:         GGUFSpec,
+  availableGb:  number,   // free VRAM (GPU) or adjusted RAM (CPU)
+  isGpu:        boolean,
+): number {
+  const SAFETY_MB   = isGpu ? 512 : 0;  // GPU: reserve for driver/CUDA context + cuBLAS workspace
+  const availableMb = availableGb * 1024 - SAFETY_MB;
+  if (availableMb <= 0) return 4096;
+
+  const maxTokensK = availableMb / spec.kvCacheMbPer1kTokens;
+
+  // Snap down to the nearest standard tier
+  const TIERS = [128, 64, 48, 32, 24, 16, 12, 8, 4] as const;
+  const tierK  = TIERS.find(t => maxTokensK >= t) ?? 4;
+
+  // Clamp to model's declared max context
+  const modelMaxK  = Math.floor(spec.contextWindow / 1024);
+  const chosenK    = Math.min(tierK, modelMaxK);
+
+  return chosenK * 1024;
 }
 
 // ── GGUF download ─────────────────────────────────────────────────────────────

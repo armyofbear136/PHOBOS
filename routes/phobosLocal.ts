@@ -34,6 +34,10 @@ import {
   type EsrganSpec,
 } from '../phobos/PhobosLocalManager.js';
 import {
+  prefetchVisionModels,
+  VISION_MODELS_DIR,
+} from '../phobos/VisionProcessor.js';
+import {
   startServer,
   stopServer,
   getServerStatus,
@@ -265,6 +269,39 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       const totalDownloadBytes = (mainDownloaded ? 0 : spec.sizeBytes)
         + auxStatus.reduce((s, a) => s + (a.downloaded ? 0 : a.sizeBytes), 0);
 
+      // ── Node prerequisite files: ESRGAN upscale models ──────────────────────
+      // These are workflow node prerequisites bundled with every image model so
+      // they appear in the checklist and download alongside the main model.
+      // Only the x4plus general model is required — anime and x2plus are optional.
+      const esrganRequired = ESRGAN_MODELS.filter(m => m.id === 'realesrgan-x4plus');
+      const esrganStatus = esrganRequired.map(m => ({
+        id:         m.id,
+        label:      m.label,
+        sizeBytes:  m.sizeBytes,
+        downloaded: isEsrganDownloaded(m),
+        license:    'BSD-3-Clause',
+        licenseUrl: 'https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE',
+      }));
+
+      // Depth model: Xenova/depth-anything-small-hf ~97 MB
+      // Cached by @xenova/transformers at VISION_MODELS_DIR on first prefetch.
+      const depthModelDir  = require('path').join(VISION_MODELS_DIR, 'Xenova', 'depth-anything-small-hf');
+      const depthDownloaded = require('fs').existsSync(depthModelDir) &&
+        require('fs').readdirSync(depthModelDir).length > 0;
+      const depthStatus = [{
+        id:         'depth-model',
+        label:      'Depth model (DepthControlNet node, ~97 MB)',
+        sizeBytes:  97_000_000,
+        downloaded: depthDownloaded,
+        license:    'Apache-2.0',
+        licenseUrl: 'https://huggingface.co/LiheYoung/depth-anything-small-hf',
+      }];
+
+      const nodePrereqStatus = [...esrganStatus, ...depthStatus];
+      const allPrereqsDownloaded = nodePrereqStatus.every(p => p.downloaded);
+      const allFilesDownloaded = allDownloaded && allPrereqsDownloaded;
+      const prereqDownloadBytes = nodePrereqStatus.reduce((s, p) => s + (p.downloaded ? 0 : p.sizeBytes), 0);
+
       return {
         modelId:            spec.modelId,
         label:              spec.label,
@@ -279,11 +316,11 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         licenseUrl:         spec.licenseUrl,
         estSecondsCuda:     spec.estSecondsCuda,
         estSecondsVulkan:   spec.estSecondsVulkan,
-        downloaded:         allDownloaded,
+        downloaded:         allFilesDownloaded,
         mainDownloaded,
-        auxFiles:           auxStatus,
+        auxFiles:           [...auxStatus, ...nodePrereqStatus],
         ...(recommendedT5 ? { recommendedT5 } : {}),
-        totalDownloadBytes,
+        totalDownloadBytes: totalDownloadBytes + prereqDownloadBytes,
       };
     });
 
@@ -337,6 +374,43 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
           send(progress);
           if (progress.error) break;
         }
+
+        // ── Download ESRGAN x4plus (required by Upscale node) ─────────────────
+        const esrganSpec = ESRGAN_MODELS.find(m => m.id === 'realesrgan-x4plus')!;
+        if (!isEsrganDownloaded(esrganSpec)) {
+          for await (const progress of downloadEsrgan(esrganSpec)) {
+            // Map ESRGAN progress to FluxDownloadProgress shape for consistent SSE
+            send({
+              fileId:        progress.id,
+              phase:         'flux-aux',
+              label:         esrganSpec.label,
+              bytesReceived: progress.bytesReceived,
+              bytesTotal:    progress.bytesTotal,
+              done:          progress.done,
+              ...(progress.error ? { error: progress.error } : {}),
+            });
+            if (progress.error) break;
+          }
+        } else {
+          send({ fileId: esrganSpec.id, phase: 'flux-aux', label: esrganSpec.label,
+                 bytesReceived: esrganSpec.sizeBytes, bytesTotal: esrganSpec.sizeBytes, done: true });
+        }
+
+        // ── Prefetch depth model (DepthControlNet node) ───────────────────────
+        // @xenova/transformers downloads ~97 MB to VISION_MODELS_DIR on first call.
+        // No per-byte progress available — runs in background, send a single event.
+        send({ fileId: 'depth-model', phase: 'flux-aux', label: 'Depth model (DepthControlNet)',
+               bytesReceived: 0, bytesTotal: 97_000_000, done: false });
+        try {
+          await prefetchVisionModels(['depth']);
+          send({ fileId: 'depth-model', phase: 'flux-aux', label: 'Depth model (DepthControlNet)',
+                 bytesReceived: 97_000_000, bytesTotal: 97_000_000, done: true });
+        } catch {
+          // Non-fatal — depth model will still download on first node use
+          send({ fileId: 'depth-model', phase: 'flux-aux', label: 'Depth model (DepthControlNet)',
+                 bytesReceived: 0, bytesTotal: 97_000_000, done: true });
+        }
+
         send({ fileId: 'complete', phase: 'complete', label: 'Done', bytesReceived: 0, bytesTotal: 0, done: true });
       } catch (err) {
         console.error(`[phobosLocal] image download error (${modelId}): ${err}`);

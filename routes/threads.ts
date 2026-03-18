@@ -54,7 +54,13 @@ export async function threadsRoute(fastify: FastifyInstance): Promise<void> {
     };
   }>('/api/threads', async (req, reply) => {
     const thread = await store.create(req.body);
-    return reply.status(201).send(thread);
+    return reply.status(201).send({
+      id: thread.id,
+      title: thread.title,
+      projectName: thread.project_id ?? null,
+      parentThreadId: thread.parent_thread_id ?? undefined,
+      createdAt: thread.created_at,
+    });
   });
 
   // POST /api/threads/:id/fork

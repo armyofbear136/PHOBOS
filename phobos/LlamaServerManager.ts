@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as net from 'net';
 import * as path from 'path';
-import { resolveLlamaServerBin, modelPath, getSpec, detectHardware, buildRecommendation } from './PhobosLocalManager.js';
+import { resolveLlamaServerBin, modelPath, getSpec, detectHardware, buildRecommendation, recommendContextSize } from './PhobosLocalManager.js';
 
 // ── Ports — permanent wire contract ──────────────────────────────────────────
 export const SAYON_PORT   = 52626;   // coordinator
@@ -207,7 +207,7 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
     env.VK_ICD_FILENAMES        = '';
   }
 
-  console.log(`[LlamaServerManager] Starting ${role} on :${cfg.port} — ${spec.label} (ngl=${cfg.gpuLayers}, device=${cfg.deviceIndex ?? 'auto'}, backend=${cfg.gpuBackend ?? 'auto'})`);
+  console.log(`[LlamaServerManager] Starting ${role} on :${cfg.port} — ${spec.label} (ngl=${cfg.gpuLayers}, ctx=${cfg.contextSize}, device=${cfg.deviceIndex ?? 'auto'}, backend=${cfg.gpuBackend ?? 'auto'})`);
 
   // Set cwd to the directory containing the binary so companion DLLs
   // (ggml-vulkan.dll, ggml-cpu-*.dll, ggml-rpc.dll, ggml-cuda.dll) are found.
@@ -232,21 +232,7 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
       managed.error = `Exited with code ${code}`;
     }
 
-    // GPU device not found (exit code 1 during startup, before port was ready) —
-    // auto-retry as CPU. Handles GPUs that have neither CUDA dll nor Vulkan ICD
-    // (e.g. Quadro M2000 on a system without ggml-cuda.dll).
-    if (code === 1 && cfg.gpuLayers > 0 && managed.state === 'error') {
-      console.warn(`[LlamaServerManager] ${role} failed to start on GPU — retrying as CPU`);
-      managed.state = 'stopped';
-      startServer(role, {
-        ...cfg,
-        gpuLayers:   0,
-        deviceIndex: undefined,
-        gpuBackend:  undefined,
-      }).catch(err => {
-        console.error(`[LlamaServerManager] ${role} CPU fallback also failed: ${err.message}`);
-      });
-    }
+
   });
 
   managed.process = proc;
@@ -328,14 +314,16 @@ export async function reconcilePhobosServers(config: {
 
   let rec: Awaited<ReturnType<typeof buildRecommendation>> | null = null;
   let hw: Awaited<ReturnType<typeof detectHardware>> | null = null;
-  if (needsAutoDetect) {
-    try {
-      hw = await detectHardware();
+  // Always detect hardware — even when device is manually configured we need
+  // live VRAM readings to compute safe context sizes for GPU-mode servers.
+  try {
+    hw = await detectHardware();
+    if (needsAutoDetect) {
       rec = buildRecommendation(hw);
-      console.log(`[reconcile] Auto-detected hardware: ${hw.gpus.map(g => `${g.name} (${g.vramGb}GB, ${g.backend})`).join(', ') || 'CPU only'}`);
-    } catch (err) {
-      console.error(`[reconcile] Hardware auto-detect failed: ${(err as Error).message}`);
     }
+    console.log(`[reconcile] Auto-detected hardware: ${hw.gpus.map(g => `${g.name} (${g.vramGb}GB, ${g.backend})`).join(', ') || 'CPU only'}`);
+  } catch (err) {
+    console.error(`[reconcile] Hardware detect failed: ${(err as Error).message}`);
   }
 
   if (config.coordinator.provider === 'phobos') {
@@ -354,7 +342,30 @@ export async function reconcilePhobosServers(config: {
         modelId:     config.coordinator.model,
         port:        SAYON_PORT,
         gpuLayers,
-        contextSize: 4096,
+        contextSize: (() => {
+          const sayonSpec = getSpec(config.coordinator.model);
+          if (!sayonSpec) return 4096;
+          if (gpuLayers > 0 && deviceIndex !== undefined && hw) {
+            // GPU mode: KV cache in VRAM.
+            // Budget = totalVramGb - modelWeights - overhead.
+            // Overhead scales with card size (smaller cards have proportionally higher
+            // fixed CUDA runtime + driver + cuBLAS workspace costs).
+            // ≤4 GB: 1.0 GB  ≤8 GB: 0.8 GB  >8 GB: 0.6 GB
+            const gpu        = hw.gpus.find(g => g.index === deviceIndex);
+            const totalGb    = gpu?.vramGb ?? 0;
+            const weightsGb  = sayonSpec.sizeBytes / (1024 ** 3);
+            // Overhead accounts for CUDA runtime, driver reservation, cuBLAS workspace.
+            // Larger fixed costs on small cards; 10GB cards need extra room under high system load.
+            // <=4GB: 1.0  <=6GB: 0.8  <=8GB: 1.0  <=10GB: 1.6  >10GB: 1.2
+            const overhead   = totalGb <= 4 ? 1.0 : totalGb <= 6 ? 0.8 : totalGb <= 8 ? 1.0 : totalGb <= 10 ? 1.6 : 1.2;
+            const budgetGb   = Math.max(0, totalGb - weightsGb - overhead);
+            return recommendContextSize(sayonSpec, budgetGb, true);
+          } else {
+            // CPU mode: KV cache in RAM — budget after model weights + 2GB OS overhead
+            const budgetGb = Math.max(0, (hw?.ramGb ?? 16) - sayonSpec.sizeBytes / (1024 ** 3) - 2) * 0.70;
+            return recommendContextSize(sayonSpec, budgetGb, false);
+          }
+        })(),
         threads:     0,
         deviceIndex,
         gpuBackend:  gpuBackend as ServerConfig['gpuBackend'],
@@ -383,7 +394,26 @@ export async function reconcilePhobosServers(config: {
         modelId:     config.engine.model,
         port:        SEREN_PORT,
         gpuLayers,
-        contextSize: 4096,
+        contextSize: (() => {
+          const serenSpec = getSpec(config.engine.model);
+          if (!serenSpec) return 4096;
+          if (gpuLayers > 0 && deviceIndex !== undefined && hw) {
+            // GPU mode: budget = totalVramGb - modelWeights - overhead (scaled by card size)
+            const gpu        = hw.gpus.find(g => g.index === deviceIndex);
+            const totalGb    = gpu?.vramGb ?? 0;
+            const weightsGb  = serenSpec.sizeBytes / (1024 ** 3);
+            // Overhead accounts for CUDA runtime, driver reservation, cuBLAS workspace.
+            // Larger fixed costs on small cards; 10GB cards need extra room under high system load.
+            // <=4GB: 1.0  <=6GB: 0.8  <=8GB: 1.0  <=10GB: 1.6  >10GB: 1.2
+            const overhead   = totalGb <= 4 ? 1.0 : totalGb <= 6 ? 0.8 : totalGb <= 8 ? 1.0 : totalGb <= 10 ? 1.6 : 1.2;
+            const budgetGb   = Math.max(0, totalGb - weightsGb - overhead);
+            return recommendContextSize(serenSpec, budgetGb, true);
+          } else {
+            // CPU mode: KV cache in RAM
+            const budgetGb = Math.max(0, (hw?.ramGb ?? 16) - serenSpec.sizeBytes / (1024 ** 3) - 2) * 0.70;
+            return recommendContextSize(serenSpec, budgetGb, false);
+          }
+        })(),
         threads:     0,
         deviceIndex,
         gpuBackend:  gpuBackend as ServerConfig['gpuBackend'],

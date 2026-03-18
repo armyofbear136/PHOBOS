@@ -114,7 +114,7 @@ export class IntentClassifier {
         return { type: 'CODE_REQUEST', confidence: 0.6, routing: 'NEEDS_SEREN' };
       }
       if (/generate.*image|draw|create.*image|make.*image|create.*picture|generate.*picture|show.*picture/.test(lower)) {
-        return { type: 'IMAGE_REQUEST', confidence: 0.6, routing: 'NEEDS_SEREN' };
+        return { type: 'IMAGE_REQUEST', confidence: 0.6, routing: 'ANSWER_DIRECTLY' };
       }
       return { type: 'QUESTION', confidence: 0.6, routing: 'ANSWER_DIRECTLY' };
     }

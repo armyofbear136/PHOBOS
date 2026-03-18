@@ -828,16 +828,16 @@ async function handleDirectResponse(
         `Compress the user's image request into a Chroma (FLUX-architecture photorealistic model) prompt.\n\n` +
         `POSITIVE PROMPT rules:\n` +
         `- Comma-separated keywords and short noun phrases ONLY — no full sentences, no verbs, no "with a"\n` +
-        `- Pattern: subject, setting/action, style tags, lighting, camera quality\n` +
+        `- Pattern: subject, setting, action, quality\n` +
         `- Example input: "draw me a pink haired goth girl"\n` +
-        `- Example output: "pink-haired goth girl, candlelit dungeon, leather corset, 8k, photorealistic, dramatic rim light, cinematic"\n` +
-        `- 13-16 characteristics, each 1-6 words, comma-separated — subject, setting, action, mood, lighting, texture, camera, quality tags\n` +
-        `- More is better than less: fill all 13-16 slots with meaningful descriptors\n\n` +
+        `- Example output: "a pink-haired goth girl, in a candlelit dungeon, sitting on a throne, leather corset, 8k, photorealistic"\n` +
+        `- 10-16 words, each phrase 1-6 words, comma-separated — 50% subject, 25% setting, 25% action, plus 2 quality tags "8k, photorealistic"\n` +
+        `- Less is okay if image calls for simplicity: try fill all 10-16 slots with meaningful descriptors\n\n` +
         `NEGATIVE PROMPT rules:\n` +
-        `- Add exactly 2-3 terms that are specific to THIS subject/scene only\n` +
+        `- Add at most 1-2 undesired quality terms that are specific to THIS subject/scene only\n` +
         `- The system already injects: blurry, low quality, watermark, deformed — do NOT repeat those or synonyms\n\n` +
         `Respond with ONLY valid JSON, no markdown, no explanation:\n` +
-        `{"prompt": "your compressed prompt", "negativePrompt": "your 3-5 context-specific terms"}`;
+        `{"prompt": "your compressed prompt", "negativePrompt": "your 1-2 context-specific terms"}`;
 
       const imageMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
         { role: 'system', content: imageSystemPrompt },

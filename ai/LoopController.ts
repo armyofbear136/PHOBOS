@@ -39,13 +39,13 @@ const dbg = (...args: unknown[]) => { if (DEBUG) console.log(...args); };
 class ToolTagFilter {
   private static readonly TOOL_NAMES = [
     'write_file', 'append_file', 'insert_lines',
-    'replace_lines', 'delete_lines', 'read_file', 'generate_image',
+    'replace_lines', 'delete_lines', 'read_file',
   ] as const;
 
   // Build a regex that matches any opening tool tag (with optional attributes)
   // OR a self-closing tag. Anchored to catch across chunk boundaries
   // via the accumulation buffer.
-  private static readonly OPEN_RE  = /<(write_file|append_file|insert_lines|replace_lines|delete_lines|read_file|generate_image)(\s[^>]*)?\/?>|<\/?(write_file|append_file|insert_lines|replace_lines|delete_lines|read_file|generate_image)>/;
+  private static readonly OPEN_RE  = /<(write_file|append_file|insert_lines|replace_lines|delete_lines|read_file)(\s[^>]*)?\/?>|<\/?(write_file|append_file|insert_lines|replace_lines|delete_lines|read_file)>/;
 
   private buf = '';          // accumulates unclassified input
   private insideTag = '';    // name of currently-open tool tag, or ''
@@ -457,24 +457,9 @@ export class LoopController {
       for (const t of tasks) {
         dbg(`[loop:plan:task${t.index}] op=${t.operation} file="${t.targetFile}" title="${t.title}"`);
       }
-    } else if (composeInput.intentType === 'IMAGE_REQUEST') {
-      // Image generation path — bypass planning entirely.
-      // Inject a fixed directive so SEREN emits <generate_image .../> immediately
-      // without re-reasoning about file formats, parameters, or clarifications.
-      const imagePrompt = ingestion.rewrittenUserMessage;
-      tasks = [{
-        index: 1,
-        title: 'Generate image',
-        targetFile: '',
-        operation: 'create' as const,
-        prompt:
-          `Emit exactly one generate_image tag now. ` +
-          `Do not ask questions. Do not explain. Do not add any other output. ` +
-          `Use this prompt verbatim: ${imagePrompt}\n\n` +
-          `<generate_image prompt="${imagePrompt}"/>`,
-        context: 'Image generation request. Use the generate_image tool only.',
-      }];
     } else {
+      // IMAGE_REQUEST never reaches this path — it is handled exclusively by
+      // handleDirectResponse() in messages.ts via the ANSWER_DIRECTLY route.
       // Q&A / direct answer path — wrap whole request as single task
       tasks = [{
         index: 1,

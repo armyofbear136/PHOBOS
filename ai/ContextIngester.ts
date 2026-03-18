@@ -303,6 +303,7 @@ export class ContextIngester {
       // ── Mode 4: Image generation — pass through raw, no rewriting ────────────
       // The user message IS the image prompt. Any rewriting or [AMBIGUOUS] prefix
       // corrupts the string that goes directly to sd-cli. Echo back verbatim.
+      // SAYON's prompt enhancement happens in handleDirectResponse() in messages.ts.
       rewritePrompt =
         `Respond with JSON only: {"reformulated":${JSON.stringify(seedMessage)},"summary":"Generate image"}. ` +
         `No preamble, nothing outside the JSON.`;

@@ -195,14 +195,17 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
     // memory for context structures / shader caches. On a 10 GB card this permanently
     // reduces the VRAM ceiling available for image generation.
     //
-    // CUDA:   CUDA_VISIBLE_DEVICES=-1 hides all CUDA devices from the runtime.
+    // CUDA:   CUDA_VISIBLE_DEVICES='' hides all CUDA devices from the runtime.
+    //         Using '' (empty) instead of '-1' — some older Maxwell-era drivers
+    //         (Quadro M2000, compute 5.2) crash on -1 as it's not part of the
+    //         CUDA spec. Empty string is the documented way to hide all devices.
     // Vulkan: GGML_VK_VISIBLE_DEVICES='' hides all devices from ggml Vulkan backend.
     //         VK_ICD_FILENAMES='' prevents the Vulkan loader finding any ICD at all —
     //         deepest available suppression, covers all Vulkan code paths.
     // ROCm:   HIP/ROCR equivalents for AMD GPU machines.
-    env.CUDA_VISIBLE_DEVICES    = '-1';
-    env.HIP_VISIBLE_DEVICES     = '-1';
-    env.ROCR_VISIBLE_DEVICES    = '-1';
+    env.CUDA_VISIBLE_DEVICES    = '';
+    env.HIP_VISIBLE_DEVICES     = '';
+    env.ROCR_VISIBLE_DEVICES    = '';
     env.GGML_VK_VISIBLE_DEVICES = '';
     env.VK_ICD_FILENAMES        = '';
   }

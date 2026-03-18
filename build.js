@@ -225,6 +225,37 @@ export async function buildForPlatform({
   if (fs.existsSync(xenovaSrc)) {
     const dest = path.join(distDir, 'node_modules', '@xenova', 'transformers');
     copyDir(xenovaSrc, dest);
+    // Nest onnxruntime-node inside @xenova/transformers/node_modules/ so ESM
+    // import('onnxruntime-node') from onnx.js resolves correctly in SEA context.
+    // ESM resolution walks up from the importing file's package root, and in SEA
+    // the outer node_modules/ may not be found. Nesting guarantees resolution.
+    if (fs.existsSync(onnxSrc)) {
+      const nestedOrt = path.join(dest, 'node_modules', 'onnxruntime-node');
+      copyDir(onnxSrc, nestedOrt);
+    }
+    // Patch onnx.js to force onnxruntime-node via createRequire instead of ESM import().
+    // ESM import() in SEA context resolves from baked-in file URLs which break on
+    // other machines. This patch replaces the dynamic import with a CJS require
+    // anchored to the package's own directory.
+    const onnxJsPath = path.join(dest, 'src', 'backends', 'onnx.js');
+    if (fs.existsSync(onnxJsPath)) {
+      let onnxJs = fs.readFileSync(onnxJsPath, 'utf8');
+      // Replace any import('onnxruntime-node') or import("onnxruntime-node") with
+      // a createRequire-based resolution that works in SEA context.
+      if (onnxJs.includes('onnxruntime-node')) {
+        onnxJs = onnxJs.replace(
+          /import\s*\(\s*['"]onnxruntime-node['"]\s*\)/g,
+          `(async()=>{const{createRequire:cr}=await import('node:module');return cr(import.meta.url||__filename)('onnxruntime-node')})()`
+        );
+        // Also prevent the onnxruntime-web fallback from firing
+        onnxJs = onnxJs.replace(
+          /import\s*\(\s*['"]onnxruntime-web['"]\s*\)/g,
+          `Promise.reject(new Error('onnxruntime-web not available'))`
+        );
+        fs.writeFileSync(onnxJsPath, onnxJs, 'utf8');
+        log('    → patched onnx.js: forced onnxruntime-node via createRequire');
+      }
+    }
     log(`  ✅ @xenova/transformers/`);
   } else {
     log('  ⚠️  @xenova/transformers not installed — VisionProcessor will be unavailable');

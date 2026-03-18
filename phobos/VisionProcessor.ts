@@ -3,16 +3,22 @@ import * as os   from 'os';
 import * as path from 'path';
 import * as zlib from 'zlib';
 
-// @xenova/transformers is lazy-imported to avoid pulling onnxruntime-node at
-// bundle load time. This is critical for SEA builds where native .node addons
-// cannot be resolved until the user actually triggers a vision operation.
-let _transformers: typeof import('@xenova/transformers') | null = null;
+// @xenova/transformers was previously used for depth estimation but has ESM
+// resolution issues in SEA context that cannot be reliably patched across all
+// machines. Depth estimation now uses onnxruntime-node directly.
+// The model (Depth Anything V2 ViT-S, ~97 MB ONNX) is bundled in the dist
+// or downloaded on first use to VISION_MODELS_DIR.
 
-async function getTransformers() {
-  if (_transformers) return _transformers;
-  _transformers = await import('@xenova/transformers');
-  _transformers.env.cacheDir = VISION_MODELS_DIR;
-  return _transformers;
+let _ort: typeof import('onnxruntime-node') | null = null;
+
+function getOrt(): typeof import('onnxruntime-node') {
+  if (_ort) return _ort;
+  const { createRequire } = require('module');
+  const seaRequire = createRequire(
+    path.join(path.dirname(process.execPath), 'node_modules', '_anchor.js')
+  );
+  _ort = seaRequire('onnxruntime-node') as typeof import('onnxruntime-node');
+  return _ort;
 }
 
 // ── Cache directory ───────────────────────────────────────────────────────────
@@ -21,17 +27,19 @@ async function getTransformers() {
 export const VISION_MODELS_DIR = path.join(os.homedir(), '.phobos', 'models', 'vision');
 
 // ── Model IDs ─────────────────────────────────────────────────────────────────
-// All models are downloaded once on first use via @xenova/transformers.
+// All models are downloaded once on first use via onnxruntime-node.
 // Sizes are approximate post-quantization download sizes.
 
-// Public models — no HuggingFace auth required.
-// Both use Xenova/yolos-tiny (fully public COCO object detector, ~25 MB).
-// Intentionally use DIFFERENT cache keys so a face pipeline OOM doesn't
-// poison the hand pipeline cache entry.
+// Depth Anything V2 ViT-S — ~97 MB ONNX model, fixed 518×518 input.
+// Downloaded from HuggingFace on first use if not bundled.
+const DEPTH_MODEL_FILE = 'model_quantized.onnx';
+const DEPTH_MODEL_REPO = 'Xenova/depth-anything-small-hf';
+const DEPTH_MODEL_URL  = `https://huggingface.co/${DEPTH_MODEL_REPO}/resolve/main/onnx/${DEPTH_MODEL_FILE}`;
+const DEPTH_INPUT_SIZE = 518;
+
 // Face/hand detection uses heuristic masks only — onnxruntime object-detection
 // crashes the SEA process (dynamic-shape allocation bug in onnxruntime-node 1.14.0).
 // Depth estimation works because it uses a fixed-shape model.
-const MODEL_DEPTH = 'Xenova/depth-anything-small-hf';  // ~97 MB — depth estimation (works in SEA)
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -57,24 +65,78 @@ export interface BgRemovalResult {
   outputPath: string;  // absolute path to RGBA PNG with background removed
 }
 
-// ── Pipeline cache ────────────────────────────────────────────────────────────
-// Pipelines are expensive to initialise (model load + ONNX session creation).
-// Cache by model ID so repeated calls within a workflow reuse the session.
+// ── ONNX session cache ───────────────────────────────────────────────────────
+// Sessions are expensive to create (model load + ONNX runtime init).
+// Cache the session so repeated depth calls reuse it.
 
-const _pipelineCache = new Map<string, unknown>();
+let _depthSession: any | null = null;
 
-async function getPipeline(task: string, model: string): Promise<unknown> {
-  if (_pipelineCache.has(model)) return _pipelineCache.get(model)!;
-  fs.mkdirSync(VISION_MODELS_DIR, { recursive: true });
-  const { pipeline } = await getTransformers();
-  const p = await pipeline(task as any, model);
-  _pipelineCache.set(model, p);
-  return p;
+function depthModelPath(): string {
+  return path.join(VISION_MODELS_DIR, 'depth-anything-small', DEPTH_MODEL_FILE);
 }
 
-/** Release all cached pipeline sessions. Call between workflows on low-VRAM machines. */
+async function ensureDepthModel(): Promise<string> {
+  const modelPath = depthModelPath();
+  if (fs.existsSync(modelPath)) return modelPath;
+
+  // Check if bundled in dist
+  const bundledPath = path.join(path.dirname(process.execPath), 'models', 'depth', DEPTH_MODEL_FILE);
+  if (fs.existsSync(bundledPath)) {
+    // Copy bundled model to cache dir so future checks find it
+    fs.mkdirSync(path.dirname(modelPath), { recursive: true });
+    fs.copyFileSync(bundledPath, modelPath);
+    return modelPath;
+  }
+
+  // Download from HuggingFace
+  console.log(`[VisionProcessor] Downloading depth model from ${DEPTH_MODEL_URL}...`);
+  fs.mkdirSync(path.dirname(modelPath), { recursive: true });
+
+  const https = await import('node:https');
+  const http  = await import('node:http');
+
+  await new Promise<void>((resolve, reject) => {
+    const follow = (url: string, redirects = 0) => {
+      if (redirects > 5) return reject(new Error('Too many redirects'));
+      const mod = url.startsWith('https') ? https : http;
+      mod.get(url, (res: any) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          return follow(res.headers.location, redirects + 1);
+        }
+        if (res.statusCode !== 200) {
+          return reject(new Error(`Download failed: HTTP ${res.statusCode}`));
+        }
+        const tmpPath = modelPath + '.tmp';
+        const ws = fs.createWriteStream(tmpPath);
+        res.pipe(ws);
+        ws.on('finish', () => {
+          ws.close();
+          fs.renameSync(tmpPath, modelPath);
+          console.log(`[VisionProcessor] Depth model downloaded to ${modelPath}`);
+          resolve();
+        });
+        ws.on('error', reject);
+      }).on('error', reject);
+    };
+    follow(DEPTH_MODEL_URL);
+  });
+
+  return modelPath;
+}
+
+async function getDepthSession(): Promise<any> {
+  if (_depthSession) return _depthSession;
+  const ort = getOrt();
+  const modelPath = await ensureDepthModel();
+  _depthSession = await ort.InferenceSession.create(modelPath, {
+    executionProviders: ['cpu'],
+  });
+  return _depthSession;
+}
+
+/** Release cached ONNX sessions. Call between workflows on low-VRAM machines. */
 export function releaseVisionPipelines(): void {
-  _pipelineCache.clear();
+  _depthSession = null;
 }
 
 // ── PNG writer ────────────────────────────────────────────────────────────────
@@ -320,62 +382,114 @@ export async function generateDepthMap(
 ): Promise<DepthResult> {
   const preBlur = opts.preBlur ?? 0;
 
-  const estimator = await getPipeline('depth-estimation', MODEL_DEPTH);
-  const result    = await (estimator as any)(imagePath);
+  // Load and resize input image to 518×518 using sharp (already works in SEA)
+  const { createRequire } = require('module');
+  const seaRequire = createRequire(
+    path.join(path.dirname(process.execPath), 'node_modules', '_anchor.js')
+  );
+  const sharp = seaRequire('sharp');
 
-  const { data, width, height } = result.depth as {
-    data:   Float32Array;
-    width:  number;
-    height: number;
-  };
+  const img = sharp(imagePath);
+  const meta = await img.metadata();
+  const origW = meta.width!;
+  const origH = meta.height!;
 
-  // Convert [0,1] float depth to [0,255] uint8 grayscale RGBA
-  const pixels = new Uint8Array(width * height * 4);
-  for (let i = 0; i < width * height; i++) {
-    const v = Math.round(Math.min(1, Math.max(0, data[i])) * 255);
-    pixels[i * 4]     = v;  // R
-    pixels[i * 4 + 1] = v;  // G
-    pixels[i * 4 + 2] = v;  // B
-    pixels[i * 4 + 3] = 255; // A
+  // Resize to 518×518, extract raw RGB float data
+  const resized = await sharp(imagePath)
+    .resize(DEPTH_INPUT_SIZE, DEPTH_INPUT_SIZE, { fit: 'fill' })
+    .removeAlpha()
+    .raw()
+    .toBuffer();
+
+  // Normalize to [0,1] float32 in NCHW format [1, 3, 518, 518]
+  const pixels = DEPTH_INPUT_SIZE * DEPTH_INPUT_SIZE;
+  const inputData = new Float32Array(3 * pixels);
+  for (let i = 0; i < pixels; i++) {
+    inputData[i]              = resized[i * 3]     / 255.0; // R channel
+    inputData[pixels + i]     = resized[i * 3 + 1] / 255.0; // G channel
+    inputData[2 * pixels + i] = resized[i * 3 + 2] / 255.0; // B channel
+  }
+
+  // Run ONNX inference
+  const ort = getOrt();
+  const session = await getDepthSession();
+  const inputTensor = new ort.Tensor('float32', inputData, [1, 3, DEPTH_INPUT_SIZE, DEPTH_INPUT_SIZE]);
+
+  // Get the input name from the model (usually 'pixel_values')
+  const inputNames = session.inputNames;
+  const feeds: Record<string, any> = {};
+  feeds[inputNames[0]] = inputTensor;
+
+  const results = await session.run(feeds);
+  const outputNames = session.outputNames;
+  const depthTensor = results[outputNames[0]];
+  const depthData = depthTensor.data as Float32Array;
+
+  // The output is [1, 518, 518] or [1, 1, 518, 518] — flatten to 2D
+  const outSize = DEPTH_INPUT_SIZE;
+
+  // Normalize depth to [0, 1] range
+  let minD = Infinity, maxD = -Infinity;
+  for (let i = 0; i < outSize * outSize; i++) {
+    if (depthData[i] < minD) minD = depthData[i];
+    if (depthData[i] > maxD) maxD = depthData[i];
+  }
+  const range = maxD - minD || 1;
+
+  // Convert to [0,255] uint8 grayscale RGBA at output size, then resize to original dims
+  const outPixels = new Uint8Array(outSize * outSize * 4);
+  for (let i = 0; i < outSize * outSize; i++) {
+    const v = Math.round(((depthData[i] - minD) / range) * 255);
+    outPixels[i * 4]     = v;
+    outPixels[i * 4 + 1] = v;
+    outPixels[i * 4 + 2] = v;
+    outPixels[i * 4 + 3] = 255;
   }
 
   // Optional box blur on depth values to smooth noisy edges
   if (preBlur > 0) {
-    const gray  = new Float32Array(width * height);
-    for (let i = 0; i < width * height; i++) gray[i] = pixels[i * 4];
+    const gray  = new Float32Array(outSize * outSize);
+    for (let i = 0; i < outSize * outSize; i++) gray[i] = outPixels[i * 4];
 
     // Horizontal pass
-    const hPass = new Float32Array(width * height);
-    for (let y = 0; y < height; y++) {
+    const hPass = new Float32Array(outSize * outSize);
+    for (let y = 0; y < outSize; y++) {
       let sum = 0, n = 0;
-      for (let x = 0; x < width; x++) {
-        sum += gray[y * width + x]; n++;
-        if (x >= preBlur) { sum -= gray[y * width + (x - preBlur)]; n--; }
+      for (let x = 0; x < outSize; x++) {
+        sum += gray[y * outSize + x]; n++;
+        if (x >= preBlur) { sum -= gray[y * outSize + (x - preBlur)]; n--; }
         const lx = x - Math.floor(preBlur / 2);
-        if (lx >= 0 && lx < width) hPass[y * width + lx] = sum / n;
+        if (lx >= 0 && lx < outSize) hPass[y * outSize + lx] = sum / n;
       }
     }
     // Vertical pass
-    const vPass = new Float32Array(width * height);
-    for (let x = 0; x < width; x++) {
+    const vPass = new Float32Array(outSize * outSize);
+    for (let x = 0; x < outSize; x++) {
       let sum = 0, n = 0;
-      for (let y = 0; y < height; y++) {
-        sum += hPass[y * width + x]; n++;
-        if (y >= preBlur) { sum -= hPass[(y - preBlur) * width + x]; n--; }
+      for (let y = 0; y < outSize; y++) {
+        sum += hPass[y * outSize + x]; n++;
+        if (y >= preBlur) { sum -= hPass[(y - preBlur) * outSize + x]; n--; }
         const ly = y - Math.floor(preBlur / 2);
-        if (ly >= 0 && ly < height) vPass[ly * width + x] = sum / n;
+        if (ly >= 0 && ly < outSize) vPass[ly * outSize + x] = sum / n;
       }
     }
-    for (let i = 0; i < width * height; i++) {
+    for (let i = 0; i < outSize * outSize; i++) {
       const v = Math.round(Math.min(255, Math.max(0, vPass[i])));
-      pixels[i * 4] = v; pixels[i * 4 + 1] = v; pixels[i * 4 + 2] = v;
+      outPixels[i * 4] = v; outPixels[i * 4 + 1] = v; outPixels[i * 4 + 2] = v;
     }
   }
 
-  const depthPath = path.join(scratchDir(threadId), `depth-${Date.now()}.png`);
-  writeRgbaPng(depthPath, pixels, width, height);
+  // Resize depth map back to original image dimensions using sharp
+  const depthRgba = Buffer.from(outPixels.buffer);
+  const resizedDepth = await sharp(depthRgba, { raw: { width: outSize, height: outSize, channels: 4 } })
+    .resize(origW, origH, { fit: 'fill' })
+    .png()
+    .toBuffer();
 
-  console.log(`[VisionProcessor] Depth map: ${width}×${height} → ${path.basename(depthPath)}`);
+  const depthPath = path.join(scratchDir(threadId), `depth-${Date.now()}.png`);
+  fs.writeFileSync(depthPath, resizedDepth);
+
+  console.log(`[VisionProcessor] Depth map generated: ${origW}×${origH} → ${path.basename(depthPath)}`);
   return { depthPath };
 }
 
@@ -540,16 +654,13 @@ export function flattenAlpha(
 export async function prefetchVisionModels(
   models: ('face' | 'hand' | 'depth')[] = [],
 ): Promise<void> {
-  const tasks: [string, string][] = [];
   // Face/hand use heuristic masks only — no model to prefetch
-  if (models.includes('depth')) tasks.push(['depth-estimation', MODEL_DEPTH]);
-
-  for (const [task, model] of tasks) {
+  if (models.includes('depth')) {
     try {
-      await getPipeline(task, model);
-      console.log(`[VisionProcessor] Prefetched: ${model}`);
+      await ensureDepthModel();
+      console.log(`[VisionProcessor] Prefetched: depth-anything-small (onnxruntime-node)`);
     } catch (err) {
-      console.warn(`[VisionProcessor] Prefetch failed for ${model}: ${(err as Error).message}`);
+      console.warn(`[VisionProcessor] Prefetch failed for depth model: ${(err as Error).message}`);
     }
   }
 }

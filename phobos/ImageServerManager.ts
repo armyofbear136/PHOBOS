@@ -122,6 +122,9 @@ function buildFluxArgs(
 
   if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
   if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
+  // VAE decode needs ~2.5 GB working memory. On tight-VRAM cards (≤10 GB)
+  // this OOMs after diffusion completes. --vae-tiling drops it to ~176 MB.
+  if (cfg.freeVramGb !== undefined && cfg.freeVramGb <= 10) args.push('--vae-tiling');
   appendWorkflowFlags(args, opts);
   return args;
 }
@@ -158,6 +161,9 @@ function buildChromaArgs(
 
   if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
   if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
+  // VAE decode needs ~2.5 GB working memory. On tight-VRAM cards (≤10 GB)
+  // this OOMs after diffusion completes. --vae-tiling drops it to ~176 MB.
+  if (cfg.freeVramGb !== undefined && cfg.freeVramGb <= 10) args.push('--vae-tiling');
   appendWorkflowFlags(args, opts);
   return args;
 }
@@ -336,12 +342,21 @@ export async function generateImage(
     );
 
     if (totalNeeded > freeMb) {
-      throw new Error(
-        `Not enough VRAM for GPU generation: model needs ~${(totalNeeded / 1024).toFixed(1)} GB ` +
-        `but only ${cfg.freeVramGb.toFixed(1)} GB is free. ` +
-        (cfg.offloadToCpu
-          ? `Even with T5 offloaded to CPU, the diffusion model alone exceeds available VRAM.`
-          : `Flux and Chroma require at least 8 GB discrete VRAM.`)
+      const shortfallMb = totalNeeded - freeMb;
+      const SOFT_LIMIT_MB = 1536; // 1.5 GB — sd.cpp VMM can spill this to system RAM
+
+      if (shortfallMb > SOFT_LIMIT_MB) {
+        throw new Error(
+          `Not enough VRAM for GPU generation: model needs ~${(totalNeeded / 1024).toFixed(1)} GB ` +
+          `but only ${cfg.freeVramGb.toFixed(1)} GB is free (${(shortfallMb / 1024).toFixed(1)} GB short). ` +
+          `Flux and Chroma require at least 8 GB discrete VRAM.`
+        );
+      }
+      // Within soft limit — warn and let sd.cpp handle the spill via CUDA VMM.
+      // This covers 8 GB cards with ~7 GB free (shortfall ~0.9 GB for Chroma Q4).
+      console.warn(
+        `[ImageServerManager] Pre-flight VRAM tight: ~${(shortfallMb / 1024).toFixed(1)} GB short — ` +
+        `proceeding anyway (sd.cpp CUDA VMM will spill to system RAM if needed)`
       );
     }
   }
@@ -560,27 +575,17 @@ export async function buildSdConfig(
     return null;
   }
 
-  // ── Tight-VRAM offload for discrete CUDA ──────────────────────────────────
+  // ── Tight-VRAM: no offload needed, just VAE tiling ─────────────────────────
   // On 8 GB cards Windows eats 1+ GB for display/driver, leaving ~7 GB free.
-  // Chroma Q4 diffusion (5.18 GB) + T5 Q3 (2.3 GB) + VAE + working > 7 GB.
-  // --offload-to-cpu moves the T5 text encoder to system RAM. The T5 forward
-  // pass runs once per generation on CPU (~3-5s penalty), then all 20 diffusion
-  // steps run fully on GPU. Net impact: <5% slower, fits in 8 GB cards.
-  if (
-    !offloadToCpu &&
-    !isUnifiedMemory &&
-    gpuBackend === 'cuda' &&
-    sdBinaryChoice === 'cuda' &&
-    spec.runnerProfile !== 'sdxl' &&
-    freeVramGb > 0 &&
-    freeVramGb < spec.vramRequiredGb
-  ) {
-    offloadToCpu = true;
-    console.log(
-      `[ImageServerManager] Tight VRAM (${freeVramGb.toFixed(1)} GB free, model needs ${spec.vramRequiredGb} GB) ` +
-      `— enabling --offload-to-cpu (T5 encoder → system RAM)`
-    );
-  }
+  // Chroma Q4 (5.18 GB) + T5 Q3 (2.3 GB) + VAE (0.09 GB) = 7.5 GB — fits via
+  // CUDA VMM which spills ~0.4 GB to system RAM during model load.
+  // Diffusion steps run fine, but VAE decode needs ~2.5 GB working memory and
+  // OOMs. --vae-tiling drops VAE working memory from ~2560 MB to ~176 MB.
+  //
+  // --offload-to-cpu was tried but crashes on Pascal (GTX 1070, sm_61) with
+  // access violation during split-backend tensor allocation. Not viable.
+  //
+  // offloadToCpu remains enabled for unified memory (set earlier, line ~492).
 
   // Aux selection by runner profile
   let auxFiles: FluxAuxFile[];

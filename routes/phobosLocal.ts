@@ -283,11 +283,11 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         licenseUrl: 'https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE',
       }));
 
-      // Depth model: Xenova/depth-anything-small-hf ~97 MB
-      // Cached by @xenova/transformers at VISION_MODELS_DIR on first prefetch.
-      const depthModelDir  = require('path').join(VISION_MODELS_DIR, 'Xenova', 'depth-anything-small-hf');
-      const depthDownloaded = require('fs').existsSync(depthModelDir) &&
-        require('fs').readdirSync(depthModelDir).length > 0;
+      // Depth model: Depth Anything V2 ViT-S ~97 MB ONNX
+      // Downloaded directly via onnxruntime-node (no @xenova/transformers dependency).
+      // Cached at VISION_MODELS_DIR/depth-anything-small/model_quantized.onnx
+      const depthModelFile = require('path').join(VISION_MODELS_DIR, 'depth-anything-small', 'model_quantized.onnx');
+      const depthDownloaded = require('fs').existsSync(depthModelFile);
       const depthStatus = [{
         id:         'depth-model',
         label:      'Depth model (DepthControlNet node, ~97 MB)',

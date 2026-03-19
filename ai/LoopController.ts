@@ -903,7 +903,7 @@ export class LoopController {
       `2. Are there cross-file inconsistencies (mismatched imports, naming, types)?\n` +
       `3. Is anything missing that the request implied but no task addressed?\n` +
       `4. Are there any obvious integration issues between the changed files?\n\n` +
-      `Respond with a brief validation summary (2-4 sentences). ` +
+      `Respond with a brief validation summary (3-6 sentences). ` +
       `If everything looks correct, say so. If there are issues, describe them specifically. ` +
       `No JSON, no formatting — just plain prose.`;
 
@@ -1252,10 +1252,10 @@ export class LoopController {
     issues?: Array<{ file: string; line_range?: string; issue: string; expected?: string }>;
   }> {
     const reviewSystem =
-      'You are SAYON, a coordinator reviewing whether a coding engine correctly solved a task. ' +
+      'You are SAYON, a coordinator reviewing whether an execution engine correctly solved a task. ' +
       'Evaluate the output against these criteria:\n' +
       '1. CORRECTNESS: Does the output address the original task? Are the right files targeted?\n' +
-      '2. COMPLETENESS: Is the code complete (not truncated, not stubbed, not placeholder)?\n' +
+      '2. COMPLETENESS: Is it code? Is the code complete (not truncated, not stubbed, not placeholder)?\n' +
       '3. QUALITY: Are there obvious syntax errors, logic flaws, or missing imports?\n' +
       '4. PRESERVATION: Do the changes preserve existing functionality that should remain?\n\n' +
       'Respond with ONLY a JSON object (no preamble, no markdown):\n' +

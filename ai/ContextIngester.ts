@@ -128,8 +128,9 @@ export class ContextIngester {
         .join('\n\n');
 
       const summaryPrompt =
-        `Summarise each file below. For each file, write ONE sentence (max 20 words) describing: ` +
+        `Summarise each file below. For each file, document EVERY critical part of the file: ` +
         `what it does, its key exports or responsibilities, and main dependencies. ` +
+        `Use as much space as is truly necessary and no more. ` +
         `Respond ONLY with a JSON array: [{"filename":"...","summary":"..."}]. No preamble.\n\n` +
         fileBlocks;
 
@@ -252,7 +253,7 @@ export class ContextIngester {
       // ── Mode 2: Clarification synthesis ──────────────────────────────────────
       rewritePrompt =
         clarificationHistoryBlock +
-        `You are preparing a task brief for SEREN, a coding execution engine. ` +
+        `You are preparing a task brief for SEREN, an execution engine. ` +
         `Rewrite the user's message into a precise, unambiguous task description. ` +
         `Resolve any vague references using the available context (exact function names, ` +
         `file paths, line numbers if relevant).\n\n` +
@@ -315,7 +316,7 @@ export class ContextIngester {
         `Rewrite the user's message into a precise, unambiguous task description. ` +
         `Resolve any vague references using the available context (exact function names, ` +
         `file paths, line numbers if relevant).\n\n` +
-        `AMBIGUITY RULE: If the user's request is ambiguous about ANY of: which files to modify, ` +
+        `AMBIGUITY RULE: If you cannot assertain which files to modify with reasonable confidence, ` +
         `what the output should look like, or which approach to take among multiple valid options — ` +
         `flag this in the reformulated prompt by prefixing it with [AMBIGUOUS: <what is unclear>]. ` +
         `Do not guess or fill in details the user did not provide. It is ALWAYS better to surface ` +

@@ -767,7 +767,7 @@ async function handleDirectResponse(
     `YOUR ROLE: You handle conversation, questions, short explanations, and direct answers. ` +
     `You do NOT write code files, generate documents, produce long-form content, or execute ` +
     `multi-step tasks. If the user asks for file creation, code generation, or anything ` +
-    `requiring more than a conversational response, tell them you are routing the request ` +
+    `requiring more than a conversational response, the user expects it to be routed ` +
     `to SEREN for execution — do not attempt to do it yourself.`
   );
   if (docs.projectMd) systemParts.push(`\n\nProject context:\n${docs.projectMd}`);

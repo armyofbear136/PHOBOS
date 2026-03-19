@@ -1,4 +1,6 @@
 import type { FastifyInstance } from 'fastify';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   detectHardware,
   buildRecommendation,
@@ -7,6 +9,7 @@ import {
   getSpec,
   deleteModel,
   GGUF_CATALOGUE,
+  MODELS_DIR,
   FLUX_CATALOGUE,
   FLUX_AUX_REQUIRED,
   CHROMA_AUX_REQUIRED,
@@ -187,6 +190,44 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
   fastify.get('/api/phobos/status', async (_req, reply) => {
     return reply.send({ status: getServerStatus() });
   });
+
+  // GET /api/phobos/models/info
+  // Returns the models folder path and total disk usage for the UI.
+  fastify.get('/api/phobos/models/info', async (_req, reply) => {
+    const modelsDir = MODELS_DIR;
+    let totalBytes = 0;
+    const countFiles = (dir: string) => {
+      try {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) countFiles(full);
+          else try { totalBytes += fs.statSync(full).size; } catch { /* skip */ }
+        }
+      } catch { /* dir doesn't exist yet */ }
+    };
+    countFiles(modelsDir);
+    return reply.send({ path: modelsDir, totalBytes });
+  });
+
+  // GET /api/phobos/open-folder?path=...
+  // Opens a folder in the native file manager. Used by the UI's "Open" button.
+  fastify.get<{ Querystring: { path: string } }>(
+    '/api/phobos/open-folder',
+    async (req, reply) => {
+      const folderPath = req.query.path;
+      if (!folderPath) return reply.status(400).send({ error: 'path required' });
+      try {
+        const { exec } = await import('child_process');
+        const cmd = process.platform === 'win32' ? `explorer "${folderPath}"`
+          : process.platform === 'darwin' ? `open "${folderPath}"`
+          : `xdg-open "${folderPath}"`;
+        exec(cmd);
+        return reply.send({ ok: true });
+      } catch (err) {
+        return reply.status(500).send({ error: (err as Error).message });
+      }
+    }
+  );
 
   // DELETE /api/phobos/models/:modelId
   fastify.delete<{ Params: { modelId: string } }>(

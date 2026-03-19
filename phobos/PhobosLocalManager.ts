@@ -377,6 +377,8 @@ export interface GGUFSpec {
   kvCacheMbPer1kTokens: number;
   ramRequiredGb: number;
   contextWindow: number;
+  /** If true, model is shown in the Legacy section of the UI. Still downloadable/usable. */
+  legacy?: boolean;
 }
 
 export const GGUF_CATALOGUE: GGUFSpec[] = [
@@ -423,41 +425,81 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 7_800_000_000, ramRequiredGb: 10, contextWindow: 131072,
     kvCacheMbPer1kTokens: 224,  // 28 layers x 8 KV heads x 256 head_dim x 2 x F16
   },
-  // ── Qwen3 family ─────────────────────────────────────────────────────────────
+  // ── Qwen3.5 family (March 2026) ──────────────────────────────────────────────
+  // Qwen3.5 replaces Qwen3 as the primary SEREN model family.
+  // Key differences from Qwen3:
+  //   - 262K native context (vs 32K)
+  //   - Gated Delta Networks + MoE hybrid architecture
+  //   - Native multimodal (text + image + video)
+  //   - No /think /nothink soft-switch — thinking controlled via API params
+  //   - 4B+ think by default; 0.8B/2B have thinking off by default
+  // llama-server: --jinja --reasoning-format deepseek works (same <think> tags)
+  {
+    modelId: 'qwen3.5-4b-q4', label: 'Qwen3.5 4B Q4', family: 'Qwen3.5',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'bartowski/Qwen_Qwen3.5-4B-GGUF',
+    hfFile: 'Qwen_Qwen3.5-4B-Q4_K_M.gguf',
+    sizeBytes: 2_600_000_000, ramRequiredGb: 3, contextWindow: 262144,
+    kvCacheMbPer1kTokens: 112,  // hybrid attention (GDN + sparse) — effective KV cost lower than Qwen3
+  },
+  {
+    modelId: 'qwen3.5-9b-q4', label: 'Qwen3.5 9B Q4', family: 'Qwen3.5',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'bartowski/Qwen_Qwen3.5-9B-GGUF',
+    hfFile: 'Qwen_Qwen3.5-9B-Q4_K_M.gguf',
+    sizeBytes: 5_500_000_000, ramRequiredGb: 7, contextWindow: 262144,
+    kvCacheMbPer1kTokens: 144,  // estimated from Qwen3-8B baseline, hybrid attention reduces effective cost
+  },
+  {
+    modelId: 'qwen3.5-27b-q4', label: 'Qwen3.5 27B Q4', family: 'Qwen3.5',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'bartowski/Qwen_Qwen3.5-27B-GGUF',
+    hfFile: 'Qwen_Qwen3.5-27B-Q4_K_M.gguf',
+    sizeBytes: 16_000_000_000, ramRequiredGb: 18, contextWindow: 262144,
+    kvCacheMbPer1kTokens: 224,  // dense 27B — similar KV structure to Gemma 3 12B but more layers
+  },
+  {
+    modelId: 'qwen3.5-35b-a3b-q4', label: 'Qwen3.5 35B-A3B Q4', family: 'Qwen3.5',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'bartowski/Qwen_Qwen3.5-35B-A3B-GGUF',
+    hfFile: 'Qwen_Qwen3.5-35B-A3B-Q4_K_M.gguf',
+    sizeBytes: 21_000_000_000, ramRequiredGb: 23, contextWindow: 262144,
+    kvCacheMbPer1kTokens: 96,   // MoE sparse — active params ~3B, KV cost similar to 4B
+  },
+  // ── Qwen3 family (legacy) ───────────────────────────────────────────────────
+  // Superseded by Qwen3.5. Still downloadable for users who prefer them.
   {
     modelId: 'qwen3-4b-q4', label: 'Qwen3 4B Q4', family: 'Qwen3',
-    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true, legacy: true,
     hfRepo: 'bartowski/Qwen_Qwen3-4B-GGUF',
     hfFile: 'Qwen_Qwen3-4B-Q4_K_M.gguf',
     sizeBytes: 2_580_000_000, ramRequiredGb: 3, contextWindow: 32768,
-    kvCacheMbPer1kTokens: 144,  // 36 layers x 8 KV heads x 128 head_dim x 2 x F16
+    kvCacheMbPer1kTokens: 144,
   },
   {
     modelId: 'qwen3-8b-q4', label: 'Qwen3 8B Q4', family: 'Qwen3',
-    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true, legacy: true,
     hfRepo: 'bartowski/Qwen_Qwen3-8B-GGUF',
     hfFile: 'Qwen_Qwen3-8B-Q4_K_M.gguf',
     sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 32768,
-    kvCacheMbPer1kTokens: 144,  // 36 layers x 8 KV heads x 128 head_dim x 2 x F16
+    kvCacheMbPer1kTokens: 144,
   },
   {
     modelId: 'qwen3-14b-q4', label: 'Qwen3 14B Q4', family: 'Qwen3',
-    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true, legacy: true,
     hfRepo: 'bartowski/Qwen_Qwen3-14B-GGUF',
     hfFile: 'Qwen_Qwen3-14B-Q4_K_M.gguf',
     sizeBytes: 9_000_000_000, ramRequiredGb: 11, contextWindow: 32768,
-    kvCacheMbPer1kTokens: 160,  // 40 layers x 8 KV heads x 128 head_dim x 2 x F16
+    kvCacheMbPer1kTokens: 160,
   },
   {
     modelId: 'qwen3-30b-a3b-q4', label: 'Qwen3 30B-A3B Q4', family: 'Qwen3',
-    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true, legacy: true,
     hfRepo: 'bartowski/Qwen_Qwen3-30B-A3B-GGUF',
     hfFile: 'Qwen_Qwen3-30B-A3B-Q4_K_M.gguf',
     sizeBytes: 18_400_000_000, ramRequiredGb: 20, contextWindow: 32768,
-    kvCacheMbPer1kTokens: 96,   // 48 layers x 4 KV heads x 128 head_dim x 2 x F16 (MoE sparse) — active params ~3B, KV cost similar to 4B
+    kvCacheMbPer1kTokens: 96,
   },
-  // Qwen3 Coder removed — bartowski repo returns 401 (gated/removed).
-  // Will be replaced by Qwen3.5-9B in the next catalogue update.
   // ── Mistral family ───────────────────────────────────────────────────────────
   {
     modelId: 'mistral-7b-q4', label: 'Mistral 7B v0.3 Q4', family: 'Mistral',
@@ -468,7 +510,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     kvCacheMbPer1kTokens: 128,  // 32 layers x 8 KV heads x 128 head_dim x 2 x F16
   },
   {
-    modelId: 'magistral-8b-q4', label: 'Magistral 8B Q4', family: 'Mistral',
+    modelId: 'magistral-8b-q4', label: 'Magistral 24B Q4', family: 'Mistral',
     role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/mistralai_Magistral-Small-2506-GGUF',
     hfFile: 'mistralai_Magistral-Small-2506-Q4_K_M.gguf',
@@ -1042,11 +1084,16 @@ const SAYON_CANDIDATES = [
 
 const SEREN_CANDIDATES = [
   'deepseek-r1-70b-q4',
-  'qwen3-30b-a3b-q4',
+  'qwen3.5-35b-a3b-q4',
+  'qwen3.5-27b-q4',
   'magistral-8b-q4',
   'deepseek-r1-14b-q4',
-  'qwen3-14b-q4',
+  'qwen3.5-9b-q4',
   'deepseek-r1-8b-q4',
+  'qwen3.5-4b-q4',
+  // Legacy fallbacks — only reached if Qwen3.5 models aren't downloaded
+  'qwen3-30b-a3b-q4',
+  'qwen3-14b-q4',
   'qwen3-8b-q4',
   'qwen3-4b-q4',
 ];

@@ -69,13 +69,13 @@ export class DeliveryComposer {
     // For execution: full outcome summary with files, tasks, status.
     const prompt = isQuestion
       ? `Write a concise response confirming what was addressed. ` +
-        `Write in first person, plain conversational prose, 2-4 sentences max. ` +
+        `Write in first person, plain conversational prose, 3-6 sentences max. ` +
         `Do not mention files, tasks, or whether anything was modified. ` +
         `Do not use bullet points or headers. Do not repeat the question verbatim.\n\n` +
         `ORIGINAL REQUEST: ${originalUserMessage}\n\n` +
         `TASK AS PLANNED: ${rewrittenTask}`
       : `Write a concise response summarising the outcome. ` +
-        `Write in first person, plain prose, 2-4 sentences max. ` +
+        `Write in first person, plain prose, 3-6 sentences max. ` +
         `For file changes: mention what changed and any failures. ` +
         `Match the tone to the task — technical for code, conversational for questions. ` +
         `Do not use bullet points or headers. Do not repeat the task verbatim.\n\n` +

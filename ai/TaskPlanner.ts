@@ -143,7 +143,7 @@ export class TaskPlanner {
       .join('\n');
 
     const prompt =
-      `Given this coding task and the available workspace files, ` +
+      `Given this task and the available workspace files, ` +
       `list which files need to be read to make an accurate implementation plan. ` +
       `Only include files genuinely needed — not all of them. ` +
       `Respond ONLY with a JSON array of filenames: ["file1.ts","file2.ts"]. ` +
@@ -258,8 +258,10 @@ export class TaskPlanner {
   ): Promise<string> {
     const prompt =
       `Extract only the information relevant to this task from the file below ${chunkNote}. ` +
-      `Focus on: function signatures, variable names, line numbers, imports, and constraints ` +
-      `that directly affect implementing the task. Be concise — max 300 words. ` +
+      `Keep in mind: user goals for this task, the type of work, the scope of work. ` +
+      `If code related, focus on function signatures, variable names, line numbers, imports, and constraints ` +
+      `that directly affect implementing the task. Be concise but don't miss anything important — ~ 300 words. ` +
+      `If non-code related, use logic and context from the task to determine the valuable information` +
       `Do not reproduce large code blocks; describe what is there and where.\n\n` +
       `TASK: ${userMessage}\n\n` +
       `FILE: ${filename}\n` +
@@ -316,7 +318,7 @@ export class TaskPlanner {
         `If the request can be done in a single file, produce exactly one task.\n\n`
       : `SCOPE: Only touch files the request explicitly mentions or that are directly ` +
         `required by the change. Do not add infrastructure (config, manifests, lockfiles) ` +
-        `unless the request asks for it. When in doubt, do less.\n\n`;
+        `unless the request asks for it. When in doubt, do less. Precision edits, complete functions.\n\n`;
 
     // Clarification weight — injected when this is a follow-up to a prior
     // NEEDS_CLARIFICATION. The weight increases pressure to attempt the task
@@ -366,17 +368,18 @@ export class TaskPlanner {
         `You have all the information you need to proceed. Make reasonable creative decisions ` +
         `for any details the user left open (filename, structure, content). ` +
         `Do NOT ask another NEEDS_CLARIFICATION — proceed to BUILD_QUEUE.\n\n`
-      : `BEFORE PLANNING — ask yourself: "Do I know exactly what file to edit, exactly what ` +
-        `to change, and exactly what the result should look like?" If the answer to ANY of ` +
+      : `BEFORE PLANNING — ask yourself: "Do I know if I'm editing a file or creating one or not at all? ` +
+        `If so do I know what to change, and exactly what the result should look like?" If the answer to ANY of ` +
         `those is no, return NEEDS_CLARIFICATION with specific questions. It is ALWAYS better ` +
         `to ask one question and get it right than to produce work the user has to redo.\n\n`;
 
     const prompt =
-      `You are SEREN, a coding execution engine. Decompose the request below into ` +
-      `ordered, atomic, file-scoped tasks that you will execute yourself. ` +
-      `Each task targets exactly one file and performs one clear operation. ` +
-      `For each task write a precise self-contained prompt — include exact function names, ` +
-      `line references, and constraints from the context. No raw file contents in prompts.\n\n` +
+      `You are SEREN, a critical analysis and intelligence execution engine. Decompose the request below into ` +
+      `ordered, atomic, tasks that you will execute yourself. Determine the purpose of the task: code - logic - general` +
+      `Each task needs a meaningful plan and performs one clear operation. ` +
+      `For each task write a precise self-contained prompt — ` +
+      `if it is a general question, task, or analysis, structure it critically. For code, include exact function names, ` +
+      `line references, and constraints from the context. Don't include your full file contents in prompts.\n\n` +
       beforePlanningRule +
       clarificationBlock +
       scopeRule +
@@ -406,13 +409,16 @@ export class TaskPlanner {
       contextSection +
       `RULES:\n` +
       `- Tasks must be ordered so dependencies come first (create before modify)\n` +
+      `- Ensure sequenced tasks have adequate context about their expected input\n` +
       `- Consolidate multiple changes to the same file into one task\n` +
       `- Hard maximum: ${MAX_TASKS} tasks\n` +
-      `- If the request only touches one file, produce exactly one task\n` +
-      `- Do NOT create tasks for files not mentioned or directly required\n` +
+      `- If the request touches a file, try to fit as much into a single task as makes sense\n` +
+      `- AVOID creating tasks for files not mentioned or directly required\n` +
+      `- IF a substantial amount of accesory data is pertinent, such as large quantities of changes or notes\n` +
+      `determine the best format to relay that information in such as .md or .html\n` +
       ((!clarificationIteration || clarificationIteration === 0)
-        ? `- If the request is ambiguous about which files, what approach, or what the outcome should be — use NEEDS_CLARIFICATION`
-        : `- User has already answered questions — make your best creative choices and proceed with BUILD_QUEUE`);
+        ? `- If you are uncertain on which files, what approach, or what the outcome should be — use NEEDS_CLARIFICATION`
+        : `- User has already answered questions — if suitable do your best to fill in the gaps and proceed with BUILD_QUEUE. If absolutely necessary use NEEDS_CLARIFICATION if your result might error.`);
 
     console.log(`[planner:seren:decompose] task="${userMessage.slice(0, 120).replace(/\n/g, ' ')}" simple=${isLikelySimple}`);
 

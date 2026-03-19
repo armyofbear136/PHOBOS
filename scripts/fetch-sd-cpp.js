@@ -62,20 +62,65 @@ function httpsGet(url) {
 }
 
 async function getLatestRelease() {
-  const res  = await httpsGet('https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/latest');
-  const body = await new Promise((resolve, reject) => {
-    let buf = '';
-    res.on('data', d => buf += d);
-    res.on('end', () => resolve(buf));
-    res.on('error', reject);
-  });
-  if (res.statusCode !== 200) throw new Error(`GitHub API HTTP ${res.statusCode}:\n${body.slice(0, 300)}`);
-  const data = JSON.parse(body);
-  if (!data.tag_name) throw new Error('No tag_name in response');
-  // Tag format: "master-525-d6dd6d7" — filenames use only the 7-char hash at the end
-  const shortHash = data.tag_name.split('-').pop();
-  const assets    = (data.assets ?? []).map(a => a.name);
-  return { tag: data.tag_name, shortHash, assets };
+  // Try the API first — gives us the asset name list for exact matching.
+  try {
+    const res  = await httpsGet('https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/latest');
+    const body = await new Promise((resolve, reject) => {
+      let buf = '';
+      res.on('data', d => buf += d);
+      res.on('end', () => resolve(buf));
+      res.on('error', reject);
+    });
+    if (res.statusCode === 200) {
+      const data = JSON.parse(body);
+      if (data.tag_name) {
+        const shortHash = data.tag_name.split('-').pop();
+        const assets    = (data.assets ?? []).map(a => a.name);
+        console.log(`[sd-cpp] GitHub API OK — tag: ${data.tag_name}, ${assets.length} assets`);
+        return { tag: data.tag_name, shortHash, assets };
+      }
+    }
+    console.warn(`[sd-cpp] GitHub API returned HTTP ${res.statusCode} — trying HTML fallback`);
+  } catch (err) {
+    console.warn(`[sd-cpp] GitHub API failed: ${err.message} — trying HTML fallback`);
+  }
+
+  // Fallback: scrape the releases page for the latest tag.
+  // The releases page contains "/releases/tag/<tagname>" which we can extract.
+  try {
+    const res  = await httpsGet('https://github.com/leejet/stable-diffusion.cpp/releases');
+    const body = await new Promise((resolve, reject) => {
+      let buf = '';
+      res.on('data', d => buf += d);
+      res.on('end', () => resolve(buf));
+      res.on('error', reject);
+    });
+    // Match the first tag link: /releases/tag/master-NNN-HASH
+    const tagMatch = body.match(/\/releases\/tag\/(master-\d+-[a-f0-9]+)/);
+    if (tagMatch) {
+      const tag       = tagMatch[1];
+      const shortHash = tag.split('-').pop();
+      // Scrape asset filenames from download links on the same page
+      const assetRe   = /\/releases\/download\/[^/]+\/([^"]+\.zip)/g;
+      const assets    = [];
+      let m;
+      while ((m = assetRe.exec(body)) !== null) {
+        if (!assets.includes(m[1])) assets.push(m[1]);
+      }
+      console.log(`[sd-cpp] HTML scrape OK — tag: ${tag}, ${assets.length} assets found`);
+      return { tag, shortHash, assets };
+    }
+    console.warn('[sd-cpp] HTML scrape found no tag — using last-known fallback');
+  } catch (err) {
+    console.warn(`[sd-cpp] HTML scrape failed: ${err.message} — using last-known fallback`);
+  }
+
+  // Last resort: hardcoded last-known release. Assets will be empty so
+  // constructed filenames are used (may 404 if naming changed, but won't crash).
+  const LAST_KNOWN_TAG = 'master-525-d6dd6d7';
+  const shortHash = LAST_KNOWN_TAG.split('-').pop();
+  console.warn(`[sd-cpp] Using hardcoded fallback tag: ${LAST_KNOWN_TAG} (no asset list — names are best-guess)`);
+  return { tag: LAST_KNOWN_TAG, shortHash, assets: [] };
 }
 
 async function downloadFile(url, dest) {
@@ -233,23 +278,34 @@ function renameFirstMatch(dir, candidates, outPath) {
 async function fetchAsset(label, url, archiveDest, outPath, extractFn, renameCandidates) {
   if (fs.existsSync(outPath)) { console.log(`✓  ${label} (already present)`); return true; }
   console.log(`↓  ${label}`);
-  console.log(`   ${url}`);
+  console.log(`   URL: ${url}`);
   let result;
   try { result = await downloadFile(url, archiveDest); }
-  catch (err) { console.error(`   ✗ Download error: ${err.message}`); return false; }
-  if (result.status === 404) { console.error(`   ✗ 404 — asset not found`); return false; }
+  catch (err) { console.error(`   ✗ FAILED — download error: ${err.message}`); return false; }
+  if (result.status === 404) { console.error(`   ✗ FAILED — 404 asset not found: ${path.basename(url)}`); return false; }
   try {
     const files = await extractFn(archiveDest);
-    if (files.length) console.log(`   extracted: ${files.join(', ')}`);
+    console.log(`   extracted ${files.length} file(s): ${files.join(', ') || '(none)'}`);
     if (renameCandidates) {
       const renamed = renameFirstMatch(path.dirname(outPath), renameCandidates, outPath);
-      if (!renamed) console.warn(`   ⚠️  Binary rename failed — none of [${renameCandidates.join(', ')}] found`);
+      if (!renamed) {
+        // List what IS in the directory so CI logs show what was actually extracted
+        const dir = path.dirname(outPath);
+        const contents = fs.readdirSync(dir).filter(f => !f.startsWith('.'));
+        console.error(`   ✗ FAILED — rename: none of [${renameCandidates.join(', ')}] found in ${dir}`);
+        console.error(`   Directory contents: ${contents.join(', ') || '(empty)'}`);
+        if (fs.existsSync(archiveDest)) fs.unlinkSync(archiveDest);
+        return false;
+      }
+      console.log(`   renamed ${renamed} → ${path.basename(outPath)}`);
     }
     if (fs.existsSync(archiveDest)) fs.unlinkSync(archiveDest);
-    console.log(`   ✓  ${label}`);
-    return true;
+    const exists = fs.existsSync(outPath);
+    if (exists) console.log(`   ✓  ${label}`);
+    else        console.error(`   ✗ FAILED — output file missing after extract: ${outPath}`);
+    return exists;
   } catch (err) {
-    console.error(`   ✗ Extract failed: ${err.message}`);
+    console.error(`   ✗ FAILED — extract error: ${err.message}`);
     if (fs.existsSync(archiveDest)) fs.unlinkSync(archiveDest);
     return false;
   }
@@ -267,9 +323,17 @@ export async function fetchSdBinaries({ all = false } = {}) {
     console.log(`\nUsing specified version: ${tag} (short hash: ${shortHash})\n`);
   } else {
     ({ tag, shortHash, assets } = await getLatestRelease());
-    console.log(`\nLatest release: ${tag} (short hash: ${shortHash})`);
-    if (assets.length) console.log(`Assets: ${assets.join(', ')}`);
-    console.log('');
+    console.log(`\n═══════════════════════════════════════════════════════════════`);
+    console.log(`  sd.cpp release: ${tag} (hash: ${shortHash})`);
+    console.log(`  Platform: ${process.platform}-${process.arch}${all ? ' (fetching ALL platforms)' : ''}`);
+    console.log(`  GITHUB_TOKEN: ${process.env.GITHUB_TOKEN ? 'present' : '⚠️  MISSING — may hit rate limits'}`);
+    console.log(`  Assets discovered: ${assets.length}`);
+    if (assets.length) {
+      for (const a of assets) console.log(`    • ${a}`);
+    } else {
+      console.log(`    (none — will use constructed filenames, may 404)`);
+    }
+    console.log(`═══════════════════════════════════════════════════════════════\n`);
   }
 
   const dl  = (fn) => `https://github.com/leejet/stable-diffusion.cpp/releases/download/${tag}/${fn}`;
@@ -300,6 +364,8 @@ export async function fetchSdBinaries({ all = false } = {}) {
     const plainFnGuess  = `sd-master-${shortHash}-bin-Linux-Ubuntu-24.04-x86_64.zip`;
     const vulkanFn = assets.find(a => /Linux.*x86_64.*vulkan\.zip$/i.test(a)) ?? vulkanFnGuess;
     const plainFn  = assets.find(a => /Linux.*x86_64\.zip$/i.test(a) && !a.includes('vulkan') && !a.includes('rocm')) ?? plainFnGuess;
+    console.log(`[linux-x64] Vulkan asset: ${vulkanFn}${vulkanFn === vulkanFnGuess ? ' (guess)' : ' (matched)'}`);
+    console.log(`[linux-x64] Plain asset:  ${plainFn}${plainFn === plainFnGuess ? ' (guess)' : ' (matched)'}`);
     const outPath  = bin('sd-server-linux-x64');
 
     if (!fs.existsSync(outPath)) {
@@ -416,12 +482,13 @@ export async function fetchSdBinaries({ all = false } = {}) {
     // Asset name discovery — sd.cpp occasionally changes naming conventions.
     // Try exact constructed name first, fall back to pattern matching in assets list.
     const findAsset = (constructed, ...patterns) => {
-      if (assets.length === 0) return constructed; // no API data, best-guess
-      if (assets.includes(constructed)) return constructed;
+      if (assets.length === 0) { console.log(`   [findAsset] no API assets — using guess: ${constructed}`); return constructed; }
+      if (assets.includes(constructed)) { console.log(`   [findAsset] exact match: ${constructed}`); return constructed; }
       for (const pat of patterns) {
         const match = assets.find(a => pat.test(a));
-        if (match) { console.log(`   asset name resolved: ${match}`); return match; }
+        if (match) { console.log(`   [findAsset] pattern ${pat} → ${match}`); return match; }
       }
+      console.warn(`   [findAsset] no match for ${constructed} or patterns — will try constructed (may 404)`);
       return constructed; // fall through to 404
     };
 
@@ -481,7 +548,33 @@ export async function fetchSdBinaries({ all = false } = {}) {
   }
 
   fs.rmSync(TMP_DIR, { recursive: true, force: true });
-  console.log('\nDone. sd-server binaries are in bin/');
+
+  // ── Summary report ─────────────────────────────────────────────────────────
+  console.log(`\n═══════════════════════════════════════════════════════════════`);
+  console.log('  sd-cpp fetch summary:');
+  const expected = [];
+  if (all || (p === 'linux'  && a === 'x64'))   expected.push({ label: 'Linux x64',     path: bin('sd-server-linux-x64') });
+  if (all || (p === 'linux'  && a === 'arm64')) expected.push({ label: 'Linux arm64',   path: bin('sd-server-linux-arm64') });
+  if (all || (p === 'darwin' && a === 'arm64')) expected.push({ label: 'macOS arm64',   path: bin('sd-server-darwin-arm64') });
+  if (all || p === 'win32') {
+    expected.push({ label: 'Windows Vulkan', path: path.join(BIN_DIR, 'sd-vulkan', 'sd-server-win32-x64.exe') });
+    expected.push({ label: 'Windows CUDA',   path: path.join(BIN_DIR, 'sd-cuda',   'sd-server-win32-x64-cuda.exe') });
+    expected.push({ label: 'Windows CPU',    path: path.join(BIN_DIR, 'sd-cpu',    'sd-server-win32-x64-cpu.exe') });
+    expected.push({ label: 'CUDA Runtime',   path: path.join(BIN_DIR, 'sd-cuda',   'cudart64_12.dll') });
+  }
+  let missing = 0;
+  for (const { label, path: p2 } of expected) {
+    const exists = fs.existsSync(p2);
+    console.log(`  ${exists ? '✅' : '❌'}  ${label}: ${exists ? p2 : 'MISSING'}`);
+    if (!exists) missing++;
+  }
+  if (missing > 0) {
+    console.log(`\n  ⚠️  ${missing} binary/binaries missing — image gen will fail on those platforms.`);
+    console.log(`  Check the logs above for 404s, rename failures, or rate limit errors.`);
+  } else if (expected.length > 0) {
+    console.log(`\n  ✅ All ${expected.length} expected binaries present.`);
+  }
+  console.log(`═══════════════════════════════════════════════════════════════\n`);
 }
 
 // ── Standalone ────────────────────────────────────────────────────────────────

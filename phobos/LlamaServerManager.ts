@@ -103,6 +103,13 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
     '--log-disable',
   ];
 
+  // ngl=0 — fully disable GPU acceleration. Without --device none, llama.cpp
+  // still offloads some operations (large matmuls) to the GPU even with 0 layers.
+  // On a 4 GB card this consumes ~600 MB of VRAM that the other server needs.
+  if (cfg.gpuLayers === 0) {
+    args.push('--device', 'none');
+  }
+
   // Jinja chat template + reasoning-format routing for all Qwen3/3.5-architecture models.
   // Covers: Qwen3 family, Qwen3.5 family, Magistral, DeepSeek-R1 Qwen3 distills (8B, 14B).
   // Qwen3.5 uses the same <think>...</think> tags as Qwen3 — --reasoning-format deepseek

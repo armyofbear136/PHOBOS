@@ -61,10 +61,15 @@ function httpsGet(url) {
   });
 }
 
-async function getLatestRelease() {
-  // Try the API first — gives us the asset name list for exact matching.
+// Minimum asset count for a "complete" release. A full sd.cpp release has:
+// Win Vulkan, Win CUDA, Win AVX2/CPU, cudart, Linux x64, Linux Vulkan, macOS arm64 = 7+
+// We accept ≥6 to tolerate a missing variant (e.g. no Linux Vulkan in some releases).
+const MIN_COMPLETE_ASSETS = 6;
+
+async function getLatestCompleteRelease() {
+  // Walk recent releases via the API and pick the first one with enough assets.
   try {
-    const res  = await httpsGet('https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/latest');
+    const res  = await httpsGet('https://api.github.com/repos/leejet/stable-diffusion.cpp/releases?per_page=10');
     const body = await new Promise((resolve, reject) => {
       let buf = '';
       res.on('data', d => buf += d);
@@ -72,21 +77,31 @@ async function getLatestRelease() {
       res.on('error', reject);
     });
     if (res.statusCode === 200) {
-      const data = JSON.parse(body);
-      if (data.tag_name) {
-        const shortHash = data.tag_name.split('-').pop();
-        const assets    = (data.assets ?? []).map(a => a.name);
-        console.log(`[sd-cpp] GitHub API OK — tag: ${data.tag_name}, ${assets.length} assets`);
-        return { tag: data.tag_name, shortHash, assets };
+      const releases = JSON.parse(body);
+      if (Array.isArray(releases)) {
+        for (const rel of releases) {
+          if (!rel.tag_name) continue;
+          const assets = (rel.assets ?? []).map(a => a.name);
+          const tag       = rel.tag_name;
+          const shortHash = tag.split('-').pop();
+          console.log(`[sd-cpp] Release ${tag}: ${assets.length} assets`);
+          if (assets.length >= MIN_COMPLETE_ASSETS) {
+            console.log(`[sd-cpp] ✓ Selected ${tag} (${assets.length} assets — meets threshold of ${MIN_COMPLETE_ASSETS})`);
+            return { tag, shortHash, assets };
+          }
+          console.log(`[sd-cpp]   skipped — only ${assets.length} assets (need ≥${MIN_COMPLETE_ASSETS})`);
+        }
+        console.warn(`[sd-cpp] None of the last ${releases.length} releases have ≥${MIN_COMPLETE_ASSETS} assets`);
       }
+    } else {
+      console.warn(`[sd-cpp] GitHub API returned HTTP ${res.statusCode}`);
     }
-    console.warn(`[sd-cpp] GitHub API returned HTTP ${res.statusCode} — trying HTML fallback`);
   } catch (err) {
-    console.warn(`[sd-cpp] GitHub API failed: ${err.message} — trying HTML fallback`);
+    console.warn(`[sd-cpp] GitHub API failed: ${err.message}`);
   }
 
-  // Fallback: scrape the releases page for the latest tag.
-  // The releases page contains "/releases/tag/<tagname>" which we can extract.
+  // Fallback: scrape the releases HTML page for download links.
+  // This can discover assets across multiple releases shown on the page.
   try {
     const res  = await httpsGet('https://github.com/leejet/stable-diffusion.cpp/releases');
     const body = await new Promise((resolve, reject) => {
@@ -95,31 +110,34 @@ async function getLatestRelease() {
       res.on('end', () => resolve(buf));
       res.on('error', reject);
     });
-    // Match the first tag link: /releases/tag/master-NNN-HASH
-    const tagMatch = body.match(/\/releases\/tag\/(master-\d+-[a-f0-9]+)/);
-    if (tagMatch) {
-      const tag       = tagMatch[1];
-      const shortHash = tag.split('-').pop();
-      // Scrape asset filenames from download links on the same page
-      const assetRe   = /\/releases\/download\/[^/]+\/([^"]+\.zip)/g;
-      const assets    = [];
-      let m;
-      while ((m = assetRe.exec(body)) !== null) {
-        if (!assets.includes(m[1])) assets.push(m[1]);
-      }
-      console.log(`[sd-cpp] HTML scrape OK — tag: ${tag}, ${assets.length} assets found`);
-      return { tag, shortHash, assets };
+    // Group assets by tag
+    const tagAssets = new Map();
+    const dlRe = /\/releases\/download\/(master-\d+-[a-f0-9]+)\/([^"]+\.zip)/g;
+    let m;
+    while ((m = dlRe.exec(body)) !== null) {
+      const tag = m[1], asset = m[2];
+      if (!tagAssets.has(tag)) tagAssets.set(tag, []);
+      const list = tagAssets.get(tag);
+      if (!list.includes(asset)) list.push(asset);
     }
-    console.warn('[sd-cpp] HTML scrape found no tag — using last-known fallback');
+    // Pick the first tag (most recent on page) with enough assets
+    for (const [tag, assets] of tagAssets) {
+      const shortHash = tag.split('-').pop();
+      console.log(`[sd-cpp] HTML: ${tag} has ${assets.length} assets`);
+      if (assets.length >= MIN_COMPLETE_ASSETS) {
+        console.log(`[sd-cpp] ✓ HTML selected ${tag}`);
+        return { tag, shortHash, assets };
+      }
+    }
+    console.warn('[sd-cpp] HTML scrape found no complete release');
   } catch (err) {
-    console.warn(`[sd-cpp] HTML scrape failed: ${err.message} — using last-known fallback`);
+    console.warn(`[sd-cpp] HTML scrape failed: ${err.message}`);
   }
 
-  // Last resort: hardcoded last-known release. Assets will be empty so
-  // constructed filenames are used (may 404 if naming changed, but won't crash).
+  // Last resort: hardcoded known-good release with full asset set.
   const LAST_KNOWN_TAG = 'master-525-d6dd6d7';
   const shortHash = LAST_KNOWN_TAG.split('-').pop();
-  console.warn(`[sd-cpp] Using hardcoded fallback tag: ${LAST_KNOWN_TAG} (no asset list — names are best-guess)`);
+  console.warn(`[sd-cpp] Using hardcoded fallback: ${LAST_KNOWN_TAG} (known-good, full asset set)`);
   return { tag: LAST_KNOWN_TAG, shortHash, assets: [] };
 }
 
@@ -322,7 +340,7 @@ export async function fetchSdBinaries({ all = false } = {}) {
     tag = vArg; shortHash = vArg.split('-').pop(); assets = [];
     console.log(`\nUsing specified version: ${tag} (short hash: ${shortHash})\n`);
   } else {
-    ({ tag, shortHash, assets } = await getLatestRelease());
+    ({ tag, shortHash, assets } = await getLatestCompleteRelease());
     console.log(`\n═══════════════════════════════════════════════════════════════`);
     console.log(`  sd.cpp release: ${tag} (hash: ${shortHash})`);
     console.log(`  Platform: ${process.platform}-${process.arch}${all ? ' (fetching ALL platforms)' : ''}`);

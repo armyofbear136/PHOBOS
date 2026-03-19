@@ -329,51 +329,106 @@ export async function reconcilePhobosServers(config: {
     console.error(`[reconcile] Hardware detect failed: ${(err as Error).message}`);
   }
 
-  if (config.coordinator.provider === 'phobos') {
-    // deviceIndex === -1: user explicitly chose CPU — skip auto-detect entirely.
-    // deviceIndex === undefined: not yet configured — fall through to recommendation.
-    const explicitCpuSayon = config.coordinator.deviceIndex === -1;
-    const deviceIndex = explicitCpuSayon ? undefined
-      : config.coordinator.deviceIndex ?? (rec ? (rec.sayonDevice === 'cpu' ? undefined : rec.sayonDevice) : undefined);
-    const gpuBackend  = explicitCpuSayon ? undefined
-      : config.coordinator.gpuBackend ?? (deviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === deviceIndex)?.backend : undefined);
-    const gpuLayers   = explicitCpuSayon ? 0
-      : config.coordinator.gpuLayers ?? (deviceIndex !== undefined ? 99 : 0);
+  // ── Resolve device assignments for both roles ─────────────────────────────
+  const explicitCpuSayon = config.coordinator.deviceIndex === -1;
+  const sayonDeviceIndex = explicitCpuSayon ? undefined
+    : config.coordinator.deviceIndex ?? (rec ? (rec.sayonDevice === 'cpu' ? undefined : rec.sayonDevice) : undefined);
+  const sayonGpuBackend  = explicitCpuSayon ? undefined
+    : config.coordinator.gpuBackend ?? (sayonDeviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === sayonDeviceIndex)?.backend : undefined);
+  const sayonGpuLayers   = explicitCpuSayon ? 0
+    : config.coordinator.gpuLayers ?? (sayonDeviceIndex !== undefined ? 99 : 0);
 
+  const explicitCpuSeren = config.engine.deviceIndex === -1;
+  const serenDeviceIndex = explicitCpuSeren ? undefined
+    : config.engine.deviceIndex ?? (rec ? (rec.serenDevice === 'cpu' ? undefined : rec.serenDevice) : undefined);
+  const serenGpuBackend  = explicitCpuSeren ? undefined
+    : config.engine.gpuBackend ?? (serenDeviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === serenDeviceIndex)?.backend : undefined);
+  const serenGpuLayers   = explicitCpuSeren ? 0
+    : config.engine.gpuLayers ?? (serenDeviceIndex !== undefined ? 99 : 0);
+
+  // ── Shared-pool context sizing ────────────────────────────────────────────
+  // Both servers may share the same memory pool (unified memory, dual-CPU, or
+  // same discrete GPU). Each server's context budget must subtract the other's
+  // footprint. SEREN gets priority (does the real work). SAYON gets the rest.
+
+  const sayonSpec = config.coordinator.provider === 'phobos' ? getSpec(config.coordinator.model) : null;
+  const serenSpec = config.engine.provider === 'phobos' ? getSpec(config.engine.model) : null;
+
+  const sayonOnPhobos = config.coordinator.provider === 'phobos';
+  const serenOnPhobos = config.engine.provider === 'phobos';
+  const sayonOnCpu = sayonGpuLayers === 0;
+  const serenOnCpu = serenGpuLayers === 0;
+  const bothOnCpu  = sayonOnPhobos && serenOnPhobos && sayonOnCpu && serenOnCpu;
+  const sameGpu    = sayonOnPhobos && serenOnPhobos && !sayonOnCpu && !serenOnCpu
+    && sayonDeviceIndex !== undefined && sayonDeviceIndex === serenDeviceIndex;
+
+  const sayonWeightsGb = sayonSpec ? sayonSpec.sizeBytes / (1024 ** 3) : 0;
+  const serenWeightsGb = serenSpec ? serenSpec.sizeBytes / (1024 ** 3) : 0;
+
+  const gpuOverhead = (totalGb: number) =>
+    totalGb <= 4 ? 1.0 : totalGb <= 6 ? 0.8 : totalGb <= 8 ? 1.0 : totalGb <= 10 ? 1.6 : 1.2;
+
+  // SEREN context first (priority)
+  let serenContextSize = 4096;
+  if (serenOnPhobos && serenSpec) {
+    if (!serenOnCpu && serenDeviceIndex !== undefined && hw) {
+      const gpu      = hw.gpus.find(g => g.index === serenDeviceIndex);
+      const totalGb  = gpu?.vramGb ?? 0;
+      const overhead = gpuOverhead(totalGb);
+      const peerWeightsGb = sameGpu ? sayonWeightsGb : 0;
+      const budgetGb = Math.max(0, totalGb - serenWeightsGb - peerWeightsGb - overhead);
+      serenContextSize = recommendContextSize(serenSpec, budgetGb, true);
+    } else {
+      const peerWeightsGb = bothOnCpu ? sayonWeightsGb : 0;
+      const budgetGb = Math.max(0, (hw?.ramGb ?? 16) - serenWeightsGb - peerWeightsGb - 2) * 0.70;
+      serenContextSize = recommendContextSize(serenSpec, budgetGb, false);
+    }
+  }
+
+  // SAYON context — subtract SEREN's full footprint (weights + KV at chosen ctx)
+  const serenKvGb = serenSpec
+    ? (serenSpec.kvCacheMbPer1kTokens * (serenContextSize / 1024)) / 1024
+    : 0;
+  const serenTotalGb = serenWeightsGb + serenKvGb;
+
+  let sayonContextSize = 4096;
+  if (sayonOnPhobos && sayonSpec) {
+    if (!sayonOnCpu && sayonDeviceIndex !== undefined && hw) {
+      const gpu      = hw.gpus.find(g => g.index === sayonDeviceIndex);
+      const totalGb  = gpu?.vramGb ?? 0;
+      const overhead = gpuOverhead(totalGb);
+      const peerGb   = sameGpu ? serenTotalGb : 0;
+      const budgetGb = Math.max(0, totalGb - sayonWeightsGb - peerGb - overhead);
+      sayonContextSize = recommendContextSize(sayonSpec, budgetGb, true);
+    } else {
+      const peerGb   = bothOnCpu ? serenTotalGb : 0;
+      const budgetGb = Math.max(0, (hw?.ramGb ?? 16) - sayonWeightsGb - peerGb - 2) * 0.70;
+      sayonContextSize = recommendContextSize(sayonSpec, budgetGb, false);
+    }
+  }
+
+  if (sayonOnPhobos && serenOnPhobos) {
+    const pool = sameGpu ? 'shared GPU' : bothOnCpu ? 'shared RAM' : 'separate devices';
+    console.log(
+      `[reconcile] Context sizes (${pool}): ` +
+      `SAYON ${sayonContextSize / 1024}K, SEREN ${serenContextSize / 1024}K`
+    );
+  }
+
+  // ── Start servers ─────────────────────────────────────────────────────────
+
+  if (config.coordinator.provider === 'phobos') {
     tasks.push(
       startServer('sayon', {
         modelId:     config.coordinator.model,
         port:        SAYON_PORT,
-        gpuLayers,
-        contextSize: (() => {
-          const sayonSpec = getSpec(config.coordinator.model);
-          if (!sayonSpec) return 4096;
-          if (gpuLayers > 0 && deviceIndex !== undefined && hw) {
-            // GPU mode: KV cache in VRAM.
-            // Budget = totalVramGb - modelWeights - overhead.
-            // Overhead scales with card size (smaller cards have proportionally higher
-            // fixed CUDA runtime + driver + cuBLAS workspace costs).
-            // ≤4 GB: 1.0 GB  ≤8 GB: 0.8 GB  >8 GB: 0.6 GB
-            const gpu        = hw.gpus.find(g => g.index === deviceIndex);
-            const totalGb    = gpu?.vramGb ?? 0;
-            const weightsGb  = sayonSpec.sizeBytes / (1024 ** 3);
-            // Overhead accounts for CUDA runtime, driver reservation, cuBLAS workspace.
-            // Larger fixed costs on small cards; 10GB cards need extra room under high system load.
-            // <=4GB: 1.0  <=6GB: 0.8  <=8GB: 1.0  <=10GB: 1.6  >10GB: 1.2
-            const overhead   = totalGb <= 4 ? 1.0 : totalGb <= 6 ? 0.8 : totalGb <= 8 ? 1.0 : totalGb <= 10 ? 1.6 : 1.2;
-            const budgetGb   = Math.max(0, totalGb - weightsGb - overhead);
-            return recommendContextSize(sayonSpec, budgetGb, true);
-          } else {
-            // CPU mode: KV cache in RAM — budget after model weights + 2GB OS overhead
-            const budgetGb = Math.max(0, (hw?.ramGb ?? 16) - sayonSpec.sizeBytes / (1024 ** 3) - 2) * 0.70;
-            return recommendContextSize(sayonSpec, budgetGb, false);
-          }
-        })(),
+        gpuLayers:   sayonGpuLayers,
+        contextSize: sayonContextSize,
         threads:     0,
-        deviceIndex,
-        gpuBackend:  gpuBackend as ServerConfig['gpuBackend'],
-        vulkanIndex: deviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === deviceIndex)?.runner?.vulkanIndex : undefined,
-        runnerKind:  deviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === deviceIndex)?.runner?.kind : undefined,
+        deviceIndex: sayonDeviceIndex,
+        gpuBackend:  sayonGpuBackend as ServerConfig['gpuBackend'],
+        vulkanIndex: sayonDeviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === sayonDeviceIndex)?.runner?.vulkanIndex : undefined,
+        runnerKind:  sayonDeviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === sayonDeviceIndex)?.runner?.kind : undefined,
       }).catch(err => {
         console.error(`[reconcile] sayon start failed: ${err.message}`);
       })
@@ -383,45 +438,17 @@ export async function reconcilePhobosServers(config: {
   }
 
   if (config.engine.provider === 'phobos') {
-    // deviceIndex === -1: user explicitly chose CPU — skip auto-detect entirely.
-    const explicitCpuSeren = config.engine.deviceIndex === -1;
-    const deviceIndex = explicitCpuSeren ? undefined
-      : config.engine.deviceIndex ?? (rec ? (rec.serenDevice === 'cpu' ? undefined : rec.serenDevice) : undefined);
-    const gpuBackend  = explicitCpuSeren ? undefined
-      : config.engine.gpuBackend ?? (deviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === deviceIndex)?.backend : undefined);
-    const gpuLayers   = explicitCpuSeren ? 0
-      : config.engine.gpuLayers ?? (deviceIndex !== undefined ? 99 : 0);
-
     tasks.push(
       startServer('seren', {
         modelId:     config.engine.model,
         port:        SEREN_PORT,
-        gpuLayers,
-        contextSize: (() => {
-          const serenSpec = getSpec(config.engine.model);
-          if (!serenSpec) return 4096;
-          if (gpuLayers > 0 && deviceIndex !== undefined && hw) {
-            // GPU mode: budget = totalVramGb - modelWeights - overhead (scaled by card size)
-            const gpu        = hw.gpus.find(g => g.index === deviceIndex);
-            const totalGb    = gpu?.vramGb ?? 0;
-            const weightsGb  = serenSpec.sizeBytes / (1024 ** 3);
-            // Overhead accounts for CUDA runtime, driver reservation, cuBLAS workspace.
-            // Larger fixed costs on small cards; 10GB cards need extra room under high system load.
-            // <=4GB: 1.0  <=6GB: 0.8  <=8GB: 1.0  <=10GB: 1.6  >10GB: 1.2
-            const overhead   = totalGb <= 4 ? 1.0 : totalGb <= 6 ? 0.8 : totalGb <= 8 ? 1.0 : totalGb <= 10 ? 1.6 : 1.2;
-            const budgetGb   = Math.max(0, totalGb - weightsGb - overhead);
-            return recommendContextSize(serenSpec, budgetGb, true);
-          } else {
-            // CPU mode: KV cache in RAM
-            const budgetGb = Math.max(0, (hw?.ramGb ?? 16) - serenSpec.sizeBytes / (1024 ** 3) - 2) * 0.70;
-            return recommendContextSize(serenSpec, budgetGb, false);
-          }
-        })(),
+        gpuLayers:   serenGpuLayers,
+        contextSize: serenContextSize,
         threads:     0,
-        deviceIndex,
-        gpuBackend:  gpuBackend as ServerConfig['gpuBackend'],
-        vulkanIndex: deviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === deviceIndex)?.runner?.vulkanIndex : undefined,
-        runnerKind:  deviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === deviceIndex)?.runner?.kind : undefined,
+        deviceIndex: serenDeviceIndex,
+        gpuBackend:  serenGpuBackend as ServerConfig['gpuBackend'],
+        vulkanIndex: serenDeviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === serenDeviceIndex)?.runner?.vulkanIndex : undefined,
+        runnerKind:  serenDeviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === serenDeviceIndex)?.runner?.kind : undefined,
       }).catch(err => {
         console.error(`[reconcile] seren start failed: ${err.message}`);
       })

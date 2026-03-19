@@ -411,14 +411,8 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 18_400_000_000, ramRequiredGb: 20, contextWindow: 32768,
     kvCacheMbPer1kTokens: 96,   // 48 layers x 4 KV heads x 128 head_dim x 2 x F16 (MoE sparse) — active params ~3B, KV cost similar to 4B
   },
-  {
-    modelId: 'qwen3-coder-8b-q4', label: 'Qwen3 Coder 8B Q4', family: 'Qwen3',
-    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
-    hfRepo: 'bartowski/Qwen_Qwen3-Coder-8B-GGUF',
-    hfFile: 'Qwen_Qwen3-Coder-8B-Q4_K_M.gguf',
-    sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 32768,
-    kvCacheMbPer1kTokens: 144,  // 36 layers x 8 KV heads x 128 head_dim x 2 x F16
-  },
+  // Qwen3 Coder removed — bartowski repo returns 401 (gated/removed).
+  // Will be replaced by Qwen3.5-9B in the next catalogue update.
   // ── Mistral family ───────────────────────────────────────────────────────────
   {
     modelId: 'mistral-7b-q4', label: 'Mistral 7B v0.3 Q4', family: 'Mistral',
@@ -1007,7 +1001,6 @@ const SEREN_CANDIDATES = [
   'magistral-8b-q4',
   'deepseek-r1-14b-q4',
   'qwen3-14b-q4',
-  'qwen3-coder-8b-q4',
   'deepseek-r1-8b-q4',
   'qwen3-8b-q4',
   'qwen3-4b-q4',

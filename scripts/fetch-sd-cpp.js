@@ -282,8 +282,9 @@ export async function fetchSdBinaries({ all = false } = {}) {
   if (all || (p === 'linux' && a === 'x64')) {
     // sd.cpp Linux releases are .zip files (not .tar.gz like llama.cpp).
     // Extract binary (no extension) + companion .so files for Vulkan GPU support.
+    // Filter: no-extension files (the binary) + any .so variant (.so, .so.0, .so.1, .so.0.0.1, etc.)
     const chmodAll = async (archive) => {
-      const filter = n => !n.includes('.') || n.endsWith('.so') || n.endsWith('.so.0');
+      const filter = n => !n.includes('.') || /\.so(\.\d+)*$/.test(n);
       const files = await extractAllFromZip(archive, BIN_DIR, filter);
       for (const e of fs.readdirSync(BIN_DIR)) {
         const ep = path.join(BIN_DIR, e);
@@ -293,8 +294,12 @@ export async function fetchSdBinaries({ all = false } = {}) {
     };
 
     // Try Vulkan first, fall back to plain
-    const vulkanFn = `sd-master-${shortHash}-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip`;
-    const plainFn  = `sd-master-${shortHash}-bin-Linux-Ubuntu-24.04-x86_64.zip`;
+    // Asset names include Ubuntu version (e.g. "Ubuntu-24.04") which may change.
+    // Try exact name first, then pattern-match from the assets list.
+    const vulkanFnGuess = `sd-master-${shortHash}-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip`;
+    const plainFnGuess  = `sd-master-${shortHash}-bin-Linux-Ubuntu-24.04-x86_64.zip`;
+    const vulkanFn = assets.find(a => /Linux.*x86_64.*vulkan\.zip$/i.test(a)) ?? vulkanFnGuess;
+    const plainFn  = assets.find(a => /Linux.*x86_64\.zip$/i.test(a) && !a.includes('vulkan') && !a.includes('rocm')) ?? plainFnGuess;
     const outPath  = bin('sd-server-linux-x64');
 
     if (!fs.existsSync(outPath)) {
@@ -329,7 +334,7 @@ export async function fetchSdBinaries({ all = false } = {}) {
       'sd-server-linux-arm64 (best-guess — 404 expected, no arm64 release)',
       dl(fn), tmp(fn), outPath,
       async (archive) => {
-        const filter = n => !n.includes('.') || n.endsWith('.so') || n.endsWith('.so.0');
+        const filter = n => !n.includes('.') || /\.so(\.\d+)*$/.test(n);
         const files = await extractAllFromZip(archive, BIN_DIR, filter);
         for (const e of fs.readdirSync(BIN_DIR)) {
           const ep = path.join(BIN_DIR, e);
@@ -408,8 +413,23 @@ export async function fetchSdBinaries({ all = false } = {}) {
 
     const extractTo = dir => archive => extractAllFromZip(archive, dir, sdFilter);
 
+    // Asset name discovery — sd.cpp occasionally changes naming conventions.
+    // Try exact constructed name first, fall back to pattern matching in assets list.
+    const findAsset = (constructed, ...patterns) => {
+      if (assets.length === 0) return constructed; // no API data, best-guess
+      if (assets.includes(constructed)) return constructed;
+      for (const pat of patterns) {
+        const match = assets.find(a => pat.test(a));
+        if (match) { console.log(`   asset name resolved: ${match}`); return match; }
+      }
+      return constructed; // fall through to 404
+    };
+
     // Primary: Vulkan GPU build
-    const vulkanFn = `sd-master-${shortHash}-bin-win-vulkan-x64.zip`;
+    const vulkanFn = findAsset(
+      `sd-master-${shortHash}-bin-win-vulkan-x64.zip`,
+      /win.*vulkan.*x64\.zip$/i
+    );
     await fetchAsset(
       'sd-server-win32-x64.exe (Vulkan GPU)',
       dl(vulkanFn), tmp(vulkanFn), path.join(SD_VULKAN_DIR, 'sd-server-win32-x64.exe'),
@@ -417,7 +437,10 @@ export async function fetchSdBinaries({ all = false } = {}) {
     );
 
     // CUDA GPU build — binary + its own ggml-cuda.dll isolated in sd-cuda/
-    const cudaFn = `sd-master-${shortHash}-bin-win-cuda12-x64.zip`;
+    const cudaFn = findAsset(
+      `sd-master-${shortHash}-bin-win-cuda12-x64.zip`,
+      /win.*cuda12.*x64\.zip$/i
+    );
     await fetchAsset(
       'sd-server-win32-x64-cuda.exe (CUDA GPU)',
       dl(cudaFn), tmp(cudaFn), path.join(SD_CUDA_DIR, 'sd-server-win32-x64-cuda.exe'),
@@ -446,7 +469,10 @@ export async function fetchSdBinaries({ all = false } = {}) {
     }
 
     // CPU AVX2 fallback
-    const avx2Fn = `sd-master-${shortHash}-bin-win-avx2-x64.zip`;
+    const avx2Fn = findAsset(
+      `sd-master-${shortHash}-bin-win-avx2-x64.zip`,
+      /win.*avx2.*x64\.zip$/i
+    );
     await fetchAsset(
       'sd-server-win32-x64-cpu.exe (AVX2 CPU fallback)',
       dl(avx2Fn), tmp(avx2Fn), path.join(SD_CPU_DIR, 'sd-server-win32-x64-cpu.exe'),

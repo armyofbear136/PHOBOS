@@ -59,6 +59,7 @@ export type WorkflowNodeType =
   | 'Generate'
   | 'VarySeed'
   | 'Img2imgRefine'
+  | 'KontextEdit'
   | 'FaceFix'
   | 'HandFix'
   | 'DepthControlNet'
@@ -67,7 +68,7 @@ export type WorkflowNodeType =
 
 // sd-cli generation nodes — these require RGB input
 const SD_CLI_GENERATION_TYPES = new Set<WorkflowNodeType>([
-  'Generate', 'VarySeed', 'Img2imgRefine', 'FaceFix', 'HandFix', 'DepthControlNet', 'Upscale',
+  'Generate', 'VarySeed', 'Img2imgRefine', 'KontextEdit', 'FaceFix', 'HandFix', 'DepthControlNet', 'Upscale',
 ]);
 
 // ── Per-node param types ──────────────────────────────────────────────────────
@@ -92,6 +93,11 @@ export interface VarySeedParams extends GenerateParams {
 
 export interface Img2imgRefineParams extends GenerateParams {
   strength: number;      // 0–1, denoising strength
+}
+
+export interface KontextEditParams extends GenerateParams {
+  // refImage is wired automatically from the upstream node output at execution time.
+  // No extra fields needed — prompt drives the edit, seed controls variation.
 }
 
 export interface FaceFixParams extends GenerateParams {
@@ -138,6 +144,7 @@ export type WorkflowNodeParams =
   | GenerateParams
   | VarySeedParams
   | Img2imgRefineParams
+  | KontextEditParams
   | FaceFixParams
   | HandFixParams
   | DepthControlNetParams
@@ -516,6 +523,26 @@ async function* executeVarySeed(
   }, node.index, onAbortRegister);
 }
 
+async function* executeKontextEdit(
+  node:      WorkflowNode,
+  inputPath: string,
+  outPath:   string,
+  cfg:       SdServerConfig,
+  onAbortRegister?: (killFn: () => void) => void,
+): AsyncGenerator<WorkflowEvent> {
+  const p = node.params as KontextEditParams;
+  // inputPath is the upstream node output — passed as -r (reference image) for editing.
+  // Width/height inherit from upstream dimensions; sd-cli reads them from the ref image.
+  yield* runGenerate(outPath, cfg, {
+    prompt:         p.prompt,
+    negativePrompt: p.negativePrompt,
+    steps:          p.steps,
+    seed:           p.seed,
+    sampler:        p.sampler,
+    refImage:       inputPath,
+  }, node.index, onAbortRegister);
+}
+
 async function* executeImg2imgRefine(
   node:      WorkflowNode,
   inputPath: string,
@@ -856,6 +883,11 @@ export async function* run(
         case 'Img2imgRefine':
           if (!inputPath) throw new Error('Img2imgRefine requires an upstream node with output');
           yield* executeImg2imgRefine(node, inputPath, outPath, cfg, onAbortRegister);
+          break;
+
+        case 'KontextEdit':
+          if (!inputPath) throw new Error('KontextEdit requires an upstream node with output');
+          yield* executeKontextEdit(node, inputPath, outPath, cfg, onAbortRegister);
           break;
 
         case 'FaceFix':

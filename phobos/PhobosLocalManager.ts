@@ -26,6 +26,10 @@ export const IMAGE_SHARED_DIR = path.join(os.homedir(), '.phobos', 'models', 'im
 export const IMAGE_FLUX_DIR   = path.join(os.homedir(), '.phobos', 'models', 'image', 'flux');
 /** SDXL model GGUFs */
 export const IMAGE_SDXL_DIR   = path.join(os.homedir(), '.phobos', 'models', 'image', 'sdxl');
+/** FLUX Kontext, FLUX.2, Z-Image, Qwen-Image diffusion model GGUFs */
+export const IMAGE_NEW_DIR    = path.join(os.homedir(), '.phobos', 'models', 'image', 'new');
+/** LLM-as-text-encoder GGUFs (Qwen3-4B, Qwen3-8B, Qwen2.5-VL-7B) — separate from LLM server models */
+export const IMAGE_LLM_DIR    = path.join(os.homedir(), '.phobos', 'models', 'image', 'llm');
 /** @deprecated use IMAGE_FLUX_DIR — kept so any external references survive */
 export const FLUX_MODELS_DIR  = IMAGE_FLUX_DIR;
 export const UPSCALE_MODELS_DIR = path.join(os.homedir(), '.phobos', 'models', 'upscale');
@@ -575,16 +579,27 @@ export function listDownloaded(): GGUFSpec[] {
 
 /**
  * Runner profile determines which sd.cpp CLI flags are used:
- *   flux  — --diffusion-model + --clip_l + --t5xxl + --vae
- *   sdxl  — -m (single file, VAE baked) + --clip_l + --clip_g
+ *   flux          — --diffusion-model + --clip_l + --t5xxl + --vae
+ *   sdxl          — -m (single file, VAE baked) + --clip_l + --clip_g
+ *   flux1-kontext — --diffusion-model + --clip_l + --t5xxl + --vae + -r + --vae-decode-only false
+ *   flux2         — --diffusion-model + --llm + --vae (flux2_ae) + --diffusion-fa
+ *   z-image       — --diffusion-model + --llm + --vae + --diffusion-fa
+ *   qwen-image    — --diffusion-model + --llm + --vae + --diffusion-fa + --flow-shift
  */
-export type ImageRunnerProfile = 'flux' | 'sdxl';
+export type ImageRunnerProfile =
+  | 'flux'
+  | 'sdxl'
+  | 'flux1-kontext'
+  | 'flux2'
+  | 'z-image'
+  | 'qwen-image';
 
 /**
  * Category tag for UI grouping. nsfw-realistic / nsfw-anime are gated behind
  * a content warning in the UI but use the same download infrastructure.
+ * legacy = superseded models (FLUX schnell) — collapsed behind a toggle.
  */
-export type ImageModelCategory = 'realistic' | 'anime' | 'nsfw-realistic' | 'nsfw-anime';
+export type ImageModelCategory = 'realistic' | 'anime' | 'nsfw-realistic' | 'nsfw-anime' | 'legacy';
 
 export interface ImageModelSpec {
   modelId: string;
@@ -593,8 +608,8 @@ export interface ImageModelSpec {
   displayName: string;
   runnerProfile: ImageRunnerProfile;
   category: ImageModelCategory;
-  variant: 'schnell' | 'dev' | 'pony' | 'sdxl' | 'chroma';
-  quantization: 'Q4_K_M' | 'Q8_0' | 'Q4_0' | 'f16';
+  variant: 'schnell' | 'dev' | 'pony' | 'sdxl' | 'chroma' | 'kontext' | 'flux2' | 'z-image' | 'qwen-image';
+  quantization: 'Q4_K_M' | 'Q8_0' | 'Q4_0' | 'Q3_K_M' | 'Q5_K_S' | 'f16';
   hfRepo: string;
   hfFile: string;
   sizeBytes: number;
@@ -618,6 +633,9 @@ export interface FluxAuxFile {
   label: string;
   hfRepo: string;
   hfFile: string;
+  /** Local filename override — use when hfFile contains a subdirectory path.
+   *  If omitted, path.basename(hfFile) is used as the local filename. */
+  localFile?: string;
   sizeBytes: number;
   /** CLI flag passed to sd-server */
   cliFlag: string;
@@ -689,6 +707,82 @@ export const FLUX_AUX_REQUIRED: FluxAuxFile[] = [FLUX_VAE, FLUX_CLIP_L];
 /** Chroma aux files — VAE only, no CLIP-L (trained without CLIP-L conditioning). T5 chosen separately. */
 export const CHROMA_AUX_REQUIRED: FluxAuxFile[] = [FLUX_VAE];
 
+// ── New-family aux files ──────────────────────────────────────────────────────
+// These live in IMAGE_SHARED_DIR (safetensors) or IMAGE_LLM_DIR (GGUF LLMs).
+// fluxAuxPath() routes by cliFlag — '--llm' entries resolve to IMAGE_LLM_DIR.
+
+/** FLUX.2-family VAE — different from FLUX.1 ae.safetensors, not interchangeable. */
+export const FLUX2_VAE: FluxAuxFile = {
+  id:         'flux2-vae',
+  label:      'FLUX.2 VAE',
+  hfRepo:     'Comfy-Org/flux2-dev',
+  hfFile:     'split_files/vae/flux2-vae.safetensors',
+  localFile:  'flux2-vae.safetensors',
+  sizeBytes:  335_000_000,
+  cliFlag:    '--vae',
+  license:    'Apache-2.0',
+  licenseUrl: 'https://huggingface.co/Comfy-Org/flux2-dev',
+};
+
+/** Qwen-Image VAE — unique to Qwen-Image, not shared with FLUX or FLUX.2. */
+export const QWEN_IMAGE_VAE: FluxAuxFile = {
+  id:         'qwen-image-vae',
+  label:      'Qwen-Image VAE',
+  hfRepo:     'Comfy-Org/Qwen-Image_ComfyUI',
+  hfFile:     'split_files/vae/qwen_image_vae.safetensors',
+  sizeBytes:  254_000_000,
+  cliFlag:    '--vae',
+  license:    'Apache-2.0',
+  licenseUrl: 'https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI',
+};
+
+/**
+ * Qwen3-4B GGUF used as --llm text encoder for Z-Image and FLUX.2-klein-4B.
+ * Kept separate from the LLM server's Qwen3.5 4B — different instruct tuning,
+ * weight compatibility with sd-cli not yet verified. Resolves to IMAGE_LLM_DIR.
+ */
+export const ZIMAGE_LLM_Q4: FluxAuxFile = {
+  id:         'zimage-llm-qwen3-4b-q4',
+  label:      'Qwen3-4B text encoder Q4 (~2.5 GB)',
+  hfRepo:     'unsloth/Qwen3-4B-Instruct-2507-GGUF',
+  hfFile:     'Qwen3-4B-Instruct-2507-Q4_K_M.gguf',
+  sizeBytes:  2_500_000_000,
+  cliFlag:    '--llm',
+  license:    'Apache-2.0',
+  licenseUrl: 'https://huggingface.co/Qwen/Qwen3-4B-GGUF/blob/main/LICENSE',
+};
+
+/** Qwen3-8B GGUF text encoder for FLUX.2-klein-9B. Resolves to IMAGE_LLM_DIR. */
+export const FLUX2_LLM_9B_Q4: FluxAuxFile = {
+  id:         'flux2-llm-qwen3-8b-q4',
+  label:      'Qwen3-8B text encoder Q4 (~5 GB)',
+  hfRepo:     'unsloth/Qwen3-8B-GGUF',
+  hfFile:     'Qwen3-8B-Q4_K_M.gguf',
+  sizeBytes:  5_190_000_000,
+  cliFlag:    '--llm',
+  license:    'Apache-2.0',
+  licenseUrl: 'https://huggingface.co/Qwen/Qwen3-8B-GGUF/blob/main/LICENSE',
+};
+
+/** Qwen2.5-VL-7B GGUF text encoder for Qwen-Image. Resolves to IMAGE_LLM_DIR. */
+export const QWEN_IMAGE_LLM_Q4: FluxAuxFile = {
+  id:         'qwen-image-llm-q4',
+  label:      'Qwen2.5-VL-7B text encoder Q4 (~5.2 GB)',
+  hfRepo:     'unsloth/Qwen2.5-VL-7B-Instruct-GGUF',
+  hfFile:     'Qwen2.5-VL-7B-Instruct-UD-Q4_K_XL.gguf',
+  sizeBytes:  5_200_000_000,
+  cliFlag:    '--llm',
+  license:    'Apache-2.0',
+  licenseUrl: 'https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct-GGUF/blob/main/LICENSE',
+};
+
+// Kontext reuses FLUX_AUX_REQUIRED (same VAE + CLIP-L + T5 pool as FLUX.1).
+export const KONTEXT_AUX_REQUIRED: FluxAuxFile[]      = [FLUX_VAE, FLUX_CLIP_L];
+export const FLUX2_4B_AUX_REQUIRED: FluxAuxFile[]     = [FLUX2_VAE, ZIMAGE_LLM_Q4];
+export const FLUX2_9B_AUX_REQUIRED: FluxAuxFile[]     = [FLUX2_VAE, FLUX2_LLM_9B_Q4];
+export const ZIMAGE_AUX_REQUIRED: FluxAuxFile[]       = [FLUX_VAE, ZIMAGE_LLM_Q4];
+export const QWEN_IMAGE_AUX_REQUIRED: FluxAuxFile[]   = [QWEN_IMAGE_VAE, QWEN_IMAGE_LLM_Q4];
+
 // ── FLUX catalogue ────────────────────────────────────────────────────────────
 
 export const FLUX_CATALOGUE: FluxSpec[] = [
@@ -698,7 +792,7 @@ export const FLUX_CATALOGUE: FluxSpec[] = [
     label:            'FLUX.1-schnell Q4',
     displayName:      'FLUX.1-schnell',
     runnerProfile:    'flux',
-    category:         'realistic',
+    category:         'legacy',
     variant:          'schnell',
     quantization:     'Q4_K_M',
     hfRepo:           'calcuis/flux1-gguf',
@@ -716,7 +810,7 @@ export const FLUX_CATALOGUE: FluxSpec[] = [
     label:            'FLUX.1-schnell Q8',
     displayName:      'FLUX.1-schnell',
     runnerProfile:    'flux',
-    category:         'realistic',
+    category:         'legacy',
     variant:          'schnell',
     quantization:     'Q8_0',
     hfRepo:           'city96/FLUX.1-schnell-gguf',
@@ -888,10 +982,151 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
   // incompatible with standard SDXL aux files. nsfw-anime covered by Chroma.
 ];
 
+// ── FLUX Kontext catalogue ────────────────────────────────────────────────────
+// Prompt-based image editing — same FLUX.1 aux pool (VAE + CLIP-L + T5).
+// Requires --vae-decode-only false and -r <input> at generation time.
+
+export const KONTEXT_CATALOGUE: ImageModelSpec[] = [
+  {
+    modelId:          'kontext-dev-q5',
+    label:            'FLUX Kontext Dev Q5',
+    displayName:      'FLUX Kontext Dev',
+    runnerProfile:    'flux1-kontext',
+    category:         'realistic',
+    variant:          'kontext',
+    quantization:     'Q5_K_S',
+    hfRepo:           'QuantStack/FLUX.1-Kontext-dev-GGUF',
+    hfFile:           'flux1-kontext-dev-Q5_K_S.gguf',
+    sizeBytes:        8_280_000_000,
+    vramRequiredGb:   12,
+    estSecondsCuda:   60,
+    estSecondsVulkan: 240,
+    estSecondsCpu:    2400,
+    license:          'FLUX-1-dev-Non-Commercial',
+    licenseUrl:       'https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev/blob/main/LICENSE.md',
+  },
+];
+
+// ── FLUX.2 catalogue ──────────────────────────────────────────────────────────
+// LLM-based text encoder (Qwen3). New VAE (flux2-vae.safetensors from Comfy-Org).
+// 4B: Apache 2.0 (commercial). 9B: non-commercial.
+// Text encoder: Qwen3-4B for 4B variant, Qwen3-8B for 9B variant.
+
+export const FLUX2_CATALOGUE: ImageModelSpec[] = [
+  {
+    modelId:          'flux2-klein-4b-q4',
+    label:            'FLUX.2-klein-4B Q4',
+    displayName:      'FLUX.2-klein-4B',
+    runnerProfile:    'flux2',
+    category:         'realistic',
+    variant:          'flux2',
+    quantization:     'Q4_K_M',
+    hfRepo:           'unsloth/FLUX.2-klein-4B-GGUF',
+    hfFile:           'flux-2-klein-4b-Q4_K_M.gguf',
+    sizeBytes:        2_280_000_000,
+    vramRequiredGb:   12,
+    estSecondsCuda:   12,
+    estSecondsVulkan: 50,
+    estSecondsCpu:    480,
+    license:          'Apache-2.0',
+    licenseUrl:       'https://huggingface.co/unsloth/FLUX.2-klein-4B-GGUF',
+  },
+  {
+    modelId:          'flux2-klein-9b-q4',
+    label:            'FLUX.2-klein-9B Q4',
+    displayName:      'FLUX.2-klein-9B',
+    runnerProfile:    'flux2',
+    category:         'realistic',
+    variant:          'flux2',
+    quantization:     'Q4_K_M',
+    hfRepo:           'unsloth/FLUX.2-klein-9B-GGUF',
+    hfFile:           'flux-2-klein-9b-Q4_K_M.gguf',
+    sizeBytes:        5_400_000_000,
+    vramRequiredGb:   16,
+    estSecondsCuda:   18,
+    estSecondsVulkan: 70,
+    estSecondsCpu:    660,
+    license:          'FLUX-Non-Commercial',
+    licenseUrl:       'https://huggingface.co/unsloth/FLUX.2-klein-9B-GGUF',
+  },
+];
+
+// ── Z-Image catalogue ─────────────────────────────────────────────────────────
+// Apache 2.0. Shares FLUX.1 VAE (ae.safetensors). Uses Qwen3-4B as --llm.
+// Z-Image Turbo = 4-step. Z-Image base = 20-step, higher quality.
+
+export const ZIMAGE_CATALOGUE: ImageModelSpec[] = [
+  {
+    modelId:          'z-image-turbo-q4',
+    label:            'Z-Image Turbo Q4',
+    displayName:      'Z-Image Turbo',
+    runnerProfile:    'z-image',
+    category:         'realistic',
+    variant:          'z-image',
+    quantization:     'Q4_K_M',
+    hfRepo:           'leejet/Z-Image-Turbo-GGUF',
+    hfFile:           'z_image_turbo-Q4_K.gguf',
+    sizeBytes:        3_860_000_000,
+    vramRequiredGb:   8,
+    estSecondsCuda:   8,
+    estSecondsVulkan: 35,
+    estSecondsCpu:    320,
+    license:          'Apache-2.0',
+    licenseUrl:       'https://huggingface.co/leejet/Z-Image-Turbo-GGUF',
+  },
+  {
+    modelId:          'z-image-base-q6',
+    label:            'Z-Image Base Q6',
+    displayName:      'Z-Image Base',
+    runnerProfile:    'z-image',
+    category:         'realistic',
+    variant:          'z-image',
+    quantization:     'Q4_K_M',   // Q6_K on disk — Q4_K_M produces black images (sd.cpp quantization bug)
+    hfRepo:           'unsloth/Z-Image-GGUF',
+    hfFile:           'z-image-Q6_K.gguf',
+    sizeBytes:        6_100_000_000,
+    vramRequiredGb:   12,
+    estSecondsCuda:   35,
+    estSecondsVulkan: 140,
+    estSecondsCpu:    1400,
+    license:          'Apache-2.0',
+    licenseUrl:       'https://huggingface.co/unsloth/Z-Image-GGUF',
+  },
+];
+
+// ── Qwen-Image catalogue ──────────────────────────────────────────────────────
+// Apache 2.0. Unique VAE + Qwen2.5-VL-7B as --llm. Excellent text rendering.
+// Qwen-Image-Edit variant uses --ref-images for editing (future: QwenEdit node).
+
+export const QWEN_IMAGE_CATALOGUE: ImageModelSpec[] = [
+  {
+    modelId:          'qwen-image-q4',
+    label:            'Qwen-Image Q4',
+    displayName:      'Qwen-Image',
+    runnerProfile:    'qwen-image',
+    category:         'realistic',
+    variant:          'qwen-image',
+    quantization:     'Q4_K_M',
+    hfRepo:           'unsloth/Qwen-Image-2512-GGUF',
+    hfFile:           'qwen-image-2512-Q4_K_M.gguf',
+    sizeBytes:        13_200_000_000,
+    vramRequiredGb:   12,
+    estSecondsCuda:   70,
+    estSecondsVulkan: 280,
+    estSecondsCpu:    2800,
+    license:          'Apache-2.0',
+    licenseUrl:       'https://huggingface.co/unsloth/Qwen-Image-2512-GGUF',
+  },
+];
+
 /** Combined catalogue — all image models across all runner profiles */
 export const IMAGE_MODEL_CATALOGUE: ImageModelSpec[] = [
   ...CHROMA_CATALOGUE,
-  ...FLUX_CATALOGUE,
+  ...ZIMAGE_CATALOGUE,
+  ...FLUX2_CATALOGUE,
+  ...KONTEXT_CATALOGUE,
+  ...QWEN_IMAGE_CATALOGUE,
+  ...FLUX_CATALOGUE,           // schnell entries are now category:'legacy'
   // SDXL_CATALOGUE omitted — hum-ma GGUFs incompatible with sd.cpp loader (city96 tensor naming)
 ];
 
@@ -906,9 +1141,18 @@ export function isImageModelDownloaded(spec: ImageModelSpec): boolean {
 }
 
 export function getAuxFilesForModel(spec: ImageModelSpec): FluxAuxFile[] {
-  if (spec.runnerProfile === 'sdxl') return SDXL_AUX_REQUIRED;
-  // flux-profile: VAE + CLIP-L always, T5 selected lazily at download time
-  return FLUX_AUX_REQUIRED;
+  switch (spec.runnerProfile) {
+    case 'sdxl':          return SDXL_AUX_REQUIRED;
+    case 'flux1-kontext': return KONTEXT_AUX_REQUIRED;
+    case 'flux2':
+      // 4B vs 9B distinguished by modelId
+      return spec.modelId.includes('9b') ? FLUX2_9B_AUX_REQUIRED : FLUX2_4B_AUX_REQUIRED;
+    case 'z-image':       return ZIMAGE_AUX_REQUIRED;
+    case 'qwen-image':    return QWEN_IMAGE_AUX_REQUIRED;
+    default:
+      // flux profile: VAE + CLIP-L always, T5 selected lazily at download time
+      return FLUX_AUX_REQUIRED;
+  }
 }
 
 
@@ -919,10 +1163,10 @@ export function getFluxSpec(modelId: string): FluxSpec | undefined {
 }
 
 // ── Image model path resolution ───────────────────────────────────────────────
-// Models:  flux/chroma GGUFs → IMAGE_FLUX_DIR
+// Models:  flux/chroma/kontext/flux2/z-image/qwen-image GGUFs → IMAGE_FLUX_DIR
 //          sdxl GGUFs        → IMAGE_SDXL_DIR
-// Aux:     all encoders/VAE  → IMAGE_SHARED_DIR
-//          (VAE, CLIP-L, T5, CLIP-G are shared across runner profiles)
+// Aux:     safetensors (VAE, CLIP-L, T5, CLIP-G) → IMAGE_SHARED_DIR
+//          LLM GGUF encoders (--llm flag)         → IMAGE_LLM_DIR
 
 export function fluxModelPath(spec: FluxSpec): string {
   const dir = spec.runnerProfile === 'sdxl' ? IMAGE_SDXL_DIR : IMAGE_FLUX_DIR;
@@ -930,7 +1174,13 @@ export function fluxModelPath(spec: FluxSpec): string {
 }
 
 export function fluxAuxPath(aux: FluxAuxFile): string {
-  return path.join(IMAGE_SHARED_DIR, aux.hfFile);
+  // LLM text encoders go in their own dir — separated from safetensors aux files
+  // to keep IMAGE_SHARED_DIR clean and avoid filename collisions.
+  const dir      = aux.cliFlag === '--llm' ? IMAGE_LLM_DIR : IMAGE_SHARED_DIR;
+  // localFile allows hfFile to contain a subdirectory path (e.g. split_files/vae/foo.safetensors)
+  // while still saving to a flat filename locally.
+  const filename = aux.localFile ?? path.basename(aux.hfFile);
+  return path.join(dir, filename);
 }
 
 export function isFluxDownloaded(spec: FluxSpec): boolean {
@@ -976,7 +1226,16 @@ export function recommendFluxModel(vramGb: number): FluxSpec | null {
  *                         With --offload-to-cpu, the full RAM pool is usable.
  */
 export function recommendImageModel(vramGb: number, isUnifiedMemory = false): ImageModelSpec | null {
-  const ordered = [...CHROMA_CATALOGUE, ...FLUX_CATALOGUE];
+  // Preference order: Chroma (best quality/compat) → Z-Image (fast, Apache 2.0) →
+  // FLUX.2 → Kontext → Qwen-Image → FLUX dev. FLUX schnell excluded (legacy category).
+  const ordered = [
+    ...CHROMA_CATALOGUE,
+    ...ZIMAGE_CATALOGUE,
+    ...FLUX2_CATALOGUE,
+    ...KONTEXT_CATALOGUE,
+    ...QWEN_IMAGE_CATALOGUE,
+    ...FLUX_CATALOGUE.filter(m => m.variant !== 'schnell'),
+  ];
   if (isUnifiedMemory) {
     // Unified memory: --offload-to-cpu uses full RAM pool. No discrete VRAM gate.
     return ordered.find(m => isImageModelDownloaded(m)) ?? null;
@@ -1286,7 +1545,7 @@ export async function* downloadModel(
           }
           if (res.statusCode !== 200 && res.statusCode !== 206) {
             const err = new Error(`HTTP ${res.statusCode} for ${targetUrl}`);
-            push({ kind: 'error', err }); reject(err); return;
+            push({ kind: 'error', err }); resolve(); return;
           }
           bytesTotal = res.statusCode === 206
             ? existingBytes + parseInt(res.headers['content-length'] ?? '0', 10)
@@ -1311,16 +1570,16 @@ export async function* downloadModel(
                 try { fs.copyFileSync(tmp, dest); fs.unlinkSync(tmp); }
                 catch (copyErr) {
                   const err = new Error(`Failed to finalize download: ${copyErr}`);
-                  push({ kind: 'error', err }); reject(err); return;
+                  push({ kind: 'error', err }); resolve(); return;
                 }
               }
               push({ kind: 'done' }); resolve();
             });
           });
-          res.on('error', (err) => { fd.destroy(); push({ kind: 'error', err }); reject(err); });
+          res.on('error', (err) => { fd.destroy(); push({ kind: 'error', err }); resolve(); });
         },
       );
-      req.on('error', (err) => { push({ kind: 'error', err }); reject(err); });
+      req.on('error', (err) => { push({ kind: 'error', err }); resolve(); });
     };
     follow(url);
   });
@@ -1340,12 +1599,14 @@ export async function* downloadModel(
       } else if (item.kind === 'done') {
         finished = true;
       } else {
-        throw item.err;
+        yield { modelId: spec.modelId, phase, bytesReceived: 0, bytesTotal, done: true,
+                error: item.err.message };
+        finished = true;
       }
     }
   }
 
-  await downloadPromise;
+  try { await downloadPromise; } catch { /* error already emitted via queue */ }
   yield { modelId: spec.modelId, phase, bytesReceived, bytesTotal, done: true };
 }
 
@@ -1419,7 +1680,10 @@ async function* downloadFluxFileGen(
           }
           if (res.statusCode !== 200 && res.statusCode !== 206) {
             const err = new Error(`HTTP ${res.statusCode} for ${targetUrl}`);
-            push({ kind: 'error', err }); reject(err); return;
+            // push error to queue then RESOLVE (not reject) — the error is already
+            // communicated via the queue. Calling reject() here causes an unhandled
+            // rejection race if the generator's await hasn't been reached yet.
+            push({ kind: 'error', err }); resolve(); return;
           }
           bytesTotal = res.statusCode === 206
             ? existingBytes + parseInt(res.headers['content-length'] ?? '0', 10)
@@ -1444,16 +1708,16 @@ async function* downloadFluxFileGen(
                 try { fs.copyFileSync(tmp, destPath); fs.unlinkSync(tmp); }
                 catch (copyErr) {
                   const err = new Error(`Failed to finalize: ${copyErr}`);
-                  push({ kind: 'error', err }); reject(err); return;
+                  push({ kind: 'error', err }); resolve(); return;
                 }
               }
               push({ kind: 'done' }); resolve();
             });
           });
-          res.on('error', (err) => { fd.destroy(); push({ kind: 'error', err }); reject(err); });
+          res.on('error', (err) => { fd.destroy(); push({ kind: 'error', err }); resolve(); });
         },
       );
-      req.on('error', (err) => { push({ kind: 'error', err }); reject(err); });
+      req.on('error', (err) => { push({ kind: 'error', err }); resolve(); });
     };
     follow(url);
   });
@@ -1473,12 +1737,20 @@ async function* downloadFluxFileGen(
       } else if (item.kind === 'done') {
         finished = true;
       } else {
-        throw item.err;
+        // Yield the error as a stream event rather than throwing. A throw from
+        // an async generator propagates to the caller's for-await and becomes
+        // an unhandled promise rejection if not caught — crashing the process.
+        // The route handler's safeDownloadFile wrapper also catches throws, but
+        // the await downloadPromise below fires after the loop and its rejection
+        // can still escape on some Node.js versions. Belt-and-suspenders: never throw.
+        yield { fileId, phase, label, bytesReceived: 0, bytesTotal, done: true,
+                error: item.err.message };
+        finished = true;
       }
     }
   }
 
-  await downloadPromise;
+  try { await downloadPromise; } catch { /* rejection already surfaced via queue */ }
   yield { fileId, phase, label, bytesReceived, bytesTotal, done: true };
 }
 
@@ -1766,7 +2038,7 @@ export async function* downloadEsrgan(
           }
           if (res.statusCode !== 200 && res.statusCode !== 206) {
             const err = new Error(`HTTP ${res.statusCode} for ${targetUrl}`);
-            push({ kind: 'error', err }); reject(err); return;
+            push({ kind: 'error', err }); resolve(); return;
           }
           const contentLength = res.headers['content-length'];
           if (contentLength) bytesTotal = existingBytes + parseInt(contentLength, 10);
@@ -1781,10 +2053,10 @@ export async function* downloadEsrgan(
           });
           res.pipe(writeStream);
           writeStream.on('finish', () => { push({ kind: 'done' }); resolve(); });
-          writeStream.on('error', (err) => { push({ kind: 'error', err }); reject(err); });
+          writeStream.on('error', (err) => { push({ kind: 'error', err }); resolve(); });
         }
       );
-      req.on('error', (err) => { push({ kind: 'error', err }); reject(err); });
+      req.on('error', (err) => { push({ kind: 'error', err }); resolve(); });
     };
     follow(spec.url);
   });

@@ -17,6 +17,11 @@ import {
   FLUX_T5_Q4,
   FLUX_T5_Q8,
   SDXL_AUX_REQUIRED,
+  KONTEXT_AUX_REQUIRED,
+  FLUX2_4B_AUX_REQUIRED,
+  FLUX2_9B_AUX_REQUIRED,
+  ZIMAGE_AUX_REQUIRED,
+  QWEN_IMAGE_AUX_REQUIRED,
   IMAGE_MODEL_CATALOGUE,
   CHROMA_CATALOGUE,
   getImageModelSpec,
@@ -288,13 +293,24 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       let auxFiles: typeof FLUX_AUX_REQUIRED;
       let recommendedT5: string | undefined;
 
-      if (spec.runnerProfile === 'flux') {
+      if (spec.runnerProfile === 'flux1-kontext') {
+        const t5 = recommendT5Encoder(spec, totalVramGb, isUnified);
+        recommendedT5 = t5.id;
+        auxFiles = [...KONTEXT_AUX_REQUIRED, t5];
+      } else if (spec.runnerProfile === 'flux2') {
+        auxFiles = spec.modelId.includes('9b') ? [...FLUX2_9B_AUX_REQUIRED] : [...FLUX2_4B_AUX_REQUIRED];
+      } else if (spec.runnerProfile === 'z-image') {
+        auxFiles = [...ZIMAGE_AUX_REQUIRED];
+      } else if (spec.runnerProfile === 'qwen-image') {
+        auxFiles = [...QWEN_IMAGE_AUX_REQUIRED];
+      } else if (spec.runnerProfile === 'sdxl') {
+        auxFiles = [...SDXL_AUX_REQUIRED];
+      } else {
+        // flux and chroma — T5 tiered by VRAM; chroma skips CLIP-L
         const t5 = recommendT5Encoder(spec, totalVramGb, isUnified);
         recommendedT5 = t5.id;
         const baseAux = spec.variant === 'chroma' ? CHROMA_AUX_REQUIRED : FLUX_AUX_REQUIRED;
         auxFiles = [...baseAux, t5];
-      } else {
-        auxFiles = [...SDXL_AUX_REQUIRED];
       }
 
       const mainDownloaded = isImageModelDownloaded(spec);
@@ -403,12 +419,22 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         const isUnified = bestGpu?.unifiedMemory === true || (bestGpu?.index ?? 0) >= 100;
 
         let auxFiles: typeof FLUX_AUX_REQUIRED;
-        if (spec.runnerProfile === 'flux') {
+        if (spec.runnerProfile === 'flux1-kontext') {
+          const t5 = recommendT5Encoder(spec, totalVram, isUnified);
+          auxFiles = [...KONTEXT_AUX_REQUIRED, t5];
+        } else if (spec.runnerProfile === 'flux2') {
+          auxFiles = spec.modelId.includes('9b') ? [...FLUX2_9B_AUX_REQUIRED] : [...FLUX2_4B_AUX_REQUIRED];
+        } else if (spec.runnerProfile === 'z-image') {
+          auxFiles = [...ZIMAGE_AUX_REQUIRED];
+        } else if (spec.runnerProfile === 'qwen-image') {
+          auxFiles = [...QWEN_IMAGE_AUX_REQUIRED];
+        } else if (spec.runnerProfile === 'sdxl') {
+          auxFiles = [...SDXL_AUX_REQUIRED];
+        } else {
+          // flux and chroma
           const t5 = recommendT5Encoder(spec, totalVram, isUnified);
           const baseAux = spec.variant === 'chroma' ? CHROMA_AUX_REQUIRED : FLUX_AUX_REQUIRED;
           auxFiles = [...baseAux, t5];
-        } else {
-          auxFiles = [...SDXL_AUX_REQUIRED];
         }
 
         for await (const progress of downloadFluxModel(spec, auxFiles)) {

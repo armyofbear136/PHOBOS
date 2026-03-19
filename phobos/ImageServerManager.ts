@@ -13,12 +13,17 @@ import {
   FLUX_AUX_REQUIRED,
   CHROMA_AUX_REQUIRED,
   SDXL_AUX_REQUIRED,
+  KONTEXT_AUX_REQUIRED,
+  FLUX2_4B_AUX_REQUIRED,
+  FLUX2_9B_AUX_REQUIRED,
+  ZIMAGE_AUX_REQUIRED,
+  QWEN_IMAGE_AUX_REQUIRED,
   detectHardware,
   type ImageModelSpec,
   type FluxAuxFile,
 } from './PhobosLocalManager.js';
 
-export type SdModelType = 'flux' | 'chroma' | 'sdxl';
+export type SdModelType = 'flux' | 'chroma' | 'sdxl' | 'kontext' | 'flux2' | 'z-image' | 'qwen-image';
 
 export interface SdServerConfig {
   modelType:    SdModelType;
@@ -57,6 +62,9 @@ export interface GenerateImageOptions {
   upscaleModel?:    string;   // --upscale-model path (ESRGAN .pth file)
   upscaleFactor?:   number;   // --upscale-repeats
   upscaleTileSize?: number;   // --upscale-tile-size (default 128)
+  // New-family runner extensions
+  refImage?:        string;   // -r path (FLUX Kontext / FLUX.2 / Qwen-Image editing)
+  flowShift?:       number;   // --flow-shift (Qwen-Image, default 3)
 }
 
 export interface GenerateImageResult {
@@ -89,6 +97,7 @@ function appendWorkflowFlags(args: string[], opts: GenerateImageOptions): void {
   if (opts.maskPath)     args.push('--mask', opts.maskPath);
   if (opts.controlImage) args.push('--control-image', opts.controlImage);
   if (opts.controlScale !== undefined) args.push('--control-strength', String(opts.controlScale));
+  if (opts.refImage)     args.push('-r', opts.refImage);
 }
 
 // Each runner profile has its own builder. buildArgs() dispatches by modelType.
@@ -204,14 +213,156 @@ function buildSdxlArgs(
   return args;
 }
 
+function buildKontextArgs(
+  cfg:     SdServerConfig,
+  opts:    GenerateImageOptions,
+  outPath: string,
+): string[] {
+  if (!opts.refImage) throw new Error('KontextEdit node requires a refImage (upstream output path)');
+  const spec   = cfg.fluxSpec;
+  const steps  = opts.steps ?? cfg.steps ?? 28;
+  const width  = opts.width  ?? cfg.width  ?? 1024;
+  const height = opts.height ?? cfg.height ?? 1024;
+  const seed   = opts.seed   ?? 42;
+
+  // Kontext shares aux files with FLUX.1 (VAE + CLIP-L + T5).
+  // --vae-decode-only false is required so sd-cli encodes the input image into latent space.
+  const args: string[] = [
+    '--diffusion-model', fluxModelPath(spec),
+    '--vae',             fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--vae')!),
+    '--clip_l',          fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--clip_l')!),
+    '--t5xxl',           fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--t5xxl')!),
+    '--prompt',          opts.prompt,
+    '--steps',           String(steps),
+    '--width',           String(width),
+    '--height',          String(height),
+    '--seed',            String(seed),
+    '--sampling-method', opts.sampler ?? 'euler',
+    '--cfg-scale',       '1.0',
+    '--vae-decode-only', 'false',
+    '-r',                opts.refImage,
+    '-o',                outPath,
+  ];
+
+  if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
+  if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
+  if (cfg.freeVramGb !== undefined && cfg.freeVramGb <= 10) args.push('--vae-tiling');
+  return args;
+}
+
+function buildFlux2Args(
+  cfg:     SdServerConfig,
+  opts:    GenerateImageOptions,
+  outPath: string,
+): string[] {
+  const spec   = cfg.fluxSpec;
+  // FLUX.2-klein default is 4-step schnell-style generation
+  const steps  = opts.steps ?? cfg.steps ?? 4;
+  const width  = opts.width  ?? cfg.width  ?? 1024;
+  const height = opts.height ?? cfg.height ?? 1024;
+  const seed   = opts.seed   ?? 42;
+
+  // FLUX.2 uses --llm instead of --clip_l + --t5xxl.
+  // --diffusion-fa omitted: produces black images on all tested hardware (same issue as Chroma + --fa).
+  const args: string[] = [
+    '--diffusion-model', fluxModelPath(spec),
+    '--vae',             fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--vae')!),
+    '--llm',             fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--llm')!),
+    '--prompt',          opts.prompt,
+    '--steps',           String(steps),
+    '--width',           String(width),
+    '--height',          String(height),
+    '--seed',            String(seed),
+    '--sampling-method', opts.sampler ?? 'euler',
+    '--cfg-scale',       '1.0',
+    '-o',                outPath,
+  ];
+
+  if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
+  if (opts.refImage)       args.push('-r', opts.refImage);
+  if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
+  return args;
+}
+
+function buildZImageArgs(
+  cfg:     SdServerConfig,
+  opts:    GenerateImageOptions,
+  outPath: string,
+): string[] {
+  const spec   = cfg.fluxSpec;
+  // Z-Image Turbo = 4-step; Z-Image Base = 20-step
+  const steps  = opts.steps ?? cfg.steps ?? (spec.modelId.includes('turbo') ? 4 : 20);
+  const width  = opts.width  ?? cfg.width  ?? 1024;
+  const height = opts.height ?? cfg.height ?? 1024;
+  const seed   = opts.seed   ?? 42;
+
+  const args: string[] = [
+    '--diffusion-model', fluxModelPath(spec),
+    '--vae',             fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--vae')!),
+    '--llm',             fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--llm')!),
+    '--prompt',          opts.prompt,
+    '--steps',           String(steps),
+    '--width',           String(width),
+    '--height',          String(height),
+    '--seed',            String(seed),
+    '--sampling-method', opts.sampler ?? 'euler',
+    '--scheduler',       'discrete',
+    '--cfg-scale',       '1.0',
+    '-o',                outPath,
+  ];
+
+  if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
+  if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
+  return args;
+}
+
+function buildQwenImageArgs(
+  cfg:     SdServerConfig,
+  opts:    GenerateImageOptions,
+  outPath: string,
+): string[] {
+  const spec   = cfg.fluxSpec;
+  const steps  = opts.steps ?? cfg.steps ?? 20;
+  const width  = opts.width  ?? cfg.width  ?? 1024;
+  const height = opts.height ?? cfg.height ?? 1024;
+  const seed   = opts.seed   ?? 42;
+  const flowShift = opts.flowShift ?? 3;
+
+  const args: string[] = [
+    '--diffusion-model', fluxModelPath(spec),
+    '--vae',             fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--vae')!),
+    '--llm',             fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--llm')!),
+    '--prompt',          opts.prompt,
+    '--steps',           String(steps),
+    '--width',           String(width),
+    '--height',          String(height),
+    '--seed',            String(seed),
+    '--sampling-method', opts.sampler ?? 'euler',
+    '--cfg-scale',       '2.5',
+    '--flow-shift',      String(flowShift),
+    '-o',                outPath,
+  ];
+
+  if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
+  if (opts.refImage)       args.push('--ref-images', opts.refImage);
+  if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
+  return args;
+}
+
 function buildArgs(
   cfg:     SdServerConfig,
   opts:    GenerateImageOptions,
   outPath: string,
 ): string[] {
-  if (cfg.modelType === 'chroma') return buildChromaArgs(cfg, opts, outPath);
-  if (cfg.modelType === 'sdxl')   return buildSdxlArgs(cfg, opts, outPath);
-  return buildFluxArgs(cfg, opts, outPath);
+  switch (cfg.modelType) {
+    case 'chroma':     return buildChromaArgs(cfg, opts, outPath);
+    case 'sdxl':       return buildSdxlArgs(cfg, opts, outPath);
+    case 'kontext':    return buildKontextArgs(cfg, opts, outPath);
+    case 'flux2':      return buildFlux2Args(cfg, opts, outPath);
+    case 'z-image':    return buildZImageArgs(cfg, opts, outPath);
+    case 'qwen-image': return buildQwenImageArgs(cfg, opts, outPath);
+    default:           return buildFluxArgs(cfg, opts, outPath);
+  }
 }
 
 // ── GPU device selection notes ────────────────────────────────────────────────
@@ -645,27 +796,63 @@ export async function buildSdConfig(
 
   // Aux selection by runner profile
   let auxFiles: FluxAuxFile[];
-  if (spec.runnerProfile === 'sdxl') {
-    auxFiles = [...SDXL_AUX_REQUIRED];
-    console.log(`[ImageServerManager] Selected model: ${spec.label} (SDXL runner)`);
-  } else {
-    // flux and chroma both use T5 — chroma skips CLIP-L
-    // Use freeVramGb (live reading after SAYON is stopped) when available —
-    // totalVramGb ignores driver overhead, Windows display VRAM, and
-    // persistent CUDA contexts that permanently reduce usable capacity.
-    // On a 10 GB card this overhead is 1-2 GB and makes the difference
-    // between fitting and OOM on cublas workspace allocation.
-    const t5VramBudget = freeVramGb > 0 ? freeVramGb : totalVramGb;
-    const t5 = recommendT5Encoder(spec, t5VramBudget, isUnifiedMemory || offloadToCpu);
-    const baseAux = spec.variant === 'chroma' ? CHROMA_AUX_REQUIRED : FLUX_AUX_REQUIRED;
-    auxFiles  = [...baseAux, t5];
-    console.log(`[ImageServerManager] Selected model: ${spec.label} (${spec.runnerProfile} runner) · T5: ${t5.label}${offloadToCpu ? ' (CPU offload)' : ''}`);
+
+  switch (spec.runnerProfile) {
+    case 'sdxl':
+      auxFiles = [...SDXL_AUX_REQUIRED];
+      console.log(`[ImageServerManager] Selected model: ${spec.label} (SDXL runner)`);
+      break;
+
+    case 'flux1-kontext':
+      // Kontext shares the FLUX.1 aux pool — VAE + CLIP-L + T5 (tiered by VRAM).
+      // The -r flag and --vae-decode-only false are added at arg-build time.
+      {
+        const t5VramBudget = freeVramGb > 0 ? freeVramGb : totalVramGb;
+        const t5 = recommendT5Encoder(spec, t5VramBudget, isUnifiedMemory || offloadToCpu);
+        auxFiles = [...KONTEXT_AUX_REQUIRED, t5];
+        console.log(`[ImageServerManager] Selected model: ${spec.label} (flux1-kontext runner) · T5: ${t5.label}`);
+      }
+      break;
+
+    case 'flux2':
+      // Fixed aux: new VAE + LLM encoder. No T5 selection needed.
+      auxFiles = spec.modelId.includes('9b') ? [...FLUX2_9B_AUX_REQUIRED] : [...FLUX2_4B_AUX_REQUIRED];
+      console.log(`[ImageServerManager] Selected model: ${spec.label} (flux2 runner)${offloadToCpu ? ' (CPU offload)' : ''}`);
+      break;
+
+    case 'z-image':
+      auxFiles = [...ZIMAGE_AUX_REQUIRED];
+      console.log(`[ImageServerManager] Selected model: ${spec.label} (z-image runner)${offloadToCpu ? ' (CPU offload)' : ''}`);
+      break;
+
+    case 'qwen-image':
+      auxFiles = [...QWEN_IMAGE_AUX_REQUIRED];
+      console.log(`[ImageServerManager] Selected model: ${spec.label} (qwen-image runner)${offloadToCpu ? ' (CPU offload)' : ''}`);
+      break;
+
+    default: {
+      // flux and chroma — T5 tiered by VRAM, chroma skips CLIP-L.
+      // Use freeVramGb (live reading after SAYON is stopped) when available —
+      // totalVramGb ignores driver overhead, Windows display VRAM, and
+      // persistent CUDA contexts that permanently reduce usable capacity.
+      const t5VramBudget = freeVramGb > 0 ? freeVramGb : totalVramGb;
+      const t5 = recommendT5Encoder(spec, t5VramBudget, isUnifiedMemory || offloadToCpu);
+      const baseAux = spec.variant === 'chroma' ? CHROMA_AUX_REQUIRED : FLUX_AUX_REQUIRED;
+      auxFiles = [...baseAux, t5];
+      console.log(`[ImageServerManager] Selected model: ${spec.label} (${spec.runnerProfile} runner) · T5: ${t5.label}${offloadToCpu ? ' (CPU offload)' : ''}`);
+    }
   }
 
-  const modelType: SdModelType =
-    spec.runnerProfile === 'sdxl'  ? 'sdxl'
-    : spec.variant    === 'chroma' ? 'chroma'
-    : 'flux';
+  const modelType: SdModelType = (() => {
+    switch (spec.runnerProfile) {
+      case 'sdxl':          return 'sdxl';
+      case 'flux1-kontext': return 'kontext';
+      case 'flux2':         return 'flux2';
+      case 'z-image':       return 'z-image';
+      case 'qwen-image':    return 'qwen-image';
+      default:              return spec.variant === 'chroma' ? 'chroma' : 'flux';
+    }
+  })();
 
   return {
     modelType,

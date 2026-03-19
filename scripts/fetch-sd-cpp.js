@@ -532,23 +532,22 @@ export async function fetchSdBinaries({ all = false } = {}) {
       extractTo(SD_CUDA_DIR), ['sd-cli.exe', 'sd.exe'],
     );
 
-    // CUDA runtime — extract cudart64_12.dll only (needed for Blackwell PTX JIT).
-    // cublas64_12.dll ships in the cuda zip but is resolved from the system CUDA install.
-    // cublasLt64_12.dll must NOT be present — it pre-allocates ~630MB on DLL load
-    // which prevents consecutive generations on 10GB cards (second run hangs at TXT2IMG).
-    // Cache-skip is intentional: if cudart64_12.dll is already present, never re-extract.
-    const cudaRtFn   = 'cudart-sd-bin-win-cu12-x64.zip';
-    const cudaRtPath = path.join(SD_CUDA_DIR, 'cudart64_12.dll');
-    // Remove stale cublasLt if a previous fetch left it behind
-    const staleLt = path.join(SD_CUDA_DIR, 'cublasLt64_12.dll');
-    if (fs.existsSync(staleLt)) { fs.unlinkSync(staleLt); console.log('  removed stale cublasLt64_12.dll'); }
-    if (fs.existsSync(cudaRtPath)) {
+    // CUDA runtime DLLs — sd-cli links against cublas64_12.dll at runtime.
+    // cudart64_12.dll provides PTX JIT for Blackwell GPUs.
+    // cublasLt64_12.dll is a transitive dependency of cublas64_12.dll — it must be
+    // present or the DLL load chain fails (STATUS_DLL_NOT_FOUND / 0xC0000135).
+    // Its ~630 MB workspace pre-allocation is suppressed at runtime via
+    // CUBLASLT_WORKSPACE_SIZE=0 in buildEnv().
+    const cudaRtFn       = 'cudart-sd-bin-win-cu12-x64.zip';
+    const cudaRtRequired = ['cudart64_12.dll', 'cublas64_12.dll', 'cublasLt64_12.dll'];
+    const cudaRtCheck    = path.join(SD_CUDA_DIR, 'cublas64_12.dll'); // gate on cublas — the actual runtime dep
+    if (fs.existsSync(cudaRtCheck)) {
       console.log(`✓  CUDA runtime DLLs in sd-cuda/ (already present)`);
     } else {
       await fetchAsset(
-        'cudart64_12.dll (Blackwell PTX JIT)',
-        dl(cudaRtFn), tmp(cudaRtFn), cudaRtPath,
-        archive => extractAllFromZip(archive, SD_CUDA_DIR, n => n === 'cudart64_12.dll'),
+        'CUDA runtime DLLs (cudart + cublas + cublasLt)',
+        dl(cudaRtFn), tmp(cudaRtFn), cudaRtCheck,
+        archive => extractAllFromZip(archive, SD_CUDA_DIR, n => cudaRtRequired.includes(n)),
         null,
       );
     }
@@ -578,7 +577,9 @@ export async function fetchSdBinaries({ all = false } = {}) {
     expected.push({ label: 'Windows Vulkan', path: path.join(BIN_DIR, 'sd-vulkan', 'sd-server-win32-x64.exe') });
     expected.push({ label: 'Windows CUDA',   path: path.join(BIN_DIR, 'sd-cuda',   'sd-server-win32-x64-cuda.exe') });
     expected.push({ label: 'Windows CPU',    path: path.join(BIN_DIR, 'sd-cpu',    'sd-server-win32-x64-cpu.exe') });
-    expected.push({ label: 'CUDA Runtime',   path: path.join(BIN_DIR, 'sd-cuda',   'cudart64_12.dll') });
+    expected.push({ label: 'CUDA cudart',    path: path.join(BIN_DIR, 'sd-cuda',   'cudart64_12.dll') });
+    expected.push({ label: 'CUDA cublas',    path: path.join(BIN_DIR, 'sd-cuda',   'cublas64_12.dll') });
+    expected.push({ label: 'CUDA cublasLt',  path: path.join(BIN_DIR, 'sd-cuda',   'cublasLt64_12.dll') });
   }
   let missing = 0;
   for (const { label, path: p2 } of expected) {

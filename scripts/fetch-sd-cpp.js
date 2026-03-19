@@ -408,6 +408,37 @@ export async function fetchSdBinaries({ all = false } = {}) {
     }
   }
 
+  // ── Linux x64 ROCm ─────────────────────────────────────────────────────────
+  // ROCm build for AMD discrete GPUs on Linux. 2-4x faster than Vulkan.
+  // Requires ROCm runtime installed (/opt/rocm). Falls back to Vulkan if missing.
+  // Isolated in sd-rocm/ subdirectory — ROCm .so files differ from Vulkan .so files.
+  if (all || (p === 'linux' && a === 'x64')) {
+    const SD_ROCM_DIR_LINUX = path.join(BIN_DIR, 'sd-rocm');
+    fs.mkdirSync(SD_ROCM_DIR_LINUX, { recursive: true });
+    const rocmFnGuess = `sd-master-${shortHash}-bin-Linux-Ubuntu-24.04-x86_64-rocm.zip`;
+    const rocmFn = assets.find(a => /Linux.*x86_64.*rocm\.zip$/i.test(a)) ?? rocmFnGuess;
+    const rocmOutPath = path.join(SD_ROCM_DIR_LINUX, 'sd-server-linux-x64-rocm');
+    if (!fs.existsSync(rocmOutPath)) {
+      console.log(`[linux-x64] ROCm asset: ${rocmFn}${rocmFn === rocmFnGuess ? ' (guess)' : ' (matched)'}`);
+      await fetchAsset(
+        'sd-server-linux-x64-rocm (AMD ROCm GPU)',
+        dl(rocmFn), tmp(rocmFn), rocmOutPath,
+        async (archive) => {
+          const filter = n => !n.includes('.') || /\.so(\.\d+)*$/.test(n);
+          const files = await extractAllFromZip(archive, SD_ROCM_DIR_LINUX, filter);
+          for (const e of fs.readdirSync(SD_ROCM_DIR_LINUX)) {
+            const ep = path.join(SD_ROCM_DIR_LINUX, e);
+            if (fs.statSync(ep).isFile()) fs.chmodSync(ep, 0o755);
+          }
+          return files;
+        },
+        ['sd-cli', 'sd'],
+      );
+    } else {
+      console.log(`✓  sd-server-linux-x64-rocm (already present)`);
+    }
+  }
+
   // ── Linux arm64 ─────────────────────────────────────────────────────────────
   // NOTE: arm64 assets not confirmed in the current release asset list.
   // Attempt with best-guess naming; will 404 gracefully if not published.
@@ -562,6 +593,20 @@ export async function fetchSdBinaries({ all = false } = {}) {
       dl(avx2Fn), tmp(avx2Fn), path.join(SD_CPU_DIR, 'sd-server-win32-x64-cpu.exe'),
       extractTo(SD_CPU_DIR), ['sd-cli.exe', 'sd.exe'],
     );
+
+    // ROCm (AMD HIP) — for AMD discrete GPUs with Adrenalin AI Bundle / ROCm installed.
+    // 2-4x faster than Vulkan on RDNA 2/3/4. Falls back to Vulkan if not present.
+    const SD_ROCM_DIR = path.join(BIN_DIR, 'sd-rocm');
+    fs.mkdirSync(SD_ROCM_DIR, { recursive: true });
+    const rocmFn = findAsset(
+      `sd-master-${shortHash}-bin-win-rocm-x64.zip`,
+      /win.*rocm.*x64\.zip$/i
+    );
+    await fetchAsset(
+      'sd-server-win32-x64-rocm.exe (AMD ROCm GPU)',
+      dl(rocmFn), tmp(rocmFn), path.join(SD_ROCM_DIR, 'sd-server-win32-x64-rocm.exe'),
+      extractTo(SD_ROCM_DIR), ['sd-cli.exe', 'sd.exe'],
+    );
   }
 
   fs.rmSync(TMP_DIR, { recursive: true, force: true });
@@ -577,9 +622,14 @@ export async function fetchSdBinaries({ all = false } = {}) {
     expected.push({ label: 'Windows Vulkan', path: path.join(BIN_DIR, 'sd-vulkan', 'sd-server-win32-x64.exe') });
     expected.push({ label: 'Windows CUDA',   path: path.join(BIN_DIR, 'sd-cuda',   'sd-server-win32-x64-cuda.exe') });
     expected.push({ label: 'Windows CPU',    path: path.join(BIN_DIR, 'sd-cpu',    'sd-server-win32-x64-cpu.exe') });
+    expected.push({ label: 'Windows ROCm',   path: path.join(BIN_DIR, 'sd-rocm',   'sd-server-win32-x64-rocm.exe') });
     expected.push({ label: 'CUDA cudart',    path: path.join(BIN_DIR, 'sd-cuda',   'cudart64_12.dll') });
     expected.push({ label: 'CUDA cublas',    path: path.join(BIN_DIR, 'sd-cuda',   'cublas64_12.dll') });
     expected.push({ label: 'CUDA cublasLt',  path: path.join(BIN_DIR, 'sd-cuda',   'cublasLt64_12.dll') });
+  }
+  // ROCm on Linux uses sd-rocm/ subdirectory
+  if (all || (p === 'linux' && a === 'x64')) {
+    expected.push({ label: 'Linux ROCm',    path: path.join(BIN_DIR, 'sd-rocm', 'sd-server-linux-x64-rocm') });
   }
   let missing = 0;
   for (const { label, path: p2 } of expected) {

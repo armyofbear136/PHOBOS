@@ -73,7 +73,7 @@ export type GpuRunnerKind =
 export interface GpuRunnerProfile {
   kind:        GpuRunnerKind;
   vulkanIndex: number;   // physical Vulkan enumeration index
-  sdBinary:    'cuda' | 'vulkan' | 'cpu';
+  sdBinary:    'cuda' | 'vulkan' | 'rocm' | 'cpu';
 }
 
 export interface GpuDevice {
@@ -228,6 +228,42 @@ async function detectAppleSilicon(): Promise<GpuDevice[]> {
   }
 }
 
+// ── ROCm detection ───────────────────────────────────────────────────────────
+
+let _rocmChecked = false;
+let _rocmPresent = false;
+
+/**
+ * Checks if AMD ROCm runtime is available on this system.
+ * Windows: Adrenalin AI Bundle installs HIP SDK — check for hiprtc*.dll in PATH or sd-rocm/.
+ * Linux: ROCm packages install to /opt/rocm — check for libamdhip64.so.
+ * Result is cached after first call.
+ */
+function _isRocmAvailable(): boolean {
+  if (_rocmChecked) return _rocmPresent;
+  _rocmChecked = true;
+
+  try {
+    if (process.platform === 'win32') {
+      // Check if the ROCm sd-cli binary exists (it bundles its own DLLs)
+      const seaDir = path.dirname(process.execPath);
+      const binDir = path.join(path.resolve(_dirname, '..'), 'bin');
+      const rocmDirs = [path.join(seaDir, 'sd-rocm'), path.join(binDir, 'sd-rocm')];
+      _rocmPresent = rocmDirs.some(d => {
+        try { return fs.existsSync(path.join(d, 'sd-server-win32-x64-rocm.exe')); } catch { return false; }
+      });
+    } else {
+      // Linux: check for ROCm runtime library
+      _rocmPresent = fs.existsSync('/opt/rocm/lib/libamdhip64.so');
+    }
+  } catch {
+    _rocmPresent = false;
+  }
+
+  if (_rocmPresent) console.log('[HW] ROCm runtime detected — AMD discrete GPUs will use ROCm for image gen');
+  return _rocmPresent;
+}
+
 // ── Aggregated detection ──────────────────────────────────────────────────────
 
 /**
@@ -290,7 +326,16 @@ function assignRunnerProfiles(gpus: GpuDevice[]): void {
     else if (isIntel)        kind = 'intel-igpu';
     else                     kind = 'amd-discrete'; // unknown non-NVIDIA, treat as discrete Vulkan
 
-    gpu.runner = { kind, vulkanIndex, sdBinary: 'vulkan' };
+    // AMD discrete GPUs: prefer ROCm (2-4x faster than Vulkan) when available.
+    // ROCm is bundled with Adrenalin AI Bundle on Windows (RDNA 3+) and available
+    // via ROCm packages on Linux. If the ROCm sd-cli binary isn't present or ROCm
+    // runtime isn't installed, resolveSdServerBin falls back to Vulkan automatically.
+    let sdBin: 'rocm' | 'vulkan' | 'cpu' = 'vulkan';
+    if (isAmd && !isUnified) {
+      sdBin = _isRocmAvailable() ? 'rocm' : 'vulkan';
+    }
+
+    gpu.runner = { kind, vulkanIndex, sdBinary: sdBin };
   }
 }
 
@@ -1489,14 +1534,28 @@ export function resolveLlamaServerBin(): string {
  *
  * Linux/macOS: single binary handles all backends via env vars.
  */
-export function resolveSdServerBin(sdBinary: 'cuda' | 'vulkan' | 'cpu' = 'cuda'): string {
+export function resolveSdServerBin(sdBinary: 'cuda' | 'vulkan' | 'rocm' | 'cpu' = 'cuda'): string {
   const platform = process.platform;
   const arch     = process.arch;
   const seaDir   = path.dirname(process.execPath);
   const binDir   = path.join(path.resolve(_dirname, '..'), 'bin');
 
-  // Linux/macOS: single binary, flat layout
+  // Linux/macOS: single binary, flat layout (Vulkan/Metal)
+  // ROCm on Linux uses an isolated subdirectory (sd-rocm/) to avoid .so conflicts.
   if (platform !== 'win32') {
+    if (sdBinary === 'rocm') {
+      for (const dir of [seaDir, binDir]) {
+        const p = path.join(dir, 'sd-rocm', `sd-server-${platform}-${arch}-rocm`);
+        if (fs.existsSync(p)) return p;
+      }
+      // Also check flat layout (dev builds)
+      for (const dir of [seaDir, binDir]) {
+        const p = path.join(dir, `sd-server-${platform}-${arch}-rocm`);
+        if (fs.existsSync(p)) return p;
+      }
+      // ROCm binary not present — fall through to Vulkan
+      console.warn('[resolveSdServerBin] ROCm binary not found, falling back to Vulkan');
+    }
     for (const dir of [seaDir, binDir]) {
       const p = path.join(dir, `sd-server-${platform}-${arch}`);
       if (fs.existsSync(p)) return p;
@@ -1514,6 +1573,10 @@ export function resolveSdServerBin(sdBinary: 'cuda' | 'vulkan' | 'cpu' = 'cuda')
     ...byCandidates(searchDirs.map(d => path.join(d, 'sd-cuda')), `sd-server-${platform}-${arch}-cuda.exe`),
     ...byCandidates(searchDirs, `sd-server-${platform}-${arch}-cuda.exe`), // flat fallback
   ];
+  const rocmCandidates: Candidate[] = [
+    ...byCandidates(searchDirs.map(d => path.join(d, 'sd-rocm')), `sd-server-${platform}-${arch}-rocm.exe`),
+    ...byCandidates(searchDirs, `sd-server-${platform}-${arch}-rocm.exe`),
+  ];
   const vulkanCandidates: Candidate[] = [
     ...byCandidates(searchDirs.map(d => path.join(d, 'sd-vulkan')), `sd-server-${platform}-${arch}.exe`),
     ...byCandidates(searchDirs, `sd-server-${platform}-${arch}.exe`),
@@ -1523,14 +1586,22 @@ export function resolveSdServerBin(sdBinary: 'cuda' | 'vulkan' | 'cpu' = 'cuda')
     ...byCandidates(searchDirs, `sd-server-${platform}-${arch}-cpu.exe`),
   ];
 
-  // Try the requested binary type first, then cpu as last resort (never cross cuda/vulkan)
-  const preferred = sdBinary === 'cuda' ? cudaCandidates
-    : sdBinary === 'vulkan'             ? vulkanCandidates
+  // Try the requested binary type first, then fallback chain
+  const preferred = sdBinary === 'cuda'   ? cudaCandidates
+    : sdBinary === 'rocm'                 ? rocmCandidates
+    : sdBinary === 'vulkan'               ? vulkanCandidates
     : cpuCandidates;
 
   for (const { file, dir } of preferred) {
     const p = path.join(dir, file);
     if (fs.existsSync(p)) return p;
+  }
+  // ROCm falls back to Vulkan (same GPU, different backend)
+  if (sdBinary === 'rocm') {
+    for (const { file, dir } of vulkanCandidates) {
+      const p = path.join(dir, file);
+      if (fs.existsSync(p)) return p;
+    }
   }
   // CPU is always the safe fallback if preferred binary not installed
   if (sdBinary !== 'cpu') {
@@ -1542,7 +1613,7 @@ export function resolveSdServerBin(sdBinary: 'cuda' | 'vulkan' | 'cpu' = 'cuda')
 
   throw new Error(
     `sd-server binary not found for ${platform}-${arch} (sdBinary: ${sdBinary}).\n` +
-    `Expected in sd-cuda/, sd-vulkan/, or sd-cpu/ (alongside executable or in bin/)\n` +
+    `Expected in sd-cuda/, sd-vulkan/, sd-rocm/, or sd-cpu/ (alongside executable or in bin/)\n` +
     `Run scripts/fetch-sd-cpp.js to download binaries.`
   );
 }

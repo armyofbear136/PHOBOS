@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { checkBackendHealth, reconfigureClients, COORDINATOR_MODEL, ENGINE_MODEL, COORDINATOR_PROVIDER, ENGINE_PROVIDER } from '../ai/clients.js';
 import { CORE_VERSION } from '../version';
+import { isImageGenerating } from './workflows.js';
 import { DispatchLogStore } from '../db/DispatchLogStore.js';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 import { ModelConfigStore, PROVIDERS, getCoordinatorModels, getEngineModels } from '../db/ModelConfigStore.js';
@@ -24,6 +25,7 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
       coordinatorProvider: COORDINATOR_PROVIDER,
       engineModel: ENGINE_MODEL,
       engineProvider: ENGINE_PROVIDER,
+      isGenerating: isImageGenerating(),
       timestamp: new Date().toISOString(),
     });
   });

@@ -54,6 +54,13 @@ function defaultGenerateNode(variant?: string) {
   };
 }
 
+// ── Global image generation flag ────────────────────────────────────────────
+// Set true when any workflow is actively generating (sd-cli running).
+// Read by /api/status so the frontend knows LLM servers are intentionally
+// stopped for VRAM, not crashed.
+let _imageGenerating = false;
+export function isImageGenerating(): boolean { return _imageGenerating; }
+
 export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
 
   // ── GET /api/threads/:threadId/workflows ──────────────────────────────────
@@ -579,6 +586,7 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
         abort:       null as (() => void) | null,
       };
       runStatus.set(workflowId, status);
+      _imageGenerating = true;
 
       const pushPhase = (renderPhase: string, detail: string) => {
         for (const p of status.phases) p.done = true;
@@ -689,6 +697,7 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
             }
           }
           status.generating = false;
+          _imageGenerating = false;
           status.completedAt = Date.now();
         }
       })();

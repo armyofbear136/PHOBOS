@@ -28,8 +28,9 @@ export interface SdServerConfig {
   gpuBackend?:  'cuda' | 'vulkan' | 'metal';
   freeVramGb?:  number;         // live free VRAM at config-build time (for polling/logging)
   needsPtxJit?: boolean;        // true for Blackwell+ GPUs lacking native cubins in sd-cli
+  gpuName?:     string;         // GPU name string for architecture-specific env vars
   /** Which sd-cli binary to use — from GpuRunnerProfile.sdBinary */
-  sdBinary?:    'cuda' | 'vulkan' | 'cpu';
+  sdBinary?:    'cuda' | 'vulkan' | 'rocm' | 'cpu';
   /** Pass --offload-to-cpu to sd-cli. Free on unified memory (AMD iGPU, Apple Silicon). */
   offloadToCpu?: boolean;
   steps?:       number;
@@ -231,6 +232,21 @@ function buildEnv(cfg: SdServerConfig): NodeJS.ProcessEnv {
     return env; // macOS Metal — DYLD_LIBRARY_PATH set at spawn site
   }
 
+  // CPU-only routing: on Linux/macOS the "cpu" and "vulkan" sd-cli binaries are
+  // the same file. sd.cpp auto-detects Vulkan devices and uses them, which OOMs
+  // on Intel iGPUs with 0 GB dedicated VRAM. Hide all Vulkan devices so sd.cpp
+  // falls back to pure CPU execution.
+  if (cfg.sdBinary === 'cpu' || cfg.gpuBackend === undefined) {
+    delete env.CUDA_VISIBLE_DEVICES;
+    if (process.platform !== 'win32') {
+      // Point the Vulkan ICD loader at a nonexistent path — it reports 0 devices,
+      // forcing sd.cpp to use the CPU backend without any Vulkan allocation attempts.
+      env.VK_ICD_FILENAMES = '/dev/null';
+      env.VK_DRIVER_FILES  = '/dev/null'; // newer Vulkan loader uses this instead
+    }
+    return env;
+  }
+
   if (cfg.gpuBackend === 'cuda') {
     // Always set explicitly. An inherited CUDA_VISIBLE_DEVICES="" from the parent
     // process (e.g. set by llama-server) will override a missing assignment and
@@ -261,6 +277,30 @@ function buildEnv(cfg: SdServerConfig): NodeJS.ProcessEnv {
     if (cfg.freeVramGb !== undefined && cfg.freeVramGb <= 12) {
       env.CUBLAS_WORKSPACE_CONFIG = ':0:0';
       env.CUBLASLT_WORKSPACE_SIZE = '0';
+    }
+
+    return env;
+  }
+
+  // ROCm (AMD HIP) — used for AMD discrete GPUs when ROCm runtime is available.
+  // HIP_VISIBLE_DEVICES selects which AMD GPU to use (similar to CUDA_VISIBLE_DEVICES).
+  if (cfg.sdBinary === 'rocm') {
+    delete env.CUDA_VISIBLE_DEVICES;
+    // AMD device index: our index scheme uses 100+ for non-NVIDIA.
+    // HIP_VISIBLE_DEVICES uses 0-based HIP enumeration (just the AMD GPUs).
+    if (cfg.deviceIndex !== undefined && cfg.deviceIndex >= 100) {
+      env.HIP_VISIBLE_DEVICES = String(cfg.deviceIndex - 100);
+    } else {
+      env.HIP_VISIBLE_DEVICES = '0';
+    }
+
+    // RDNA 2 (RX 6600/6700/6800/6900) uses gfx1031/gfx1032 but ROCm only ships
+    // precompiled kernels for gfx1030. HSA_OVERRIDE_GFX_VERSION tells the runtime
+    // to treat the GPU as gfx1030, which is instruction-compatible.
+    // This is a no-op on GPUs that are already gfx1030 (RX 6800 XT, 6900 XT)
+    // and unnecessary on RDNA 3/4 (gfx1100+).
+    if (/RX\s*6[0-9]{3}/i.test(cfg.gpuName ?? '')) {
+      env.HSA_OVERRIDE_GFX_VERSION = '10.3.0';
     }
 
     return env;
@@ -481,7 +521,8 @@ export async function buildSdConfig(
   let isUnifiedMemory = false;
   let needsPtxJit     = false;
   let offloadToCpu    = false;
-  let sdBinaryChoice: 'cuda' | 'vulkan' | 'cpu' = 'cuda';
+  let gpuName         = '';
+  let sdBinaryChoice: 'cuda' | 'vulkan' | 'rocm' | 'cpu' = 'cuda';
 
   try {
     const hw = await detectHardware();
@@ -508,6 +549,7 @@ export async function buildSdConfig(
       isUnifiedMemory = bestGpu.unifiedMemory === true; // index>=100 is non-NVIDIA, not necessarily unified
       sdBinaryChoice  = bestGpu.runner?.sdBinary ?? (bestGpu.backend === 'cuda' ? 'cuda' : bestGpu.backend === 'vulkan' ? 'vulkan' : 'cpu');
       freeVramGb      = bestGpu.freeVramGb ?? Math.max(0, totalVramGb - 1.5);
+      gpuName         = bestGpu.name ?? '';
 
       // Blackwell GPUs (RTX 5060/5070/5080/5090) need PTX JIT because
       // sd.cpp release binaries lack native sm_120 cubins.
@@ -550,7 +592,12 @@ export async function buildSdConfig(
     }
   }
   if (!spec) {
-    if (isUnifiedMemory) {
+    // Unified memory fast path: Apple Metal and AMD APUs with real shared VRAM.
+    // Intel iGPUs report unifiedMemory=true but Vulkan can't allocate large
+    // device buffers (OOMs at 1 GB on HD 5500). Only trust unified memory
+    // for image gen on Metal or when reported VRAM is ≥4 GB.
+    const viableUnified = isUnifiedMemory && (gpuBackend === 'metal' || totalVramGb >= 4);
+    if (viableUnified) {
       // Unified memory: use full system RAM pool (--offload-to-cpu, no PCIe cost)
       const os = await import('os');
       const ramGb = Math.floor(os.default.totalmem() / (1024 ** 3));
@@ -628,6 +675,7 @@ export async function buildSdConfig(
     gpuBackend,
     freeVramGb,
     needsPtxJit,
+    gpuName,
     offloadToCpu,
     sdBinary: sdBinaryChoice,
     ...overrides,

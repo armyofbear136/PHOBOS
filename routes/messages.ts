@@ -888,8 +888,8 @@ async function handleDirectResponse(
           `- 10-20 words maximum\n` +
           `- Example: "a cat jumping through a sunny garden, slow motion, cinematic"\n\n` +
           `NEGATIVE PROMPT rules:\n` +
-          `- At most 1-2 UNDESIRABLE qualities specific to this scene\n` +
-          `- System already injects: blurry, low quality, watermark, deformed\n\n` +
+          `- Add at most 1-2 undesired quality terms specific to THIS subject/scene only\n` +
+          `- The system already injects: blurry, low quality, watermark, deformed — do NOT repeat those\n\n` +
           `Respond with ONLY valid JSON:\n` +
           `{"prompt": "your compressed prompt", "negativePrompt": "1-2 terms"}`
         : `You are SAYON, the image generation coordinator for PHOBOS.\n\n` +

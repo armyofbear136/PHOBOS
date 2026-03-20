@@ -50,9 +50,9 @@ jobs:
 
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
@@ -137,7 +137,7 @@ jobs:
 
       - name: Upload artifact (tar)
         if: matrix.pack == 'tar'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}
           path: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.tar.gz
@@ -145,7 +145,7 @@ jobs:
 
       - name: Upload artifact (zip)
         if: matrix.pack == 'zip'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}
           path: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.zip
@@ -164,7 +164,7 @@ jobs:
 
     steps:
       - name: Download all available artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v4
         with:
           path: release-artifacts
         continue-on-error: true

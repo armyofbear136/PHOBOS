@@ -22,3 +22,5 @@ localai.duckdb.wal
 
 # License generator script (contains seed logic)
 scripts/generate-license.ts
+# Local binary master copies — tracked by bin-manifest.json, not committed directly
+bin-master/

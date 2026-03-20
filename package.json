@@ -14,6 +14,9 @@
     "build:full:mac-intel": "node scripts/build-full.js darwin-x64",
     "build:full:linux": "node scripts/build-full.js linux-x64",
     "build:full:linux-arm": "node scripts/build-full.js linux-arm64",
+    "master:sync": "node scripts/master-sync.js",
+    "master:update": "node scripts/master-sync.js --update",
+    "master:check": "node scripts/master-sync.js --check",
     "build:all": "node build.all.js",
     "start": "node dist/server.js",
     "db:setup": "node scripts/setup-db.js"

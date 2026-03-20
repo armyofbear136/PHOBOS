@@ -1,0 +1,30 @@
+{
+  "_comment": "Pinned binary manifest for PHOBOS. Updated by: npm run master:update. Never edit manually.",
+  "_updated": "",
+  "win32-x64": {
+    "llama": "",
+    "llama-vulkan-source": "",
+    "sd": "",
+    "files": {}
+  },
+  "darwin-arm64": {
+    "llama": "",
+    "sd": "",
+    "files": {}
+  },
+  "darwin-x64": {
+    "llama": "",
+    "sd": "",
+    "files": {}
+  },
+  "linux-x64": {
+    "llama": "",
+    "sd": "",
+    "files": {}
+  },
+  "linux-arm64": {
+    "llama": "",
+    "sd": "n/a",
+    "files": {}
+  }
+}

@@ -370,7 +370,22 @@ export async function fetchSdBinaries({ all = false } = {}) {
   const dl  = (fn) => `https://github.com/leejet/stable-diffusion.cpp/releases/download/${tag}/${fn}`;
   const tmp = (fn) => path.join(TMP_DIR, fn);
   const bin = (fn) => path.join(BIN_DIR, fn);
-  const p = process.platform, a = process.arch;
+
+  // Allow PHOBOS_TARGET_PLATFORM=win32-x64|darwin-arm64|linux-x64 etc. to override
+  // the current machine platform — used by master-sync to fetch cross-platform binaries.
+  const _tgt = process.env.PHOBOS_TARGET_PLATFORM;
+  const p = _tgt === 'win32-x64'    ? 'win32'
+          : _tgt === 'darwin-arm64' ? 'darwin'
+          : _tgt === 'darwin-x64'   ? 'darwin'
+          : _tgt === 'linux-x64'    ? 'linux'
+          : _tgt === 'linux-arm64'  ? 'linux'
+          : process.platform;
+  const a = _tgt === 'win32-x64'    ? 'x64'
+          : _tgt === 'darwin-arm64' ? 'arm64'
+          : _tgt === 'darwin-x64'   ? 'x64'
+          : _tgt === 'linux-x64'    ? 'x64'
+          : _tgt === 'linux-arm64'  ? 'arm64'
+          : process.arch;
 
   // ── Linux x64 ───────────────────────────────────────────────────────────────
   // Prefer Vulkan build (GPU support); fall back to plain CPU build.

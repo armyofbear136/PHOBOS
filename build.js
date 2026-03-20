@@ -161,7 +161,8 @@ export async function buildForPlatform({
   log('📂 Staging native packages...');
 
   const SKIP_DIRS = new Set(['obj', '.cache', 'test', 'tests', 'docs', 'doc',
-                              'example', 'examples', '.github', 'scripts']);
+                              'example', 'examples', '.github', 'scripts',
+                              'src', 'include', 'third_party', 'vendor']);
   const SKIP_EXT  = new Set(['.cc', '.cpp', '.h', '.gyp', '.gypi', '.c',
                               '.md', '.map', '.ts']);
 
@@ -194,6 +195,11 @@ export async function buildForPlatform({
   } else {
     const dest = path.join(distDir, 'duckdb');
     copyDir(duckdbSrc, dest);
+    // Prune C++ source trees that got copied — only runtime files needed
+    for (const pruneDir of ['src', 'third_party']) {
+      const p = path.join(dest, pruneDir);
+      if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true });
+    }
     writeFake(dest, '@mapbox/node-pre-gyp', FAKE_NODE_PRE_GYP);
     log(`  ✅ duckdb/`);
   }

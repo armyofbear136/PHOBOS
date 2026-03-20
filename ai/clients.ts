@@ -218,6 +218,11 @@ export function getThinkingStrategy(provider: string, model: string): ThinkingSt
   // All other models (Llama, Gemma, DeepSeek-R1 Llama distill): tag path via prompt injection.
   if (provider === 'phobos') {
     const spec = getSpec(model);
+
+    // All Nemotron 3 variants (4B llama, 9B llama, 30B-A3B mamba) share the same
+    // ChatML template with thinking_forced_open. They all use --jinja + --reasoning-format deepseek.
+    // The standard jinjaTemplate branch below handles all of them correctly.
+
     if (spec?.jinjaTemplate) {
       return {
         systemSuffix: '',
@@ -339,8 +344,9 @@ export function applyThinkingStrategy(
   // FastFlowLLM: extra_body activates thinking via server config, no message change.
   if (provider === 'fastflowllm') return { messages, systemPrompt };
 
-  // PHOBOS Local Jinja-template models: thinking activated via chat_template_kwargs:{enable_thinking:true}
-  // in extra_body (set in getThinkingStrategy). No message prefix needed.
+  // PHOBOS Local Jinja-template models (Qwen3, Magistral, DeepSeek-R1 Qwen3 distills, Nemotron 30B-A3B):
+  // thinking activated via chat_template_kwargs:{enable_thinking:true} in extra_body.
+  // No message prefix needed.
   if (provider === 'phobos' && getSpec(model)?.jinjaTemplate) return { messages, systemPrompt };
 
   // System prompt injection for models that need it (Llama on Ollama, PHOBOS Llama, etc.)
@@ -412,12 +418,16 @@ export async function coordinatorCall(opts: {
     const delta = chunk.choices[0]?.delta as Record<string, unknown>;
     _callDbgN++;
     if (_callDbgN <= 2) {
-      console.log(`[coordinatorCall:delta:${_callDbgN}] keys=${JSON.stringify(Object.keys(delta ?? {}))} content=${JSON.stringify((delta as any)?.content)} reasoning=${JSON.stringify((delta as any)?.reasoning)}`);
+      console.log(`[coordinatorCall:delta:${_callDbgN}] keys=${JSON.stringify(Object.keys(delta ?? {}))} content=${JSON.stringify((delta as any)?.content)} reasoning=${JSON.stringify((delta as any)?.reasoning_content)}`);
     }
     if (coordStrategy.thinkingPath === 'field') {
       const d = delta as Record<string, unknown>;
       const outToken = d.content as string | null | undefined;
+      // Nemotron 4B with reasoning_format:none still routes output to reasoning_content
+      // instead of content. Fall back to reasoning_content when content is absent.
+      const reasoningFallback = d.reasoning_content as string | null | undefined;
       if (outToken) outputBuf += outToken;
+      else if (reasoningFallback) outputBuf += reasoningFallback;
     } else {
       const outToken = delta?.content as string | null | undefined;
       if (outToken) {
@@ -653,8 +663,30 @@ export async function engineStream(opts: {
             }
             if (outToken) outputBuf += outToken;
           } else {
+            // Tag path: <think>...</think> arrives inline in delta.content
             const outToken = delta.content as string | null | undefined;
-            if (outToken) outputBuf += outToken;
+            if (outToken) {
+              let remaining = outToken;
+              let inThinkLocal = false;
+              while (remaining.length > 0) {
+                if (inThinkLocal) {
+                  const ci = remaining.indexOf('</think>');
+                  if (ci === -1) {
+                    if (onThinkToken) onThinkToken(remaining);
+                    thinkBuf += remaining; remaining = '';
+                  } else {
+                    const chunk = remaining.slice(0, ci);
+                    if (chunk && onThinkToken) onThinkToken(chunk);
+                    thinkBuf += chunk; inThinkLocal = false;
+                    remaining = remaining.slice(ci + '</think>'.length);
+                  }
+                } else {
+                  const oi = remaining.indexOf('<think>');
+                  if (oi === -1) { outputBuf += remaining; remaining = ''; }
+                  else { outputBuf += remaining.slice(0, oi); inThinkLocal = true; remaining = remaining.slice(oi + '<think>'.length); }
+                }
+              }
+            }
           }
         } catch { /* malformed chunk */ }
       }

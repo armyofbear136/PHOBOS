@@ -110,13 +110,12 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
     args.push('--device', 'none');
   }
 
-  // Jinja chat template + reasoning-format routing for all Qwen3/3.5-architecture models.
-  // Covers: Qwen3 family, Qwen3.5 family, Magistral, DeepSeek-R1 Qwen3 distills (8B, 14B).
-  // Qwen3.5 uses the same <think>...</think> tags as Qwen3 — --reasoning-format deepseek
-  // extracts them into reasoning_content. Qwen3.5 4B+ think by default (no /think toggle).
-  // Not applied to Llama-architecture models (Llama 3, Gemma 3, DeepSeek-R1 70B)
-  // which use tag-based thinking or no thinking at all.
-  if (role === 'seren' && spec.jinjaTemplate) {
+  // Jinja chat template + reasoning-format routing for all Jinja-template models.
+  // Covers: Qwen3, Qwen3.5, Magistral, DeepSeek-R1 Qwen3 distills, all Nemotron 3 variants.
+  // --reasoning-format deepseek extracts <think>...</think> into reasoning_content,
+  // keeping delta.content clean for the final answer. Without this flag, <think> tokens
+  // are injected into the content stream and cause the Jinja renderer to crash.
+  if (spec.jinjaTemplate) {
     args.push('--jinja', '--reasoning-format', 'deepseek');
   }
 
@@ -189,6 +188,7 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
       const vkIdx = cfg.vulkanIndex ??
         (cfg.deviceIndex >= 100 ? (cfg.deviceIndex - 100) : cfg.deviceIndex);
 
+      console.log(`[LlamaServerManager] ${role}: GGML_VK_VISIBLE_DEVICES=${vkIdx} (vulkanIndex=${cfg.vulkanIndex ?? 'unset'}, deviceIndex=${cfg.deviceIndex})`);
       env.CUDA_VISIBLE_DEVICES    = '-1'; // hide CUDA — no NVIDIA context overhead
       env.HIP_VISIBLE_DEVICES     = '-1'; // hide ROCm
       env.GGML_VK_VISIBLE_DEVICES = String(vkIdx);

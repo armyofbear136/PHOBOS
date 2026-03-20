@@ -22,35 +22,24 @@ export interface ClassificationContext {
   repoMap?: string;
 }
 
-const CLASSIFIER_SYSTEM = `You are an accurate intent classifier for PHOBOS, a dual-AI system. SAYON (you) is the coordinator. SEREN is the execution engine. These are the names of the two AI models in this system — not functions or code constructs.
+const CLASSIFIER_SYSTEM = `You are an accurate intent classifier for PHOBOS, a dual-AI system. SAYON (you) is the coordinator. SEREN is the execution engine.
 
-Classify the user's message into exactly one of these categories:
+Classify the user message into exactly one of:
+QUESTION - conversation, explanation, analysis, help (no file changes needed)
+DOCUMENT_EDIT - update PHOBOS DIRECTIVES, project.md, or chat.md
+CODE_REQUEST - write, modify, refactor, or debug code files or workspace files
+PLAN_REQUEST - plan or discuss architecture before any file changes
+IMAGE_REQUEST - generate, draw, or create an image
+NEEDS_CLARIFICATION - genuinely too ambiguous to classify
 
-QUESTION - Any question, explanation, conversation, creative request, analysis, how-to, debugging help, or general assistance that does not require writing files
-DOCUMENT_EDIT - Requests to update PHOBOS DIRECTIVES, project.md, or chat.md documents
-CODE_REQUEST - Requests to write, modify, refactor, or debug actual code files or create/edit any files in the workspace
-PLAN_REQUEST - Requests to create a plan, outline an approach, or discuss architecture before any file changes
-IMAGE_REQUEST - Requests to generate, create, draw, or make an image or picture using AI. Phrases like "generate an image", "draw me", "create a picture of", "make an image of", "show me a picture of" all indicate this type
-NEEDS_CLARIFICATION - After thoroughly analyzing the request and attempting your best judgement on the intent, if all other categories would produce an error in the final output you may use NEEDS_CLARIFICATION
+Routing:
+ANSWER_DIRECTLY - SAYON handles alone (questions, conversation, image requests)
+NEEDS_SEREN - requires the engine (code, files, complex multi-step tasks)
+NEEDS_CLARIFICATION - needs more info
 
-Also determine routing — how the request should be handled:
-ANSWER_DIRECTLY - SAYON can handle this alone (simple questions, conversation, short explanations)
-NEEDS_SEREN - Requires the engine for code generation, file creation, complex analysis, or multi-step tasks
-NEEDS_CLARIFICATION - Cannot proceed without more information from the user
+Rules: write/create/build/modify files -> CODE_REQUEST + NEEDS_SEREN. Image/draw/picture -> IMAGE_REQUEST + ANSWER_DIRECTLY. Mentions SEREN by name -> NEEDS_SEREN. Simple Q&A -> ANSWER_DIRECTLY.
 
-ROUTING OVERRIDE RULES — these take precedence over the defaults above:
-1. If the user mentions "SEREN" by name → always route NEEDS_SEREN, regardless of phrasing
-2. If the request involves generating content longer than a short paragraph (documents, guides, articles, code files, scripts) → route NEEDS_SEREN even if phrased as a question
-3. If the request asks to "write", "create", "build", "generate", or "make" anything substantial → route NEEDS_SEREN
-4. If type is IMAGE_REQUEST → always route ANSWER_DIRECTLY (SAYON handles workflow creation)
-
-Default toward QUESTION for anything purely conversational, analytical, or informational.
-Only use CODE_REQUEST when the user explicitly wants files written or changed.
-Always use IMAGE_REQUEST when the user wants any kind of image generated — never classify these as QUESTION or CODE_REQUEST.
-Use NEEDS_CLARIFICATION when the request is genuinely ambiguous — do not guess.
-
-Respond with ONLY a JSON object on a single line. No preamble, no explanation.
-Format: {"type":"INTENT_TYPE","confidence":0.0,"routing":"ROUTING"}`;
+Respond ONLY with JSON on one line: {"type":"TYPE","confidence":0.0,"routing":"ROUTING"}`;
 
 export class IntentClassifier {
   async classify(
@@ -71,7 +60,7 @@ export class IntentClassifier {
       }
       if (context?.fileSummaries && context.fileSummaries.length > 0) {
         const top = context.fileSummaries.slice(0, 5);
-        const block = top.map((f) => `  ${f.filename} — ${f.summary}`).join('\n');
+        const block = top.map((f) => `  ${f.filename} - ${f.summary}`).join('\n');
         contextParts.push(`<file_context>\n${block}\n</file_context>`);
       }
 

@@ -273,16 +273,92 @@ function _isRocmAvailable(): boolean {
 // ── Aggregated detection ──────────────────────────────────────────────────────
 
 /**
- * Assigns a GpuRunnerProfile to every detected GPU.
+ * Runs llama-server --list-devices and returns a map of
+ * { normalizedName -> vulkanIndex } from the actual runtime enumeration.
+ * This is the only reliable way to get the correct Vulkan index —
+ * enumeration order can change after driver updates or reboots.
  *
- * Vulkan enumeration order on Windows:
- *   - NVIDIA GPUs enumerate FIRST (position = nvidia-smi index)
- *   - Non-NVIDIA GPUs follow in WMI order (position = nvidiaCount + wmiIndex)
- *
- * After setting GGML_VK_VISIBLE_DEVICES=<vulkanIndex>, llama-server sees
- * only one device which it calls Vulkan0. We always pass --device Vulkan0.
+ * Output parsed: "ggml_vulkan: N = <device name> | ..."
+ * Falls back to empty map if the binary is not found or the call fails.
  */
-function assignRunnerProfiles(gpus: GpuDevice[]): void {
+async function enumerateVulkanDevices(): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  try {
+    const bin = resolveLlamaServerBin();
+    // Run with --list-devices flag (llama.cpp b3000+) which prints all Vulkan
+    // devices and exits. On older builds that don't have this flag, it exits
+    // with a non-zero code but still initializes backends and prints device
+    // lines to stderr — the .catch captures that output either way.
+    // GGML_VK_VISIBLE_DEVICES='' ensures all devices are visible (no pre-filter).
+    const result = await execFileAsync(bin, ['--list-devices'], {
+      timeout: 8000,
+      env: { ...process.env, GGML_VK_VISIBLE_DEVICES: '' },
+    }).catch((err: any) => {
+      // Non-zero exit is fine — ggml still printed device lines before exiting
+      return { stdout: (err as any).stdout ?? '', stderr: (err as any).stderr ?? '' };
+    });
+
+    const output = (result.stdout ?? '') + '\n' + (result.stderr ?? '');
+    for (const match of output.matchAll(/ggml_vulkan:\s+(\d+)\s*=\s*([^|\n]+)/g)) {
+      const idx  = parseInt(match[1], 10);
+      const name = match[2].trim();
+      map.set(name.toLowerCase(), idx);
+      // Also index without driver annotations in parentheses e.g. "(NVIDIA)" / "(AMD proprietary driver)"
+      const short = name.toLowerCase().replace(/\(.*?\)/g, '').trim();
+      if (short !== name.toLowerCase()) map.set(short, idx);
+    }
+    if (map.size === 0) {
+      console.warn('[HW] enumerateVulkanDevices: no ggml_vulkan lines found in output');
+    }
+  } catch (err: any) {
+    console.warn(`[HW] enumerateVulkanDevices failed: ${err?.message ?? err}`);
+  }
+  return map;
+}
+
+/**
+ * Matches a detected GPU name against the runtime Vulkan enumeration map.
+ * Uses progressively looser matching:
+ *   1. Exact match (normalized)
+ *   2. Substring — either name contains the other
+ *   3. Significant word overlap (>=2 words >2 chars in common)
+ */
+function matchVulkanIndex(gpuName: string, vkMap: Map<string, number>): number | undefined {
+  const needle = gpuName.toLowerCase().replace(/\(.*?\)/g, '').trim();
+
+  if (vkMap.has(needle)) return vkMap.get(needle);
+  if (vkMap.has(gpuName.toLowerCase())) return vkMap.get(gpuName.toLowerCase());
+
+  for (const [key, idx] of vkMap) {
+    if (needle.includes(key) || key.includes(needle)) return idx;
+  }
+
+  const needleWords = new Set(needle.split(/\s+/).filter(w => w.length > 2));
+  for (const [key, idx] of vkMap) {
+    const overlap = key.split(/\s+/).filter(w => w.length > 2 && needleWords.has(w)).length;
+    if (overlap >= 2) return idx;
+  }
+
+  return undefined;
+}
+
+/**
+ * Assigns a GpuRunnerProfile to every detected GPU.
+ * vulkanIndex is resolved by matching the GPU name against the actual
+ * runtime Vulkan enumeration from llama-server --list-devices,
+ * making it robust against driver/reboot enumeration order changes.
+ * Falls back to computed positional index if enumeration fails.
+ */
+async function assignRunnerProfiles(gpus: GpuDevice[]): Promise<void> {
+  const vkMap = await enumerateVulkanDevices();
+  const hasRuntimeEnum = vkMap.size > 0;
+
+  if (hasRuntimeEnum) {
+    console.log(`[HW] Vulkan runtime enum: ${[...vkMap.entries()].filter(([k]) => !k.includes('(')).map(([n, i]) => `${i}=${n}`).join(', ')}`);
+  } else {
+    console.warn('[HW] Vulkan runtime enumeration unavailable — using positional fallback');
+  }
+
   const nvidiaCount = gpus.filter(g => g.backend === 'cuda').length;
 
   for (const gpu of gpus) {
@@ -292,54 +368,51 @@ function assignRunnerProfiles(gpus: GpuDevice[]): void {
     }
 
     if (gpu.backend === 'cuda') {
-      // NVIDIA: Vulkan position = nvidia-smi index (NVIDIA always first in Vulkan)
-      const vulkanIndex = gpu.index; // nvidia-smi index IS the Vulkan position
-      // Maxwell/Kepler classification:
-      // CUDA 12 prebuilt Windows binaries require sm_60+ (CUDA atomics need sm_70+ on Windows).
-      // Quadro M-series, GTX 900-series, GTX 600-series, Quadro K-series are Maxwell/Kepler.
-      // These use 'nvidia-legacy' — attempt Vulkan, fall to CPU if ICD not registered.
+      const runtimeIdx  = hasRuntimeEnum ? matchVulkanIndex(gpu.name, vkMap) : undefined;
+      const vulkanIndex = runtimeIdx ?? gpu.index;
+      if (hasRuntimeEnum) {
+        console.log(`[HW] ${gpu.name}: Vulkan${vulkanIndex}${runtimeIdx !== undefined ? ' (runtime)' : ' (positional fallback)'}`);
+      }
       const isLegacy = /Quadro M|GTX 9[0-9][0-9]|GTX 7[0-9][0-9].*Ti|GTX 6[0-9][0-9]|Quadro K/i.test(gpu.name);
       gpu.runner = {
-        kind:        isLegacy ? 'nvidia-legacy' : 'nvidia-vulkan',
+        kind:     isLegacy ? 'nvidia-legacy' : 'nvidia-vulkan',
         vulkanIndex,
-        sdBinary:    'cuda', // sd-cli always uses CUDA binary for NVIDIA image gen
+        sdBinary: 'cuda',
       };
       continue;
     }
 
-    // Non-NVIDIA Vulkan device.
-    // vulkanIndex must reflect the actual Vulkan enumeration position.
-    // Vulkan enumerates NVIDIA GPUs first (positions 0..nvidiaCount-1),
-    // then non-NVIDIA GPUs in the same order as they survive WMI filtering.
+    // Non-NVIDIA: runtime match primary, CUDA-hidden positional fallback.
     //
-    // We CANNOT use (gpu.index - 100) as the WMI offset because the index
-    // includes GPUs that were filtered out by vramGb < 1 (e.g. Intel iGPU
-    // reporting 0 VRAM). Those gaps shift the Vulkan position vs the raw offset.
+    // When CUDA_VISIBLE_DEVICES=-1 is set for the seren process, NVIDIA GPUs
+    // are hidden from ggml entirely. ggml Vulkan then enumerates only the
+    // non-NVIDIA devices, making the first non-NVIDIA GPU always Vulkan0 in
+    // that process context. GGML_VK_VISIBLE_DEVICES further filters within
+    // that already-CUDA-hidden Vulkan list.
     //
-    // Correct approach: count how many non-NVIDIA gpus in THIS list have
-    // a lower index (i.e. came before this one in WMI order after filtering).
+    // Positional index = position among non-NVIDIA GPUs only (0-based),
+    // NOT offset by nvidiaCount (those are hidden from this process).
     const nonNvidiaPosition = gpus.filter(g =>
       g.backend !== 'cuda' && g.backend !== 'metal' && g.index < gpu.index
     ).length;
-    const vulkanIndex = nvidiaCount + nonNvidiaPosition;
-    const isAmd      = /AMD|Radeon|ATI/i.test(gpu.name);
-    const isIntel    = /Intel/i.test(gpu.name);
-    const isUnified  = gpu.unifiedMemory === true;
+    const positionalIndex = nonNvidiaPosition; // 0-based within non-NVIDIA only
+    const runtimeIdx      = hasRuntimeEnum ? matchVulkanIndex(gpu.name, vkMap) : undefined;
+    const vulkanIndex     = runtimeIdx ?? positionalIndex;
+
+    console.log(`[HW] ${gpu.name}: Vulkan${vulkanIndex}${runtimeIdx !== undefined ? ' (runtime)' : ' (positional fallback, CUDA-hidden)'}`);
+
+    const isAmd     = /AMD|Radeon|ATI/i.test(gpu.name);
+    const isIntel   = /Intel/i.test(gpu.name);
+    const isUnified = gpu.unifiedMemory === true;
 
     let kind: GpuRunnerKind;
     if (isAmd && isUnified)  kind = 'amd-igpu';
     else if (isAmd)          kind = 'amd-discrete';
     else if (isIntel)        kind = 'intel-igpu';
-    else                     kind = 'amd-discrete'; // unknown non-NVIDIA, treat as discrete Vulkan
+    else                     kind = 'amd-discrete';
 
-    // AMD discrete GPUs: prefer ROCm (2-4x faster than Vulkan) when available.
-    // ROCm is bundled with Adrenalin AI Bundle on Windows (RDNA 3+) and available
-    // via ROCm packages on Linux. If the ROCm sd-cli binary isn't present or ROCm
-    // runtime isn't installed, resolveSdServerBin falls back to Vulkan automatically.
     let sdBin: 'rocm' | 'vulkan' | 'cpu' = 'vulkan';
-    if (isAmd && !isUnified) {
-      sdBin = _isRocmAvailable() ? 'rocm' : 'vulkan';
-    }
+    if (isAmd && !isUnified) sdBin = _isRocmAvailable() ? 'rocm' : 'vulkan';
 
     gpu.runner = { kind, vulkanIndex, sdBinary: sdBin };
   }
@@ -358,7 +431,7 @@ export async function detectHardware(): Promise<HardwareProfile> {
   ]);
 
   const gpus = [...nvidiaGpus, ...nonNvidiaWin, ...nonNvidiaLinux, ...appleGpus];
-  assignRunnerProfiles(gpus);
+  await assignRunnerProfiles(gpus);
   return { ramGb, cpuCores, cpuName, gpus };
 }
 
@@ -385,6 +458,12 @@ export interface GGUFSpec {
   contextWindow: number;
   /** If true, model is shown in the Legacy section of the UI. Still downloadable/usable. */
   legacy?: boolean;
+  /**
+   * Nemotron architecture variant:
+   * 'llama' — Llama 3.1 derivative, reasoning toggled via system prompt (4B, 9B)
+   * 'mamba' — Mamba-2/MoE hybrid, reasoning toggled via chat_template_kwargs (30B-A3B)
+   */
+  nemotronVariant?: 'llama' | 'mamba';
 }
 
 export const GGUF_CATALOGUE: GGUFSpec[] = [
@@ -547,6 +626,35 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf',
     sizeBytes: 42_520_000_000, ramRequiredGb: 48, contextWindow: 65536,
     kvCacheMbPer1kTokens: 320,  // 80 layers x 8 KV heads x 128 head_dim x 2 x F16
+  },
+  // ── Nemotron 3 family ────────────────────────────────────────────────────────
+  // Hybrid Mamba-2/MoE-Transformer architecture from NVIDIA. Requires llama.cpp b6315+
+  // for the nemotron_h architecture type. Thinking tokens supported via <think> tags.
+  // License: NVIDIA Open Model License (commercial-friendly open weights).
+  // Knowledge cutoff: pre-training June 2025, post-training November 2025.
+  {
+    modelId: 'nemotron3-4b-q4', label: 'Nemotron 3 Nano 4B Q4', family: 'Nemotron 3',
+    role: 'sayon', thinkingTokens: true, jinjaTemplate: true, nemotronVariant: 'llama',
+    hfRepo: 'unsloth/NVIDIA-Nemotron-3-Nano-4B-GGUF',
+    hfFile: 'NVIDIA-Nemotron-3-Nano-4B-Q4_K_M.gguf',
+    sizeBytes: 2_600_000_000, ramRequiredGb: 4, contextWindow: 32768,
+    kvCacheMbPer1kTokens: 96,   // Llama 3.1 derivative — reasoning via system prompt
+  },
+  {
+    modelId: 'nemotron3-9b-q4', label: 'Nemotron 3 Nano 9B Q4', family: 'Nemotron 3',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true, nemotronVariant: 'llama',
+    hfRepo: 'bartowski/nvidia_NVIDIA-Nemotron-Nano-9B-v2-GGUF',
+    hfFile: 'nvidia_NVIDIA-Nemotron-Nano-9B-v2-Q4_K_M.gguf',
+    sizeBytes: 5_700_000_000, ramRequiredGb: 7, contextWindow: 32768,
+    kvCacheMbPer1kTokens: 96,   // Llama 3.1 derivative — reasoning via system prompt
+  },
+  {
+    modelId: 'nemotron3-30b-a3b-q4', label: 'Nemotron 3 Nano 30B-A3B Q4', family: 'Nemotron 3',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true, nemotronVariant: 'mamba',
+    hfRepo: 'unsloth/Nemotron-3-Nano-30B-A3B-GGUF',
+    hfFile: 'Nemotron-3-Nano-30B-A3B-UD-Q4_K_XL.gguf',
+    sizeBytes: 22_800_000_000, ramRequiredGb: 25, contextWindow: 32768,
+    kvCacheMbPer1kTokens: 96,   // Mamba-2/MoE hybrid — ~3B active params, reasoning via chat_template_kwargs
   },
 ];
 
@@ -1458,21 +1566,29 @@ export interface ModelRecommendation {
 }
 
 const SAYON_CANDIDATES = [
-  // Ordered best-to-smallest. gemma3-1b-q4 is the 1B fallback (stable on 2GB GPU).
+  // Nemotron 3 preferred — best reasoning quality for coordinator role
+  'nemotron3-4b-q4',
+  // Llama fallbacks
   'llama3.1-8b-q4', 'gemma3-12b-q4', 'gemma3-4b-q4',
   'llama3.2-3b-q4', 'gemma3-1b-q4',
 ];
 
 const SEREN_CANDIDATES = [
-  'deepseek-r1-70b-q4',
+  // Nemotron 3 preferred — strong reasoning at all sizes
+  'nemotron3-30b-a3b-q4',
+  'nemotron3-9b-q4',
+  // Qwen3.5 — excellent reasoning, wide size range
   'qwen3.5-35b-a3b-q4',
   'qwen3.5-27b-q4',
-  'magistral-8b-q4',
-  'deepseek-r1-14b-q4',
   'qwen3.5-9b-q4',
-  'deepseek-r1-8b-q4',
   'qwen3.5-4b-q4',
-  // Legacy fallbacks — only reached if Qwen3.5 models aren't downloaded
+  // DeepSeek-R1 — strong on reasoning tasks
+  'deepseek-r1-70b-q4',
+  'deepseek-r1-14b-q4',
+  'deepseek-r1-8b-q4',
+  // Mistral
+  'magistral-8b-q4',
+  // Legacy fallbacks
   'qwen3-30b-a3b-q4',
   'qwen3-14b-q4',
   'qwen3-8b-q4',

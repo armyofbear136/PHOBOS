@@ -290,6 +290,8 @@ function buildFlux2Args(
   ];
 
   if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
+  if (opts.initImg)        args.push('--init-img', opts.initImg);
+  if (opts.strength != null) args.push('--strength', String(opts.strength));
   if (opts.refImage)       args.push('-r', opts.refImage);
   if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
   return args;
@@ -324,6 +326,9 @@ function buildZImageArgs(
   ];
 
   if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
+  if (opts.initImg)        args.push('--init-img', opts.initImg);
+  if (opts.strength != null) args.push('--strength', String(opts.strength));
+  if (opts.refImage)       args.push('-r', opts.refImage);
   if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
   return args;
 }
@@ -357,6 +362,7 @@ function buildQwenImageArgs(
   ];
 
   if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
+  if (opts.initImg)        args.push('--init-img', opts.initImg);
   if (opts.refImage)       args.push('--ref-images', opts.refImage);
   if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
   return args;

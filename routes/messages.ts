@@ -715,7 +715,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
 
       // Generate rolling summary — blocks done so it's always current before next turn.
       // Skip for IMAGE_REQUEST — SAYON is about to be killed for VRAM, summary would ECONNRESET.
-      if (intent.type !== 'IMAGE_REQUEST') {
+      if (intent.type !== 'IMAGE_REQUEST' && intent.type !== 'VIDEO_REQUEST') {
         try {
           await generateAndPersistSummary(threadId, messageStore, summaryStore, configStore);
         } catch (summaryErr) {
@@ -832,28 +832,84 @@ async function handleDirectResponse(
   };
 
   try {
-    // ── IMAGE_REQUEST: SAYON enhances prompt → create workflow → start generation ──
-    if (intentType === 'IMAGE_REQUEST') {
-      sendEvent({ type: 'status', content: 'Preparing image generation…' });
+    // ── IMAGE_REQUEST / VIDEO_REQUEST: SAYON enhances prompt → create workflow → start generation ──
+    if (intentType === 'IMAGE_REQUEST' || intentType === 'VIDEO_REQUEST') {
+      const isVideo = intentType === 'VIDEO_REQUEST';
+      sendEvent({ type: 'status', content: isVideo ? 'Preparing video generation…' : 'Preparing image generation…' });
 
-      const imageSystemPrompt =
-        `You are SAYON, the image generation coordinator for PHOBOS.\n\n` +
-        `Compress the user's image request into a Chroma (FLUX-architecture photorealistic model) prompt.\n\n` +
-        `POSITIVE PROMPT rules:\n` +
-        `- Comma-separated keywords and short noun phrases ONLY — no full sentences, no verbs, no "with a"\n` +
-        `- Pattern: subject, setting, action, quality\n` +
-        `- Example input: "draw me a pink haired goth girl"\n` +
-        `- Example output: "a pink-haired goth girl, in a candlelit dungeon, sitting on a throne, leather corset, 8k, photorealistic"\n` +
-        `- 10-16 words, each phrase 1-6 words, comma-separated — 50% subject, 25% setting, 25% action, plus 2 quality tags "8k, photorealistic"\n` +
-        `- Less is okay if image calls for simplicity: try fill all 10-16 slots with meaningful descriptors\n\n` +
-        `NEGATIVE PROMPT rules:\n` +
-        `- Add at most 1-2 undesired quality terms that are specific to THIS subject/scene only\n` +
-        `- The system already injects: blurry, low quality, watermark, deformed — do NOT repeat those or synonyms\n\n` +
-        `Respond with ONLY valid JSON, no markdown, no explanation:\n` +
-        `{"prompt": "your compressed prompt", "negativePrompt": "your 1-2 context-specific terms"}`;
+      // ── Discover installed image/video models to inform SAYON ──
+      const { IMAGE_MODEL_CATALOGUE, isFluxDownloaded } = await import('../phobos/PhobosLocalManager.js');
+      const { buildSdConfig } = await import('../phobos/ImageServerManager.js');
 
-      const imageMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
-        { role: 'system', content: imageSystemPrompt },
+      // Speed-ordered preference for image models (fastest first)
+      const IMAGE_SPEED_ORDER = [
+        'z-image-turbo-q4', 'flux2-klein-4b-q4', 'flux-schnell-q4', 'flux-schnell-q8',
+        'chroma-q4', 'flux2-klein-9b-q4', 'flux-dev-q4', 'z-image-base-q6', 'qwen-image-q4', 'kontext-dev-q5',
+      ];
+      // Speed-ordered preference for video models (fastest first)
+      const VIDEO_SPEED_ORDER = ['wan21-t2v-1.3b-q4', 'wan21-t2v-14b-q4', 'wan21-i2v-14b-480p-q4'];
+
+      const installedImageModels = IMAGE_MODEL_CATALOGUE
+        .filter(m => m.category !== 'video' && isFluxDownloaded(m))
+        .map(m => ({ modelId: m.modelId, label: m.label }));
+
+      const installedVideoModels = IMAGE_MODEL_CATALOGUE
+        .filter(m => m.category === 'video' && isFluxDownloaded(m))
+        .map(m => ({ modelId: m.modelId, label: m.label }));
+
+      // Pick fastest available model
+      const pickFastest = (installed: { modelId: string }[], order: string[]) => {
+        for (const id of order) {
+          const found = installed.find(m => m.modelId === id);
+          if (found) return found.modelId;
+        }
+        return installed[0]?.modelId ?? null;
+      };
+
+      const bestImageModel = pickFastest(installedImageModels, IMAGE_SPEED_ORDER);
+      const bestVideoModel = pickFastest(installedVideoModels, VIDEO_SPEED_ORDER);
+
+      // Build model context strings for SAYON
+      const imageModelList = installedImageModels.length > 0
+        ? installedImageModels.map(m => `  - ${m.modelId} (${m.label})`).join('\n')
+        : '  (none installed)';
+      const videoModelList = installedVideoModels.length > 0
+        ? installedVideoModels.map(m => `  - ${m.modelId} (${m.label})`).join('\n')
+        : '  (none installed)';
+
+      // ── SAYON prompt enhancement ──
+      const mediaSystemPrompt = isVideo
+        ? `You are SAYON, the video generation coordinator for PHOBOS.\n\n` +
+          `Installed video models (use the first one listed — it is fastest):\n${videoModelList}\n\n` +
+          `Compress the user's video request into a concise generation prompt.\n\n` +
+          `PROMPT rules:\n` +
+          `- Comma-separated keywords and short phrases ONLY\n` +
+          `- Describe motion, subject, scene, style\n` +
+          `- 10-20 words maximum\n` +
+          `- Example: "a cat jumping through a sunny garden, slow motion, cinematic"\n\n` +
+          `NEGATIVE PROMPT rules:\n` +
+          `- At most 1-2 UNDESIRABLE qualities specific to this scene\n` +
+          `- System already injects: blurry, low quality, watermark, deformed\n\n` +
+          `Respond with ONLY valid JSON:\n` +
+          `{"prompt": "your compressed prompt", "negativePrompt": "1-2 terms"}`
+        : `You are SAYON, the image generation coordinator for PHOBOS.\n\n` +
+          `Installed image models (use the first one listed — it is fastest):\n${imageModelList}\n\n` +
+          `Compress the user's image request into a photorealistic prompt.\n\n` +
+          `POSITIVE PROMPT rules:\n` +
+          `- Comma-separated keywords and short noun phrases ONLY — no full sentences, no verbs, no "with a"\n` +
+          `- Pattern: subject, setting, action, quality\n` +
+          `- Example input: "draw me a pink haired goth girl"\n` +
+          `- Example output: "a pink-haired goth girl, in a candlelit dungeon, sitting on a throne, leather corset, 8k, photorealistic"\n` +
+          `- 10-16 words, each phrase 1-6 words, comma-separated — 50% subject, 25% setting, 25% action, plus 2 quality tags "8k, photorealistic"\n` +
+          `- Less is okay if image calls for simplicity\n\n` +
+          `NEGATIVE PROMPT rules:\n` +
+          `- Add at most 1-2 undesired quality terms specific to THIS subject/scene only\n` +
+          `- The system already injects: blurry, low quality, watermark, deformed — do NOT repeat those\n\n` +
+          `Respond with ONLY valid JSON, no markdown, no explanation:\n` +
+          `{"prompt": "your compressed prompt", "negativePrompt": "your 1-2 context-specific terms"}`;
+
+      const mediaMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+        { role: 'system', content: mediaSystemPrompt },
         { role: 'user', content: userMessage },
       ];
 
@@ -863,65 +919,78 @@ async function handleDirectResponse(
       try {
         const completion = await coordinatorClient.chat.completions.create({
           model: COORDINATOR_MODEL,
-          messages: imageMessages,
+          messages: mediaMessages,
           max_tokens: 1024,
           temperature: 0.7,
           stream: false,
         });
 
         const raw = (completion as any).choices?.[0]?.message?.content ?? '';
-        // Strip markdown fences if present
         const cleaned = raw.replace(/```json\s*|```/g, '').trim();
         try {
           const parsed = JSON.parse(cleaned);
           if (parsed.prompt) enhancedPrompt = parsed.prompt;
           if (parsed.negativePrompt) enhancedNegative = parsed.negativePrompt;
         } catch {
-          // SAYON didn't return valid JSON — use raw as prompt
           enhancedPrompt = raw.trim() || userMessage;
         }
       } catch (err) {
-        console.warn('[handleDirect:image] SAYON prompt enhancement failed, using raw user prompt:', (err as Error).message);
+        console.warn(`[handleDirect:${isVideo ? 'video' : 'image'}] SAYON prompt enhancement failed:`, (err as Error).message);
       }
 
-      // Prepend standard negative terms
       const fullNegative = 'blurry, low quality, watermark, deformed'
         + (enhancedNegative ? ', ' + enhancedNegative : '');
 
-      // Create workflow and start generation
+      // ── Create workflow session ──
       const { createSession } = await import('../phobos/WorkflowEngine.js');
-      const { buildSdConfig } = await import('../phobos/ImageServerManager.js');
 
-      let modelId = 'chroma-q4';
-      try {
-        const cfg = await buildSdConfig({ modelId });
-        if (!cfg) {
-          // Chroma not available, try auto-detect
-          const fallbackCfg = await buildSdConfig();
-          modelId = fallbackCfg?.fluxSpec?.modelId ?? 'unknown';
-        }
-      } catch { /* use chroma-q4 */ }
+      let modelId: string;
+      if (isVideo) {
+        modelId = bestVideoModel ?? 'wan21-t2v-1.3b-q4';
+      } else {
+        modelId = bestImageModel ?? 'chroma-q4';
+        // Verify the selected image model is actually loadable, fall back if not
+        try {
+          const cfg = await buildSdConfig({ modelId });
+          if (!cfg) {
+            const fallbackCfg = await buildSdConfig();
+            modelId = fallbackCfg?.fluxSpec?.modelId ?? modelId;
+          }
+        } catch { /* keep chosen modelId */ }
+      }
+
+      const nodeType  = isVideo ? 'VideoGenerate' as const : 'Generate' as const;
+      const nodeParams = isVideo ? {
+        prompt:         enhancedPrompt,
+        negativePrompt: fullNegative,
+        steps:          20,
+        width:          832,
+        height:         480,
+        seed:           -1,
+        fps:            12,
+        videoFrames:    49,
+      } : {
+        prompt:         enhancedPrompt,
+        negativePrompt: fullNegative,
+        steps:          20,
+        width:          1024,
+        height:         1024,
+        seed:           -1,
+        sampler:        'euler',
+      };
 
       const session = createSession(
         threadId,
-        userMessage.slice(0, 40).trim() || 'Image',
+        userMessage.slice(0, 40).trim() || (isVideo ? 'Video' : 'Image'),
         modelId,
-        [{
-          type: 'Generate' as const,
-          label: 'Generate',
-          params: {
-            prompt:         enhancedPrompt,
-            negativePrompt: fullNegative,
-            steps:          20,
-            width:          1024,
-            height:         1024,
-            seed:           -1,
-            sampler:        'euler',
-          },
-        }],
+        [{ type: nodeType, label: nodeType, params: nodeParams }],
+        isVideo ? 'video' : 'image',
       );
 
-      // Tell the frontend about the new workflow
+      const modelLabel = isVideo
+        ? (installedVideoModels.find(m => m.modelId === modelId)?.label ?? modelId)
+        : (installedImageModels.find(m => m.modelId === modelId)?.label ?? modelId);
+
       sendEvent({ type: 'status', content: `Created workflow: ${session.name}` });
       sendEvent({
         type: 'image_workflow_created',
@@ -932,7 +1001,7 @@ async function handleDirectResponse(
         negativePrompt: fullNegative,
       });
 
-      // Start generation via the /run endpoint logic (fire and forget)
+      // Fire and forget generation
       try {
         const runUrl = `http://localhost:${process.env.PORT ?? '3001'}/api/threads/${threadId}/workflows/${session.workflowId}/run`;
         const fetchMod = await import('node:http');
@@ -940,24 +1009,17 @@ async function handleDirectResponse(
         const req = fetchMod.request(runUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) },
-        }, () => { /* response ignored — fire and forget */ });
+        }, () => {});
         req.write(postData);
         req.end();
       } catch (runErr) {
-        console.warn('[handleDirect:image] Failed to start generation:', (runErr as Error).message);
+        console.warn(`[handleDirect:${isVideo ? 'video' : 'image'}] Failed to start generation:`, (runErr as Error).message);
       }
 
-      // Update the pre-created message (from line ~795) instead of inserting a duplicate.
-      // The outer `msg` was created empty — fill it with SAYON's response content.
-      const responseContent = `Starting image generation with Chroma.\n\n**Prompt:** ${enhancedPrompt}\n\n**Negative:** ${fullNegative}`;
+      const mediaType = isVideo ? 'video' : 'image';
+      const responseContent = `Starting ${mediaType} generation with ${modelLabel}.\n\n**Prompt:** ${enhancedPrompt}\n\n**Negative:** ${fullNegative}`;
       await messageStore.update(msg.id, { content: responseContent });
-
-      // Emit as coordinator bubble so it appears immediately in chat
-      // (IMAGE_REQUEST doesn't stream output_tokens, so without this the
-      // text only shows after the 600ms refetch — and on 2nd+ requests the
-      // refetch can miss it if the pre-created empty row already exists).
       sendEvent({ type: 'coordinator', content: responseContent, source: 'coordinator' });
-
       sendEvent({ type: 'complete', approved: true, bestAttempt: 1 });
       return msg.id;
     }

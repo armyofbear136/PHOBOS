@@ -6,6 +6,7 @@ export type IntentType =
   | 'CODE_REQUEST'
   | 'PLAN_REQUEST'
   | 'IMAGE_REQUEST'
+  | 'VIDEO_REQUEST'
   | 'NEEDS_CLARIFICATION';
 
 export interface ClassifiedIntent {
@@ -29,15 +30,16 @@ QUESTION - conversation, explanation, analysis, help (no file changes needed)
 DOCUMENT_EDIT - update PHOBOS DIRECTIVES, project.md, or chat.md
 CODE_REQUEST - write, modify, refactor, or debug code files or workspace files
 PLAN_REQUEST - plan or discuss architecture before any file changes
-IMAGE_REQUEST - generate, draw, or create an image
+IMAGE_REQUEST - generate, draw, or create an image or picture
+VIDEO_REQUEST - generate, create, or make a video, animation, or movie clip
 NEEDS_CLARIFICATION - genuinely too ambiguous to classify
 
 Routing:
-ANSWER_DIRECTLY - SAYON handles alone (questions, conversation, image requests)
+ANSWER_DIRECTLY - SAYON handles alone (questions, conversation, image/video requests)
 NEEDS_SEREN - requires the engine (code, files, complex multi-step tasks)
 NEEDS_CLARIFICATION - needs more info
 
-Rules: write/create/build/modify files -> CODE_REQUEST + NEEDS_SEREN. Image/draw/picture -> IMAGE_REQUEST + ANSWER_DIRECTLY. Mentions SEREN by name -> NEEDS_SEREN. Simple Q&A -> ANSWER_DIRECTLY.
+Rules: write/create/build/modify files -> CODE_REQUEST + NEEDS_SEREN. Image/draw/picture -> IMAGE_REQUEST + ANSWER_DIRECTLY. Video/animation/clip/movie -> VIDEO_REQUEST + ANSWER_DIRECTLY. Mentions SEREN by name -> NEEDS_SEREN. Simple Q&A -> ANSWER_DIRECTLY.
 
 Respond ONLY with JSON on one line: {"type":"TYPE","confidence":0.0,"routing":"ROUTING"}`;
 
@@ -97,7 +99,7 @@ export class IntentClassifier {
       if (!parsed) {
         // JSON not found or malformed — keyword extraction from raw text
         const upper = raw.toUpperCase();
-        const TYPES: IntentType[] = ['CODE_REQUEST', 'IMAGE_REQUEST', 'DOCUMENT_EDIT', 'PLAN_REQUEST', 'NEEDS_CLARIFICATION', 'QUESTION'];
+        const TYPES: IntentType[] = ['CODE_REQUEST', 'VIDEO_REQUEST', 'IMAGE_REQUEST', 'DOCUMENT_EDIT', 'PLAN_REQUEST', 'NEEDS_CLARIFICATION', 'QUESTION'];
         const foundType    = TYPES.find(t => upper.includes(t));
         const foundRouting = upper.includes('NEEDS_SEREN') ? 'NEEDS_SEREN'
           : upper.includes('ANSWER_DIRECTLY') ? 'ANSWER_DIRECTLY'
@@ -139,6 +141,7 @@ export class IntentClassifier {
   private deriveRouting(type: IntentType): ClassifiedIntent['routing'] {
     switch (type) {
       case 'NEEDS_CLARIFICATION': return 'NEEDS_CLARIFICATION';
+      case 'VIDEO_REQUEST':        return 'ANSWER_DIRECTLY';
       case 'QUESTION': return 'ANSWER_DIRECTLY';
       case 'DOCUMENT_EDIT': return 'ANSWER_DIRECTLY';
       case 'CODE_REQUEST': return 'NEEDS_SEREN';

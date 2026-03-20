@@ -350,9 +350,17 @@ export class ContextIngester {
       });
       const jsonMatch = stripped.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]) as { reformulated?: string; summary?: string };
-        if (parsed.reformulated) rewrittenUserMessage = parsed.reformulated;
-        if (parsed.summary)      coordinatorSummary    = parsed.summary;
+        try {
+          const parsed = JSON.parse(jsonMatch[0]) as { reformulated?: string; summary?: string };
+          if (parsed.reformulated) rewrittenUserMessage = parsed.reformulated;
+          if (parsed.summary)      coordinatorSummary    = parsed.summary;
+        } catch {
+          // Malformed JSON — try to extract reformulated/summary from raw text
+          const refMatch   = stripped.match(/"reformulated"\s*:\s*"([^"]{10,})"/);
+          const summMatch  = stripped.match(/"summary"\s*:\s*"([^"]{5,})"/);
+          if (refMatch?.[1])  rewrittenUserMessage = refMatch[1];
+          if (summMatch?.[1]) coordinatorSummary   = summMatch[1];
+        }
       }
     } catch (err) {
       console.warn('[ContextIngester] Request rewrite failed, using original:', err);

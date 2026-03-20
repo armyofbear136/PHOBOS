@@ -281,7 +281,12 @@ function _isRocmAvailable(): boolean {
  * Output parsed: "ggml_vulkan: N = <device name> | ..."
  * Falls back to empty map if the binary is not found or the call fails.
  */
+// Cache the Vulkan enumeration result — spawning the binary is slow and the
+// Vulkan device list doesn't change between model switches within a session.
+let _vkMapCache: Map<string, number> | null = null;
+
 async function enumerateVulkanDevices(): Promise<Map<string, number>> {
+  if (_vkMapCache) return _vkMapCache;
   const map = new Map<string, number>();
   try {
     const bin = resolveLlamaServerBin();
@@ -313,6 +318,7 @@ async function enumerateVulkanDevices(): Promise<Map<string, number>> {
   } catch (err: any) {
     console.warn(`[HW] enumerateVulkanDevices failed: ${err?.message ?? err}`);
   }
+  _vkMapCache = map;
   return map;
 }
 

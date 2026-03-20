@@ -74,15 +74,41 @@ export class IntentClassifier {
       const raw = await coordinatorCall({
         systemPrompt: CLASSIFIER_SYSTEM,
         messages: [{ role: 'user', content: userContent }],
-        maxTokens: 96,
+        maxTokens: 512,
         temperature: 0.1,
         mode: 'no_think',
       });
 
       const latency = Date.now() - start;
-      const jsonMatch = raw.match(/\{[\s\S]*\}/);
-      const cleaned = jsonMatch ? jsonMatch[0] : '';
-      const parsed = JSON.parse(cleaned) as { type: IntentType; confidence: number; routing?: string };
+      // Try JSON extraction — model should return {"type":"...","confidence":...,"routing":"..."}
+      // Use non-greedy match first to avoid grabbing the entire thinking trace.
+      // Try multiple patterns in order of specificity.
+      const tryParseJSON = (text: string): { type: IntentType; confidence: number; routing?: string } | null => {
+        // Pattern 1: compact single-line JSON object with "type" key
+        const compact = text.match(/\{"type"\s*:\s*"[^"]+[^}]*\}/);
+        if (compact) { try { return JSON.parse(compact[0]); } catch { /* try next */ } }
+        // Pattern 2: any JSON object (greedy, may grab thinking trace)
+        const greedy = text.match(/\{[^]*\}/);
+        if (greedy) { try { return JSON.parse(greedy[0]); } catch { /* fall through */ } }
+        return null;
+      };
+
+      let parsed: { type: IntentType; confidence: number; routing?: string } | null = tryParseJSON(raw);
+      if (!parsed) {
+        // JSON not found or malformed — keyword extraction from raw text
+        const upper = raw.toUpperCase();
+        const TYPES: IntentType[] = ['CODE_REQUEST', 'IMAGE_REQUEST', 'DOCUMENT_EDIT', 'PLAN_REQUEST', 'NEEDS_CLARIFICATION', 'QUESTION'];
+        const foundType    = TYPES.find(t => upper.includes(t));
+        const foundRouting = upper.includes('NEEDS_SEREN') ? 'NEEDS_SEREN'
+          : upper.includes('ANSWER_DIRECTLY') ? 'ANSWER_DIRECTLY'
+          : upper.includes('NEEDS_CLARIFICATION') ? 'NEEDS_CLARIFICATION'
+          : null;
+        if (foundType) {
+          parsed = { type: foundType, confidence: 0.5, routing: foundRouting ?? undefined };
+        }
+      }
+
+      if (!parsed?.type) throw new Error(`No valid classification in: ${raw.slice(0, 80)}`);
 
       // Derive routing if the model didn't return it (backward compat)
       const routing = (['ANSWER_DIRECTLY', 'NEEDS_SEREN', 'NEEDS_CLARIFICATION'].includes(parsed.routing ?? '')

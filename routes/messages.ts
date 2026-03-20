@@ -880,7 +880,7 @@ async function handleDirectResponse(
       // ── SAYON prompt enhancement ──
       const mediaSystemPrompt = isVideo
         ? `You are SAYON, the video generation coordinator for PHOBOS.\n\n` +
-          `Installed video models (use the first one listed — it is fastest):\n${videoModelList}\n\n` +
+          `Installed video models (use the first one listed unless user specifies — it is fastest):\n${videoModelList}\n\n` +
           `Compress the user's video request into a concise generation prompt.\n\n` +
           `PROMPT rules:\n` +
           `- Comma-separated keywords and short phrases ONLY\n` +
@@ -893,7 +893,7 @@ async function handleDirectResponse(
           `Respond with ONLY valid JSON:\n` +
           `{"prompt": "your compressed prompt", "negativePrompt": "1-2 terms"}`
         : `You are SAYON, the image generation coordinator for PHOBOS.\n\n` +
-          `Installed image models (use the first one listed — it is fastest):\n${imageModelList}\n\n` +
+          `Installed image models (use the first one listed unless user specifies — it is fastest):\n${imageModelList}\n\n` +
           `Compress the user's image request into a photorealistic prompt.\n\n` +
           `POSITIVE PROMPT rules:\n` +
           `- Comma-separated keywords and short noun phrases ONLY — no full sentences, no verbs, no "with a"\n` +

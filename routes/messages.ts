@@ -886,7 +886,7 @@ async function handleDirectResponse(
           `- Comma-separated keywords and short phrases ONLY\n` +
           `- Describe motion, subject, scene, style\n` +
           `- 10-20 words maximum\n` +
-          `- Example: "a cat jumping through a sunny garden, slow motion, cinematic"\n\n` +
+          `- Example: "an emerald on a piece of bread, being spread like butter"\n\n` +
           `NEGATIVE PROMPT rules:\n` +
           `- Add at most 1-2 undesired quality terms specific to THIS subject/scene only\n` +
           `- The system already injects: blurry, low quality, watermark, deformed — do NOT repeat those\n\n` +

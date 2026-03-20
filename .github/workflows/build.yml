@@ -24,18 +24,21 @@ jobs:
             artifact:     phobos-win32-x64
             pack:         zip
             fetch-script: scripts/fetch-win32-x64.js
+            build-full-target: win32-x64
 
           - label:        darwin-arm64
             runner:       macos-14
             artifact:     phobos-darwin-arm64
             pack:         tar
             fetch-script: scripts/fetch-darwin-arm64.js
+            build-full-target: darwin-arm64
 
           - label:        linux-x64
             runner:       ubuntu-latest
             artifact:     phobos-linux-x64
             pack:         tar
             fetch-script: scripts/fetch-linux-x64.js
+            build-full-target: linux-x64
 
           - label:        linux-arm64
             runner:       ubuntu-24.04-arm
@@ -43,6 +46,7 @@ jobs:
             pack:         tar
             fetch-script: scripts/fetch-linux-arm64.js
             build-llama:  linux-arm64
+            build-full-target: linux-arm64
 
 
     steps:
@@ -79,6 +83,9 @@ jobs:
         run: node scripts/fetch-sd-cpp.js
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Note: fetch steps above are preserved for CI caching granularity.
+        # Local full builds use: npm run build:full -- <target>
+        # which runs build-full.js and calls the same fetch scripts + build.js.
 
       - name: Build llama-server from source (linux-arm64)
         if: matrix.build-llama == 'linux-arm64'

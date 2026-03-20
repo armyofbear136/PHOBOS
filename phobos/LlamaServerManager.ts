@@ -176,7 +176,8 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
         }
         const vkIdx = cfg.vulkanIndex ?? cfg.deviceIndex;
         env.GGML_VK_VISIBLE_DEVICES = String(vkIdx);
-        args.push('--device', 'Vulkan0');
+        // GGML_VK_VISIBLE_DEVICES already filters to one device (Vulkan0 in the filtered set).
+        // Do NOT pass --device Vulkan0 — newer llama.cpp builds reject device name args.
         if ((cfg as any).runnerKind === 'nvidia-legacy') {
           console.log(`[LlamaServerManager] ${role}: NVIDIA legacy GPU — attempting Vulkan${vkIdx}. If ICD not registered, will fall to CPU.`);
         }
@@ -192,7 +193,8 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
       env.CUDA_VISIBLE_DEVICES    = '-1'; // hide CUDA — no NVIDIA context overhead
       env.HIP_VISIBLE_DEVICES     = '-1'; // hide ROCm
       env.GGML_VK_VISIBLE_DEVICES = String(vkIdx);
-      args.push('--device', 'Vulkan0');
+      // GGML_VK_VISIBLE_DEVICES filters to one device — no --device arg needed.
+      // Newer llama.cpp builds reject --device VulkanN style arguments.
     }
   } else if (cfg.gpuLayers > 0) {
     // No specific device — let llama-server auto-select

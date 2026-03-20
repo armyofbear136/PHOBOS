@@ -7,6 +7,12 @@
   "scripts": {
     "dev": "tsx watch server.ts",
     "build": "node build.js",
+    "build:full": "node scripts/build-full.js",
+    "build:full:win": "node scripts/build-full.js win32-x64",
+    "build:full:mac": "node scripts/build-full.js darwin-arm64",
+    "build:full:mac-intel": "node scripts/build-full.js darwin-x64",
+    "build:full:linux": "node scripts/build-full.js linux-x64",
+    "build:full:linux-arm": "node scripts/build-full.js linux-arm64",
     "build:all": "node build.all.js",
     "start": "node dist/server.js",
     "db:setup": "node scripts/setup-db.js"

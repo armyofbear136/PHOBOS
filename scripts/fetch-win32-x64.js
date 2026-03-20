@@ -8,8 +8,11 @@ await fetchBinaries(
       platform:   'win32',
       arch:       'x64',
       variants: [
-        { suffix: 'win-vulkan-x64', ext: '.zip' },
-        { suffix: 'win-cpu-x64',    ext: '.zip' },
+        { suffix: 'win-vulkan-x64',      ext: '.zip' },
+        { suffix: 'win-vulkan-avx2-x64', ext: '.zip' },
+        { suffix: 'win-avx2-x64',        ext: '.zip' },
+        { suffix: 'win-avx-x64',         ext: '.zip' },
+        { suffix: 'win-cpu-x64',         ext: '.zip' },
       ],
       binInZip:   'llama-server.exe',
       outName:    'llama-server-win32-x64.exe',
@@ -21,6 +24,7 @@ await fetchBinaries(
     // Extracted from the llama CUDA release zip (contains only ggml-cuda.dll).
     {
       variants: [
+        { suffix: 'win-cuda-13.1-x64', ext: '.zip' },
         { suffix: 'win-cuda-12.4-x64', ext: '.zip' },
         { suffix: 'win-cuda-12.8-x64', ext: '.zip' },
         { suffix: 'win-cuda-12.2-x64', ext: '.zip' },
@@ -40,6 +44,7 @@ await fetchBinaries(
     // packages only these three runtime DLLs for redistribution.
     {
       variants: [
+        { suffix: 'win-cuda-13.1-x64', ext: '.zip', cudartZip: true },
         { suffix: 'win-cuda-12.4-x64', ext: '.zip', cudartZip: true },
         { suffix: 'win-cuda-12.8-x64', ext: '.zip', cudartZip: true },
         { suffix: 'win-cuda-12.2-x64', ext: '.zip', cudartZip: true },
@@ -51,6 +56,7 @@ await fetchBinaries(
     },
     {
       variants: [
+        { suffix: 'win-cuda-13.1-x64', ext: '.zip', cudartZip: true },
         { suffix: 'win-cuda-12.4-x64', ext: '.zip', cudartZip: true },
         { suffix: 'win-cuda-12.8-x64', ext: '.zip', cudartZip: true },
         { suffix: 'win-cuda-12.2-x64', ext: '.zip', cudartZip: true },
@@ -62,6 +68,7 @@ await fetchBinaries(
     },
     {
       variants: [
+        { suffix: 'win-cuda-13.1-x64', ext: '.zip', cudartZip: true },
         { suffix: 'win-cuda-12.4-x64', ext: '.zip', cudartZip: true },
         { suffix: 'win-cuda-12.8-x64', ext: '.zip', cudartZip: true },
         { suffix: 'win-cuda-12.2-x64', ext: '.zip', cudartZip: true },

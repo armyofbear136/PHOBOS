@@ -28,6 +28,19 @@ import zlib   from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Load .env from repo root — lets you store GITHUB_TOKEN without a system env var.
+(function loadDotEnv() {
+  try {
+    const envPath = path.resolve(__dirname, '..', '.env');
+    if (fs.existsSync(envPath)) {
+      for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+        const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$/);
+        if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim().replace(/^['"]|['"]$/g, '');
+      }
+    }
+  } catch { /* silent */ }
+})();
 export const BIN_DIR = path.resolve(__dirname, '..', 'bin');
 export const TMP_DIR = path.resolve(__dirname, '..', 'bin', '.tmp');
 
@@ -51,7 +64,7 @@ function httpsGet(url) {
       https.get({
         hostname: parsed.hostname,
         path:     parsed.pathname + parsed.search,
-        headers:  parsed.hostname === 'api.github.com' ? GH_HEADERS : {},
+        headers:  (parsed.hostname === 'api.github.com' || parsed.hostname === 'github.com') ? GH_HEADERS : {},
       }, res => {
         if ([301, 302, 307, 308].includes(res.statusCode)) follow(res.headers.location, hops + 1);
         else resolve(res);

@@ -29,8 +29,18 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root      = path.resolve(__dirname, '..');
 
-const run = (cmd, opts = {}) =>
-  execSync(cmd, { stdio: 'inherit', cwd: root, ...opts });
+const run = (cmd, opts = {}) => {
+  try {
+    execSync(cmd, { stdio: 'inherit', cwd: root, ...opts });
+  } catch (err) {
+    const msg = err?.message ?? String(err);
+    if (msg.includes('EBUSY') || msg.includes('resource busy') || msg.includes('locked')) {
+      console.error('\n❌ Build failed: dist/ is locked by a running process.');
+      console.error('   Close phobos-core (and any open terminals inside dist/) then try again.');
+    }
+    throw err;
+  }
+};
 
 // ── Detect target platform ────────────────────────────────────────────────────
 const rawArgs   = process.argv.slice(2).filter(a => !a.startsWith('-'));

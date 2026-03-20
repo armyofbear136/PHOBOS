@@ -28,6 +28,20 @@ const vArg    = args.find(a => a.startsWith('--version='))?.split('=')[1]
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// Load .env from repo root if present — lets you store GITHUB_TOKEN there without
+// setting it as a system env var. Never commit .env (it's in .gitignore).
+(function loadDotEnv() {
+  try {
+    const envPath = path.resolve(__dirname, '..', '.env');
+    if (fs.existsSync(envPath)) {
+      for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+        const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$/);
+        if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim().replace(/^['"]|['"]$/g, '');
+      }
+    }
+  } catch { /* silent — .env is optional */ }
+})();
+
 // Headers required for GitHub API — User-Agent mandatory, Accept ensures JSON not redirect page.
 const GH_HEADERS = {
   'User-Agent': 'phobos-fetch-llamacpp/1.0',
@@ -40,9 +54,11 @@ function httpsGet(url, extraHeaders = {}) {
     const follow = (target, hops = 0) => {
       if (hops > 10) { reject(new Error('Too many redirects')); return; }
       const parsed = new URL(target);
-      // Only send GitHub headers to api.github.com — not to S3/CDN redirects
-      const isGithubApi = parsed.hostname === 'api.github.com';
-      const headers = { ...(isGithubApi ? GH_HEADERS : {}), ...extraHeaders };
+      // Send GitHub headers to github.com AND api.github.com — not to S3/CDN redirects.
+      // github.com/releases/download redirects require Authorization when a token is set,
+      // otherwise the authenticated session returns 404 for assets.
+      const isGithub = parsed.hostname === 'api.github.com' || parsed.hostname === 'github.com';
+      const headers  = { ...(isGithub ? GH_HEADERS : {}), ...extraHeaders };
       const opts = {
         hostname: parsed.hostname,
         path:     parsed.pathname + parsed.search,
@@ -78,7 +94,11 @@ async function getLatestRelease() {
 
 async function downloadFile(url, dest) {
   const res = await httpsGet(url);
-  if (res.statusCode === 404) return { status: 404 };
+  if (res.statusCode === 404) {
+    // Log the actual response to help diagnose rate limiting vs genuine 404
+    process.stdout.write(`   [HTTP 404 — ${res.headers['x-ratelimit-remaining'] !== undefined ? `rate limit remaining: ${res.headers['x-ratelimit-remaining']}` : 'no rate-limit headers'}]\n`);
+    return { status: 404 };
+  }
   if (res.statusCode !== 200) throw new Error(`HTTP ${res.statusCode} for ${url}`);
   return new Promise((resolve, reject) => {
     const fd = fs.createWriteStream(dest);
@@ -487,16 +507,20 @@ const TARGETS = [
     outName:    'llama-server-darwin-x64',
     extractAll: true,
   },
-  // Windows — Vulkan build
-  // Modern llama.cpp uses dynamic backend loading: llama-server.exe needs
-  // ggml-vulkan.dll, ggml-cpu-*.dll, ggml-rpc.dll etc. in the same directory.
-  // We extract ALL files from the archive, not just the server binary.
+  // Windows — Vulkan build (includes ggml-vulkan.dll, ggml-cpu-*.dll, ggml-rpc.dll etc.)
+  // llama.cpp has changed release naming across versions:
+  //   b4xxx-b6xxx: win-vulkan-x64
+  //   b7xxx+:      win-vulkan-avx2-x64  (or win-avx2-x64 which includes vulkan backend)
+  // We try all known variants in order; extractAll=true stages all DLLs alongside the binary.
   {
     platform:   'win32',
     arch:       'x64',
     variants: [
-      { suffix: 'win-vulkan-x64', ext: '.zip' },
-      { suffix: 'win-cpu-x64',    ext: '.zip' },
+      { suffix: 'win-vulkan-x64',      ext: '.zip' },
+      { suffix: 'win-vulkan-avx2-x64', ext: '.zip' },
+      { suffix: 'win-avx2-x64',        ext: '.zip' },
+      { suffix: 'win-avx-x64',         ext: '.zip' },
+      { suffix: 'win-cpu-x64',         ext: '.zip' },
     ],
     binInZip:   'llama-server.exe',
     outName:    'llama-server-win32-x64.exe',
@@ -644,7 +668,11 @@ export async function fetchBinaries(targets, cudaTargets = []) {
   fs.mkdirSync(TMP_DIR, { recursive: true });
 
   const version = vArg ?? await getLatestRelease();
-  console.log(`\nFetching llama-server binaries from llama.cpp release: ${version}\n`);
+  console.log(`\nFetching llama-server binaries from llama.cpp release: ${version}`);
+  if (!process.env.GITHUB_TOKEN) {
+    console.log('⚠️  GITHUB_TOKEN not set — unauthenticated requests (60/hr limit). If downloads 404, set GITHUB_TOKEN and retry.');
+  }
+  console.log('');
 
   for (const target of targets) {
     const outPath = path.join(BIN_DIR, target.outName);
@@ -709,6 +737,43 @@ export async function fetchBinaries(targets, cudaTargets = []) {
 
       console.log(`   ✓  ${target.outName}`);
       downloaded = true;
+
+      // ── Vulkan DLL recovery ────────────────────────────────────────────────
+      // Some llama.cpp releases drop the Windows Vulkan build (e.g. b8457).
+      // If ggml-vulkan.dll is missing after extractAll, walk back through
+      // recent releases until we find one that has the vulkan zip.
+      if (target.platform === 'win32' && target.extractAll) {
+        const vulkanDll = path.join(BIN_DIR, 'ggml-vulkan.dll');
+        if (!fs.existsSync(vulkanDll)) {
+          console.log('   ⚠️  ggml-vulkan.dll not in this release — searching recent releases for Vulkan build...');
+          const releasesRes  = await httpsGet('https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=20');
+          const releasesBody = await new Promise((res, rej) => { let b=''; releasesRes.on('data',d=>b+=d); releasesRes.on('end',()=>res(b)); releasesRes.on('error',rej); });
+          const releases     = JSON.parse(releasesBody);
+          let found = false;
+          for (const rel of releases) {
+            const tag = rel.tag_name;
+            if (tag === version) continue; // already tried
+            const vulkanUrl  = `https://github.com/ggml-org/llama.cpp/releases/download/${tag}/llama-${tag}-bin-win-vulkan-x64.zip`;
+            const vulkanDest = path.join(TMP_DIR, `llama-${tag}-bin-win-vulkan-x64.zip`);
+            console.log(`   trying: ${vulkanUrl}`);
+            let vResult;
+            try { vResult = await downloadFile(vulkanUrl, vulkanDest); } catch { continue; }
+            if (vResult.status === 404) { console.log(`   ✗ 404`); continue; }
+            try {
+              const files = await extractAllFilesFromZip(vulkanDest, BIN_DIR);
+              const hasVulkan = files.includes('ggml-vulkan.dll');
+              fs.unlinkSync(vulkanDest);
+              if (hasVulkan) {
+                console.log(`   ✓  ggml-vulkan.dll (from ${tag})`);
+                found = true;
+                break;
+              }
+            } catch { if (fs.existsSync(vulkanDest)) fs.unlinkSync(vulkanDest); }
+          }
+          if (!found) console.warn('   ⚠️  Could not find ggml-vulkan.dll in any recent release — Vulkan backend unavailable');
+        }
+      }
+
       break;
     }
 

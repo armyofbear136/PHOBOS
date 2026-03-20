@@ -28,6 +28,8 @@ export const IMAGE_FLUX_DIR   = path.join(os.homedir(), '.phobos', 'models', 'im
 export const IMAGE_SDXL_DIR   = path.join(os.homedir(), '.phobos', 'models', 'image', 'sdxl');
 /** FLUX Kontext, FLUX.2, Z-Image, Qwen-Image diffusion model GGUFs */
 export const IMAGE_NEW_DIR    = path.join(os.homedir(), '.phobos', 'models', 'image', 'new');
+/** Wan video diffusion model GGUFs */
+export const IMAGE_WAN_DIR    = path.join(os.homedir(), '.phobos', 'models', 'image', 'wan');
 /** LLM-as-text-encoder GGUFs (Qwen3-4B, Qwen3-8B, Qwen2.5-VL-7B) — separate from LLM server models */
 export const IMAGE_LLM_DIR    = path.join(os.homedir(), '.phobos', 'models', 'image', 'llm');
 /** @deprecated use IMAGE_FLUX_DIR — kept so any external references survive */
@@ -592,14 +594,15 @@ export type ImageRunnerProfile =
   | 'flux1-kontext'
   | 'flux2'
   | 'z-image'
-  | 'qwen-image';
+  | 'qwen-image'
+  | 'wan';
 
 /**
  * Category tag for UI grouping. nsfw-realistic / nsfw-anime are gated behind
  * a content warning in the UI but use the same download infrastructure.
  * legacy = superseded models (FLUX schnell) — collapsed behind a toggle.
  */
-export type ImageModelCategory = 'realistic' | 'anime' | 'nsfw-realistic' | 'nsfw-anime' | 'legacy';
+export type ImageModelCategory = 'realistic' | 'anime' | 'nsfw-realistic' | 'nsfw-anime' | 'legacy' | 'video';
 
 export interface ImageModelSpec {
   modelId: string;
@@ -608,7 +611,7 @@ export interface ImageModelSpec {
   displayName: string;
   runnerProfile: ImageRunnerProfile;
   category: ImageModelCategory;
-  variant: 'schnell' | 'dev' | 'pony' | 'sdxl' | 'chroma' | 'kontext' | 'flux2' | 'z-image' | 'qwen-image';
+  variant: 'schnell' | 'dev' | 'pony' | 'sdxl' | 'chroma' | 'kontext' | 'flux2' | 'z-image' | 'qwen-image' | 'wan';
   quantization: 'Q4_K_M' | 'Q8_0' | 'Q4_0' | 'Q3_K_M' | 'Q5_K_S' | 'f16';
   hfRepo: string;
   hfFile: string;
@@ -782,6 +785,54 @@ export const FLUX2_4B_AUX_REQUIRED: FluxAuxFile[]     = [FLUX2_VAE, ZIMAGE_LLM_Q
 export const FLUX2_9B_AUX_REQUIRED: FluxAuxFile[]     = [FLUX2_VAE, FLUX2_LLM_9B_Q4];
 export const ZIMAGE_AUX_REQUIRED: FluxAuxFile[]       = [FLUX_VAE, ZIMAGE_LLM_Q4];
 export const QWEN_IMAGE_AUX_REQUIRED: FluxAuxFile[]   = [QWEN_IMAGE_VAE, QWEN_IMAGE_LLM_Q4];
+
+// ── Wan video aux files ───────────────────────────────────────────────────────
+// Wan uses --t5xxl for its text encoder (UMT5-XXL, different weights from FLUX T5)
+// and --vae for the Wan VAE. Both are shared across all Wan model variants.
+
+export const WAN_VAE: FluxAuxFile = {
+  id:         'wan-vae',
+  label:      'Wan 2.1 VAE',
+  hfRepo:     'Comfy-Org/Wan_2.1_ComfyUI_repackaged',
+  hfFile:     'split_files/vae/wan_2.1_vae.safetensors',
+  localFile:  'wan_2.1_vae.safetensors',
+  sizeBytes:  100_000_000,
+  cliFlag:    '--vae',
+  license:    'Apache-2.0',
+  licenseUrl: 'https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged',
+};
+
+/**
+ * UMT5-XXL text encoder for Wan. Different weights from FLUX T5 (t5-v1_1-xxl).
+ * city96 recommends Q5_K_M or larger — non-imatrix quant, lower quants degrade quality.
+ * Same --t5xxl CLI flag as FLUX, but a completely separate download.
+ */
+export const WAN_T5_Q5: FluxAuxFile = {
+  id:         'wan-umt5-q5',
+  label:      'UMT5-XXL text encoder Q5_K_M (~4.2 GB)',
+  hfRepo:     'city96/umt5-xxl-encoder-gguf',
+  hfFile:     'umt5-xxl-encoder-Q5_K_M.gguf',
+  sizeBytes:  4_150_000_000,
+  cliFlag:    '--t5xxl',
+  license:    'Apache-2.0',
+  licenseUrl: 'https://huggingface.co/city96/umt5-xxl-encoder-gguf',
+};
+
+/** CLIP Vision encoder for I2V — only needed by I2V models, not T2V. */
+export const WAN_CLIP_VISION: FluxAuxFile = {
+  id:         'wan-clip-vision',
+  label:      'CLIP Vision encoder (I2V, ~1.7 GB)',
+  hfRepo:     'Comfy-Org/Wan_2.1_ComfyUI_repackaged',
+  hfFile:     'split_files/clip_vision/clip_vision_h.safetensors',
+  localFile:  'clip_vision_h.safetensors',
+  sizeBytes:  1_730_000_000,
+  cliFlag:    '--clip_vision',
+  license:    'Apache-2.0',
+  licenseUrl: 'https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged',
+};
+
+export const WAN_AUX_REQUIRED: FluxAuxFile[]     = [WAN_VAE, WAN_T5_Q5];
+export const WAN_I2V_AUX_REQUIRED: FluxAuxFile[] = [WAN_VAE, WAN_T5_Q5, WAN_CLIP_VISION];
 
 // ── FLUX catalogue ────────────────────────────────────────────────────────────
 
@@ -1119,13 +1170,77 @@ export const QWEN_IMAGE_CATALOGUE: ImageModelSpec[] = [
   },
 ];
 
-/** Combined catalogue — all image models across all runner profiles */
+// ── Wan video catalogue ───────────────────────────────────────────────────────
+// All Apache 2.0. Shared aux: WAN_VAE + WAN_T5_Q5 (UMT5-XXL, not FLUX T5).
+// I2V models require an init image (--init-img) passed at generation time.
+// Note: 1.3B GGUF only exists as T2V (samuelchristlie repo). I2V 1.3B
+// is available via VACE architecture — deferred. I2V uses 14B 480P GGUF.
+
+export const WAN_CATALOGUE: ImageModelSpec[] = [
+  {
+    modelId:          'wan21-t2v-1.3b-q4',
+    label:            'Wan 2.1 T2V 1.3B Q4',
+    displayName:      'Wan 2.1 T2V 1.3B',
+    runnerProfile:    'wan',
+    category:         'video',
+    variant:          'wan',
+    quantization:     'Q4_K_M',
+    hfRepo:           'samuelchristlie/Wan2.1-T2V-1.3B-GGUF',
+    hfFile:           'Wan2.1-T2V-1.3B-Q4_K_M.gguf',
+    sizeBytes:        983_000_000,
+    vramRequiredGb:   8,
+    estSecondsCuda:   30,
+    estSecondsVulkan: 120,
+    estSecondsCpu:    600,
+    license:          'Apache-2.0',
+    licenseUrl:       'https://huggingface.co/samuelchristlie/Wan2.1-T2V-1.3B-GGUF',
+  },
+  {
+    modelId:          'wan21-t2v-14b-q4',
+    label:            'Wan 2.1 T2V 14B Q4',
+    displayName:      'Wan 2.1 T2V 14B',
+    runnerProfile:    'wan',
+    category:         'video',
+    variant:          'wan',
+    quantization:     'Q4_K_M',
+    hfRepo:           'city96/Wan2.1-T2V-14B-gguf',
+    hfFile:           'wan2.1-t2v-14b-Q4_K_M.gguf',
+    sizeBytes:        10_100_000_000,
+    vramRequiredGb:   16,
+    estSecondsCuda:   180,
+    estSecondsVulkan: 720,
+    estSecondsCpu:    3600,
+    license:          'Apache-2.0',
+    licenseUrl:       'https://huggingface.co/city96/Wan2.1-T2V-14B-gguf',
+  },
+  {
+    modelId:          'wan21-i2v-14b-480p-q4',
+    label:            'Wan 2.1 I2V 14B 480P Q4',
+    displayName:      'Wan 2.1 I2V 14B',
+    runnerProfile:    'wan',
+    category:         'video',
+    variant:          'wan',
+    quantization:     'Q4_K_M',
+    hfRepo:           'city96/Wan2.1-I2V-14B-480P-gguf',
+    hfFile:           'wan2.1-i2v-14b-480p-Q4_K_M.gguf',
+    sizeBytes:        10_100_000_000,
+    vramRequiredGb:   16,
+    estSecondsCuda:   180,
+    estSecondsVulkan: 720,
+    estSecondsCpu:    3600,
+    license:          'Apache-2.0',
+    licenseUrl:       'https://huggingface.co/city96/Wan2.1-I2V-14B-480P-gguf',
+  },
+];
+
+/** Combined catalogue — all image and video models across all runner profiles */
 export const IMAGE_MODEL_CATALOGUE: ImageModelSpec[] = [
   ...CHROMA_CATALOGUE,
   ...ZIMAGE_CATALOGUE,
   ...FLUX2_CATALOGUE,
   ...KONTEXT_CATALOGUE,
   ...QWEN_IMAGE_CATALOGUE,
+  ...WAN_CATALOGUE,
   ...FLUX_CATALOGUE,           // schnell entries are now category:'legacy'
   // SDXL_CATALOGUE omitted — hum-ma GGUFs incompatible with sd.cpp loader (city96 tensor naming)
 ];
@@ -1149,6 +1264,9 @@ export function getAuxFilesForModel(spec: ImageModelSpec): FluxAuxFile[] {
       return spec.modelId.includes('9b') ? FLUX2_9B_AUX_REQUIRED : FLUX2_4B_AUX_REQUIRED;
     case 'z-image':       return ZIMAGE_AUX_REQUIRED;
     case 'qwen-image':    return QWEN_IMAGE_AUX_REQUIRED;
+    case 'wan':
+      // I2V models need an extra CLIP Vision encoder; T2V models don't
+      return spec.modelId.includes('i2v') ? WAN_I2V_AUX_REQUIRED : WAN_AUX_REQUIRED;
     default:
       // flux profile: VAE + CLIP-L always, T5 selected lazily at download time
       return FLUX_AUX_REQUIRED;
@@ -1169,16 +1287,20 @@ export function getFluxSpec(modelId: string): FluxSpec | undefined {
 //          LLM GGUF encoders (--llm flag)         → IMAGE_LLM_DIR
 
 export function fluxModelPath(spec: FluxSpec): string {
-  const dir = spec.runnerProfile === 'sdxl' ? IMAGE_SDXL_DIR : IMAGE_FLUX_DIR;
-  return path.join(dir, spec.hfFile);
+  if (spec.runnerProfile === 'sdxl') return path.join(IMAGE_SDXL_DIR, spec.hfFile);
+  if (spec.runnerProfile === 'wan')  return path.join(IMAGE_WAN_DIR,  spec.hfFile);
+  return path.join(IMAGE_FLUX_DIR, spec.hfFile);
 }
 
 export function fluxAuxPath(aux: FluxAuxFile): string {
-  // LLM text encoders go in their own dir — separated from safetensors aux files
-  // to keep IMAGE_SHARED_DIR clean and avoid filename collisions.
-  const dir      = aux.cliFlag === '--llm' ? IMAGE_LLM_DIR : IMAGE_SHARED_DIR;
-  // localFile allows hfFile to contain a subdirectory path (e.g. split_files/vae/foo.safetensors)
-  // while still saving to a flat filename locally.
+  // LLM text encoders go in their own dir.
+  // Wan T5 (umt5-xxl) and CLIP Vision go in IMAGE_WAN_DIR — same filename as FLUX T5
+  // (umt5-xxl-encoder-Q5_K_M.gguf vs t5-v1_1-xxl-encoder-Q5_K_M.gguf actually differ,
+  // but keeping them separate avoids any future collision risk).
+  const dir =
+    aux.cliFlag === '--llm'          ? IMAGE_LLM_DIR  :
+    aux.id.startsWith('wan-')        ? IMAGE_WAN_DIR  :
+    IMAGE_SHARED_DIR;
   const filename = aux.localFile ?? path.basename(aux.hfFile);
   return path.join(dir, filename);
 }

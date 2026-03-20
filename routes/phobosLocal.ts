@@ -22,6 +22,7 @@ import {
   FLUX2_9B_AUX_REQUIRED,
   ZIMAGE_AUX_REQUIRED,
   QWEN_IMAGE_AUX_REQUIRED,
+  WAN_AUX_REQUIRED,
   IMAGE_MODEL_CATALOGUE,
   CHROMA_CATALOGUE,
   getImageModelSpec,
@@ -303,6 +304,8 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         auxFiles = [...ZIMAGE_AUX_REQUIRED];
       } else if (spec.runnerProfile === 'qwen-image') {
         auxFiles = [...QWEN_IMAGE_AUX_REQUIRED];
+      } else if (spec.runnerProfile === 'wan') {
+        auxFiles = [...WAN_AUX_REQUIRED];
       } else if (spec.runnerProfile === 'sdxl') {
         auxFiles = [...SDXL_AUX_REQUIRED];
       } else {
@@ -428,6 +431,8 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
           auxFiles = [...ZIMAGE_AUX_REQUIRED];
         } else if (spec.runnerProfile === 'qwen-image') {
           auxFiles = [...QWEN_IMAGE_AUX_REQUIRED];
+        } else if (spec.runnerProfile === 'wan') {
+          auxFiles = [...WAN_AUX_REQUIRED];
         } else if (spec.runnerProfile === 'sdxl') {
           auxFiles = [...SDXL_AUX_REQUIRED];
         } else {

@@ -18,12 +18,14 @@ import {
   FLUX2_9B_AUX_REQUIRED,
   ZIMAGE_AUX_REQUIRED,
   QWEN_IMAGE_AUX_REQUIRED,
+  WAN_AUX_REQUIRED,
+  WAN_I2V_AUX_REQUIRED,
   detectHardware,
   type ImageModelSpec,
   type FluxAuxFile,
 } from './PhobosLocalManager.js';
 
-export type SdModelType = 'flux' | 'chroma' | 'sdxl' | 'kontext' | 'flux2' | 'z-image' | 'qwen-image';
+export type SdModelType = 'flux' | 'chroma' | 'sdxl' | 'kontext' | 'flux2' | 'z-image' | 'qwen-image' | 'wan';
 
 export interface SdServerConfig {
   modelType:    SdModelType;
@@ -65,12 +67,20 @@ export interface GenerateImageOptions {
   // New-family runner extensions
   refImage?:        string;   // -r path (FLUX Kontext / FLUX.2 / Qwen-Image editing)
   flowShift?:       number;   // --flow-shift (Qwen-Image, default 3)
+  // Video generation (Wan)
+  videoFrames?:     number;   // --video-frames (total frames to generate)
+  fps?:             number;   // --fps (frames per second, default 12)
 }
 
 export interface GenerateImageResult {
   outputPath: string;
   seed:       number;
   elapsedMs:  number;
+}
+
+/** Returns the output file extension for a given model type. Wan outputs .avi; all others .png. */
+export function nodeOutputExt(modelType: SdModelType): '.png' | '.avi' {
+  return modelType === 'wan' ? '.avi' : '.png';
 }
 
 // ── CLI arg builders ──────────────────────────────────────────────────────────
@@ -263,7 +273,7 @@ function buildFlux2Args(
   const seed   = opts.seed   ?? 42;
 
   // FLUX.2 uses --llm instead of --clip_l + --t5xxl.
-  // --diffusion-fa omitted: produces black images on all tested hardware (same issue as Chroma + --fa).
+  // --diffusion-fa: safe for LLM-encoder architectures. Only Chroma and FLUX.1 (--fa path) are known bad.
   const args: string[] = [
     '--diffusion-model', fluxModelPath(spec),
     '--vae',             fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--vae')!),
@@ -275,6 +285,7 @@ function buildFlux2Args(
     '--seed',            String(seed),
     '--sampling-method', opts.sampler ?? 'euler',
     '--cfg-scale',       '1.0',
+    '--diffusion-fa',
     '-o',                outPath,
   ];
 
@@ -308,6 +319,7 @@ function buildZImageArgs(
     '--sampling-method', opts.sampler ?? 'euler',
     '--scheduler',       'discrete',
     '--cfg-scale',       '1.0',
+    '--diffusion-fa',
     '-o',                outPath,
   ];
 
@@ -340,11 +352,58 @@ function buildQwenImageArgs(
     '--sampling-method', opts.sampler ?? 'euler',
     '--cfg-scale',       '2.5',
     '--flow-shift',      String(flowShift),
+    '--diffusion-fa',
     '-o',                outPath,
   ];
 
   if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
   if (opts.refImage)       args.push('--ref-images', opts.refImage);
+  if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
+  return args;
+}
+
+function buildWanArgs(
+  cfg:     SdServerConfig,
+  opts:    GenerateImageOptions,
+  outPath: string,
+): string[] {
+  const spec        = cfg.fluxSpec;
+  const steps       = opts.steps       ?? cfg.steps  ?? 20;
+  const seed        = opts.seed        ?? 42;
+  const fps         = opts.fps         ?? 12;
+  // Safe defaults by model size: 1.3B → 49 frames (4s), 14B → 49 frames (4s at 12fps).
+  // User can increase via videoFrames param in the panel.
+  const videoFrames = opts.videoFrames ?? 49;
+  // Wan video output dimensions: 480P is 832×480 for widescreen, 480×832 for portrait.
+  // Default to landscape 480P — fits all VRAM budgets.
+  const width  = opts.width  ?? cfg.width  ?? 832;
+  const height = opts.height ?? cfg.height ?? 480;
+
+  const args: string[] = [
+    '-M',                'vid_gen',
+    '--diffusion-model', fluxModelPath(spec),
+    '--vae',             fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--vae')!),
+    '--t5xxl',           fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--t5xxl')!),
+    '--prompt',          opts.prompt,
+    '--steps',           String(steps),
+    '--width',           String(width),
+    '--height',          String(height),
+    '--seed',            String(seed),
+    '--sampling-method', opts.sampler ?? 'euler',
+    '--scheduler',       'simple',
+    '--cfg-scale',       '5',
+    '--fps',             String(fps),
+    '--video-frames',    String(videoFrames),
+    // --diffusion-fa required for Wan — black images without it (confirmed sd.cpp issue tracker)
+    '--diffusion-fa',
+    // Keep T5/text encoder on CPU to preserve GPU VRAM for diffusion — Wan T5 is 4+ GB
+    '--clip-on-cpu',
+    '-o',                outPath,
+  ];
+
+  if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
+  // I2V: pass the input image as --init-img (same field reused from img2img)
+  if (opts.initImg)        args.push('--init-img', opts.initImg);
   if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
   return args;
 }
@@ -361,6 +420,7 @@ function buildArgs(
     case 'flux2':      return buildFlux2Args(cfg, opts, outPath);
     case 'z-image':    return buildZImageArgs(cfg, opts, outPath);
     case 'qwen-image': return buildQwenImageArgs(cfg, opts, outPath);
+    case 'wan':        return buildWanArgs(cfg, opts, outPath);
     default:           return buildFluxArgs(cfg, opts, outPath);
   }
 }
@@ -830,6 +890,12 @@ export async function buildSdConfig(
       console.log(`[ImageServerManager] Selected model: ${spec.label} (qwen-image runner)${offloadToCpu ? ' (CPU offload)' : ''}`);
       break;
 
+    case 'wan':
+      // Wan uses fixed aux: WAE VAE + UMT5 T5 encoder (no T5 tier selection — one size fits all).
+      auxFiles = [...WAN_AUX_REQUIRED];
+      console.log(`[ImageServerManager] Selected model: ${spec.label} (wan runner)${offloadToCpu ? ' (CPU offload)' : ''}`);
+      break;
+
     default: {
       // flux and chroma — T5 tiered by VRAM, chroma skips CLIP-L.
       // Use freeVramGb (live reading after SAYON is stopped) when available —
@@ -850,6 +916,7 @@ export async function buildSdConfig(
       case 'flux2':         return 'flux2';
       case 'z-image':       return 'z-image';
       case 'qwen-image':    return 'qwen-image';
+      case 'wan':           return 'wan';
       default:              return spec.variant === 'chroma' ? 'chroma' : 'flux';
     }
   })();

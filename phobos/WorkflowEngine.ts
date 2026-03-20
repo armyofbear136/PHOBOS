@@ -5,6 +5,7 @@ import * as crypto from 'crypto';
 
 import {
   generateImage,
+  nodeOutputExt,
   type SdServerConfig,
   type GenerateImageOptions,
 } from './ImageServerManager.js';
@@ -64,11 +65,14 @@ export type WorkflowNodeType =
   | 'HandFix'
   | 'DepthControlNet'
   | 'RemoveBg'
-  | 'Upscale';
+  | 'Upscale'
+  | 'VideoGenerate'
+  | 'VideoFromImage';
 
 // sd-cli generation nodes — these require RGB input
 const SD_CLI_GENERATION_TYPES = new Set<WorkflowNodeType>([
   'Generate', 'VarySeed', 'Img2imgRefine', 'KontextEdit', 'FaceFix', 'HandFix', 'DepthControlNet', 'Upscale',
+  'VideoGenerate', 'VideoFromImage',
 ]);
 
 // ── Per-node param types ──────────────────────────────────────────────────────
@@ -139,6 +143,22 @@ export interface UpscaleParams {
   height?:          number;  // passed as --height
 }
 
+export interface VideoGenerateParams {
+  prompt:          string;
+  negativePrompt?: string;
+  steps?:          number;   // default 20
+  width?:          number;   // default 832 (landscape 480P)
+  height?:         number;   // default 480
+  seed?:           number;   // -1 = random
+  fps?:            number;   // --fps, default 12
+  videoFrames?:    number;   // --video-frames, default 49 (≈4s at 12fps)
+}
+
+export interface VideoFromImageParams extends VideoGenerateParams {
+  // initImg is wired automatically from upstream node output at execution time.
+  // Only available when using an I2V model (wan21-i2v-14b-480p).
+}
+
 export type WorkflowNodeParams =
   | SourceParams
   | GenerateParams
@@ -149,7 +169,9 @@ export type WorkflowNodeParams =
   | HandFixParams
   | DepthControlNetParams
   | RemoveBgParams
-  | UpscaleParams;
+  | UpscaleParams
+  | VideoGenerateParams
+  | VideoFromImageParams;
 
 // ── Node and session types ────────────────────────────────────────────────────
 
@@ -178,20 +200,22 @@ export interface WorkflowNode {
 }
 
 export interface WorkflowSession {
-  workflowId:  string;
-  name:        string;
-  createdAt:   string;
-  modelId:     string;               // snapshotted at creation, must still be installed to run
-  nodes:       WorkflowNode[];
-  threadId:    string;
+  workflowId:   string;
+  name:         string;
+  createdAt:    string;
+  modelId:      string;               // snapshotted at creation, must still be installed to run
+  workflowType: 'image' | 'video';   // determines output format (.png vs .avi) and panel behaviour
+  nodes:        WorkflowNode[];
+  threadId:     string;
 }
 
 export interface WorkflowIndexEntry {
-  workflowId:  string;
-  name:        string;
-  createdAt:   string;
-  modelId:     string;
-  thumbPath:   string | null;        // path to thumbnail (final.png or last node output)
+  workflowId:   string;
+  name:         string;
+  createdAt:    string;
+  modelId:      string;
+  workflowType: 'image' | 'video';
+  thumbPath:    string | null;        // path to thumbnail for image workflows; null for video
 }
 
 // ── SSE event types ───────────────────────────────────────────────────────────
@@ -306,16 +330,18 @@ export function readIndex(threadId: string): WorkflowIndexEntry[] {
 // ── Session factory ───────────────────────────────────────────────────────────
 
 export function createSession(
-  threadId:  string,
-  name:      string,
-  modelId:   string,
-  nodes:     Omit<WorkflowNode, 'id' | 'index' | 'paramSnapshot' | 'outputPath' | 'maskPath' | 'depthPath' | 'inputSnapshot' | 'executedAt' | 'stale'>[],
+  threadId:     string,
+  name:         string,
+  modelId:      string,
+  nodes:        Omit<WorkflowNode, 'id' | 'index' | 'paramSnapshot' | 'outputPath' | 'maskPath' | 'depthPath' | 'inputSnapshot' | 'executedAt' | 'stale'>[],
+  workflowType: 'image' | 'video' = 'image',
 ): WorkflowSession {
   const session: WorkflowSession = {
     workflowId: crypto.randomUUID(),
     name,
-    createdAt:  new Date().toISOString(),
+    createdAt:    new Date().toISOString(),
     modelId,
+    workflowType,
     threadId,
     nodes: nodes.map((n, index) => ({
       ...n,
@@ -332,11 +358,12 @@ export function createSession(
   };
   writeSession(session);
   updateIndex(threadId, {
-    workflowId: session.workflowId,
-    name:       session.name,
-    createdAt:  session.createdAt,
-    modelId:    session.modelId,
-    thumbPath:  null,
+    workflowId:   session.workflowId,
+    name:         session.name,
+    createdAt:    session.createdAt,
+    modelId:      session.modelId,
+    workflowType: session.workflowType,
+    thumbPath:    null,
   });
   return session;
 }
@@ -755,6 +782,48 @@ async function* executeUpscale(
   }, node.index, onAbortRegister);
 }
 
+async function* executeVideoGenerate(
+  node:      WorkflowNode,
+  outPath:   string,
+  cfg:       SdServerConfig,
+  onAbortRegister?: (killFn: () => void) => void,
+): AsyncGenerator<WorkflowEvent> {
+  const p = node.params as VideoGenerateParams;
+  yield* runGenerate(outPath, cfg, {
+    prompt:       p.prompt,
+    negativePrompt: p.negativePrompt,
+    steps:        p.steps,
+    width:        p.width,
+    height:       p.height,
+    seed:         p.seed,
+    fps:          p.fps,
+    videoFrames:  p.videoFrames,
+  }, node.index, onAbortRegister);
+}
+
+async function* executeVideoFromImage(
+  node:      WorkflowNode,
+  inputPath: string,
+  outPath:   string,
+  cfg:       SdServerConfig,
+  onAbortRegister?: (killFn: () => void) => void,
+): AsyncGenerator<WorkflowEvent> {
+  const p = node.params as VideoFromImageParams;
+  // Passes the upstream image as --init-img for I2V generation
+  yield* runGenerate(outPath, cfg, {
+    prompt:       p.prompt,
+    negativePrompt: p.negativePrompt,
+    steps:        p.steps,
+    width:        p.width,
+    height:       p.height,
+    seed:         p.seed,
+    fps:          p.fps,
+    videoFrames:  p.videoFrames,
+    initImg:      inputPath,
+  }, node.index, onAbortRegister);
+}
+
+
 // ── Main entry point ──────────────────────────────────────────────────────────
 
 /**
@@ -767,13 +836,13 @@ async function* executeUpscale(
  *   false (default) — Generate button: run dirty nodes up to target, no workspace save
  *   true            — Final button: run dirty nodes up to last node, save to workspace
  */
-// Returns the next available N for {prefix}-{N}.png in imagesDir
-function nextFinalN(imagesDir: string, prefix: string): number {
+// Returns the next available N for {prefix}-{N}{ext} in dir
+function nextFinalN(dir: string, prefix: string, ext: string = '.png'): number {
   let maxN = 0;
   try {
-    for (const f of fs.readdirSync(imagesDir)) {
-      if (f.startsWith(prefix + '-') && f.endsWith('.png')) {
-        const n = parseInt(f.slice(prefix.length + 1, -4), 10);
+    for (const f of fs.readdirSync(dir)) {
+      if (f.startsWith(prefix + '-') && f.endsWith(ext)) {
+        const n = parseInt(f.slice(prefix.length + 1, -ext.length), 10);
         if (!isNaN(n) && n > maxN) maxN = n;
       }
     }
@@ -805,20 +874,25 @@ export async function* run(
     const lastOutput = nodes[targetNodeIndex].outputPath;
     if (lastOutput && isFinal) {
       // Still need to save to workspace even though nothing was re-generated
-      const finalPath = path.join(sessionDir(threadId, session.workflowId), 'final.png');
+      const isVideo   = session.workflowType === 'video';
+      const outExt    = isVideo ? '.avi' : '.png';
+      const outSubdir = isVideo ? 'videos' : 'images';
+      const finalName = isVideo ? `final${outExt}` : 'final.png';
+      const finalPath = path.join(sessionDir(threadId, session.workflowId), finalName);
       fs.copyFileSync(lastOutput, finalPath);
-      const workspaceImagesDir = path.join(workspacesRoot(), threadId, 'images');
-      fs.mkdirSync(workspaceImagesDir, { recursive: true });
+      const workspaceOutDir = path.join(workspacesRoot(), threadId, outSubdir);
+      fs.mkdirSync(workspaceOutDir, { recursive: true });
       const sanitisedName = session.name.replace(/[^a-z0-9_\-]/gi, '_').slice(0, 64);
-      const n = nextFinalN(workspaceImagesDir, sanitisedName);
-      const workspaceOut  = path.join(workspaceImagesDir, `${sanitisedName}-${n}.png`);
+      const n = nextFinalN(workspaceOutDir, sanitisedName, outExt);
+      const workspaceOut = path.join(workspaceOutDir, `${sanitisedName}-${n}${outExt}`);
       fs.copyFileSync(lastOutput, workspaceOut);
       updateIndex(threadId, {
-        workflowId: session.workflowId,
-        name:       session.name,
-        createdAt:  session.createdAt,
-        modelId:    session.modelId,
-        thumbPath:  finalPath,
+        workflowId:   session.workflowId,
+        name:         session.name,
+        createdAt:    session.createdAt,
+        modelId:      session.modelId,
+        workflowType: session.workflowType,
+        thumbPath:    isVideo ? null : finalPath,
       });
       yield { phase: 'workflow_done', finalOutputPath: workspaceOut, isFinal: true };
     } else if (lastOutput) {
@@ -856,7 +930,8 @@ export async function* run(
     // Resolve stable output path for this node
     const nDir = nodeDir(threadId, session.workflowId, nodeIndex, node.type);
     fs.mkdirSync(nDir, { recursive: true });
-    const outPath = path.join(nDir, 'output.png');
+    const outExt  = nodeOutputExt(cfg.modelType);
+    const outPath = path.join(nDir, `output${outExt}`);
 
     yield { phase: 'node_start', nodeIndex, nodeType: node.type, totalNodes: range.length };
 
@@ -913,6 +988,15 @@ export async function* run(
         case 'Upscale':
           if (!inputPath) throw new Error('Upscale requires an upstream node with output');
           yield* executeUpscale(node, inputPath, outPath, cfg, onAbortRegister);
+          break;
+
+        case 'VideoGenerate':
+          yield* executeVideoGenerate(node, outPath, cfg, onAbortRegister);
+          break;
+
+        case 'VideoFromImage':
+          if (!inputPath) throw new Error('VideoFromImage requires an upstream node with output');
+          yield* executeVideoFromImage(node, inputPath, outPath, cfg, onAbortRegister);
           break;
 
         default:
@@ -975,24 +1059,27 @@ export async function* run(
 
   // ── Generate Final: write to workspace ───────────────────────────────────
   if (isFinal && lastOutputPath) {
-    const finalPath = path.join(sessionDir(threadId, session.workflowId), 'final.png');
+    const isVideo   = session.workflowType === 'video';
+    const outExt    = isVideo ? '.avi' : '.png';
+    const outSubdir = isVideo ? 'videos' : 'images';
+    const finalName = isVideo ? `final${outExt}` : 'final.png';
+    const finalPath = path.join(sessionDir(threadId, session.workflowId), finalName);
     fs.copyFileSync(lastOutputPath, finalPath);
 
-    // Also write to thread workspace as a named file
-    const workspaceImagesDir = path.join(workspacesRoot(), threadId, 'images');
-    fs.mkdirSync(workspaceImagesDir, { recursive: true });
+    const workspaceOutDir = path.join(workspacesRoot(), threadId, outSubdir);
+    fs.mkdirSync(workspaceOutDir, { recursive: true });
     const sanitisedName = session.name.replace(/[^a-z0-9_\-]/gi, '_').slice(0, 64);
-    const n = nextFinalN(workspaceImagesDir, sanitisedName);
-    const workspaceOut  = path.join(workspaceImagesDir, `${sanitisedName}-${n}.png`);
+    const n = nextFinalN(workspaceOutDir, sanitisedName, outExt);
+    const workspaceOut = path.join(workspaceOutDir, `${sanitisedName}-${n}${outExt}`);
     fs.copyFileSync(lastOutputPath, workspaceOut);
 
-    // Update index thumbnail
     updateIndex(threadId, {
-      workflowId: session.workflowId,
-      name:       session.name,
-      createdAt:  session.createdAt,
-      modelId:    session.modelId,
-      thumbPath:  finalPath,
+      workflowId:   session.workflowId,
+      name:         session.name,
+      createdAt:    session.createdAt,
+      modelId:      session.modelId,
+      workflowType: session.workflowType,
+      thumbPath:    isVideo ? null : finalPath,
     });
 
     yield { phase: 'workflow_done', finalOutputPath: workspaceOut, isFinal: true };
@@ -1001,11 +1088,12 @@ export async function* run(
 
   // Non-final generate: update thumbnail to last node output and signal done
   updateIndex(threadId, {
-    workflowId: session.workflowId,
-    name:       session.name,
-    createdAt:  session.createdAt,
-    modelId:    session.modelId,
-    thumbPath:  lastOutputPath,
+    workflowId:   session.workflowId,
+    name:         session.name,
+    createdAt:    session.createdAt,
+    modelId:      session.modelId,
+    workflowType: session.workflowType,
+    thumbPath:    session.workflowType === 'video' ? null : lastOutputPath,
   });
 
   yield { phase: 'workflow_done', finalOutputPath: lastOutputPath, isFinal: false };

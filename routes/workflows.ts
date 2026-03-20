@@ -54,6 +54,23 @@ function defaultGenerateNode(variant?: string) {
   };
 }
 
+function defaultVideoGenerateNode() {
+  return {
+    type: 'VideoGenerate' as const,
+    label: 'Generate',
+    params: {
+      prompt:        '',
+      negativePrompt: '',
+      steps:         20,
+      width:         832,   // landscape 480P — safe on all VRAM budgets
+      height:        480,
+      seed:          -1,
+      fps:           12,
+      videoFrames:   49,    // ~4s at 12fps — safe default for both 1.3B and 14B
+    },
+  };
+}
+
 // ── Global image generation flag ────────────────────────────────────────────
 // Set true when any workflow is actively generating (sd-cli running).
 // Read by /api/status so the frontend knows LLM servers are intentionally
@@ -119,16 +136,18 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
   // Body: { name?: string, modelId?: string }
   fastify.post<{
     Params: { threadId: string };
-    Body:   { name?: string; modelId?: string };
+    Body:   { name?: string; modelId?: string; workflowType?: 'image' | 'video' };
   }>(
     '/api/threads/:threadId/workflows',
     async (req, reply) => {
       const { threadId } = req.params;
       if (!threadId) return reply.status(400).send({ error: 'threadId required' });
 
-      // Use explicit modelId from frontend, fall back to auto-detect
+      const workflowType: 'image' | 'video' = req.body?.workflowType === 'video' ? 'video' : 'image';
+
+      // Use explicit modelId from frontend, fall back to auto-detect (image only)
       let modelId = req.body?.modelId?.trim() || '';
-      if (!modelId) {
+      if (!modelId && workflowType === 'image') {
         try {
           const cfg = await buildSdConfig();
           if (cfg) modelId = cfg.fluxSpec.modelId;
@@ -136,17 +155,17 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
       }
       if (!modelId) modelId = 'unknown';
 
-      const name = req.body?.name?.trim() || `Image ${new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
+      const defaultLabel = workflowType === 'video' ? 'Video' : 'Image';
+      const name = req.body?.name?.trim() || `${defaultLabel} ${new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
 
       const spec = modelId !== 'unknown' ? getImageModelSpec(modelId) : null;
       const variant = spec?.variant;
 
-      const session = createSession(
-        threadId,
-        name,
-        modelId,
-        [defaultGenerateNode(variant)],
-      );
+      const nodes = workflowType === 'video'
+        ? [defaultVideoGenerateNode()]
+        : [defaultGenerateNode(variant)];
+
+      const session = createSession(threadId, name, modelId, nodes, workflowType);
 
       return reply.status(201).send({ session });
     }
@@ -353,6 +372,8 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
       const { threadId, workflowId } = req.params;
       const entries = readIndex(threadId);
       const entry   = entries.find((e) => e.workflowId === workflowId);
+      // Video workflows have no thumbnail — 204 so img onError suppresses cleanly
+      if (entry?.workflowType === 'video') return reply.status(204).send();
       if (!entry?.thumbPath || !fs.existsSync(entry.thumbPath)) {
         return reply.status(404).send({ error: 'No thumbnail yet' });
       }
@@ -420,8 +441,11 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
         return reply.status(404).send({ error: 'No output yet for this node' });
       }
 
-      const imagesDir = path.join(resolveWorkspacesRoot(), threadId, 'images');
-      fs.mkdirSync(imagesDir, { recursive: true });
+      const isVideo   = session.workflowType === 'video';
+      const outExt    = isVideo ? '.avi' : '.png';
+      const outSubdir = isVideo ? 'videos' : 'images';
+      const outDir    = path.join(resolveWorkspacesRoot(), threadId, outSubdir);
+      fs.mkdirSync(outDir, { recursive: true });
 
       const safeName = session.name.replace(/[^a-z0-9_\-]/gi, '_').slice(0, 48);
       const nodeIdx  = String(node.index).padStart(2, '0');
@@ -429,16 +453,16 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
 
       let maxN = 0;
       try {
-        for (const f of fs.readdirSync(imagesDir)) {
-          if (f.startsWith(prefix) && f.endsWith('.png')) {
-            const n = parseInt(f.slice(prefix.length, -4), 10);
+        for (const f of fs.readdirSync(outDir)) {
+          if (f.startsWith(prefix) && f.endsWith(outExt)) {
+            const n = parseInt(f.slice(prefix.length, -outExt.length), 10);
             if (!isNaN(n) && n > maxN) maxN = n;
           }
         }
-      } catch { /* images dir may be empty */ }
+      } catch { /* dir may be empty */ }
 
-      const destFilename = `${prefix}${maxN + 1}.png`;
-      const destPath     = path.join(imagesDir, destFilename);
+      const destFilename = `${prefix}${maxN + 1}${outExt}`;
+      const destPath     = path.join(outDir, destFilename);
       fs.copyFileSync(node.outputPath, destPath);
 
       return reply.send({ filename: destFilename, n: maxN + 1 });

@@ -379,6 +379,10 @@ function buildWanArgs(
   const width  = opts.width  ?? cfg.width  ?? 832;
   const height = opts.height ?? cfg.height ?? 480;
 
+  // sd-cli vid_gen mode appends .avi to the output path automatically.
+  // Pass the stem (no extension) so the result is output.avi not output.avi.avi.
+  const outStem = outPath.endsWith('.avi') ? outPath.slice(0, -4) : outPath;
+
   const args: string[] = [
     '-M',                'vid_gen',
     '--diffusion-model', fluxModelPath(spec),
@@ -398,7 +402,7 @@ function buildWanArgs(
     '--diffusion-fa',
     // Keep T5/text encoder on CPU to preserve GPU VRAM for diffusion — Wan T5 is 4+ GB
     '--clip-on-cpu',
-    '-o',                outPath,
+    '-o',                outStem,
   ];
 
   if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);

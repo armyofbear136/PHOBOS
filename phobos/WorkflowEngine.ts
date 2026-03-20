@@ -437,6 +437,11 @@ function classifySdLine(line: string, nodeIndex: number): WorkflowEvent | null {
   if (line.includes('TXT2IMG') || line.includes('IMG2IMG')) {
     return { phase: 'render_phase', nodeIndex, renderPhase: 'conditioning', detail: 'Encoding prompt…' };
   }
+  // Wan video: generate_video line signals the start of video generation
+  if (line.includes('generate_video')) {
+    const m = line.match(/generate_video (\d+x\d+x\d+)/);
+    return { phase: 'render_phase', nodeIndex, renderPhase: 'conditioning', detail: m ? `Encoding prompt for ${m[1]}…` : 'Encoding prompt…' };
+  }
   if (line.includes('get_learned_condition completed')) {
     const m = line.match(/taking (\d+) ms/);
     const secs = m ? (parseInt(m[1], 10) / 1000).toFixed(1) : '?';
@@ -454,14 +459,28 @@ function classifySdLine(line: string, nodeIndex: number): WorkflowEvent | null {
     const m = line.match(/taking ([\d.]+)s/);
     return { phase: 'render_phase', nodeIndex, renderPhase: 'sampling_done', detail: m ? `Sampled in ${m[1]}s` : 'Sampling done' };
   }
+  // Wan video: latent video completed before the long per-frame VAE decode
+  if (line.includes('generating latent video completed')) {
+    const m = line.match(/taking ([\d.]+)s/);
+    return { phase: 'render_phase', nodeIndex, renderPhase: 'sampling_done', detail: m ? `Latent video in ${m[1]}s — decoding frames…` : 'Latent video done — decoding frames…' };
+  }
   if (line.includes('decoding') && line.includes('latent')) {
     return { phase: 'render_phase', nodeIndex, renderPhase: 'decoding', detail: 'Decoding latent…' };
   }
-  if (line.includes('decoded, taking') || line.includes('decode_first_stage completed')) {
+  // decode_first_stage for video covers per-frame VAE decode — can take 15–20 min on CPU
+  if (line.includes('decode_first_stage completed')) {
+    const m = line.match(/taking ([\d.]+)s/);
+    const secs = m ? parseFloat(m[1]) : 0;
+    const detail = secs > 60 ? `Frames decoded in ${(secs / 60).toFixed(1)}min` : `Frames decoded in ${secs.toFixed(1)}s`;
+    return { phase: 'render_phase', nodeIndex, renderPhase: 'decode_done', detail };
+  }
+  if (line.includes('decoded, taking')) {
     return { phase: 'render_phase', nodeIndex, renderPhase: 'decode_done', detail: 'Decoded' };
   }
-  if (line.includes('save result image')) {
-    return { phase: 'render_phase', nodeIndex, renderPhase: 'saving', detail: 'Saving image…' };
+  // Video save line differs from image save line
+  if (line.includes('save result MJPG AVI') || line.includes('save result image')) {
+    const isVideo = line.includes('AVI');
+    return { phase: 'render_phase', nodeIndex, renderPhase: 'saving', detail: isVideo ? 'Saving video…' : 'Saving image…' };
   }
   return null;
 }

@@ -8,6 +8,7 @@
     "dev": "tsx watch server.ts",
     "build": "node build.js",
     "build:full": "node scripts/build-full.js",
+    "build:full:clean": "node scripts/build-full.js --force",
     "build:full:win": "node scripts/build-full.js win32-x64",
     "build:full:mac": "node scripts/build-full.js darwin-arm64",
     "build:full:mac-intel": "node scripts/build-full.js darwin-x64",

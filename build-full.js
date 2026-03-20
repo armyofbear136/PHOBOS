@@ -8,6 +8,7 @@
 //
 // Usage:
 //   node scripts/build-full.js                    ← auto-detect current platform
+//   node scripts/build-full.js --force            ← wipe bin/ and re-download everything
 //   node scripts/build-full.js win32-x64          ← explicit target
 //   node scripts/build-full.js darwin-arm64
 //   node scripts/build-full.js linux-x64
@@ -32,7 +33,10 @@ const run = (cmd, opts = {}) =>
   execSync(cmd, { stdio: 'inherit', cwd: root, ...opts });
 
 // ── Detect target platform ────────────────────────────────────────────────────
-const arg = process.argv[2];
+const rawArgs   = process.argv.slice(2).filter(a => !a.startsWith('-'));
+const flags     = process.argv.slice(2).filter(a => a.startsWith('-'));
+const arg       = rawArgs[0];
+const forceClean = flags.includes('--force') || flags.includes('-f');
 
 function detectPlatform() {
   const p = process.platform;
@@ -70,8 +74,18 @@ if (!cfg) {
   process.exit(1);
 }
 
-console.log(`\n🚀 PHOBOS full build — target: ${target}`);
+console.log(`\n🚀 PHOBOS full build — target: ${target}${forceClean ? ' (--force: wiping bin/)' : ''}`);
 console.log('─'.repeat(52));
+
+// ── Optional: wipe bin/ so fetch scripts re-download everything ───────────────
+if (forceClean) {
+  const { default: fs } = await import('node:fs');
+  const binDir = path.join(root, 'bin');
+  if (fs.existsSync(binDir)) {
+    fs.rmSync(binDir, { recursive: true, force: true });
+    console.log('🗑️  bin/ wiped — will re-download all binaries');
+  }
+}
 
 // ── Step 1: Fetch llama.cpp ───────────────────────────────────────────────────
 if (cfg.fetchLlama) {

@@ -397,7 +397,11 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
         return reply.status(404).send({ error: 'No output yet' });
       }
       const stream = fs.createReadStream(node.outputPath);
-      return reply.type('image/png').send(stream);
+      const ext = path.extname(node.outputPath).toLowerCase();
+      const contentType = ext === '.avi' ? 'video/x-msvideo'
+        : ext === '.mp4' ? 'video/mp4'
+        : 'image/png';
+      return reply.type(contentType).send(stream);
     }
   );
 

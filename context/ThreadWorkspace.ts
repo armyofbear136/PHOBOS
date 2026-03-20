@@ -58,6 +58,7 @@ export class ThreadWorkspace {
     'node_modules', '.git', '__pycache__', '.venv', 'venv',
     'dist', 'build', '.next', 'coverage', '.DS_Store',
     'images',          // media files are tracked separately via addMediaFile
+    'videos',          // video generation output — tracked separately via workspace-media
     'workflows',       // workflow engine cache — managed by WorkflowEngine, not workspace index
     'vision-scratch',  // temporary VisionProcessor artifacts — cleaned after each workflow run
   ];

@@ -114,7 +114,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   );
 
   // GET /api/threads/:id/workspace-media
-  // Returns the list of image files in the thread's images/ subdirectory.
+  // Returns image and video files from the thread's images/ and videos/ subdirectories.
   // Used on conversation load to restore media thumbnails without replaying SSE events.
   fastify.get<{ Params: { id: string } }>(
     '/api/threads/:id/workspace-media',
@@ -124,27 +124,36 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
         ? path.resolve(process.env.WORKSPACES_ROOT)
         : path.resolve(process.cwd(), 'workspaces');
 
-      const imagesDir = path.join(workspacesRoot, threadId, 'images');
       const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+      const VIDEO_EXTS = new Set(['.avi', '.mp4', '.mov', '.webm']);
 
-      if (!fs.existsSync(imagesDir)) {
-        return reply.send({ files: [] });
-      }
+      const readDir = (subdir: string) => {
+        const dir = path.join(workspacesRoot, threadId, subdir);
+        if (!fs.existsSync(dir)) return [];
+        try {
+          return fs.readdirSync(dir, { withFileTypes: true })
+            .filter((e) => e.isFile())
+            .map((e) => {
+              const ext = path.extname(e.name).toLowerCase();
+              const mediaType = VIDEO_EXTS.has(ext) ? 'video' : 'image';
+              return {
+                filename:     e.name,
+                absolutePath: path.join(dir, e.name),
+                mediaType,
+                dir:          subdir,
+                createdAt:    fs.statSync(path.join(dir, e.name)).mtime.toISOString(),
+              };
+            })
+            .filter((e) => IMAGE_EXTS.has(path.extname(e.filename).toLowerCase()) || VIDEO_EXTS.has(path.extname(e.filename).toLowerCase()));
+        } catch { return []; }
+      };
 
-      try {
-        const entries = fs.readdirSync(imagesDir, { withFileTypes: true });
-        const files = entries
-          .filter((e) => e.isFile() && IMAGE_EXTS.has(path.extname(e.name).toLowerCase()))
-          .map((e) => ({
-            filename: e.name,
-            absolutePath: path.join(imagesDir, e.name),
-            createdAt: fs.statSync(path.join(imagesDir, e.name)).mtime.toISOString(),
-          }))
-          .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-        return reply.send({ files });
-      } catch {
-        return reply.send({ files: [] });
-      }
+      const files = [
+        ...readDir('images'),
+        ...readDir('videos'),
+      ].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+      return reply.send({ files });
     }
   );
 
@@ -228,6 +237,10 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
       '.jpeg': 'image/jpeg',
       '.webp': 'image/webp',
       '.gif':  'image/gif',
+      '.avi':  'video/x-msvideo',
+      '.mp4':  'video/mp4',
+      '.mov':  'video/quicktime',
+      '.webm': 'video/webm',
     };
     const contentType = mimeTypes[ext] ?? 'application/octet-stream';
 

@@ -1370,7 +1370,7 @@ export const FLUX2_CATALOGUE: ImageModelSpec[] = [
     hfRepo:           'unsloth/FLUX.2-klein-4B-GGUF',
     hfFile:           'flux-2-klein-4b-Q4_K_M.gguf',
     sizeBytes:        2_280_000_000,
-    vramRequiredGb:   12,
+    vramRequiredGb:   7,
     estSecondsCuda:   12,
     estSecondsVulkan: 50,
     estSecondsCpu:    480,
@@ -1525,6 +1525,27 @@ export const WAN_CATALOGUE: ImageModelSpec[] = [
     estSecondsCpu:    3600,
     license:          'Apache-2.0',
     licenseUrl:       'https://huggingface.co/city96/Wan2.1-I2V-14B-480P-gguf',
+  },
+  // ── Wan 2.2 ───────────────────────────────────────────────────────────────
+  // Same architecture and aux files as 2.1 (WAN_VAE + WAN_T5_Q5 + same runner).
+  // Improved motion quality and prompt adherence over 2.1. Apache 2.0.
+  {
+    modelId:          'wan22-t2v-14b-q4',
+    label:            'Wan 2.2 T2V 14B Q4',
+    displayName:      'Wan 2.2 T2V 14B',
+    runnerProfile:    'wan',
+    category:         'video',
+    variant:          'wan',
+    quantization:     'Q4_K_M',
+    hfRepo:           'city96/Wan2.2-T2V-14B-gguf',
+    hfFile:           'wan2.2-t2v-14b-Q4_K_M.gguf',
+    sizeBytes:        10_100_000_000,
+    vramRequiredGb:   16,
+    estSecondsCuda:   180,
+    estSecondsVulkan: 720,
+    estSecondsCpu:    3600,
+    license:          'Apache-2.0',
+    licenseUrl:       'https://huggingface.co/city96/Wan2.2-T2V-14B-gguf',
   },
 ];
 

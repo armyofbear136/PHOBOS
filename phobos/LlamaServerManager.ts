@@ -287,8 +287,9 @@ export async function stopServer(role: 'sayon' | 'seren'): Promise<void> {
     const t = setTimeout(() => { managed.process?.kill('SIGKILL'); resolve(); }, 5000);
     managed.process!.once('exit', () => { clearTimeout(t); resolve(); });
   });
-  managed.process = null;
-  managed.state   = 'stopped';
+  managed.process      = null;
+  managed.state        = 'stopped';
+  managed.config.modelId = '';  // clear so getServerStatus() returns '' when stopped
 }
 
 export function getServerStatus(): Record<'sayon' | 'seren', {
@@ -444,7 +445,7 @@ export async function reconcilePhobosServers(config: {
 
   // ── Start servers ─────────────────────────────────────────────────────────
 
-  if (config.coordinator.provider === 'phobos') {
+  if (config.coordinator.provider === 'phobos' && config.coordinator.model) {
     tasks.push(
       startServer('sayon', {
         modelId:     config.coordinator.model,
@@ -471,7 +472,7 @@ export async function reconcilePhobosServers(config: {
     tasks.push(stopServer('sayon'));
   }
 
-  if (config.engine.provider === 'phobos') {
+  if (config.engine.provider === 'phobos' && config.engine.model) {
     tasks.push(
       startServer('seren', {
         modelId:     config.engine.model,

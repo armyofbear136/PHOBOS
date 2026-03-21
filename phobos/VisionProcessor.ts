@@ -522,9 +522,11 @@ export async function removeBackground(
 ): Promise<BgRemovalResult> {
   // Load @imgly/background-removal-node via createRequire so the SEA build
   // resolves from dist/node_modules/ via Module.globalPaths.
+  // We load the pre-bundled imgly-bundle.cjs (produced by build.js) which has
+  // lodash, ndarray, and zod inlined — no external dep-resolution needed at runtime.
   const { createRequire } = require('module') as typeof import('module');
   const req = createRequire(path.join(path.dirname(process.execPath), '_entry.js'));
-  let removeBg: (input: ArrayBuffer, config?: object) => Promise<Blob>;
+  let removeBg: (input: any, config?: object) => Promise<Blob>;
   try {
     const mod = req('@imgly/background-removal-node');
     removeBg = mod.removeBackground ?? mod.default;
@@ -534,15 +536,27 @@ export async function removeBackground(
     );
   }
 
+  // publicPath tells imgly where to find resources.json and the model chunk files.
+  // Default resolves relative to node_modules at call time, which won't exist in dist/.
+  // We point it explicitly at the staged dist/node_modules/@imgly/.../dist/ directory
+  // so it reads local chunks immediately without attempting any CDN fetch.
+  const imglyDistDir = path.join(
+    path.dirname(process.execPath),
+    'node_modules', '@imgly', 'background-removal-node', 'dist'
+  );
+  const imglyPublicPath = 'file:///' + imglyDistDir.replace(/\\/g, '/') + '/';
+
   const outputPath = path.join(scratchDir(threadId), `no-bg-${Date.now()}.png`);
 
   const config: Record<string, unknown> = {
     model: opts.model ?? 'medium',
     debug: false,
-    // Force CPU execution provider to avoid GPU/CUDA provider crashes in SEA context.
-    // onnxruntime-node 1.17.x tries CUDA first by default; on some systems this
-    // crashes the process before JS error handlers can fire.
+    // Force CPU execution provider — onnxruntime 1.17.x tries CUDA first by default,
+    // which crashes the SEA process on NVIDIA hardware before JS handlers fire.
     executionProviders: ['cpu'],
+    // Point imgly at the staged dist/ directory so it reads model chunks from disk
+    // rather than attempting a CDN fetch (which doesn't work in SEA context).
+    publicPath: imglyPublicPath,
   };
   if (opts.alphaMatting) {
     config.alphaMatting = true;

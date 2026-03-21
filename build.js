@@ -277,27 +277,116 @@ export async function buildForPlatform({
     log('  ⚠️  sharp not installed — some vision features may be unavailable');
   }
 
+  // sharp runtime deps — staged at top-level dist/node_modules/ so sharp finds them
+  // via the globalPaths banner. These are all pure JS (no .node binaries).
+  // In development npm hoists them to the project root; in dist/ they must be explicit.
+  //
+  // Full transitive tree (verified against package-lock.json):
+  //   semver        → (no deps)       sharp/lib/libvips.js: semver/functions/coerce + gte
+  //   color         → color-convert, color-string
+  //   color-convert → color-name
+  //   color-string  → color-name, simple-swizzle
+  //   simple-swizzle→ is-arrayish
+  //   color-name    → (no deps)
+  //   is-arrayish   → (no deps)
+  //   detect-libc   → (no deps)       sharp/lib/platform.js + utility.js
+  //   tunnel-agent  → safe-buffer     sharp/lib/agent.js
+  //   safe-buffer   → (no deps)
+  for (const depName of [
+    'semver', 'color', 'color-convert', 'color-string', 'color-name',
+    'simple-swizzle', 'is-arrayish',
+    'detect-libc', 'tunnel-agent', 'safe-buffer',
+  ]) {
+    const depSrc = path.join(__dirname, 'node_modules', depName);
+    if (fs.existsSync(depSrc)) {
+      copyDir(depSrc, path.join(distDir, 'node_modules', depName));
+      log(`  ✅ ${depName}/ (sharp dep)`);
+    } else {
+      log(`  ⚠️  ${depName} not found — sharp may fail to load`);
+    }
+  }
+
   // @imgly/background-removal-node — optional (RemoveBg node only)
+  //
+  // WHY WE PRE-BUNDLE instead of copyDir:
+  // imgly's dist/index.cjs makes 6 external require() calls at runtime: lodash, ndarray,
+  // zod, sharp, onnxruntime-node, and fs/promises. In development npm hoists all of these
+  // to the project root node_modules/ so they resolve transparently. In the SEA dist only
+  // onnxruntime-node and sharp are staged — lodash, ndarray, and zod are never copied,
+  // causing "Cannot find module 'lodash'" on every user machine.
+  //
+  // Fix: use esbuild to pre-bundle imgly's dist/index.cjs + its pure-JS deps (lodash,
+  // ndarray, zod) into a single self-contained imgly-bundle.cjs, keeping only
+  // onnxruntime-node and sharp as externals (they have .node binaries that cannot be
+  // bundled). This eliminates all dep-resolution problems for pure-JS dependencies.
+  //
+  // The model chunk files (resources.json + hash-named binary chunks) are copied
+  // alongside the bundle so imgly finds them via the publicPath we pass at runtime.
+  // VisionProcessor.ts passes publicPath: 'file:///execdir/node_modules/@imgly/.../dist/'
+  // so imgly reads resources.json and chunk files from the staged dist location instead
+  // of trying to fetch from its CDN (which doesn't work in the SEA context).
+  //
+  // onnxruntime-node (1.17.x) is still nested inside the imgly dir and CPU-patched —
+  // the top-level staged 1.14.0 cannot be shared because imgly's ONNX models require
+  // ops only available in 1.17.x.
   const imglySrc = path.join(__dirname, 'node_modules', '@imgly', 'background-removal-node');
   if (fs.existsSync(imglySrc)) {
-    const dest = path.join(distDir, 'node_modules', '@imgly', 'background-removal-node');
-    copyDir(imglySrc, dest);
-    // Point imgly at the TOP-LEVEL staged onnxruntime-node rather than its own
-    // bundled copy. imgly's bundled .node binary may be a different napi ABI than
-    // the one the SEA executable was built with, causing "cannot run %1" on Windows.
-    // Symlinking (or copying) from the top-level staged version ensures ABI consistency.
-    // Keep imgly's own onnxruntime-node (1.17.3) — do NOT junction to top-level 1.14.0.
-    // imgly's ONNX model requires ops from 1.17.x; using 1.14.0 crashes the process.
-    // We stage imgly's own copy and patch its index.js to force CPU execution provider,
-    // preventing the CUDA init crash that happens in the SEA binary context.
-    const imglyOnnx = path.join(imglySrc, 'node_modules', 'onnxruntime-node');
-    if (fs.existsSync(imglyOnnx)) {
-      const onnxDest = path.join(dest, 'node_modules', 'onnxruntime-node');
-      copyDir(imglyOnnx, onnxDest);
-      // Patch the staged onnxruntime-node index.js to force CPU execution provider.
-      // This prevents the CUDA provider init crash in SEA context on NVIDIA hardware.
-      // Find and patch onnxruntime-node entry point to force CPU execution provider.
-      // onnxruntime 1.17.x tries CUDA first which crashes the SEA process on NVIDIA hardware.
+    const imglyDist = path.join(distDir, 'node_modules', '@imgly', 'background-removal-node', 'dist');
+    fs.mkdirSync(imglyDist, { recursive: true });
+
+    // ── Step 1: esbuild pre-bundle ──────────────────────────────────────────
+    // Bundle imgly + lodash + ndarray + zod into one CJS file.
+    // onnxruntime-node and sharp remain external (have .node binaries).
+    const imglyEntry   = path.join(imglySrc, 'dist', 'index.cjs');
+    const imglyBundle  = path.join(imglyDist, 'imgly-bundle.cjs');
+    await esbuild({
+      entryPoints: [imglyEntry],
+      bundle:      true,
+      platform:    'node',
+      target:      'node22',
+      format:      'cjs',
+      outfile:     imglyBundle,
+      external:    ['onnxruntime-node', 'sharp'],
+      // Suppress the "use of eval" warning from imgly's zod dependency — it's harmless.
+      logOverride: { 'indirect-require': 'silent' },
+    });
+    log('  🔧 Pre-bundled imgly + lodash + ndarray + zod → imgly-bundle.cjs');
+
+    // ── Step 2: copy resources.json + model chunk files ────────────────────
+    // resources.json maps model names to chunk hashes + offsets.
+    // The hash-named files ARE the model weights — they must travel with the bundle.
+    // VisionProcessor.ts sets publicPath to point here at runtime.
+    const imglySrcDist = path.join(imglySrc, 'dist');
+    for (const entry of fs.readdirSync(imglySrcDist)) {
+      if (entry === 'index.cjs' || entry === 'index.cjs.map' ||
+          entry === 'index.mjs' || entry === 'index.mjs.map') continue; // replaced by bundle
+      const src = path.join(imglySrcDist, entry);
+      if (fs.statSync(src).isFile()) {
+        fs.copyFileSync(src, path.join(imglyDist, entry));
+      }
+    }
+    log('  📦 Copied resources.json + model chunks');
+
+    // Write a minimal package.json so require('@imgly/background-removal-node')
+    // resolves to our bundle via the 'main' field.
+    const imglyPkgDir = path.join(distDir, 'node_modules', '@imgly', 'background-removal-node');
+    fs.writeFileSync(path.join(imglyPkgDir, 'package.json'), JSON.stringify({
+      name:    '@imgly/background-removal-node',
+      version: '1.4.5',
+      main:    'dist/imgly-bundle.cjs',
+    }, null, 2));
+
+    // ── Step 3: stage imgly's own onnxruntime-node (1.17.x) + CPU patch ───
+    // DO NOT share with the top-level staged onnxruntime-node (1.14.0) —
+    // imgly's ONNX models require ops added in 1.17.x; using 1.14.0 crashes.
+    const imglyOnnxSrc = path.join(imglySrc, 'node_modules', 'onnxruntime-node');
+    if (fs.existsSync(imglyOnnxSrc)) {
+      const onnxDest = path.join(imglyPkgDir, 'node_modules', 'onnxruntime-node');
+      copyDir(imglyOnnxSrc, onnxDest);
+
+      // Patch onnxruntime entry to force CPU execution provider.
+      // onnxruntime 1.17.x tries CUDA first by default; on NVIDIA hardware this
+      // crashes the SEA process before JS error handlers fire.
       const ortPkgPath = path.join(onnxDest, 'package.json');
       const ortCandidates = [
         path.join(onnxDest, 'dist', 'cjs', 'onnxruntime-node.js'),
@@ -317,7 +406,7 @@ export async function buildForPlatform({
       for (const ortIndex of ortCandidates) {
         if (!fs.existsSync(ortIndex)) continue;
         try {
-          let ortSrc = fs.readFileSync(ortIndex, 'utf8');
+          const ortSrc = fs.readFileSync(ortIndex, 'utf8');
           if (!ortSrc.includes('SEA patch') && ortSrc.includes('InferenceSession')) {
             fs.writeFileSync(ortIndex, ortSrc + cpuPatch);
             log('  🔧 Patched ' + path.basename(ortIndex) + ' (imgly onnxruntime CPU-only)');
@@ -325,8 +414,23 @@ export async function buildForPlatform({
           }
         } catch {}
       }
+    } else {
+      log('  ⚠️  imgly nested onnxruntime-node not found — RemoveBg may fail at inference');
     }
-    log(`  ✅ @imgly/background-removal-node/`);
+
+    // ── Step 4: stage onnxruntime-common 1.17.x alongside onnxruntime-node ─
+    // onnxruntime-node requires onnxruntime-common at runtime (dist/index.js line 1).
+    // In the lock file it sits at @imgly/node_modules/onnxruntime-common — a sibling
+    // to onnxruntime-node, NOT nested inside it. Node resolution walks up from
+    // onnxruntime-node and finds it at the imgly node_modules level before it could
+    // fall through to the top-level 1.14.0 (wrong version — would crash inference).
+    const imglyOrtCommonSrc = path.join(imglySrc, 'node_modules', 'onnxruntime-common');
+    if (fs.existsSync(imglyOrtCommonSrc)) {
+      copyDir(imglyOrtCommonSrc, path.join(imglyPkgDir, 'node_modules', 'onnxruntime-common'));
+      log('  ✅ onnxruntime-common 1.17.x (imgly dep, sibling to onnxruntime-node)');
+    } else {
+      log('  ⚠️  imgly nested onnxruntime-common not found — inference may fail');
+    }
   } else {
     log('  ⚠️  @imgly/background-removal-node not installed — RemoveBg node unavailable');
   }

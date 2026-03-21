@@ -210,6 +210,8 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
   // POST /api/phobos/start
   // Body: { sayon: { modelId, gpuLayers?, contextSize?, threads?, deviceIndex?, gpuBackend? },
   //         seren: { ... } }
+  // An empty modelId means "stop this server" — useful when the user selects "— stopped —"
+  // in the launch config dropdown.
   fastify.post<{
     Body: {
       sayon:   { modelId: string; gpuLayers?: number; contextSize?: number; threads?: number; deviceIndex?: number; gpuBackend?: string };
@@ -219,24 +221,28 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
     const { sayon, seren } = req.body;
 
     const [sayonErr, serenErr] = await Promise.allSettled([
-      startServer('sayon', {
-        modelId:     sayon.modelId,
-        port:        SAYON_PORT,
-        gpuLayers:   sayon.gpuLayers   ?? 0,
-        contextSize: sayon.contextSize ?? 4096,
-        threads:     sayon.threads     ?? 0,
-        deviceIndex: sayon.deviceIndex,
-        gpuBackend:  sayon.gpuBackend as 'cuda' | 'vulkan' | 'metal' | undefined,
-      }),
-      startServer('seren', {
-        modelId:     seren.modelId,
-        port:        SEREN_PORT,
-        gpuLayers:   seren.gpuLayers   ?? 99,
-        contextSize: seren.contextSize ?? 4096,
-        threads:     seren.threads     ?? 0,
-        deviceIndex: seren.deviceIndex,
-        gpuBackend:  seren.gpuBackend as 'cuda' | 'vulkan' | 'metal' | undefined,
-      }),
+      sayon.modelId
+        ? startServer('sayon', {
+            modelId:     sayon.modelId,
+            port:        SAYON_PORT,
+            gpuLayers:   sayon.gpuLayers   ?? 0,
+            contextSize: sayon.contextSize ?? 4096,
+            threads:     sayon.threads     ?? 0,
+            deviceIndex: sayon.deviceIndex,
+            gpuBackend:  sayon.gpuBackend as 'cuda' | 'vulkan' | 'metal' | undefined,
+          })
+        : stopServer('sayon'),
+      seren.modelId
+        ? startServer('seren', {
+            modelId:     seren.modelId,
+            port:        SEREN_PORT,
+            gpuLayers:   seren.gpuLayers   ?? 99,
+            contextSize: seren.contextSize ?? 4096,
+            threads:     seren.threads     ?? 0,
+            deviceIndex: seren.deviceIndex,
+            gpuBackend:  seren.gpuBackend as 'cuda' | 'vulkan' | 'metal' | undefined,
+          })
+        : stopServer('seren'),
     ]);
 
     const errors: string[] = [];

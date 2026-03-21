@@ -478,7 +478,18 @@ async function assignRunnerProfiles(gpus: GpuDevice[]): Promise<void> {
   }
 }
 
+// ── Hardware detection cache ─────────────────────────────────────────────────
+// Hardware doesn't change at runtime. Cache indefinitely after first successful detection.
+// Call invalidateHardwareCache() if a model switch needs fresh VRAM readings (future).
+let _hwCache: HardwareProfile | null = null;
+
+export function invalidateHardwareCache(): void {
+  _hwCache = null;
+}
+
 export async function detectHardware(): Promise<HardwareProfile> {
+  if (_hwCache) return _hwCache;
+
   const ramGb    = Math.floor(os.totalmem() / (1024 ** 3));
   const cpuCores = os.cpus().length;
   const cpuName  = os.cpus()[0]?.model?.trim() ?? 'Unknown CPU';
@@ -492,7 +503,8 @@ export async function detectHardware(): Promise<HardwareProfile> {
 
   const gpus = [...nvidiaGpus, ...nonNvidiaWin, ...nonNvidiaLinux, ...appleGpus];
   await assignRunnerProfiles(gpus);
-  return { ramGb, cpuCores, cpuName, gpus };
+  _hwCache = { ramGb, cpuCores, cpuName, gpus };
+  return _hwCache;
 }
 
 // ── GGUF model catalogue ──────────────────────────────────────────────────────
@@ -527,6 +539,29 @@ export interface GGUFSpec {
    * The 'llama' variant is reserved for future Llama-derived Nemotron models if any are added.
    */
   nemotronVariant?: 'llama' | 'mamba';
+  /**
+   * Active parameters in billions. For dense models = total params.
+   * For MoE/sparse: only the params active per token (e.g. 3.2 for Nemotron 30B-A3B).
+   * Drives throughput estimation — lower active params = faster tok/s on same hardware.
+   */
+  activeParamsB: number;
+  /**
+   * Quality tier 1–5 for EACH role this model can serve.
+   * SAYON quality = coordination/classification ability.
+   * SEREN quality = deep reasoning/code generation ability.
+   * Models with role='sayon' only need sayonQuality.
+   * Models with role='seren' only need serenQuality.
+   * Models with role='both' need both.
+   */
+  sayonQuality?: number;
+  serenQuality?: number;
+  /**
+   * Rough throughput bucket at Q4 quantization.
+   * 'fast'   = ≤4B active params, 30+ tok/s on mid-range GPU
+   * 'medium' = 5–12B active params, 15–30 tok/s
+   * 'slow'   = 13B+ active params, <15 tok/s
+   */
+  speedClass: 'fast' | 'medium' | 'slow';
 }
 
 export const GGUF_CATALOGUE: GGUFSpec[] = [
@@ -539,6 +574,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'Llama-3.2-3B-Instruct-Q4_K_M.gguf',
     sizeBytes: 2_020_000_000, ramRequiredGb: 3, contextWindow: 131072,
     kvCacheMbPer1kTokens: 112,  // 28 layers x 8 KV heads x 128 head_dim x 2 x F16
+    activeParamsB: 3.0, sayonQuality: 2, speedClass: 'fast',
   },
   {
     modelId: 'llama3.1-8b-q4', label: 'Llama 3.1 8B Q4', family: 'Llama 3',
@@ -547,6 +583,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf',
     sizeBytes: 4_920_000_000, ramRequiredGb: 6, contextWindow: 131072,
     kvCacheMbPer1kTokens: 128,  // 32 layers x 8 KV heads x 128 head_dim x 2 x F16
+    activeParamsB: 8.0, sayonQuality: 3, speedClass: 'medium',
   },
   // ── Gemma 3 family ───────────────────────────────────────────────────────────
   {
@@ -556,6 +593,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'google_gemma-3-1b-it-Q4_K_M.gguf',
     sizeBytes: 694_000_000, ramRequiredGb: 1, contextWindow: 32768,
     kvCacheMbPer1kTokens: 72,   // 18 layers x 4 KV heads x 256 head_dim x 2 x F16
+    activeParamsB: 1.0, sayonQuality: 1, speedClass: 'fast',
   },
   {
     modelId: 'gemma3-4b-q4', label: 'Gemma 3 4B Q4', family: 'Gemma 3',
@@ -564,6 +602,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'google_gemma-3-4b-it-Q4_K_M.gguf',
     sizeBytes: 2_530_000_000, ramRequiredGb: 3, contextWindow: 131072,
     kvCacheMbPer1kTokens: 72,   // 18 layers x 4 KV heads x 256 head_dim x 2 x F16
+    activeParamsB: 4.0, sayonQuality: 3, speedClass: 'fast',
   },
   {
     modelId: 'gemma3-12b-q4', label: 'Gemma 3 12B Q4', family: 'Gemma 3',
@@ -572,6 +611,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'google_gemma-3-12b-it-Q4_K_M.gguf',
     sizeBytes: 7_800_000_000, ramRequiredGb: 10, contextWindow: 131072,
     kvCacheMbPer1kTokens: 224,  // 28 layers x 8 KV heads x 256 head_dim x 2 x F16
+    activeParamsB: 12.0, sayonQuality: 4, speedClass: 'medium',
   },
   // ── Qwen3.5 family (March 2026) ──────────────────────────────────────────────
   // Qwen3.5 replaces Qwen3 as the primary SEREN model family.
@@ -589,6 +629,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'Qwen_Qwen3.5-4B-Q4_K_M.gguf',
     sizeBytes: 2_600_000_000, ramRequiredGb: 3, contextWindow: 262144,
     kvCacheMbPer1kTokens: 112,  // hybrid attention (GDN + sparse) — effective KV cost lower than Qwen3
+    activeParamsB: 5.0, serenQuality: 2, speedClass: 'fast',  // GDN+sparse adds ~25% overhead vs Qwen3
   },
   {
     modelId: 'qwen3.5-9b-q4', label: 'Qwen3.5 9B Q4', family: 'Qwen3.5',
@@ -597,6 +638,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'Qwen_Qwen3.5-9B-Q4_K_M.gguf',
     sizeBytes: 5_500_000_000, ramRequiredGb: 7, contextWindow: 262144,
     kvCacheMbPer1kTokens: 144,  // estimated from Qwen3-8B baseline, hybrid attention reduces effective cost
+    activeParamsB: 11.0, serenQuality: 4, speedClass: 'medium',  // GDN+sparse adds ~25% overhead vs Qwen3
   },
   {
     modelId: 'qwen3.5-27b-q4', label: 'Qwen3.5 27B Q4', family: 'Qwen3.5',
@@ -605,6 +647,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'Qwen_Qwen3.5-27B-Q4_K_M.gguf',
     sizeBytes: 16_000_000_000, ramRequiredGb: 18, contextWindow: 262144,
     kvCacheMbPer1kTokens: 224,  // dense 27B — similar KV structure to Gemma 3 12B but more layers
+    activeParamsB: 34.0, serenQuality: 5, speedClass: 'slow',  // GDN+sparse adds ~25% overhead vs dense
   },
   {
     modelId: 'qwen3.5-35b-a3b-q4', label: 'Qwen3.5 35B-A3B Q4', family: 'Qwen3.5',
@@ -613,6 +656,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'Qwen_Qwen3.5-35B-A3B-Q4_K_M.gguf',
     sizeBytes: 21_000_000_000, ramRequiredGb: 23, contextWindow: 262144,
     kvCacheMbPer1kTokens: 96,   // MoE sparse — active params ~3B, KV cost similar to 4B
+    activeParamsB: 3.8, serenQuality: 4, speedClass: 'fast',  // MoE 3B active + GDN overhead
   },
   // ── Qwen3 family (legacy) ───────────────────────────────────────────────────
   // Superseded by Qwen3.5. Still downloadable for users who prefer them.
@@ -623,6 +667,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'Qwen_Qwen3-4B-Q4_K_M.gguf',
     sizeBytes: 2_580_000_000, ramRequiredGb: 3, contextWindow: 32768,
     kvCacheMbPer1kTokens: 144,
+    activeParamsB: 4.0, serenQuality: 2, speedClass: 'fast',  // standard attention — faster than Qwen3.5 on weak hardware
   },
   {
     modelId: 'qwen3-8b-q4', label: 'Qwen3 8B Q4', family: 'Qwen3',
@@ -631,6 +676,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'Qwen_Qwen3-8B-Q4_K_M.gguf',
     sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 32768,
     kvCacheMbPer1kTokens: 144,
+    activeParamsB: 8.0, serenQuality: 3, speedClass: 'medium',
   },
   {
     modelId: 'qwen3-14b-q4', label: 'Qwen3 14B Q4', family: 'Qwen3',
@@ -639,6 +685,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'Qwen_Qwen3-14B-Q4_K_M.gguf',
     sizeBytes: 9_000_000_000, ramRequiredGb: 11, contextWindow: 32768,
     kvCacheMbPer1kTokens: 160,
+    activeParamsB: 14.0, serenQuality: 3, speedClass: 'slow',
   },
   {
     modelId: 'qwen3-30b-a3b-q4', label: 'Qwen3 30B-A3B Q4', family: 'Qwen3',
@@ -647,6 +694,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'Qwen_Qwen3-30B-A3B-Q4_K_M.gguf',
     sizeBytes: 18_400_000_000, ramRequiredGb: 20, contextWindow: 32768,
     kvCacheMbPer1kTokens: 96,
+    activeParamsB: 3.0, serenQuality: 3, speedClass: 'fast',
   },
   // ── Mistral family ───────────────────────────────────────────────────────────
   {
@@ -656,6 +704,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'Mistral-7B-Instruct-v0.3-Q4_K_M.gguf',
     sizeBytes: 4_370_000_000, ramRequiredGb: 6, contextWindow: 32768,
     kvCacheMbPer1kTokens: 128,  // 32 layers x 8 KV heads x 128 head_dim x 2 x F16
+    activeParamsB: 7.0, sayonQuality: 3, speedClass: 'medium',
   },
   {
     modelId: 'magistral-8b-q4', label: 'Magistral 24B Q4', family: 'Mistral',
@@ -664,6 +713,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'mistralai_Magistral-Small-2506-Q4_K_M.gguf',
     sizeBytes: 14_400_000_000, ramRequiredGb: 16, contextWindow: 131072,
     kvCacheMbPer1kTokens: 128,  // 32 layers x 8 KV heads x 128 head_dim x 2 x F16
+    activeParamsB: 24.0, serenQuality: 5, speedClass: 'slow',
   },
   // ── DeepSeek-R1 family ───────────────────────────────────────────────────────
   {
@@ -673,6 +723,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'deepseek-ai_DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf',
     sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 32768,
     kvCacheMbPer1kTokens: 144,  // 36 layers x 8 KV heads x 128 head_dim x 2 x F16
+    activeParamsB: 8.0, serenQuality: 3, speedClass: 'medium',
   },
   {
     modelId: 'deepseek-r1-14b-q4', label: 'DeepSeek-R1 14B Q4', family: 'DeepSeek-R1',
@@ -681,6 +732,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf',
     sizeBytes: 9_050_000_000, ramRequiredGb: 11, contextWindow: 65536,
     kvCacheMbPer1kTokens: 192,  // 48 layers x 8 KV heads x 128 head_dim x 2 x F16
+    activeParamsB: 14.0, serenQuality: 4, speedClass: 'slow',
   },
   {
     modelId: 'deepseek-r1-70b-q4', label: 'DeepSeek-R1 70B Q4', family: 'DeepSeek-R1',
@@ -689,6 +741,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf',
     sizeBytes: 42_520_000_000, ramRequiredGb: 48, contextWindow: 65536,
     kvCacheMbPer1kTokens: 320,  // 80 layers x 8 KV heads x 128 head_dim x 2 x F16
+    activeParamsB: 70.0, serenQuality: 5, speedClass: 'slow',
   },
   // ── Nemotron 3 family ────────────────────────────────────────────────────────
   // Hybrid Mamba-2/MoE-Transformer architecture from NVIDIA. Requires llama.cpp b6315+
@@ -702,6 +755,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'NVIDIA-Nemotron-3-Nano-4B-Q4_K_M.gguf',
     sizeBytes: 2_600_000_000, ramRequiredGb: 4, contextWindow: 32768,
     kvCacheMbPer1kTokens: 96,   // Mamba-2 hybrid (21 Mamba, 4 attn, 17 MLP layers) — pruned from 9B v2
+    activeParamsB: 4.0, sayonQuality: 4, speedClass: 'fast',
   },
   {
     modelId: 'nemotron3-9b-q4', label: 'Nemotron 3 Nano 9B Q4', family: 'Nemotron 3',
@@ -710,6 +764,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'nvidia_NVIDIA-Nemotron-Nano-9B-v2-Q4_K_M.gguf',
     sizeBytes: 5_700_000_000, ramRequiredGb: 6, contextWindow: 32768,
     kvCacheMbPer1kTokens: 96,   // Nemotron-H Mamba-2 hybrid (Mamba-2 + 4 attn layers) — Nemotron Nano 2
+    activeParamsB: 9.0, serenQuality: 3, speedClass: 'medium',
   },
   {
     modelId: 'nemotron3-30b-a3b-q4', label: 'Nemotron 3 Nano 30B-A3B Q4', family: 'Nemotron 3',
@@ -718,6 +773,75 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     hfFile: 'Nemotron-3-Nano-30B-A3B-UD-Q4_K_XL.gguf',
     sizeBytes: 22_800_000_000, ramRequiredGb: 25, contextWindow: 32768,
     kvCacheMbPer1kTokens: 96,   // Mamba-2/MoE hybrid — ~3B active params, reasoning via chat_template_kwargs
+    activeParamsB: 3.2, serenQuality: 4, speedClass: 'fast',
+  },
+  // ── Nanbeige4.1 family ──────────────────────────────────────────────────────
+  // Qwen2.5-based architecture (standard attention, no GDN overhead).
+  // Claims to outperform Qwen3-32B on Arena-Hard despite 3B params.
+  // Thinking via <think> tags, ChatML template. Apache 2.0.
+  // --jinja --reasoning-format deepseek works (field path, same as Qwen3).
+  {
+    modelId: 'nanbeige4.1-3b-q4', label: 'Nanbeige4.1 3B Q4', family: 'Nanbeige',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'mradermacher/Nanbeige4.1-3B-GGUF',
+    hfFile: 'Nanbeige4.1-3B.Q4_K_M.gguf',
+    sizeBytes: 2_440_000_000, ramRequiredGb: 3, contextWindow: 32768,
+    kvCacheMbPer1kTokens: 112,  // Qwen2.5 architecture — 28 layers, standard GQA
+    activeParamsB: 3.0, serenQuality: 3, speedClass: 'fast',  // standard attn = fast on weak hardware
+  },
+  // ── SmolLM3 family ──────────────────────────────────────────────────────────
+  // HuggingFace's fully open 3B model. GQA + NoPE architecture (standard attention).
+  // Trained on 11.2T tokens. Thinking via /think /no_think in system prompt.
+  // --jinja --reasoning-format deepseek works. 128K context with YaRN. Apache 2.0.
+  // Tool calling supported natively.
+  {
+    modelId: 'smollm3-3b-q4', label: 'SmolLM3 3B Q4', family: 'SmolLM3',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'bartowski/HuggingFaceTB_SmolLM3-3B-GGUF',
+    hfFile: 'HuggingFaceTB_SmolLM3-3B-Q4_K_M.gguf',
+    sizeBytes: 1_920_000_000, ramRequiredGb: 3, contextWindow: 131072,
+    kvCacheMbPer1kTokens: 96,   // GQA + NoPE — lightweight KV cache
+    activeParamsB: 3.0, serenQuality: 3, speedClass: 'fast',  // standard attn, competitive with 4B models
+  },
+  // ── Phi-4 mini reasoning family ─────────────────────────────────────────────
+  // Microsoft's reasoning distill from DeepSeek-R1. 3.8B params.
+  // Uses phi4 template. Always produces <think> tags (R1 distill).
+  // jinjaTemplate: true so LlamaServerManager passes --jinja.
+  // ThinkingTokenRouter uses tag path — reasoning_format:none per-request keeps
+  // <think> tags in delta.content where our tag parser extracts them.
+  {
+    modelId: 'phi4-mini-reasoning-q4', label: 'Phi-4 Mini Reasoning Q4', family: 'Phi-4',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'bartowski/microsoft_Phi-4-mini-reasoning-GGUF',
+    hfFile: 'microsoft_Phi-4-mini-reasoning-Q4_K_M.gguf',
+    sizeBytes: 2_390_000_000, ramRequiredGb: 3, contextWindow: 131072,
+    kvCacheMbPer1kTokens: 96,   // Phi-4 architecture — efficient KV heads
+    activeParamsB: 3.8, serenQuality: 3, speedClass: 'fast',  // R1 distill quality at 3.8B
+  },
+  // ── Ministral 3 Reasoning family ─────────────────────────────────────────────
+  // Mistral's smallest reasoning model. 3B params. Trained for chain-of-thought.
+  // Mistral v7 template. Produces <think> tags when reasoning. Apache 2.0.
+  // Smallest RAM footprint in catalogue — fits in 2 GB GPU.
+  {
+    modelId: 'ministral-3b-q4', label: 'Ministral 3B Reasoning Q4', family: 'Ministral',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'bartowski/mistralai_Ministral-3-3B-Reasoning-2512-GGUF',
+    hfFile: 'mistralai_Ministral-3-3B-Reasoning-2512-Q4_K_M.gguf',
+    sizeBytes: 1_830_000_000, ramRequiredGb: 2, contextWindow: 131072,
+    kvCacheMbPer1kTokens: 64,   // Mistral GQA — very efficient KV heads
+    activeParamsB: 3.0, serenQuality: 2, speedClass: 'fast',  // smallest viable SEREN
+  },
+  // ── Qwen3.5 sub-4B family ──────────────────────────────────────────────────
+  // Qwen3.5 2B — ultra-constrained SEREN option. Thinking can be unstable.
+  // GDN + sparse attention overhead applies (inflated activeParamsB).
+  {
+    modelId: 'qwen3.5-2b-q4', label: 'Qwen3.5 2B Q4', family: 'Qwen3.5',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'bartowski/Qwen_Qwen3.5-2B-GGUF',
+    hfFile: 'Qwen_Qwen3.5-2B-Q4_K_M.gguf',
+    sizeBytes: 1_520_000_000, ramRequiredGb: 2, contextWindow: 262144,
+    kvCacheMbPer1kTokens: 80,   // GDN hybrid — lower layers than 4B variant
+    activeParamsB: 2.5, serenQuality: 1, speedClass: 'fast',  // GDN overhead + unstable thinking at 2B
   },
 ];
 
@@ -1616,7 +1740,7 @@ export function cancelLlmDownload(...modelIds: string[]): void {
   }
 }
 
-// ── Model recommendation ──────────────────────────────────────────────────────
+// ── Model recommendation — scoring-based ─────────────────────────────────────
 
 export interface ModelRecommendation {
   sayon: GGUFSpec;
@@ -1625,45 +1749,163 @@ export interface ModelRecommendation {
   serenDevice: 'cpu' | number;
   sayonGpuLayers: number;
   serenGpuLayers: number;
+  /** Recommended image model (null = no image models in catalogue fit) */
+  imageModel: ImageModelSpec | null;
+  /** Recommended video model (null = no video models fit) */
+  videoModel: ImageModelSpec | null;
+  /** True if ESRGAN x4plus is recommended (always true when any image model is recommended) */
+  upscaleRecommended: boolean;
   reasoning: string;
+  /** Scoring details for debugging / frontend display */
+  sayonScore: number;
+  serenScore: number;
 }
 
-const SAYON_CANDIDATES = [
-  // Nemotron 3 preferred — best reasoning quality for coordinator role
-  'nemotron3-4b-q4',
-  // Llama fallbacks
-  'llama3.1-8b-q4', 'gemma3-12b-q4', 'gemma3-4b-q4',
-  'llama3.2-3b-q4', 'gemma3-1b-q4',
-];
+/**
+ * Estimated tok/s for a model on a given compute class.
+ * Derived from activeParamsB — smaller active params = faster inference.
+ *
+ * Compute classes:
+ *   'cuda-high'  — CUDA discrete ≥8 GB (RTX 3080+)
+ *   'cuda-low'   — CUDA discrete <8 GB (GTX 1070, Quadro M2000)
+ *   'vulkan'     — AMD/Intel Vulkan discrete
+ *   'metal'      — Apple Silicon Metal
+ *   'cpu'        — CPU-only
+ *
+ * The constants are rough empirical baselines from llama-server benchmarks.
+ * The formula: baseTokS / (activeParamsB / baseParamsB)
+ * where baseTokS is the measured tok/s for a 4B dense model on that compute class.
+ */
+type ComputeClass = 'cuda-high' | 'cuda-low' | 'vulkan' | 'metal' | 'cpu';
 
-const SEREN_CANDIDATES = [
-  // Nemotron 3 preferred — strong reasoning at all sizes
-  'nemotron3-30b-a3b-q4',
-  'nemotron3-9b-q4',
-  // Qwen3.5 — excellent reasoning, wide size range
-  'qwen3.5-35b-a3b-q4',
-  'qwen3.5-27b-q4',
-  'qwen3.5-9b-q4',
-  'qwen3.5-4b-q4',
-  // DeepSeek-R1 — strong on reasoning tasks
-  'deepseek-r1-70b-q4',
-  'deepseek-r1-14b-q4',
-  'deepseek-r1-8b-q4',
-  // Mistral
-  'magistral-8b-q4',
-  // Legacy fallbacks
-  'qwen3-30b-a3b-q4',
-  'qwen3-14b-q4',
-  'qwen3-8b-q4',
-  'qwen3-4b-q4',
-];
+const BASE_TOKS: Record<ComputeClass, number> = {
+  'cuda-high': 60,   // ~60 tok/s for 4B Q4 on RTX 3080
+  'cuda-low':  35,   // ~35 tok/s for 4B Q4 on GTX 1070
+  'vulkan':    25,   // ~25 tok/s for 4B Q4 on AMD discrete Vulkan
+  'metal':     45,   // ~45 tok/s for 4B Q4 on M4 Pro Metal
+  'cpu':       8,    // ~8 tok/s for 4B Q4 on CPU (16-core)
+};
+const BASE_PARAMS_B = 4.0;
 
-function pickBestFit(candidates: string[], budgetGb: number): GGUFSpec {
-  for (const id of candidates) {
-    const spec = GGUF_CATALOGUE.find(s => s.modelId === id);
-    if (spec && spec.ramRequiredGb <= budgetGb) return spec;
+function estimateTokS(activeParamsB: number, compute: ComputeClass): number {
+  return BASE_TOKS[compute] * (BASE_PARAMS_B / activeParamsB);
+}
+
+function computeClassFromDevice(gpu: GpuDevice | null, isGpu: boolean): ComputeClass {
+  if (!isGpu || !gpu) return 'cpu';
+  if (gpu.backend === 'metal') return 'metal';
+  if (gpu.backend === 'cuda') return gpu.vramGb >= 8 ? 'cuda-high' : 'cuda-low';
+  return 'vulkan';
+}
+
+// Target tok/s thresholds — models scoring below these are penalized.
+// SAYON needs to be snappy (coordinator); SEREN can be slower (deep reasoning).
+const SAYON_TARGET_TOKS = 15;
+const SEREN_TARGET_TOKS = 8;
+
+/**
+ * Score a model for a specific role on a specific device.
+ *
+ *   score = qualityTier × min(1.0, estimatedTokS / targetTokS)
+ *
+ * Higher score = better fit. A quality-5 model that can't meet the speed target
+ * gets penalized proportionally. A quality-3 model that exceeds the target
+ * doesn't get bonus — quality is the ceiling once speed is met.
+ */
+function scoreLlm(
+  spec: GGUFSpec,
+  role: 'sayon' | 'seren',
+  compute: ComputeClass,
+): number {
+  const quality = role === 'sayon' ? (spec.sayonQuality ?? 0) : (spec.serenQuality ?? 0);
+  if (quality === 0) return 0; // model has no quality rating for this role
+
+  const targetTokS = role === 'sayon' ? SAYON_TARGET_TOKS : SEREN_TARGET_TOKS;
+  const estTokS    = estimateTokS(spec.activeParamsB, compute);
+  const speedFactor = Math.min(1.0, estTokS / targetTokS);
+
+  return quality * speedFactor;
+}
+
+/**
+ * Pick the best model for a role from a candidate pool within a memory budget.
+ * Returns null if no candidate fits.
+ */
+function pickBestScored(
+  candidates: GGUFSpec[],
+  role: 'sayon' | 'seren',
+  budgetGb: number,
+  compute: ComputeClass,
+): { spec: GGUFSpec; score: number } | null {
+  let best: { spec: GGUFSpec; score: number } | null = null;
+  for (let i = 0; i < candidates.length; i++) {
+    const spec = candidates[i];
+    if (spec.ramRequiredGb > budgetGb) continue;
+    // SEREN must support thinking tokens
+    if (role === 'seren' && !spec.thinkingTokens) continue;
+    const score = scoreLlm(spec, role, compute);
+    if (score === 0) continue;
+    if (!best || score > best.score ||
+        (score === best.score && spec.sizeBytes > best.spec.sizeBytes)) {
+      // Tiebreaker: equal score → prefer larger model (more total knowledge).
+      // Nemotron 30B-A3B (22.8 GB, 3.2B active) beats Qwen3.5 9B (5.5 GB, 9B active)
+      // when both score identically — the 30B model has far more knowledge despite
+      // similar throughput from its MoE architecture.
+      best = { spec, score };
+    }
   }
-  return GGUF_CATALOGUE.find(s => s.modelId === candidates[candidates.length - 1])!;
+  return best;
+}
+
+/**
+ * Recommend the best image model for the hardware.
+ * Prefers fastest generation (lowest estSecondsCuda) among downloaded models.
+ * If no models are downloaded, recommends the best from the full catalogue for auto-config.
+ */
+function recommendOptionalImageModel(
+  vramGb: number,
+  isUnifiedMemory: boolean,
+  downloadedOnly: boolean,
+): ImageModelSpec | null {
+  // Speed-ordered preference: z-image-turbo → flux2-klein-4b → chroma → z-image-base → others
+  // Exclude video, legacy, and kontext (editing-only) from primary recommendation
+  const pool = IMAGE_MODEL_CATALOGUE.filter(m =>
+    m.category !== 'video' && m.category !== 'legacy' && m.category !== 'kontext'
+  );
+  const candidates = downloadedOnly ? pool.filter(isImageModelDownloaded) : pool;
+  if (candidates.length === 0) return null;
+
+  // Filter by VRAM (unified memory can offload, so no VRAM gate)
+  const fitting = isUnifiedMemory
+    ? candidates
+    : candidates.filter(m => m.vramRequiredGb <= vramGb);
+  if (fitting.length === 0) return null;
+
+  // Sort by estimated CUDA speed (fastest first), then by VRAM requirement (smallest first)
+  fitting.sort((a, b) => a.estSecondsCuda - b.estSecondsCuda || a.vramRequiredGb - b.vramRequiredGb);
+  return fitting[0];
+}
+
+/**
+ * Recommend the best video model for the hardware.
+ */
+function recommendOptionalVideoModel(
+  vramGb: number,
+  isUnifiedMemory: boolean,
+  downloadedOnly: boolean,
+): ImageModelSpec | null {
+  const pool = IMAGE_MODEL_CATALOGUE.filter(m => m.category === 'video');
+  const candidates = downloadedOnly ? pool.filter(isImageModelDownloaded) : pool;
+  if (candidates.length === 0) return null;
+
+  const fitting = isUnifiedMemory
+    ? candidates
+    : candidates.filter(m => m.vramRequiredGb <= vramGb);
+  if (fitting.length === 0) return null;
+
+  // Prefer smallest (fastest) video model
+  fitting.sort((a, b) => a.estSecondsCuda - b.estSecondsCuda || a.vramRequiredGb - b.vramRequiredGb);
+  return fitting[0];
 }
 
 export function buildRecommendation(hw: HardwareProfile): ModelRecommendation {
@@ -1680,57 +1922,102 @@ export function buildRecommendation(hw: HardwareProfile): ModelRecommendation {
   let serenDevice: 'cpu' | number;
   let sayonGpuLayers: number;
   let serenGpuLayers: number;
+  let sayonScore = 0;
+  let serenScore = 0;
+
+  // Determine VRAM available for image generation (max GPU, after LLM servers stop)
+  let imageVramGb = bestGpu?.vramGb ?? 0;
 
   if (hasUnifiedMemory && bestGpu) {
-    const pool          = Math.floor(hw.ramGb * HEADROOM);
+    // ── Unified memory: both models share one pool ──
+    const pool        = Math.floor(hw.ramGb * HEADROOM);
     const serenBudget = Math.floor(pool * 0.75);
-    const sayonBudget   = Math.floor(pool * 0.35);
-    seren          = pickBestFit(SEREN_CANDIDATES, serenBudget);
-    sayon            = pickBestFit(SAYON_CANDIDATES,   sayonBudget);
+    const sayonBudget = Math.floor(pool * 0.35);
+    const compute     = computeClassFromDevice(bestGpu, true);
+
+    const serenPick = pickBestScored(GGUF_CATALOGUE, 'seren', serenBudget, compute);
+    const sayonPick = pickBestScored(GGUF_CATALOGUE, 'sayon', sayonBudget, compute);
+
+    seren          = serenPick?.spec ?? GGUF_CATALOGUE.find(s => s.thinkingTokens)!;
+    sayon          = sayonPick?.spec ?? GGUF_CATALOGUE[0];
+    serenScore     = serenPick?.score ?? 0;
+    sayonScore     = sayonPick?.score ?? 0;
     serenDevice    = bestGpu.index;
-    sayonDevice      = bestGpu.index;
+    sayonDevice    = bestGpu.index;
     serenGpuLayers = 99;
-    sayonGpuLayers   = 99;
+    sayonGpuLayers = 99;
+    imageVramGb    = hw.ramGb;  // unified memory: full RAM pool for image gen
 
   } else if (bestGpu && bestGpu.vramGb >= 3) {
-    // Use higher headroom for large discrete GPUs — 8 GB+ cards can safely use 90%
+    // ── Discrete GPU with ≥3 GB ──
     const discreteHeadroom = (bestGpu.vramGb >= 8 && !bestGpu.unifiedMemory) ? 0.90 : HEADROOM;
     const serenBudget = Math.floor(bestGpu.vramGb * discreteHeadroom);
-    seren          = pickBestFit(SEREN_CANDIDATES, serenBudget);
+    const serenCompute = computeClassFromDevice(bestGpu, true);
+
+    const serenPick = pickBestScored(GGUF_CATALOGUE, 'seren', serenBudget, serenCompute);
+    seren          = serenPick?.spec ?? GGUF_CATALOGUE.find(s => s.thinkingTokens)!;
+    serenScore     = serenPick?.score ?? 0;
     serenDevice    = bestGpu.index;
     serenGpuLayers = 99;
 
     if (secondGpu && secondGpu.vramGb >= 2 && !secondGpu.unifiedMemory) {
-      sayon          = pickBestFit(SAYON_CANDIDATES, Math.floor(secondGpu.vramGb * HEADROOM));
+      const sayonCompute = computeClassFromDevice(secondGpu, true);
+      const sayonPick = pickBestScored(GGUF_CATALOGUE, 'sayon', Math.floor(secondGpu.vramGb * HEADROOM), sayonCompute);
+      sayon          = sayonPick?.spec ?? GGUF_CATALOGUE[0];
+      sayonScore     = sayonPick?.score ?? 0;
       sayonDevice    = secondGpu.index;
       sayonGpuLayers = 99;
     } else {
-      sayon          = pickBestFit(SAYON_CANDIDATES, Math.floor(hw.ramGb * HEADROOM));
+      const sayonPick = pickBestScored(GGUF_CATALOGUE, 'sayon', Math.floor(hw.ramGb * HEADROOM), 'cpu');
+      sayon          = sayonPick?.spec ?? GGUF_CATALOGUE[0];
+      sayonScore     = sayonPick?.score ?? 0;
       sayonDevice    = 'cpu';
       sayonGpuLayers = 0;
     }
 
   } else if (bestGpu && bestGpu.vramGb === 2) {
-    // 2 GB GPU edge case: too small for any SEREN model (smallest needs 3 GB).
-    // But gemma3-1b-q4 (1 GB) runs well on 2 GB. Put SAYON on GPU, SEREN on CPU.
-    sayon          = pickBestFit(SAYON_CANDIDATES, Math.floor(bestGpu.vramGb * HEADROOM));
+    // ── 2 GB edge case: SAYON on GPU, SEREN on CPU ──
+    const sayonCompute = computeClassFromDevice(bestGpu, true);
+    const sayonPick = pickBestScored(GGUF_CATALOGUE, 'sayon', Math.floor(bestGpu.vramGb * HEADROOM), sayonCompute);
+    sayon          = sayonPick?.spec ?? GGUF_CATALOGUE[0];
+    sayonScore     = sayonPick?.score ?? 0;
     sayonDevice    = bestGpu.index;
     sayonGpuLayers = 99;
-    seren          = pickBestFit(SEREN_CANDIDATES, Math.floor(hw.ramGb * HEADROOM));
+
+    const serenPick = pickBestScored(GGUF_CATALOGUE, 'seren', Math.floor(hw.ramGb * HEADROOM), 'cpu');
+    seren          = serenPick?.spec ?? GGUF_CATALOGUE.find(s => s.thinkingTokens)!;
+    serenScore     = serenPick?.score ?? 0;
     serenDevice    = 'cpu';
     serenGpuLayers = 0;
 
   } else {
-    const pool       = Math.floor(hw.ramGb * HEADROOM);
-    seren          = pickBestFit(SEREN_CANDIDATES, Math.floor(pool * 0.60));
-    sayon            = pickBestFit(SAYON_CANDIDATES,   Math.floor(pool * 0.40));
+    // ── CPU-only ──
+    // Pick SEREN first (higher priority), then give SAYON the remainder.
+    // This avoids the fixed 60/40 split which can exclude viable SAYON models
+    // on tight systems (e.g. 8 GB RAM: Qwen3 4B=3GB + Llama 3.2 3B=3GB = 6GB fits).
+    const pool = Math.floor(hw.ramGb * HEADROOM);
+    const serenPick = pickBestScored(GGUF_CATALOGUE, 'seren', Math.floor(pool * 0.70), 'cpu');
+    seren          = serenPick?.spec ?? GGUF_CATALOGUE.find(s => s.thinkingTokens)!;
+    serenScore     = serenPick?.score ?? 0;
+    const serenCost = seren.ramRequiredGb;
+    const sayonBudget = pool - serenCost;  // remainder after SEREN
+    const sayonPick = pickBestScored(GGUF_CATALOGUE, 'sayon', sayonBudget, 'cpu');
+    sayon          = sayonPick?.spec ?? GGUF_CATALOGUE[0];
+    sayonScore     = sayonPick?.score ?? 0;
     serenDevice    = 'cpu';
-    sayonDevice      = 'cpu';
+    sayonDevice    = 'cpu';
     serenGpuLayers = 0;
-    sayonGpuLayers   = 0;
+    sayonGpuLayers = 0;
   }
 
-  const gpuLines  = hw.gpus.map(g =>
+  // ── Optional model recommendations ──
+  // Image/video models use the GPU after LLM servers stop — full VRAM available.
+  const imageModel  = recommendOptionalImageModel(imageVramGb, hasUnifiedMemory, false);
+  const videoModel  = recommendOptionalVideoModel(imageVramGb, hasUnifiedMemory, false);
+  const upscaleRecommended = imageModel !== null; // always recommend ESRGAN if any image model fits
+
+  // ── Reasoning string ──
+  const gpuLines = hw.gpus.map(g =>
     `${g.name} (${g.vramGb} GB${g.unifiedMemory ? ', unified' : ''}, ${g.backend})`
   ).join(' · ');
   const gpuStr    = gpuLines || 'No GPU — CPU fallback';
@@ -1741,10 +2028,30 @@ export function buildRecommendation(hw: HardwareProfile): ModelRecommendation {
     `System: ${hw.ramGb} GB RAM · ${hw.cpuCores} cores · ${hw.cpuName}. ` +
     `GPUs: ${gpuStr}.` +
     (hasUnifiedMemory ? ` Unified memory — both models share the same ${hw.ramGb} GB pool.` : '') +
-    ` SAYON → ${sayon.label} on ${deviceName(sayonDevice)} (${sayonGpuLayers > 0 ? 'GPU' : 'CPU'}).` +
-    ` SEREN → ${seren.label} on ${deviceName(serenDevice)} (${serenGpuLayers > 0 ? 'GPU' : 'CPU'}).`;
+    ` SAYON → ${sayon.label} on ${deviceName(sayonDevice)} (${sayonGpuLayers > 0 ? 'GPU' : 'CPU'}, score ${sayonScore.toFixed(1)}).` +
+    ` SEREN → ${seren.label} on ${deviceName(serenDevice)} (${serenGpuLayers > 0 ? 'GPU' : 'CPU'}, score ${serenScore.toFixed(1)}).` +
+    (imageModel ? ` IMG → ${imageModel.displayName}.` : '') +
+    (videoModel ? ` VID → ${videoModel.displayName}.` : '');
 
-  return { sayon, seren, sayonDevice, serenDevice, sayonGpuLayers, serenGpuLayers, reasoning };
+  return {
+    sayon, seren, sayonDevice, serenDevice, sayonGpuLayers, serenGpuLayers,
+    imageModel, videoModel, upscaleRecommended,
+    reasoning, sayonScore, serenScore,
+  };
+}
+
+/**
+ * Compare the currently running config against the optimal recommendation.
+ * Returns true if current config matches the recommendation.
+ */
+export function isConfigOptimal(
+  currentSayon: string | undefined,
+  currentSeren: string | undefined,
+  hw: HardwareProfile,
+): { optimal: boolean; recommendedSayon: string; recommendedSeren: string } {
+  const rec = buildRecommendation(hw);
+  const optimal = currentSayon === rec.sayon.modelId && currentSeren === rec.seren.modelId;
+  return { optimal, recommendedSayon: rec.sayon.modelId, recommendedSeren: rec.seren.modelId };
 }
 
 // ── Dynamic context size recommendation ──────────────────────────────────────

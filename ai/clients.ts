@@ -317,6 +317,53 @@ export function getThinkingStrategy(provider: string, model: string): ThinkingSt
       };
     }
 
+    // ── SmolLM3: FIELD path, no chat_template_kwargs ───────────────────
+    // SmolLM3's template doesn't support enable_thinking kwarg. The server's
+    // --reasoning-format deepseek (set at startup for jinjaTemplate models)
+    // parses <think> tags and routes them to reasoning_content in the API response.
+    // Per-request reasoning_format:deepseek ensures field path works.
+    // No chat_template_kwargs — the template activates thinking via its own
+    // Reasoning Mode metadata field when --jinja is active.
+    if (model.startsWith('smollm3')) {
+      return {
+        systemSuffix: '',
+        thinkingPath: 'field',
+        extraBodyThink:   { reasoning_format: 'deepseek' },
+        extraBodyNoThink: { reasoning_format: 'none' },
+      };
+    }
+
+    // ── Phi-4 mini reasoning: FIELD path, no chat_template_kwargs ─────
+    // Phi-4-mini always reasons (R1 distill). Its template doesn't support
+    // enable_thinking kwarg. Server's --reasoning-format deepseek parses
+    // <think> tags into reasoning_content.
+    if (model.startsWith('phi4-mini-reasoning')) {
+      return {
+        systemSuffix: '',
+        thinkingPath: 'field',
+        extraBodyThink:   { reasoning_format: 'deepseek' },
+        extraBodyNoThink: { reasoning_format: 'none' },
+      };
+    }
+
+    // ── Ministral 3 Reasoning: TAG path ────────────────────────────────
+    // Ministral Reasoning confirmed working with tag path + reasoning_format:none.
+    // The model produces <think> tags in content, ThinkingTokenRouter extracts them.
+    // Do NOT change — verified working with 2,268 thinking tokens in SEREN panel.
+    if (model.startsWith('ministral-')) {
+      return {
+        systemSuffix: '',
+        thinkingPath: 'tag',
+        extraBodyThink:   { reasoning_format: 'none' },
+        extraBodyNoThink: { reasoning_format: 'none' },
+      };
+    }
+
+    // ── Nanbeige4.1: FIELD path ──────────────────────────────────────────
+    // Nanbeige uses Qwen2.5-based ChatML template with <think> tags.
+    // reasoning_format:deepseek works — confirmed in testing.
+    // Falls through to the jinjaTemplate catch-all below.
+
     // ── Other jinjaTemplate models: FIELD path ──────────────────────────
     // Qwen3, Qwen3.5, Magistral, DeepSeek-R1 Qwen3 distills — these models' think
     // tokens ARE properly parsed by llama-server's reasoning_format:deepseek into

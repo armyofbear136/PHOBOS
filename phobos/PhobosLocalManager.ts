@@ -2,6 +2,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as os from 'os';
 import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 import * as https from 'https';
 import * as http  from 'http';
@@ -175,12 +176,18 @@ async function detectNonNvidiaGpus(): Promise<GpuDevice[]> {
     const items = Array.isArray(raw) ? raw : [raw];
     const gpus: GpuDevice[] = [];
 
+    // Use a separate counter for assigned index so skipped GPUs (vramGb < 1)
+    // don't shift the index of valid GPUs. Without this, a virtual display
+    // adapter at position 0 would make the real GPU at position 1 get
+    // deviceIndex=101 instead of 100, causing GGML_VK_VISIBLE_DEVICES=1.
+    let nonNvidiaIdx = 0;
     for (let i = 0; i < items.length; i++) {
       const item      = items[i];
       const vramBytes = Number(item.VramBytes ?? 0);
       const vramGb    = Math.round(vramBytes / (1024 ** 3));
       if (vramGb < 1) continue;
-      gpus.push({ index: 100 + i, name: String(item.Name ?? 'Unknown GPU'), vramGb, backend: 'vulkan' });
+      gpus.push({ index: 100 + nonNvidiaIdx, name: String(item.Name ?? 'Unknown GPU'), vramGb, backend: 'vulkan' });
+      nonNvidiaIdx++;
     }
     return gpus;
   } catch {
@@ -283,7 +290,36 @@ function _isRocmAvailable(): boolean {
  */
 // Cache the Vulkan enumeration result — spawning the binary is slow and the
 // Vulkan device list doesn't change between model switches within a session.
-let _vkMapCache: Map<string, number> | null = null;
+let _vkMapCache:       Map<string, number> | null = null;
+let _vkMapCacheCudaHidden: Map<string, number> | null = null;
+
+async function enumerateVulkanDevicesInternal(hideCuda: boolean): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  try {
+    const bin = resolveLlamaServerBin();
+    const extraEnv: Record<string, string> = { GGML_VK_VISIBLE_DEVICES: '' };
+    if (hideCuda) {
+      // Simulate the environment of a non-NVIDIA spawned process
+      extraEnv.CUDA_VISIBLE_DEVICES = '-1';
+      extraEnv.HIP_VISIBLE_DEVICES  = '-1';
+    }
+    const result = await execFileAsync(bin, ['--list-devices'], {
+      timeout: 8000,
+      env: { ...process.env, ...extraEnv },
+    }).catch((err: any) => {
+      return { stdout: (err as any).stdout ?? '', stderr: (err as any).stderr ?? '' };
+    });
+    const output = (result.stdout ?? '') + '\n' + (result.stderr ?? '');
+    for (const match of output.matchAll(/ggml_vulkan:\s+(\d+)\s*=\s*([^|\n]+)/g)) {
+      const idx  = parseInt(match[1], 10);
+      const name = match[2].trim();
+      map.set(name.toLowerCase(), idx);
+      const short = name.toLowerCase().replace(/\(.*?\)/g, '').trim();
+      if (short !== name.toLowerCase()) map.set(short, idx);
+    }
+  } catch { /* ignore */ }
+  return map;
+}
 
 async function enumerateVulkanDevices(): Promise<Map<string, number>> {
   if (_vkMapCache) return _vkMapCache;
@@ -357,12 +393,23 @@ function matchVulkanIndex(gpuName: string, vkMap: Map<string, number>): number |
  */
 async function assignRunnerProfiles(gpus: GpuDevice[]): Promise<void> {
   const vkMap = await enumerateVulkanDevices();
+  // Also enumerate with CUDA hidden — this is what non-NVIDIA spawned processes see.
+  // Needed when NVIDIA + AMD/Intel coexist: CUDA_VISIBLE_DEVICES=-1 hides CUDA
+  // but the GPU may still appear as a Vulkan device, shifting non-NVIDIA indices.
+  if (!_vkMapCacheCudaHidden) {
+    _vkMapCacheCudaHidden = await enumerateVulkanDevicesInternal(true);
+  }
+  const vkMapCudaHidden = _vkMapCacheCudaHidden;
   const hasRuntimeEnum = vkMap.size > 0;
+  const hasCudaHiddenEnum = vkMapCudaHidden.size > 0;
 
   if (hasRuntimeEnum) {
     console.log(`[HW] Vulkan runtime enum: ${[...vkMap.entries()].filter(([k]) => !k.includes('(')).map(([n, i]) => `${i}=${n}`).join(', ')}`);
   } else {
     console.warn('[HW] Vulkan runtime enumeration unavailable — using positional fallback');
+  }
+  if (hasCudaHiddenEnum) {
+    console.log(`[HW] Vulkan (CUDA-hidden) enum: ${[...vkMapCudaHidden.entries()].filter(([k]) => !k.includes('(')).map(([n, i]) => `${i}=${n}`).join(', ')}`);
   }
 
   const nvidiaCount = gpus.filter(g => g.backend === 'cuda').length;
@@ -402,10 +449,17 @@ async function assignRunnerProfiles(gpus: GpuDevice[]): Promise<void> {
       g.backend !== 'cuda' && g.backend !== 'metal' && g.index < gpu.index
     ).length;
     const positionalIndex = nonNvidiaPosition; // 0-based within non-NVIDIA only
-    const runtimeIdx      = hasRuntimeEnum ? matchVulkanIndex(gpu.name, vkMap) : undefined;
-    const vulkanIndex     = runtimeIdx ?? positionalIndex;
+    // Prefer the CUDA-hidden enumeration index — this matches what the spawned
+    // process will see when CUDA_VISIBLE_DEVICES=-1 is set. Fall back to full
+    // enumeration, then positional.
+    const cudaHiddenIdx   = hasCudaHiddenEnum ? matchVulkanIndex(gpu.name, vkMapCudaHidden) : undefined;
+    const runtimeIdx      = hasRuntimeEnum    ? matchVulkanIndex(gpu.name, vkMap)           : undefined;
+    const vulkanIndex     = cudaHiddenIdx ?? runtimeIdx ?? positionalIndex;
 
-    console.log(`[HW] ${gpu.name}: Vulkan${vulkanIndex}${runtimeIdx !== undefined ? ' (runtime)' : ' (positional fallback, CUDA-hidden)'}`);
+    const src2 = cudaHiddenIdx !== undefined ? 'cuda-hidden enum'
+               : runtimeIdx   !== undefined ? 'runtime enum'
+               : 'positional fallback';
+    console.log(`[HW] ${gpu.name}: Vulkan${vulkanIndex} (${src2})`);
 
     const isAmd     = /AMD|Radeon|ATI/i.test(gpu.name);
     const isIntel   = /Intel/i.test(gpu.name);
@@ -465,9 +519,12 @@ export interface GGUFSpec {
   /** If true, model is shown in the Legacy section of the UI. Still downloadable/usable. */
   legacy?: boolean;
   /**
-   * Nemotron architecture variant:
-   * 'llama' — Llama 3.1 derivative, reasoning toggled via system prompt (4B, 9B)
-   * 'mamba' — Mamba-2/MoE hybrid, reasoning toggled via chat_template_kwargs (30B-A3B)
+   * Nemotron architecture variant. All current Nemotron models are Mamba-2 hybrids.
+   * 'mamba' — Nemotron-H Mamba-2/MoE hybrid (4B, 9B v2, 30B-A3B)
+   *           <think> token ID 12, </think> token ID 13 — special tokens, not parsed
+   *           by llama-server's reasoning_format:deepseek. Must use tag-path parsing.
+   *
+   * The 'llama' variant is reserved for future Llama-derived Nemotron models if any are added.
    */
   nemotronVariant?: 'llama' | 'mamba';
 }
@@ -594,7 +651,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
   // ── Mistral family ───────────────────────────────────────────────────────────
   {
     modelId: 'mistral-7b-q4', label: 'Mistral 7B v0.3 Q4', family: 'Mistral',
-    role: 'seren', thinkingTokens: false, jinjaTemplate: false,
+    role: 'sayon', thinkingTokens: false, jinjaTemplate: false,
     hfRepo: 'bartowski/Mistral-7B-Instruct-v0.3-GGUF',
     hfFile: 'Mistral-7B-Instruct-v0.3-Q4_K_M.gguf',
     sizeBytes: 4_370_000_000, ramRequiredGb: 6, contextWindow: 32768,
@@ -640,19 +697,19 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
   // Knowledge cutoff: pre-training June 2025, post-training November 2025.
   {
     modelId: 'nemotron3-4b-q4', label: 'Nemotron 3 Nano 4B Q4', family: 'Nemotron 3',
-    role: 'sayon', thinkingTokens: true, jinjaTemplate: true, nemotronVariant: 'llama',
+    role: 'sayon', thinkingTokens: true, jinjaTemplate: true, nemotronVariant: 'mamba',
     hfRepo: 'unsloth/NVIDIA-Nemotron-3-Nano-4B-GGUF',
     hfFile: 'NVIDIA-Nemotron-3-Nano-4B-Q4_K_M.gguf',
     sizeBytes: 2_600_000_000, ramRequiredGb: 4, contextWindow: 32768,
-    kvCacheMbPer1kTokens: 96,   // Llama 3.1 derivative — reasoning via system prompt
+    kvCacheMbPer1kTokens: 96,   // Mamba-2 hybrid (21 Mamba, 4 attn, 17 MLP layers) — pruned from 9B v2
   },
   {
     modelId: 'nemotron3-9b-q4', label: 'Nemotron 3 Nano 9B Q4', family: 'Nemotron 3',
-    role: 'seren', thinkingTokens: true, jinjaTemplate: true, nemotronVariant: 'llama',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true, nemotronVariant: 'mamba',
     hfRepo: 'bartowski/nvidia_NVIDIA-Nemotron-Nano-9B-v2-GGUF',
     hfFile: 'nvidia_NVIDIA-Nemotron-Nano-9B-v2-Q4_K_M.gguf',
-    sizeBytes: 5_700_000_000, ramRequiredGb: 7, contextWindow: 32768,
-    kvCacheMbPer1kTokens: 96,   // Llama 3.1 derivative — reasoning via system prompt
+    sizeBytes: 5_700_000_000, ramRequiredGb: 6, contextWindow: 32768,
+    kvCacheMbPer1kTokens: 96,   // Nemotron-H Mamba-2 hybrid (Mamba-2 + 4 attn layers) — Nemotron Nano 2
   },
   {
     modelId: 'nemotron3-30b-a3b-q4', label: 'Nemotron 3 Nano 30B-A3B Q4', family: 'Nemotron 3',
@@ -716,7 +773,7 @@ export type ImageRunnerProfile =
  * a content warning in the UI but use the same download infrastructure.
  * legacy = superseded models (FLUX schnell) — collapsed behind a toggle.
  */
-export type ImageModelCategory = 'realistic' | 'anime' | 'nsfw-realistic' | 'nsfw-anime' | 'legacy' | 'video';
+export type ImageModelCategory = 'realistic' | 'anime' | 'nsfw-realistic' | 'nsfw-anime' | 'legacy' | 'video' | 'kontext';
 
 export interface ImageModelSpec {
   modelId: string;
@@ -1157,7 +1214,7 @@ export const KONTEXT_CATALOGUE: ImageModelSpec[] = [
     label:            'FLUX Kontext Dev Q5',
     displayName:      'FLUX Kontext Dev',
     runnerProfile:    'flux1-kontext',
-    category:         'realistic',
+    category:         'kontext',
     variant:          'kontext',
     quantization:     'Q5_K_S',
     hfRepo:           'QuantStack/FLUX.1-Kontext-dev-GGUF',
@@ -1636,7 +1693,9 @@ export function buildRecommendation(hw: HardwareProfile): ModelRecommendation {
     sayonGpuLayers   = 99;
 
   } else if (bestGpu && bestGpu.vramGb >= 3) {
-    const serenBudget = Math.floor(bestGpu.vramGb * HEADROOM);
+    // Use higher headroom for large discrete GPUs — 8 GB+ cards can safely use 90%
+    const discreteHeadroom = (bestGpu.vramGb >= 8 && !bestGpu.unifiedMemory) ? 0.90 : HEADROOM;
+    const serenBudget = Math.floor(bestGpu.vramGb * discreteHeadroom);
     seren          = pickBestFit(SEREN_CANDIDATES, serenBudget);
     serenDevice    = bestGpu.index;
     serenGpuLayers = 99;
@@ -1749,6 +1808,14 @@ export async function* downloadModel(
   fs.mkdirSync(MODELS_DIR, { recursive: true });
 
   const dest = modelPath(spec);
+
+  // Skip if already downloaded and valid — prevents duplicate downloads
+  // when the frontend sends the same model for both sayon and seren phases.
+  if (isDownloaded(spec)) {
+    yield { modelId: spec.modelId, phase, bytesReceived: spec.sizeBytes, bytesTotal: spec.sizeBytes, done: true };
+    return;
+  }
+
   const tmp  = dest + '.download';
 
   const existingBytes = fs.existsSync(tmp) ? fs.statSync(tmp).size : 0;
@@ -1807,11 +1874,11 @@ export async function* downloadModel(
           });
           res.on('end', () => {
             push({ kind: 'installing' });
-            fd.end(() => {
+            fd.end(async () => {
               try {
-                fs.renameSync(tmp, dest);
+                await fsPromises.rename(tmp, dest);
               } catch {
-                try { fs.copyFileSync(tmp, dest); fs.unlinkSync(tmp); }
+                try { await fsPromises.copyFile(tmp, dest); await fsPromises.unlink(tmp); }
                 catch (copyErr) {
                   const err = new Error(`Failed to finalize download: ${copyErr}`);
                   push({ kind: 'error', err }); resolve(); return;

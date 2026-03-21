@@ -1,6 +1,7 @@
 import type { FastifyReply } from 'fastify';
 import { AgentStateManager, type AgentStateEvent } from './AgentStateManager.js';
 import { engineClient, coordinatorClient, ENGINE_MODEL, COORDINATOR_MODEL, ENGINE_PROVIDER, COORDINATOR_PROVIDER, applyThinkingStrategy, getThinkingStrategy, getThinkingExtraBody, coordinatorStream } from './clients.js';
+import { ThinkingTokenRouter } from './ThinkingTokenRouter.js';
 import { DispatchComposer, type ComposeInput } from './DispatchComposer.js';
 import { ContextIngester } from './ContextIngester.js';
 import { TaskPlanner } from './TaskPlanner.js';
@@ -567,7 +568,7 @@ export class LoopController {
           ];
           sendStatus(`[${task.index}/${total}] Engine continuing after file read…`);
           const continued = await this.runSingleStream(
-            reply, continuationMessages, taskId, attemptResult.thinking, sendThinking, assistantMessageId
+            reply, continuationMessages, taskId, attemptResult.thinking, sendEngineThinking, assistantMessageId
           );
           currentOutput = continued.output;
           currentParsed = this.toolParser.parse(currentOutput);
@@ -1044,11 +1045,22 @@ export class LoopController {
 
     const engineExtraBody = getThinkingExtraBody(liveProvider, liveModel, 'think');
     dbg(`[engine:config] provider=${liveProvider} model=${liveModel} baseURL=${engineBaseURLEarly} extraBody=${JSON.stringify(engineExtraBody)}`);
-    const engineCallParams = {
+
+    // Build params differently for raw fetch vs SDK:
+    // Raw fetch (phobos): spread extra body at top level — llama-server accepts reasoning_format etc. directly
+    // SDK (non-phobos): nest under extra_body — the SDK passes it through
+    const baseCallParams = {
       model: liveModel,
       messages: finalMessages as Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
       max_tokens: 32768,
       temperature: 0.4,
+    };
+    const engineCallParamsRaw = {
+      ...baseCallParams,
+      ...engineExtraBody,
+    };
+    const engineCallParamsSDK = {
+      ...baseCallParams,
       ...(Object.keys(engineExtraBody).length > 0 ? { extra_body: engineExtraBody } : {}),
     };
 
@@ -1095,19 +1107,19 @@ export class LoopController {
       const baseURL = ((engineClient as unknown as { baseURL?: string }).baseURL ?? 'http://127.0.0.1:52627/v1').replace(/\/$/, '');
       rawStream = rawSseStream(
         `${baseURL}/chat/completions`,
-        { ...engineCallParams },
+        { ...engineCallParamsRaw },
         abortController.signal
       );
     } else {
       try {
         stream = await engineClient.chat.completions.create(
-          { ...engineCallParams, stream: true as const },
+          { ...engineCallParamsSDK, stream: true as const },
           { signal: abortController.signal }
         );
       } catch (createErr: unknown) {
         console.error(`[engine:create:error] ${createErr instanceof Error ? createErr.message : String(createErr)}`);
         dbg('[engine:create:retry] Retrying without extra_body...');
-        const fallbackParams = { ...engineCallParams };
+        const fallbackParams = { ...engineCallParamsSDK };
         delete (fallbackParams as Record<string, unknown>).extra_body;
         stream = await engineClient.chat.completions.create(
           { ...fallbackParams, stream: true as const },
@@ -1123,14 +1135,20 @@ export class LoopController {
       }
     }
 
-    let fieldThinkBuf = ''; // accumulates thinking tokens on field-path (parser not used there)
+    let fieldThinkBuf = ''; // accumulates thinking tokens from ThinkingTokenRouter
     const toolFilter = new ToolTagFilter(); // suppresses tool XML from output_token stream
     try {
-      let emittedThinkLen = 0;
-      let emittedOutputLen = 0;
       let _dbgN = 0;
       const engineStrategy = getThinkingStrategy(liveProvider, liveModel);
       dbg(`[engine:strategy] thinkingPath=${engineStrategy.thinkingPath}`);
+
+      // ThinkingTokenRouter: single source of truth for thinking token parsing.
+      // Replaces the duplicate field-path / tag-path logic that was here before.
+      const thinkForcedOpen = engineStrategy.thinkingForcedOpen === true;
+      const thinkRouter = new ThinkingTokenRouter(engineStrategy, 'think', (token: string) => {
+        fieldThinkBuf += token;
+        sendThinking(token);
+      }, thinkForcedOpen);
 
       for await (const delta of deltaIterator()) {
         if (streamAborted) break;
@@ -1142,83 +1160,37 @@ export class LoopController {
         }
         _dbgN++;
 
-        if (engineStrategy.thinkingPath === 'field') {
-          // Ollama Qwen3: thinking in dedicated field, content in delta.content — fully separate streams
-          const d = delta as Record<string, unknown>;
-          let thinkToken = (d.thinking ?? d.reasoning_content ?? d.reasoning) as string | null | undefined;
-          const outToken = d.content as string | null | undefined;
-
-          if (thinkToken) {
-            // Strip any <think>/<think> wrapper tags some providers inject into the field
-            thinkToken = thinkToken.replace(/<\/?think>/g, '');
-            if (thinkToken) {
-              if (_dbgN <= 3) dbg(`[engine:think:field] ${JSON.stringify(thinkToken.slice(0, 80))}`);
-              // Send directly — do NOT feed parser (would cause double-emit when outToken arrives)
-              fieldThinkBuf += thinkToken;
-              sendThinking(thinkToken);
-            }
-          }
-          if (outToken) {
-            // Content is clean on field-path providers — no <think> tags in delta.content
-            parser.feedOutput(outToken);
-            this.options.onOutputChunk?.(outToken, assistantMessageId).catch(() => {});
-            const safeToken = toolFilter.feed(outToken);
-            if (safeToken) {
-              reply.raw.write(`data: ${JSON.stringify({ type: 'output_token', token: safeToken })}\n\n`);
-            }
-            emittedOutputLen += outToken.length;
-          }
-        } else {
-          // FastFlowLLM Qwen3 / Llama: everything in delta.content, <think> tags separate it
-          const outToken = delta?.content as string | null | undefined;
-
-          if (outToken != null) {
-            _dbgN++;
-            if (_dbgN <= 3 || outToken.includes('<think') || outToken.includes('</think')) {
-              dbg(`[engine:${_dbgN}] raw=${JSON.stringify(outToken.slice(0, 100))}`);
-            }
-          }
-
-          if (outToken) {
-            parser.feed(outToken);
-            const { thinking: thinkBuf, output: outBuf } = parser.getBuffers();
-            const newThink = thinkBuf.slice(emittedThinkLen);
-            if (newThink) {
-              emittedThinkLen = thinkBuf.length;
-              sendThinking(newThink);
-            }
-            const newOut = outBuf.slice(emittedOutputLen);
-            if (newOut) {
-              emittedOutputLen = outBuf.length;
-              this.options.onOutputChunk?.(newOut, assistantMessageId).catch(() => {});
-              const safeOut = toolFilter.feed(newOut);
-              if (safeOut) {
-                reply.raw.write(`data: ${JSON.stringify({ type: 'output_token', token: safeOut })}\n\n`);
-              }
-            }
+        const { output: outChunk } = thinkRouter.feed(delta);
+        if (outChunk) {
+          // Feed output to parser for tool-call extraction
+          parser.feedOutput(outChunk);
+          this.options.onOutputChunk?.(outChunk, assistantMessageId).catch(() => {});
+          const safeToken = toolFilter.feed(outChunk);
+          if (safeToken) {
+            reply.raw.write(`data: ${JSON.stringify({ type: 'output_token', token: safeToken })}\n\n`);
           }
         }
 
-        const thinkCount = parser.getThinkTokenCount();
-        if (thinkCount > 4000 && thinkCount % 500 < 10) {
-          reply.raw.write(`data: ${JSON.stringify({ type: 'status', content: `Thinking: ${thinkCount} tokens…` })}\n\n`);
+        const thinkLen = fieldThinkBuf.length;
+        if (thinkLen > 4000 && thinkLen % 500 < 100) {
+          reply.raw.write(`data: ${JSON.stringify({ type: 'status', content: `Thinking: ${Math.ceil(thinkLen / 4)} tokens…` })}\n\n`);
         }
       }
+
+      thinkRouter.flush();
     } catch (err: unknown) {
       const isAbort = err instanceof Error && (err.name === 'AbortError' || err.message.toLowerCase().includes('abort'));
       if (!isAbort) throw err;
     }
 
     parser.complete();
-    const { thinking: parserThinking, output: streamOutput } = parser.getBuffers();
-    const streamThinking = fieldThinkBuf || parserThinking;
+    const { output: streamOutput } = parser.getBuffers();
+    const streamThinking = fieldThinkBuf;
 
     // Flush any safe content held in the filter buffer (e.g. text after the last tool block)
     const filterFlush = toolFilter.flush();
     if (filterFlush) {
-      reply.raw.write(`data: ${JSON.stringify({ type: 'output_token', token: filterFlush })}
-
-`);
+      reply.raw.write(`data: ${JSON.stringify({ type: 'output_token', token: filterFlush })}\n\n`);
     }
 
     if (interventionQuestion === null) {

@@ -86,12 +86,38 @@ export class IntentClassifier {
       // Use non-greedy match first to avoid grabbing the entire thinking trace.
       // Try multiple patterns in order of specificity.
       const tryParseJSON = (text: string): { type: IntentType; confidence: number; routing?: string } | null => {
-        // Pattern 1: compact single-line JSON object with "type" key
-        const compact = text.match(/\{"type"\s*:\s*"[^"]+[^}]*\}/);
-        if (compact) { try { return JSON.parse(compact[0]); } catch { /* try next */ } }
-        // Pattern 2: any JSON object (greedy, may grab thinking trace)
-        const greedy = text.match(/\{[^]*\}/);
-        if (greedy) { try { return JSON.parse(greedy[0]); } catch { /* fall through */ } }
+        // Strip markdown fences — small models like Gemma 1B wrap output in ```json ... ```
+        const stripped = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+        const sources = stripped !== text ? [stripped, text] : [text];
+
+        for (const s of sources) {
+          // Pattern 1: compact single-line JSON object with "type" key
+          const compact = s.match(/\{"type"\s*:\s*"[^"]+[^}]*\}/);
+          if (compact) { try { return JSON.parse(compact[0]); } catch { /* try next */ } }
+          // Pattern 2: any JSON object (greedy, may grab thinking trace)
+          const greedy = s.match(/\{[^]*\}/);
+          if (greedy) { try { return JSON.parse(greedy[0]); } catch { /* fall through */ } }
+        }
+
+        // Pattern 3: Gemma 1B corruption repair
+        // Model scrambles JSON like {"{"type":"CODECODE" — extract type value directly
+        const typeMatch = text.match(/"type"[^:]*:\s*"?([A-Z_]{4,25})"?/);
+        if (typeMatch) {
+          const routingMatch = text.match(/"routing"[^:]*:\s*"?(NEEDS_SEREN|ANSWER_DIRECTLY|NEEDS_CLARIFICATION)"?/);
+          const confMatch    = text.match(/"confidence"[^:]*:\s*"?([0-9.]+)"?/);
+          // Deduplicate corrupted type tokens like "CODECODE" -> "CODE_REQUEST"
+          const raw = typeMatch[1];
+          const KNOWN: IntentType[] = ['CODE_REQUEST','IMAGE_REQUEST','VIDEO_REQUEST','DOCUMENT_EDIT','PLAN_REQUEST','NEEDS_CLARIFICATION','QUESTION'];
+          const found = KNOWN.find(t => raw.startsWith(t.replace('_REQUEST','').replace('_EDIT','').replace('_','')) || t.startsWith(raw.slice(0,5)));
+          if (found) {
+            return {
+              type: found,
+              confidence: confMatch ? parseFloat(confMatch[1]) : 0.5,
+              routing: routingMatch?.[1] as ClassifiedIntent['routing'] | undefined,
+            };
+          }
+        }
+
         return null;
       };
 

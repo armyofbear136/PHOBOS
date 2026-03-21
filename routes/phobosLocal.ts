@@ -137,7 +137,11 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
     };
 
     await downloadPhase(sayonSpec, 'sayon');
-    await downloadPhase(serenSpec, 'seren');
+    // Skip seren phase if it's the same model — the frontend sends the same ID
+    // for both when downloading a single model from the queue.
+    if (serenId !== sayonId) {
+      await downloadPhase(serenSpec, 'seren');
+    }
 
     emit({ phase: 'complete', done: true });
     reply.raw.end();

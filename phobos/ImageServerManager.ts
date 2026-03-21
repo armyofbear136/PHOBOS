@@ -330,6 +330,9 @@ function buildZImageArgs(
   if (opts.strength != null) args.push('--strength', String(opts.strength));
   if (opts.refImage)       args.push('-r', opts.refImage);
   if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
+  // VAE decode of a full-res latent exceeds 8 GB VRAM budget without tiling.
+  // --vae-tiling splits the decode into 512x512 tiles, reducing peak to ~176 MB.
+  if (cfg.freeVramGb !== undefined && cfg.freeVramGb <= 10) args.push('--vae-tiling');
   return args;
 }
 

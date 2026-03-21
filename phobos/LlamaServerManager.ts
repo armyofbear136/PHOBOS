@@ -165,9 +165,13 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
       const hasCuda       = hasCudaDll && hasCudaRuntime;
 
       if (hasCuda) {
-        // Native CUDA path — ggml-cuda.dll + cudart runtime both present
+        // Native CUDA path — ggml-cuda.dll + cudart runtime both present.
+        // CUDA_VISIBLE_DEVICES=N filters to one device; it becomes CUDA0.
+        // --device CUDA0 explicitly selects it (required in newer llama.cpp builds
+        // where env-var-only device selection is no longer sufficient).
         env.CUDA_VISIBLE_DEVICES    = String(cfg.deviceIndex);
         env.GGML_VK_VISIBLE_DEVICES = ''; // suppress Vulkan iGPU interference
+        args.push('--device', 'CUDA0');
         console.log(`[LlamaServerManager] ${role}: NVIDIA CUDA path (ggml-cuda.dll + cudart runtime found)`);
       } else {
         // Vulkan path for NVIDIA — either no CUDA DLLs, or missing cudart runtime.
@@ -186,10 +190,22 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
     } else {
       // Non-NVIDIA Vulkan GPU (AMD discrete, AMD iGPU, Intel iGPU).
       // GGML_VK_VISIBLE_DEVICES filters to one device; it becomes Vulkan0.
-      const vkIdx = cfg.vulkanIndex ??
-        (cfg.deviceIndex >= 100 ? (cfg.deviceIndex - 100) : cfg.deviceIndex);
+      //
+      // vulkanIndex resolution priority:
+      //   1. cfg.vulkanIndex from runner profile (most accurate — runtime-enumerated or positional)
+      //   2. positional fallback: non-NVIDIA devices use 100+ deviceIndex, subtract 100
+      //   3. deviceIndex as-is (last resort, almost certainly wrong but avoids crashing)
+      //
+      // NOTE: cfg.vulkanIndex can be 0 (falsy) for the first non-NVIDIA GPU.
+      // Use explicit null/undefined check, NOT the ?? operator, to avoid treating 0 as unset.
+      const vkIdx = cfg.vulkanIndex !== undefined && cfg.vulkanIndex !== null
+        ? cfg.vulkanIndex
+        : (cfg.deviceIndex !== undefined && cfg.deviceIndex >= 100
+            ? cfg.deviceIndex - 100
+            : cfg.deviceIndex ?? 0);
 
-      console.log(`[LlamaServerManager] ${role}: GGML_VK_VISIBLE_DEVICES=${vkIdx} (vulkanIndex=${cfg.vulkanIndex ?? 'unset'}, deviceIndex=${cfg.deviceIndex})`);
+      const vkSrc = cfg.vulkanIndex !== undefined ? 'runner' : (cfg.deviceIndex !== undefined && cfg.deviceIndex >= 100 ? 'fallback' : 'fallback');
+      console.log(`[LlamaServerManager] ${role}: GGML_VK_VISIBLE_DEVICES=${vkIdx} (vulkanIndex=${vkIdx}, src=${vkSrc}, deviceIndex=${cfg.deviceIndex})`);
       env.CUDA_VISIBLE_DEVICES    = '-1'; // hide CUDA — no NVIDIA context overhead
       env.HIP_VISIBLE_DEVICES     = '-1'; // hide ROCm
       env.GGML_VK_VISIBLE_DEVICES = String(vkIdx);
@@ -438,7 +454,14 @@ export async function reconcilePhobosServers(config: {
         threads:     0,
         deviceIndex: sayonDeviceIndex,
         gpuBackend:  sayonGpuBackend as ServerConfig['gpuBackend'],
-        vulkanIndex: sayonDeviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === sayonDeviceIndex)?.runner?.vulkanIndex : undefined,
+        // vulkanIndex can be 0 (first non-NVIDIA GPU) — use explicit undefined check not ?.
+        vulkanIndex: (() => {
+          if (sayonDeviceIndex === undefined || !hw) return undefined;
+          const gpu = hw.gpus.find(g => g.index === sayonDeviceIndex);
+          if (gpu?.runner?.vulkanIndex !== undefined) return gpu.runner.vulkanIndex;
+          if (sayonDeviceIndex >= 100) return sayonDeviceIndex - 100;
+          return undefined;
+        })(),
         runnerKind:  sayonDeviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === sayonDeviceIndex)?.runner?.kind : undefined,
       }).catch(err => {
         console.error(`[reconcile] sayon start failed: ${err.message}`);
@@ -458,7 +481,15 @@ export async function reconcilePhobosServers(config: {
         threads:     0,
         deviceIndex: serenDeviceIndex,
         gpuBackend:  serenGpuBackend as ServerConfig['gpuBackend'],
-        vulkanIndex: serenDeviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === serenDeviceIndex)?.runner?.vulkanIndex : undefined,
+        // vulkanIndex can be 0 (first non-NVIDIA GPU) — use explicit undefined check not ?.
+        vulkanIndex: (() => {
+          if (serenDeviceIndex === undefined || !hw) return undefined;
+          const gpu = hw.gpus.find(g => g.index === serenDeviceIndex);
+          if (gpu?.runner?.vulkanIndex !== undefined) return gpu.runner.vulkanIndex;
+          // Fallback: non-NVIDIA devices have 100+ index offset
+          if (serenDeviceIndex >= 100) return serenDeviceIndex - 100;
+          return undefined;
+        })(),
         runnerKind:  serenDeviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === serenDeviceIndex)?.runner?.kind : undefined,
       }).catch(err => {
         console.error(`[reconcile] seren start failed: ${err.message}`);

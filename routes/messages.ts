@@ -883,9 +883,10 @@ async function handleDirectResponse(
           `Installed video models (use the first one listed unless user specifies — it is fastest):\n${videoModelList}\n\n` +
           `Compress the user's video request into a concise generation prompt.\n\n` +
           `PROMPT rules:\n` +
+          `- DO NOT re-use the user's prompt verbatim"\n` +
           `- Comma-separated keywords and short phrases ONLY\n` +
           `- Describe motion, subject, scene, style\n` +
-          `- 10-20 words maximum\n` +
+          `- 10-20 words maximum, be concise \n` +
           `- Example: "an emerald on a piece of bread, being spread like butter"\n\n` +
           `NEGATIVE PROMPT rules:\n` +
           `- Add at most 1-2 undesired quality terms specific to THIS subject/scene only\n` +
@@ -896,6 +897,7 @@ async function handleDirectResponse(
           `Installed image models (use the first one listed unless user specifies — it is fastest):\n${imageModelList}\n\n` +
           `Compress the user's image request into a photorealistic prompt.\n\n` +
           `POSITIVE PROMPT rules:\n` +
+          `- DO NOT re-use the user's prompt verbatim"\n` +
           `- Comma-separated keywords and short noun phrases ONLY — no full sentences, no verbs, no "with a"\n` +
           `- Pattern: subject, setting, action, quality\n` +
           `- Example input: "draw me a pink haired goth girl"\n` +
@@ -1026,6 +1028,7 @@ async function handleDirectResponse(
 
     // ── Normal direct response (non-image) ──────────────────────────────────
     const { getThinkingExtraBody: getExtra } = await import('../ai/clients.js');
+    const { ThinkingTokenRouter } = await import('../ai/ThinkingTokenRouter.js');
     const coordExtraBody = getExtra(COORD_PROV, COORDINATOR_MODEL, 'think');
     dbg(`[handleDirect:extraBody] ${JSON.stringify(coordExtraBody)}`);
     const coordMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
@@ -1033,104 +1036,107 @@ async function handleDirectResponse(
       ...stratMessages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
     ];
 
-    let stream: Awaited<ReturnType<typeof coordinatorClient.chat.completions.create>>;
-    try {
-      stream = await coordinatorClient.chat.completions.create({
-        model: COORDINATOR_MODEL,
-        messages: coordMessages,
-        max_tokens: 8192,
-        temperature: 0.3,
-        stream: true as const,
-        ...(Object.keys(coordExtraBody).length > 0 ? { extra_body: coordExtraBody } : {}),
-      });
-    } catch (streamCreateErr: unknown) {
-      console.error(`[handleDirect:createError] ${streamCreateErr instanceof Error ? streamCreateErr.message : String(streamCreateErr)}`);
-      dbg('[handleDirect:retry] Retrying without extra_body...');
-      stream = await coordinatorClient.chat.completions.create({
-        model: COORDINATOR_MODEL,
-        messages: coordMessages,
-        max_tokens: 8192,
-        temperature: 0.3,
-        stream: true as const,
-      });
-    }
-
     let thinkingBuf = '';
     let outputBuf = '';
-    let inThinkTag = false;
     let _dbgCount = 0;
+    const isPhobos = COORD_PROV === 'phobos';
 
-    for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta as Record<string, unknown>;
+    // ThinkingTokenRouter: single source of truth for thinking token parsing.
+    // onThinkToken callback emits SSE events + persists to segment in real time.
+    // startInThink: Nemotron models have thinking_forced_open — the chat template
+    // prepends <think> but it's not streamed, so generation starts inside the think block.
+    const forcedOpen = strategy.thinkingForcedOpen === true;
+    const router = new ThinkingTokenRouter(strategy, 'think', (token: string) => {
+      thinkingBuf += token;
+      _dbgCount++;
+      if (_dbgCount <= 3) dbg(`[handleDirect:think:${_dbgCount}] ${JSON.stringify(token.slice(0, 80))}`);
+      appendToSegment(token).catch(() => {});
+      sendEvent({ type: 'think_token', token, source: 'coordinator' });
+    }, forcedOpen);
 
-      if (strategy.thinkingPath === 'field') {
-        const d = delta as Record<string, unknown>;
-        let thinkToken = (d.reasoning_content ?? d.reasoning ?? d.thinking) as string | null | undefined;
-        const outToken = d.content as string | null | undefined;
-        if (thinkToken) {
-          thinkToken = thinkToken.replace(/<\/?think>/g, '');
-          if (thinkToken) {
-            _dbgCount++;
-            if (_dbgCount <= 3) dbg(`[handleDirect:think:${_dbgCount}] field=${JSON.stringify(thinkToken.slice(0, 80))}`);
-            thinkingBuf += thinkToken;
-            await appendToSegment(thinkToken);
-            sendEvent({ type: 'think_token', token: thinkToken, source: 'coordinator' });
+    // ── Delta iterator: raw fetch for phobos, OpenAI SDK for others ──
+    // Phobos MUST use raw fetch because the OpenAI SDK silently strips
+    // delta.reasoning_content which field-path models (Nemotron, Qwen3, etc) need.
+    async function* deltaIterator(): AsyncGenerator<Record<string, unknown>> {
+      if (isPhobos) {
+        const baseURL = ((coordinatorClient as unknown as { baseURL?: string }).baseURL ?? '').replace(/\/$/, '');
+        const url = `${baseURL}/chat/completions`;
+        const body = {
+          model: COORDINATOR_MODEL,
+          messages: coordMessages,
+          max_tokens: 8192,
+          temperature: 0.3,
+          stream: true,
+          // Spread extra body at top level — llama-server accepts these directly
+          ...coordExtraBody,
+        };
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!resp.ok || !resp.body) throw new Error(`[handleDirect:raw] HTTP ${resp.status}`);
+        const reader = resp.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop() ?? '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data:')) continue;
+            const json = trimmed.slice(5).trim();
+            if (json === '[DONE]') return;
+            try {
+              const parsed = JSON.parse(json);
+              const d = parsed?.choices?.[0]?.delta;
+              if (d) yield d as Record<string, unknown>;
+            } catch { /* malformed chunk */ }
           }
-        }
-        if (outToken) {
-          outputBuf += outToken;
-          sendEvent({ type: 'output_token', token: outToken });
         }
       } else {
-        const rawContent = delta?.content as string | null | undefined;
-
-        if (rawContent != null) {
-          _dbgCount++;
-          if (_dbgCount <= 3 || rawContent.includes('<think') || rawContent.includes('</think')) {
-            dbg(`[handleDirect:${_dbgCount}] raw=${JSON.stringify(rawContent.slice(0, 100))}`);
-          }
+        // Non-phobos: OpenAI SDK stream
+        let stream: Awaited<ReturnType<typeof coordinatorClient.chat.completions.create>>;
+        try {
+          stream = await coordinatorClient.chat.completions.create({
+            model: COORDINATOR_MODEL,
+            messages: coordMessages,
+            max_tokens: 8192,
+            temperature: 0.3,
+            stream: true as const,
+            ...(Object.keys(coordExtraBody).length > 0 ? { extra_body: coordExtraBody } : {}),
+          });
+        } catch (streamCreateErr: unknown) {
+          console.error(`[handleDirect:createError] ${streamCreateErr instanceof Error ? streamCreateErr.message : String(streamCreateErr)}`);
+          dbg('[handleDirect:retry] Retrying without extra_body...');
+          stream = await coordinatorClient.chat.completions.create({
+            model: COORDINATOR_MODEL,
+            messages: coordMessages,
+            max_tokens: 8192,
+            temperature: 0.3,
+            stream: true as const,
+          });
         }
-
-        if (rawContent) {
-          let remaining = rawContent;
-          while (remaining.length > 0) {
-            if (inThinkTag) {
-              const closeIdx = remaining.indexOf('</think>');
-              if (closeIdx === -1) {
-                thinkingBuf += remaining;
-                await appendToSegment(remaining);
-                sendEvent({ type: 'think_token', token: remaining, source: 'coordinator' });
-                remaining = '';
-              } else {
-                const chunk2 = remaining.slice(0, closeIdx);
-                if (chunk2) {
-                  thinkingBuf += chunk2;
-                  await appendToSegment(chunk2);
-                  sendEvent({ type: 'think_token', token: chunk2, source: 'coordinator' });
-                }
-                inThinkTag = false;
-                remaining = remaining.slice(closeIdx + '</think>'.length);
-              }
-            } else {
-              const openIdx = remaining.indexOf('<think>');
-              if (openIdx === -1) {
-                outputBuf += remaining;
-                sendEvent({ type: 'output_token', token: remaining });
-                remaining = '';
-              } else {
-                const before = remaining.slice(0, openIdx);
-                if (before) {
-                  outputBuf += before;
-                  sendEvent({ type: 'output_token', token: before });
-                }
-                inThinkTag = true;
-                remaining = remaining.slice(openIdx + '<think>'.length);
-              }
-            }
-          }
+        for await (const chunk of stream) {
+          yield chunk.choices[0]?.delta as Record<string, unknown>;
         }
       }
     }
+
+    for await (const delta of deltaIterator()) {
+      const { output } = router.feed(delta);
+      if (output) {
+        outputBuf += output;
+        sendEvent({ type: 'output_token', token: output });
+      }
+    }
+    router.flush();
+
+    // Nuclear final strip: remove any <think> blocks that survived streaming parse
+    const cleanOutput = ThinkingTokenRouter.finalStrip(outputBuf);
 
     // Log the full prompt + response to prompt_log for export/debugging
     try {
@@ -1145,7 +1151,7 @@ async function handleDirectResponse(
         stage: 'direct',
         model: COORDINATOR_MODEL,
         prompt: _promptText,
-        response: outputBuf.trim(),
+        response: cleanOutput,
         latencyMs: 0,
       });
     } catch (_plogErr) { /* never crash the pipeline */ }
@@ -1155,7 +1161,7 @@ async function handleDirectResponse(
 
     // Update the pre-created message row with final content
     await messageStore.update(msg.id, {
-      content: outputBuf.trim() || '(no output)',
+      content: cleanOutput || '(no output)',
       thinking_trace: thinkingBuf || null,
     });
 

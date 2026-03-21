@@ -73,21 +73,38 @@ jobs:
           echo "$VERSION" >> $GITHUB_OUTPUT
         shell: bash
 
+      - name: Read pinned binary versions from manifest
+        id: pins
+        run: |
+          node -e "
+            const fs = require('fs');
+            const m = JSON.parse(fs.readFileSync('scripts/bin-manifest.json', 'utf8'));
+            const t = '${{ matrix.build-full-target }}';
+            const llama = m[t]?.llama || '';
+            const sd = m[t]?.sd || '';
+            console.log('LLAMA_VERSION=' + llama);
+            console.log('SD_VERSION=' + sd);
+            if (llama) console.error('📌 Pinned llama.cpp: ' + llama);
+            else       console.error('⚠️  No pinned llama.cpp version — will fetch latest');
+            if (sd)    console.error('📌 Pinned sd.cpp: ' + sd);
+            else       console.error('⚠️  No pinned sd.cpp version — will fetch latest');
+          " >> $GITHUB_OUTPUT
+        shell: bash
+
       - name: Fetch llama.cpp binaries
         if: "!matrix.build-llama"
-        run: node ${{ matrix.fetch-script }}
+        run: node ${{ matrix.fetch-script }} ${{ steps.pins.outputs.LLAMA_VERSION && format('--version {0}', steps.pins.outputs.LLAMA_VERSION) || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Fetch sd.cpp binaries
         # linux-arm64 skipped — no sd.cpp arm64 release binary exists
         if: "!matrix.build-llama"
-        run: node scripts/fetch-sd-cpp.js
+        run: node scripts/fetch-sd-cpp.js ${{ steps.pins.outputs.SD_VERSION && format('--version {0}', steps.pins.outputs.SD_VERSION) || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # Note: fetch steps above are preserved for CI caching granularity.
-        # Local full builds use: npm run build:full -- <target>
-        # which runs build-full.js and calls the same fetch scripts + build.js.
+        # CI now reads pinned versions from the committed bin-manifest.json.
+        # To update pinned versions: npm run master:update, commit manifest, push.
 
       - name: Build llama-server from source (linux-arm64)
         if: matrix.build-llama == 'linux-arm64'

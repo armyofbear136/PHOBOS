@@ -223,6 +223,26 @@ async function syncPlatform(platform, manifest, updateMode) {
     const HAS_SD = { 'win32-x64':true, 'darwin-arm64':true, 'darwin-x64':false, 'linux-x64':true, 'linux-arm64':false };
     const fetchEnv = { ...process.env, PHOBOS_TARGET_PLATFORM: platform };
 
+    // Resolve upstream release tags BEFORE fetching so we can record them.
+    // On --update we always want latest. On initial sync we also want latest
+    // (there's no pinned version yet if we're here — bin-master was empty).
+    let llamaTag = null;
+    let sdTag    = null;
+    try {
+      llamaTag = await getLatestLlama();
+      console.log(`  📌 llama.cpp: ${llamaTag}`);
+    } catch (err) {
+      console.warn(`  ⚠️  Could not resolve llama.cpp tag: ${err.message}`);
+    }
+    try {
+      if (HAS_SD[platform]) {
+        sdTag = await getLatestSd();
+        console.log(`  📌 sd.cpp: ${sdTag}`);
+      }
+    } catch (err) {
+      console.warn(`  ⚠️  Could not resolve sd.cpp tag: ${err.message}`);
+    }
+
     try {
       // Step A: wipe bin/ to prevent cross-platform contamination between fetches
       const binDir = path.join(ROOT, 'bin');
@@ -231,14 +251,16 @@ async function syncPlatform(platform, manifest, updateMode) {
         console.log(`  🗑️  bin/ wiped before fetch`);
       }
 
-      // Step B: fetch llama.cpp binaries into bin/
+      // Step B: fetch llama.cpp binaries into bin/ — pinned to the resolved tag
       const llamaScript = FETCH_LLAMA[platform];
       if (llamaScript) {
-        execSync(`node ${llamaScript}`, { stdio: 'inherit', cwd: ROOT, env: fetchEnv });
+        const versionArg = llamaTag ? ` --version ${llamaTag}` : '';
+        execSync(`node ${llamaScript}${versionArg}`, { stdio: 'inherit', cwd: ROOT, env: fetchEnv });
       }
-      // Step C: fetch sd.cpp binaries into bin/ with platform override
+      // Step C: fetch sd.cpp binaries into bin/ with platform override — pinned to resolved tag
       if (HAS_SD[platform]) {
-        execSync(`node scripts/fetch-sd-cpp.js`, { stdio: 'inherit', cwd: ROOT, env: fetchEnv });
+        const versionArg = sdTag ? ` --version ${sdTag}` : '';
+        execSync(`node scripts/fetch-sd-cpp.js${versionArg}`, { stdio: 'inherit', cwd: ROOT, env: fetchEnv });
       }
       // Step D: copy bin/ → bin-master/{platform}/
       if (fs.existsSync(binDir)) {
@@ -253,6 +275,10 @@ async function syncPlatform(platform, manifest, updateMode) {
         copyDir(binDir, masterPlatDir);
         console.log(`  ✅ Copied bin/ → bin-master/${platform}/`);
       }
+
+      // Record the release tags we actually fetched
+      if (llamaTag) entry.llama = llamaTag;
+      if (sdTag)    entry.sd    = sdTag;
     } catch (err) {
       console.warn(`  ⚠️  Fetch failed for ${platform} — keeping existing files`);
       console.warn(`     ${err.message?.split('\n')[0] ?? err}`);

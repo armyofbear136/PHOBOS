@@ -234,14 +234,24 @@ if (hasMaster && !forceClean) {
 // ── Fetch if needed ───────────────────────────────────────────────────────────
 if (!usedMaster) {
   if (cfg.fetchLlama) {
-    console.log(`\n📥 [2/3] Fetching llama.cpp binaries (${target})...`);
-    run(`node ${cfg.fetchLlama}`);
+    const pinnedVer = report.pinnedLlama ? ` --version ${report.pinnedLlama}` : '';
+    if (report.pinnedLlama) {
+      console.log(`\n📥 [2/3] Fetching llama.cpp binaries (${target}) — pinned to ${report.pinnedLlama}...`);
+    } else {
+      console.log(`\n📥 [2/3] Fetching llama.cpp binaries (${target}) — ⚠️  NO PINNED VERSION, using latest...`);
+    }
+    run(`node ${cfg.fetchLlama}${pinnedVer}`);
   } else {
     console.warn(`\n⚠️  [2/3] ${cfg.note ?? 'No fetch script'}`);
   }
   if (cfg.fetchSd) {
-    console.log('\n📥 Fetching sd.cpp binaries...');
-    run('node scripts/fetch-sd-cpp.js');
+    const pinnedSdVer = report.pinnedSd ? ` --version ${report.pinnedSd}` : '';
+    if (report.pinnedSd) {
+      console.log(`\n📥 Fetching sd.cpp binaries — pinned to ${report.pinnedSd}...`);
+    } else {
+      console.log('\n📥 Fetching sd.cpp binaries — ⚠️  NO PINNED VERSION, using latest...');
+    }
+    run(`node scripts/fetch-sd-cpp.js${pinnedSdVer}`);
   } else if (cfg.note) {
     console.warn(`   ${cfg.note}`);
   }

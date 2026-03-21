@@ -1,5 +1,8 @@
 {
   "win32-x64": {
+    "llama": "b8457",
+    "llama-vulkan-source": "b8429",
+    "sd": "master-536-5265a5e",
     "files": {
       "llama-server-win32-x64.exe": {
         "sha256": "64096d0b1ff22e09b2acb2d4b793a7f8acd33cbd130031f45d117d84e26ade72",
@@ -74,6 +77,8 @@
     }
   },
   "darwin-arm64": {
+    "llama": "b8457",
+    "sd": "master-536-5265a5e",
     "files": {
       "llama-server-darwin-arm64": {
         "sha256": "c90823b7c826698eae4e83df4194e0a0d4b8d727475a2e642f790be23bd71758",
@@ -88,6 +93,8 @@
     }
   },
   "darwin-x64": {
+    "llama": "b8457",
+    "sd": "",
     "files": {
       "llama-server-darwin-x64": {
         "sha256": "fe2fd8b3d2d29f23d36c4aaeec38fa7a569e5c9a492711060327f631b85729f6",
@@ -97,6 +104,8 @@
     }
   },
   "linux-x64": {
+    "llama": "b8457",
+    "sd": "master-536-5265a5e",
     "files": {
       "llama-server-linux-x64": {
         "sha256": "dd362a9d453c66a9c3859bf5e95fd46e5cdc15103bea73b1c7edc058bf4865de",
@@ -116,6 +125,8 @@
     }
   },
   "linux-arm64": {
+    "llama": "",
+    "sd": "n/a",
     "files": {}
   },
   "_updated": "2026-03-20T23:01:19.677Z"

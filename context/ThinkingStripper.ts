@@ -1,25 +1,33 @@
 /**
- * Removes <think>...</think> blocks from message content before
- * using messages as input to future AI dispatches.
+ * Removes <think>...</think> and [THINK]...[/THINK] blocks from message content
+ * before using messages as input to future AI dispatches.
  *
- * DeepSeek's thinking content should never be re-injected into
+ * DeepSeek's and Ministral's thinking content should never be re-injected into
  * the next turn's input — only the final output matters.
  * The thinking content is stored separately in messages.thinking_trace.
  */
 export class ThinkingStripper {
   /**
-   * Extract thinking content and clean output from a raw DeepSeek response.
+   * Extract thinking content and clean output from a raw response.
    * Returns { thinking, output } where output is safe to store as message content.
+   * Handles both <think>...</think> (Qwen3, DeepSeek, Nemotron) and
+   * [THINK]...[/THINK] (Ministral bracket format).
    */
   strip(rawContent: string): { thinking: string; output: string } {
     const thinkBlocks: string[] = [];
-    let cleaned = rawContent;
+
+    // Normalize bracket form to angle-bracket form before processing
+    const normalized = rawContent
+      .replace(/\[THINK\]/gi, '<think>')
+      .replace(/\[\/THINK\]/gi, '</think>');
+
+    let cleaned = normalized;
 
     // Extract all <think>...</think> blocks
     const thinkRegex = /<think>([\s\S]*?)<\/think>/g;
     let match;
 
-    while ((match = thinkRegex.exec(rawContent)) !== null) {
+    while ((match = thinkRegex.exec(normalized)) !== null) {
       thinkBlocks.push(match[1]);
     }
 

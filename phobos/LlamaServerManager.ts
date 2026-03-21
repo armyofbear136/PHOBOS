@@ -111,12 +111,28 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
   }
 
   // Jinja chat template + reasoning-format routing for all Jinja-template models.
-  // Covers: Qwen3, Qwen3.5, Magistral, DeepSeek-R1 Qwen3 distills, all Nemotron 3 variants.
-  // --reasoning-format deepseek extracts <think>...</think> into reasoning_content,
-  // keeping delta.content clean for the final answer. Without this flag, <think> tokens
-  // are injected into the content stream and cause the Jinja renderer to crash.
+  //
+  // --reasoning-format deepseek: llama-server parses <think>...</think> into
+  // reasoning_content in the streaming delta. Used by field-path models (Qwen3,
+  // Qwen3.5, Magistral, DeepSeek-R1 Qwen3 distills, Nanbeige, SmolLM3) where the
+  // Qwen3 template format is what deepseek parsing was written for.
+  //
+  // --reasoning-format none: tags stay in delta.content. Used by tag-path models
+  // where ThinkingTokenRouter handles extraction client-side:
+  //   • Nemotron 3 — special token IDs 12/13, deepseek parsing silently fails
+  //   • Phi-4 mini reasoning — phi-4 template format, deepseek parsing doesn't match
+  //   • Ministral 3 Reasoning — Mistral v7 template, confirmed working tag-path
+  //
+  // Per-request reasoning_format in extraBodyThink/extraBodyNoThink always overrides
+  // this server-level default.
   if (spec.jinjaTemplate) {
-    args.push('--jinja', '--reasoning-format', 'deepseek');
+    const isTagPathModel = (
+      spec.nemotronVariant != null ||
+      spec.modelId.startsWith('phi4-mini-reasoning') ||
+      spec.modelId.startsWith('ministral-') ||
+      spec.modelId.startsWith('smollm3')
+    );
+    args.push('--jinja', '--reasoning-format', isTagPathModel ? 'none' : 'deepseek');
   }
 
   // ── Build environment for GPU device targeting ──────────────────────────

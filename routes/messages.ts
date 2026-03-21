@@ -567,6 +567,9 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           // Real-time segment writes — one segment per thinking phase, appended per token.
           // segmentStore tracks the active segment ID internally per (messageId, source) pair.
           onThinkChunk: async (content: string, source: 'coordinator' | 'engine') => {
+            // Don't open or write a segment for whitespace-only tokens (e.g. SmolLM3 emits
+            // "<think>\n\n</think>" — the \n\n is the entire think content, creating empty segments).
+            if (!content.trim()) return;
             if (!loopSegIds[source]) {
               loopSegIds[source] = await segmentStore.openSegment(threadId, assistantMsg.id, source);
             }
@@ -821,6 +824,7 @@ async function handleDirectResponse(
   };
 
   const appendToSegment = async (token: string): Promise<void> => {
+    if (!token.trim()) return;  // skip whitespace-only tokens — never open a segment for them
     if (!activeSegmentId) await openCoordSegment();
     await segmentStore.appendToken(activeSegmentId!, token);
   };

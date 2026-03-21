@@ -317,31 +317,42 @@ export function getThinkingStrategy(provider: string, model: string): ThinkingSt
       };
     }
 
-    // ── SmolLM3: FIELD path, no chat_template_kwargs ───────────────────
-    // SmolLM3's template doesn't support enable_thinking kwarg. The server's
-    // --reasoning-format deepseek (set at startup for jinjaTemplate models)
-    // parses <think> tags and routes them to reasoning_content in the API response.
-    // Per-request reasoning_format:deepseek ensures field path works.
-    // No chat_template_kwargs — the template activates thinking via its own
-    // Reasoning Mode metadata field when --jinja is active.
+    // ── SmolLM3: TAG path, system prompt activation ────────────────────
+    // Wire test results (confirmed March 2026):
+    //   chat_template_kwargs:{enable_thinking:true} → ECONNRESET (crashes server)
+    //   reasoning_format:deepseek                   → ECONNRESET (crashes server)
+    //   system: "## Metadata\nReasoning Mode: /think" → WORKS, <think> tags in delta.content
+    //   system: "/think"                             → ECONNRESET
+    //
+    // SmolLM3 activation requires the EXACT string "## Metadata\nReasoning Mode: /think"
+    // as the system message. Tags appear in delta.content (not reasoning_content).
+    // Use tag path + reasoning_format:none. applyThinkingStrategy() exempts SmolLM3
+    // from the jinjaTemplate early-return so the systemSuffix is actually appended.
     if (model.startsWith('smollm3')) {
       return {
-        systemSuffix: '',
-        thinkingPath: 'field',
-        extraBodyThink:   { reasoning_format: 'deepseek' },
+        systemSuffix: '\n\n## Metadata\nReasoning Mode: /think',
+        thinkingPath: 'tag',
+        extraBodyThink:   { reasoning_format: 'none' },
         extraBodyNoThink: { reasoning_format: 'none' },
       };
     }
 
-    // ── Phi-4 mini reasoning: FIELD path, no chat_template_kwargs ─────
-    // Phi-4-mini always reasons (R1 distill). Its template doesn't support
-    // enable_thinking kwarg. Server's --reasoning-format deepseek parses
-    // <think> tags into reasoning_content.
+    // ── Phi-4 mini reasoning: TAG path ────────────────────────────────
+    // Phi-4-mini is an R1 distill — always produces <think> tags, no activation needed.
+    // Its Jinja template is the phi-4 instruct template, NOT the Qwen3 template.
+    // --reasoning-format deepseek at the server level only reliably parses the
+    // Qwen3-family <think> token pattern. For Phi-4, the tag format differs enough
+    // that parsing fails silently and tags leak into delta.content as literal text.
+    //
+    // Tag path + per-request reasoning_format:none tells llama-server to leave
+    // everything in delta.content. ThinkingTokenRouter's tag parser then extracts
+    // <think>...</think> blocks, identical to the confirmed-working Ministral path.
+    // The server-level --reasoning-format deepseek is overridden per-request to none.
     if (model.startsWith('phi4-mini-reasoning')) {
       return {
         systemSuffix: '',
-        thinkingPath: 'field',
-        extraBodyThink:   { reasoning_format: 'deepseek' },
+        thinkingPath: 'tag',
+        extraBodyThink:   { reasoning_format: 'none' },
         extraBodyNoThink: { reasoning_format: 'none' },
       };
     }
@@ -505,7 +516,11 @@ export function applyThinkingStrategy(
   // PHOBOS Local Jinja-template models (Qwen3, Magistral, DeepSeek-R1 Qwen3 distills, Nemotron):
   // thinking activated via chat_template_kwargs:{enable_thinking:true} in extra_body.
   // No message prefix needed.
-  if (provider === 'phobos' && getSpec(model)?.jinjaTemplate) return { messages, systemPrompt };
+  //
+  // EXCEPTION: SmolLM3 uses jinjaTemplate:true but crashes on chat_template_kwargs and
+  // reasoning_format:deepseek. It activates thinking via "## Metadata\nReasoning Mode: /think"
+  // as a system prompt suffix. Its systemSuffix must be appended here — do NOT early-return.
+  if (provider === 'phobos' && getSpec(model)?.jinjaTemplate && !model.startsWith('smollm3')) return { messages, systemPrompt };
 
   // System prompt injection for models that need it (Llama on Ollama, PHOBOS Llama, etc.)
   const finalSystem = mode === 'think'

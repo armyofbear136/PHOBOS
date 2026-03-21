@@ -426,7 +426,8 @@ export class TaskPlanner {
       const clean = await engineStream({
         systemPrompt: '',
         messages: [{ role: 'user', content: prompt }],
-        maxTokens: 2048,
+        maxTokens: 8192,  // thinking models (Phi-4, SmolLM3, Ministral) spend 500-2000 tokens
+                          // thinking before producing JSON — 2048 was too tight and caused truncation
         temperature: 0.2,
         mode: 'think',
         onThinkToken: sendThinking,

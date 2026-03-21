@@ -835,7 +835,7 @@ export class LoopController {
       });
       await this.persistAndSend(
         reply,
-        { type: 'coordinator', content: delivery, source: 'coordinator' },
+        { type: 'coordinator', content: delivery, source: 'engine' },
         assistantMessageId
       );
     } catch (err) {

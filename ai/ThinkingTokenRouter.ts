@@ -26,6 +26,30 @@
 
 import type { ThinkingStrategy } from './clients.js';
 
+/**
+ * Returns the longest suffix of `text` that is a proper prefix of `tag`,
+ * or '' if no such suffix exists.
+ *
+ * Used to detect when an SSE chunk ends mid-tag (e.g. text ends with "<th"
+ * when tag is "<think>"). The returned partial is held in partialTagBuf and
+ * prepended to the next chunk so the full tag can be matched.
+ *
+ * Examples:
+ *   trailingPartialTag("hello <th",  "<think>") → "<th"
+ *   trailingPartialTag("hello <thi", "<think>") → "<thi"
+ *   trailingPartialTag("hello",      "<think>") → ""
+ *   trailingPartialTag("</th",       "</think>") → "</th"
+ */
+function trailingPartialTag(text: string, tag: string): string {
+  // Walk backwards from the end of text, checking if any suffix is a tag prefix
+  const maxCheck = Math.min(text.length, tag.length - 1);
+  for (let len = maxCheck; len >= 1; len--) {
+    const suffix = text.slice(text.length - len);
+    if (tag.startsWith(suffix)) return suffix;
+  }
+  return '';
+}
+
 export interface RouterResult {
   think: string;
   output: string;
@@ -35,6 +59,9 @@ export class ThinkingTokenRouter {
   private inThink: boolean;       // cross-chunk state for <think> tag parsing
   private thinkBuf = '';           // accumulated thinking text
   private outputBuf = '';          // accumulated output text
+  // Holds a partial open/close tag that was split across SSE chunk boundaries.
+  // e.g. model streams "<th" then "ink" then ">\n" — we buffer until complete.
+  private partialTagBuf = '';
 
   /**
    * @param strategy  — thinking strategy for the model/provider
@@ -104,9 +131,16 @@ export class ThinkingTokenRouter {
     }
 
     if (rawContent) {
-      // Content field present — check for leaked <think> tags
-      if (rawContent.includes('<think>') || rawContent.includes('</think>')) {
-        outputOut += this.stripInlineThinkTags(rawContent);
+      // Content field present — check for leaked think tags (angle-bracket or bracket form)
+      const hasLeakedTags =
+        rawContent.includes('<think>') || rawContent.includes('</think>') ||
+        /\[THINK\]/i.test(rawContent) || /\[\/THINK\]/i.test(rawContent);
+      if (hasLeakedTags) {
+        // Normalize bracket form before stripping so stripInlineThinkTags only needs one format
+        const normalized = rawContent
+          .replace(/\[THINK\]/gi, '<think>')
+          .replace(/\[\/THINK\]/gi, '</think>');
+        outputOut += this.stripInlineThinkTags(normalized);
       } else if (!this.inThink) {
         outputOut += rawContent;
       }
@@ -129,12 +163,20 @@ export class ThinkingTokenRouter {
       }
     }
 
+    if (outputOut) this.outputBuf += outputOut;
     return { think: thinkOut, output: outputOut };
   }
 
   /**
    * Tag-path: everything arrives in delta.content. <think>...</think> tags
    * separate thinking from output. Cross-chunk state tracked via this.inThink.
+   *
+   * Also handles Ministral's [THINK]...[/THINK] bracket format — normalized to
+   * angle-bracket form before parsing so all downstream logic stays unchanged.
+   *
+   * Partial-tag buffering: some models (e.g. Phi-4) split tags across SSE chunk
+   * boundaries: "<th" + "ink" + ">\n". partialTagBuf holds incomplete tag prefixes
+   * until the full tag can be assembled and matched.
    */
   private feedTag(delta: Record<string, unknown>): RouterResult {
     let thinkOut = '';
@@ -143,17 +185,29 @@ export class ThinkingTokenRouter {
     const rawContent = delta.content as string | null | undefined;
     if (!rawContent) return { think: '', output: '' };
 
-    let remaining = rawContent;
+    // Normalize Ministral's bracket tags to standard angle-bracket form.
+    // [THINK] and [/THINK] (case-insensitive) are aliases for <think> and </think>.
+    // Done once per chunk before the parse loop so every code path handles them.
+    // Then prepend any partial tag carried over from the previous chunk.
+    let remaining = this.partialTagBuf + rawContent
+      .replace(/\[THINK\]/gi, '<think>')
+      .replace(/\[\/THINK\]/gi, '</think>');
+    this.partialTagBuf = '';
+
     while (remaining.length > 0) {
       if (this.inThink) {
         const closeIdx = remaining.indexOf('</think>');
         if (closeIdx === -1) {
-          // Still inside <think> block — entire chunk is thinking
-          if (this.mode === 'think') {
-            this.thinkBuf += remaining;
-            thinkOut += remaining;
-            this.onThinkToken?.(remaining);
+          // Check if the tail could be a partial </think> tag split across chunks.
+          // If so, hold the partial suffix — don't emit or discard it yet.
+          const partial = trailingPartialTag(remaining, '</think>');
+          const safe = partial ? remaining.slice(0, remaining.length - partial.length) : remaining;
+          if (safe && this.mode === 'think') {
+            this.thinkBuf += safe;
+            thinkOut += safe;
+            this.onThinkToken?.(safe);
           }
+          if (partial) this.partialTagBuf = partial;
           remaining = '';
         } else {
           // Found </think> — extract thinking portion, continue with rest
@@ -169,8 +223,11 @@ export class ThinkingTokenRouter {
       } else {
         const openIdx = remaining.indexOf('<think>');
         if (openIdx === -1) {
-          // No <think> tag — everything is output
-          outputOut += remaining;
+          // No complete <think> tag — but the tail might be a partial open tag.
+          const partial = trailingPartialTag(remaining, '<think>');
+          const safe = partial ? remaining.slice(0, remaining.length - partial.length) : remaining;
+          if (safe) outputOut += safe;
+          if (partial) this.partialTagBuf = partial;
           remaining = '';
         } else {
           // Found <think> — emit text before it as output, enter think mode
@@ -233,9 +290,16 @@ export class ThinkingTokenRouter {
   /**
    * Call after the stream ends. Returns any remaining buffered content.
    * If still inside a <think> block (model produced unclosed tag), discards it.
+   * If partialTagBuf holds an incomplete tag that never completed, emits it as output.
    */
   flush(): RouterResult {
     const result: RouterResult = { think: '', output: '' };
+    // If we were holding a partial tag that never completed, it's safe literal text
+    if (this.partialTagBuf && !this.inThink) {
+      result.output = this.partialTagBuf;
+      this.outputBuf += this.partialTagBuf;
+    }
+    this.partialTagBuf = '';
     // If still inThink at end of stream, the model left an unclosed <think> block.
     // Discard any partial thinking — it's malformed.
     this.inThink = false;
@@ -243,12 +307,16 @@ export class ThinkingTokenRouter {
   }
 
   /**
-   * Nuclear final strip: removes any surviving <think>...</think> blocks from
-   * the accumulated output buffer. Call on the final output string before returning.
-   * This catches any multi-token spanning tags the streaming parser missed.
+   * Nuclear final strip: removes any surviving <think>...</think> or [THINK]...[/THINK]
+   * blocks from the accumulated output buffer. Call on the final output string before
+   * returning. Catches any multi-token spanning tags the streaming parser missed.
    */
   static finalStrip(text: string): string {
-    return text.trim().replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    return text
+      .trim()
+      .replace(/<think>[\s\S]*?<\/think>/g, '')
+      .replace(/\[THINK\][\s\S]*?\[\/THINK\]/gi, '')
+      .trim();
   }
 
   /** Returns accumulated thinking text */
@@ -262,5 +330,6 @@ export class ThinkingTokenRouter {
     this.inThink = startInThink;
     this.thinkBuf = '';
     this.outputBuf = '';
+    this.partialTagBuf = '';
   }
 }

@@ -6,6 +6,13 @@ import { getServerStatus } from '../phobos/LlamaServerManager.js';
 import { DispatchLogStore } from '../db/DispatchLogStore.js';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 import { ModelConfigStore, PROVIDERS, getCoordinatorModels, getEngineModels } from '../db/ModelConfigStore.js';
+import { isConfigOptimal, detectHardware } from '../phobos/PhobosLocalManager.js';
+
+// ── Config optimal cache — avoids running the scoring engine on every 5s poll ──
+let _optimalCache: { optimal: boolean; recommendedSayon: string; recommendedSeren: string } | null = null;
+let _optimalCacheKey  = '';   // `${sayonModel}|${serenModel}` — invalidates on model change
+let _optimalCacheTime = 0;
+const OPTIMAL_CACHE_TTL_MS = 60_000;
 
 export async function statusRoute(fastify: FastifyInstance): Promise<void> {
   const db = DatabaseManager.getInstance();
@@ -21,6 +28,34 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
   fastify.get('/api/status', async (_req, reply) => {
     const health = await checkBackendHealth();
     const phobos = getServerStatus();
+
+    // Config optimal check — only for phobos provider, cached 60s
+    let configOptimal: boolean | null = null;
+    let recommendedSayon: string | null = null;
+    let recommendedSeren: string | null = null;
+
+    const isPhobos = COORDINATOR_PROVIDER === 'phobos' || ENGINE_PROVIDER === 'phobos';
+    if (isPhobos) {
+      const cacheKey = `${COORDINATOR_MODEL}|${ENGINE_MODEL}`;
+      const now = Date.now();
+      if (_optimalCache && _optimalCacheKey === cacheKey && (now - _optimalCacheTime) < OPTIMAL_CACHE_TTL_MS) {
+        configOptimal    = _optimalCache.optimal;
+        recommendedSayon = _optimalCache.recommendedSayon;
+        recommendedSeren = _optimalCache.recommendedSeren;
+      } else {
+        try {
+          const hw = await detectHardware();
+          const result = isConfigOptimal(COORDINATOR_MODEL, ENGINE_MODEL, hw);
+          _optimalCache     = result;
+          _optimalCacheKey  = cacheKey;
+          _optimalCacheTime = now;
+          configOptimal    = result.optimal;
+          recommendedSayon = result.recommendedSayon;
+          recommendedSeren = result.recommendedSeren;
+        } catch { /* non-fatal — leave fields null */ }
+      }
+    }
+
     return reply.send({
       ...health,
       coordinatorModel: COORDINATOR_MODEL,
@@ -33,6 +68,10 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
       // Server lifecycle — lets the frontend block input during model switches
       coordinatorStarting: phobos.sayon.state === 'starting',
       engineStarting:      phobos.seren.state === 'starting',
+      // Config optimality — lets the frontend show mismatch indicators
+      configOptimal,
+      recommendedSayon,
+      recommendedSeren,
       timestamp: new Date().toISOString(),
     });
   });

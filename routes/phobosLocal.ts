@@ -4,10 +4,13 @@ import * as path from 'path';
 import {
   detectHardware,
   buildRecommendation,
+  isConfigOptimal,
   listDownloaded,
+  isDownloaded,
   downloadModel,
   getSpec,
   deleteModel,
+  deleteFluxModel,
   GGUF_CATALOGUE,
   MODELS_DIR,
   FLUX_CATALOGUE,
@@ -41,6 +44,8 @@ import {
   isEsrganDownloaded,
   esrganModelPath,
   type EsrganSpec,
+  type GGUFSpec,
+  type ImageModelSpec,
 } from '../phobos/PhobosLocalManager.js';
 import {
   prefetchVisionModels,
@@ -63,16 +68,71 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
     return reply.send({ hardware: hw, recommendation: rec });
   });
 
+  // POST /api/phobos/auto-config
+  // Computes the optimal config and returns a full plan: what to download, what to
+  // clean up, and what to launch. The frontend orchestrates the sequence.
+  fastify.post('/api/phobos/auto-config', async (_req, reply) => {
+    const hw  = await detectHardware();
+    const rec = buildRecommendation(hw);
+
+    // ── Hardcoded image/video picks for auto-config ──
+    const AUTO_IMAGE_ID = 'z-image-turbo-q4';
+    const AUTO_VIDEO_ID = 'wan21-t2v-1.3b-q4';
+
+    const imageSpec = getImageModelSpec(AUTO_IMAGE_ID) ?? null;
+    const videoSpec = getImageModelSpec(AUTO_VIDEO_ID) ?? null;
+
+    // ── LLM models: what needs downloading ──
+    const llmNeeded: string[] = [];
+    const sayonSpec = getSpec(rec.sayon.modelId);
+    const serenSpec = getSpec(rec.seren.modelId);
+    if (sayonSpec && !isDownloaded(sayonSpec)) llmNeeded.push(rec.sayon.modelId);
+    if (serenSpec && !isDownloaded(serenSpec) && rec.seren.modelId !== rec.sayon.modelId) {
+      llmNeeded.push(rec.seren.modelId);
+    }
+
+    // ── Image/video models: what needs downloading ──
+    const imageNeeded: string[] = [];
+    if (imageSpec && !isImageModelDownloaded(imageSpec)) imageNeeded.push(imageSpec.modelId);
+    if (videoSpec && !isImageModelDownloaded(videoSpec)) imageNeeded.push(videoSpec.modelId);
+
+    // ── Cleanup candidates: downloaded LLM models NOT in the recommended set ──
+    // Only LLM models — optional models (image, video, upscale) are never touched.
+    const keepSet = new Set([rec.sayon.modelId, rec.seren.modelId]);
+    const downloaded = listDownloaded();
+    const cleanupCandidates = downloaded
+      .filter(s => !keepSet.has(s.modelId))
+      .map(s => ({ modelId: s.modelId, label: s.label, sizeBytes: s.sizeBytes }));
+
+    return reply.send({
+      recommendation: rec,
+      imageModel:  imageSpec ? { modelId: imageSpec.modelId, displayName: imageSpec.displayName, sizeBytes: imageSpec.sizeBytes, vramRequiredGb: imageSpec.vramRequiredGb } : null,
+      videoModel:  videoSpec ? { modelId: videoSpec.modelId, displayName: videoSpec.displayName, sizeBytes: videoSpec.sizeBytes, vramRequiredGb: videoSpec.vramRequiredGb } : null,
+      llmNeeded,
+      imageNeeded,
+      cleanupCandidates,
+      readyToLaunch: llmNeeded.length === 0,
+    });
+  });
+
   // GET /api/phobos/catalogue
-  // Returns the full model catalogue (for frontend display of all available models).
+  // Returns the full model catalogue with scoring fields for frontend display.
   fastify.get('/api/phobos/catalogue', async (_req, reply) => {
     return reply.send({
       models: GGUF_CATALOGUE.map(s => ({
         modelId: s.modelId,
         label:   s.label,
+        family:  s.family,
+        role:    s.role,
+        thinkingTokens: s.thinkingTokens,
         sizeBytes: s.sizeBytes,
         ramRequiredGb: s.ramRequiredGb,
         contextWindow: s.contextWindow,
+        legacy:  s.legacy ?? false,
+        activeParamsB: s.activeParamsB,
+        sayonQuality:  s.sayonQuality ?? 0,
+        serenQuality:  s.serenQuality ?? 0,
+        speedClass:    s.speedClass,
       })),
     });
   });
@@ -263,6 +323,44 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       }
     }
   );
+
+  // POST /api/phobos/cleanup
+  // Deletes LLM models from the cleanup list. Stops servers first if any model
+  // being deleted is currently loaded. Only LLM models — never optional models.
+  fastify.post<{
+    Body: { modelIds: string[] };
+  }>('/api/phobos/cleanup', async (req, reply) => {
+    const { modelIds } = req.body;
+    if (!modelIds || modelIds.length === 0) return reply.send({ ok: true, deleted: [] });
+
+    // Check if any model being cleaned is currently loaded
+    const status = getServerStatus();
+    const loadedIds = new Set<string>();
+    for (const [, s] of Object.entries(status) as [string, { state: string; modelId: string }][]) {
+      if (s.modelId && (s.state === 'running' || s.state === 'starting')) {
+        loadedIds.add(s.modelId);
+      }
+    }
+    const needsStop = modelIds.some(id => loadedIds.has(id));
+
+    // Stop servers if a loaded model is being cleaned
+    if (needsStop) {
+      await Promise.all([stopServer('sayon'), stopServer('seren')]);
+    }
+
+    // Delete each model
+    const deleted: string[] = [];
+    const errors: string[]  = [];
+    for (const modelId of modelIds) {
+      try {
+        if (deleteModel(modelId)) deleted.push(modelId);
+      } catch (err) {
+        errors.push(`${modelId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    return reply.send({ ok: errors.length === 0, deleted, errors: errors.length > 0 ? errors : undefined, serversStopped: needsStop });
+  });
 
   // ── Image model routes ───────────────────────────────────────────────────
 

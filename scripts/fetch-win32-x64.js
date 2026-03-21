@@ -21,14 +21,16 @@ await fetchBinaries(
   ],
   [
     // ── ggml-cuda.dll — the CUDA compute backend for llama-server ──────────────
-    // Extracted from the llama CUDA release zip (contains only ggml-cuda.dll).
+    // IMPORTANT: ggml-cuda.dll and all cudart DLLs below MUST come from the same
+    // CUDA major version. CUDA 12.x builds produce cublas64_12.dll etc.
+    // CUDA 13.x builds produce cublas64_13.dll — different filenames, incompatible.
+    // Pin to 12.4 first to match the runtime DLL names we extract (*64_12.dll).
     {
       variants: [
-        { suffix: 'win-cuda-13.1-x64', ext: '.zip' },
         { suffix: 'win-cuda-12.4-x64', ext: '.zip' },
         { suffix: 'win-cuda-12.8-x64', ext: '.zip' },
-        { suffix: 'win-cuda-12.2-x64', ext: '.zip' },
         { suffix: 'win-cuda-12.6-x64', ext: '.zip' },
+        { suffix: 'win-cuda-12.2-x64', ext: '.zip' },
       ],
       dllInZip: 'ggml-cuda.dll',
       outName:  'ggml-cuda.dll',
@@ -42,13 +44,13 @@ await fetchBinaries(
     //
     // The cudart-llama zip is a separate release asset from llama.cpp CI that
     // packages only these three runtime DLLs for redistribution.
+    // CUDA 12.x only — must match the ggml-cuda.dll variant above.
     {
       variants: [
-        { suffix: 'win-cuda-13.1-x64', ext: '.zip', cudartZip: true },
         { suffix: 'win-cuda-12.4-x64', ext: '.zip', cudartZip: true },
         { suffix: 'win-cuda-12.8-x64', ext: '.zip', cudartZip: true },
-        { suffix: 'win-cuda-12.2-x64', ext: '.zip', cudartZip: true },
         { suffix: 'win-cuda-12.6-x64', ext: '.zip', cudartZip: true },
+        { suffix: 'win-cuda-12.2-x64', ext: '.zip', cudartZip: true },
       ],
       dllInZip: 'cudart64_12.dll',
       outName:  'cudart64_12.dll',
@@ -56,11 +58,10 @@ await fetchBinaries(
     },
     {
       variants: [
-        { suffix: 'win-cuda-13.1-x64', ext: '.zip', cudartZip: true },
         { suffix: 'win-cuda-12.4-x64', ext: '.zip', cudartZip: true },
         { suffix: 'win-cuda-12.8-x64', ext: '.zip', cudartZip: true },
-        { suffix: 'win-cuda-12.2-x64', ext: '.zip', cudartZip: true },
         { suffix: 'win-cuda-12.6-x64', ext: '.zip', cudartZip: true },
+        { suffix: 'win-cuda-12.2-x64', ext: '.zip', cudartZip: true },
       ],
       dllInZip: 'cublas64_12.dll',
       outName:  'cublas64_12.dll',
@@ -68,11 +69,10 @@ await fetchBinaries(
     },
     {
       variants: [
-        { suffix: 'win-cuda-13.1-x64', ext: '.zip', cudartZip: true },
         { suffix: 'win-cuda-12.4-x64', ext: '.zip', cudartZip: true },
         { suffix: 'win-cuda-12.8-x64', ext: '.zip', cudartZip: true },
-        { suffix: 'win-cuda-12.2-x64', ext: '.zip', cudartZip: true },
         { suffix: 'win-cuda-12.6-x64', ext: '.zip', cudartZip: true },
+        { suffix: 'win-cuda-12.2-x64', ext: '.zip', cudartZip: true },
       ],
       dllInZip: 'cublasLt64_12.dll',
       outName:  'cublasLt64_12.dll',

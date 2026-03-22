@@ -241,8 +241,12 @@ async function detectNonNvidiaGpus(): Promise<GpuDevice[]> {
         // AMD APUs share system RAM. Distinguishing heuristic: discrete AMD GPUs
         // have names like "RX 6600", "RX 7900 XTX", "Vega 64", "Navi 21" etc.
         // APU iGPUs have names like "Radeon 890M", "Radeon 780M", "Radeon Vega 8".
-        const amdDiscretePattern = /\bRX\s*\d{3,4}\b|\bVega\s*\d{2}\b|\bNavi\b|\bRDNA\b/i;
-        const isAmdDiscrete = isAmd && amdDiscretePattern.test(name);
+        // Older discrete: "Radeon (TM) 520", "Radeon 530", "Radeon R5 M430", "Radeon HD 7870".
+        // Note: WMI often reports trademark markers like (TM), (R), ® in GPU names.
+        // The key APU tell is an 'M' suffix on 3-digit model numbers (780M, 890M).
+        const amdDiscretePattern = /\bRX\s*\d{3,4}\b|\bVega\s*\d{2}\b|\bNavi\b|\bRDNA\b|\bRadeon\s*(?:\(TM\)\s*|\(R\)\s*|®\s*)?(?:HD\s*)?\d{3,4}\b|\bR[5-9]\b|\bWX\b/i;
+        const amdApuPattern = /\d{3}M\b/i; // 780M, 890M, 680M — integrated APU iGPUs
+        const isAmdDiscrete = isAmd && amdDiscretePattern.test(name) && !amdApuPattern.test(name);
         if (!isAmdDiscrete && (isAmd || isIntel)) {
           unifiedMemory = true; // APU or iGPU: RAM is shared pool
         }

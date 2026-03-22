@@ -100,6 +100,14 @@ export interface GpuDevice {
    */
   unifiedMemory?: boolean;
   /**
+   * Raw WMI / lspci enumeration position among non-NVIDIA GPUs, 0-based, before
+   * any vramGb-gate filtering. Vulkan enumerates all GPUs regardless of whether
+   * we skip them for inference — so the positional Vulkan index must be computed
+   * from the unfiltered WMI order, not from hw.gpus which excludes skipped entries.
+   * Only set on non-NVIDIA, non-Metal devices.
+   */
+  wmiPosition?: number;
+  /**
    * Runner profile — computed by detectHardware() after all GPUs are assembled.
    * Contains everything needed to spawn llama-server and sd-cli on this device.
    * Undefined only on cpu-fallback placeholder entries.
@@ -152,21 +160,33 @@ async function detectNonNvidiaGpus(): Promise<GpuDevice[]> {
   try {
     const { stdout } = await execFileAsync('powershell', [
       '-NoProfile', '-Command',
+      // Return both AdapterRAM and the registry qwMemorySize separately.
+      // qwMemorySize is the authoritative dedicated/UMA VRAM value written by the
+      // driver at install time — present on AMD discrete, AMD APU (UMA), and
+      // absent or tiny on Intel iGPU (which has no dedicated memory of its own).
+      // AdapterRAM is a 32-bit WMI field capped at 4 GB; it represents the
+      // "shared memory aperture" for iGPUs — a small window into system RAM that
+      // Windows exposes as adapter RAM. It is NOT reliable for inference budgeting.
+      //
+      // HasQwMemory=true means the driver reported a real dedicated/UMA allocation.
+      // HasQwMemory=false means we only have the unreliable AdapterRAM aperture value.
       `$regBase = 'HKLM:\\SYSTEM\\ControlSet001\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}'; ` +
       `$adapters = Get-CimInstance Win32_VideoController ` +
       `| Where-Object { $_.Name -notmatch 'NVIDIA' -and $_.Name -notmatch 'Microsoft' -and $_.Status -eq 'OK' } ` +
       `| Select-Object -Property Name,AdapterRAM,PNPDeviceID; ` +
       `$results = @(); ` +
       `foreach ($a in $adapters) { ` +
-      `  $vram = [uint64]$a.AdapterRAM; ` +
+      `  $adapterRam = [uint64]$a.AdapterRAM; ` +
+      `  $qwVram = [uint64]0; ` +
+      `  $hasQw = $false; ` +
       `  $regKeys = Get-ChildItem $regBase -ErrorAction SilentlyContinue | Where-Object { ` +
       `    (Get-ItemProperty $_.PSPath -Name 'DriverDesc' -ErrorAction SilentlyContinue).DriverDesc -eq $a.Name ` +
       `  }; ` +
       `  foreach ($rk in $regKeys) { ` +
       `    $qw = (Get-ItemProperty $rk.PSPath -Name 'HardwareInformation.qwMemorySize' -ErrorAction SilentlyContinue).'HardwareInformation.qwMemorySize'; ` +
-      `    if ($qw -and [uint64]$qw -gt $vram) { $vram = [uint64]$qw } ` +
+      `    if ($qw -and [uint64]$qw -gt $qwVram) { $qwVram = [uint64]$qw; $hasQw = $true } ` +
       `  }; ` +
-      `  $results += @{ Name = $a.Name; VramBytes = $vram } ` +
+      `  $results += @{ Name = $a.Name; AdapterRamBytes = $adapterRam; QwVramBytes = $qwVram; HasQwMemory = $hasQw } ` +
       `}; ` +
       `$results | ConvertTo-Json -Compress`,
     ], { timeout: 15_000 });
@@ -182,11 +202,94 @@ async function detectNonNvidiaGpus(): Promise<GpuDevice[]> {
     // deviceIndex=101 instead of 100, causing GGML_VK_VISIBLE_DEVICES=1.
     let nonNvidiaIdx = 0;
     for (let i = 0; i < items.length; i++) {
-      const item      = items[i];
-      const vramBytes = Number(item.VramBytes ?? 0);
-      const vramGb    = Math.round(vramBytes / (1024 ** 3));
-      if (vramGb < 1) continue;
-      gpus.push({ index: 100 + nonNvidiaIdx, name: String(item.Name ?? 'Unknown GPU'), vramGb, backend: 'vulkan' });
+      const item         = items[i];
+      const name         = String(item.Name ?? 'Unknown GPU');
+      const hasQwMemory  = Boolean(item.HasQwMemory);
+      const qwVramBytes  = Number(item.QwVramBytes ?? 0);
+      const adapterBytes = Number(item.AdapterRamBytes ?? 0);
+
+      // qwMemorySize is present → real dedicated VRAM or real UMA allocation.
+      // This covers: AMD discrete (GDDR), AMD APU/iGPU with UMA (890M, 780M, etc).
+      // Not present → only the shared aperture AdapterRAM is available.
+      // This covers: Intel iGPU (UHD, Iris, Arc on some systems), and any adapter
+      // where the driver didn't write the registry key.
+      //
+      // When qwMemorySize is present, that value is authoritative and marks the
+      // memory as real — usable by llama.cpp's Vulkan backend for model weights.
+      // When only AdapterRAM is available, the GPU has no dedicated memory that
+      // llama.cpp can reliably use; mark as sharedMemoryOnly and report 0 vramGb
+      // so it falls below the ≥1 GB gate and is excluded from inference budgeting.
+      //
+      // Exception: AdapterRAM-only GPUs are still included if they pass the ≥1 GB
+      // gate AND are Intel Arc (discrete Intel GPU with real VRAM) — detected by
+      // name. Arc GPUs write qwMemorySize correctly in modern drivers, so in
+      // practice this exception is rarely needed.
+      const isIntelArc = /Intel.*Arc/i.test(name);
+
+      let vramGb: number;
+      let unifiedMemory: boolean | undefined;
+      let sharedMemoryOnly: boolean | undefined;
+
+      if (hasQwMemory) {
+        vramGb = Math.round(qwVramBytes / (1024 ** 3));
+        // AMD APU / Intel (if ever writes qwMemory) with UMA: the GPU and CPU share
+        // the same physical RAM pool. Flag it so the recommendation engine budgets
+        // both models from one pool rather than double-counting.
+        const isAmd   = /AMD|Radeon|ATI/i.test(name);
+        const isIntel = /Intel/i.test(name);
+        // AMD discrete GPUs have qwMemorySize = dedicated GDDR, not shared.
+        // AMD APUs share system RAM. Distinguishing heuristic: discrete AMD GPUs
+        // have names like "RX 6600", "RX 7900 XTX", "Vega 64", "Navi 21" etc.
+        // APU iGPUs have names like "Radeon 890M", "Radeon 780M", "Radeon Vega 8".
+        const amdDiscretePattern = /\bRX\s*\d{3,4}\b|\bVega\s*\d{2}\b|\bNavi\b|\bRDNA\b/i;
+        const isAmdDiscrete = isAmd && amdDiscretePattern.test(name);
+        if (!isAmdDiscrete && (isAmd || isIntel)) {
+          unifiedMemory = true; // APU or iGPU: RAM is shared pool
+        }
+      } else if (isIntelArc) {
+        // Intel Arc discrete — should write qwMemorySize but may not on older drivers.
+        // Use AdapterRAM as a fallback; it's unreliable but better than nothing.
+        vramGb = Math.round(adapterBytes / (1024 ** 3));
+      } else {
+        // Only AdapterRAM available — this is the shared memory aperture.
+        // Not usable for LLM inference. Mark and skip via the vramGb gate below.
+        vramGb = 0;
+        sharedMemoryOnly = true;
+      }
+
+      // Skip GPUs with no usable memory (shared-aperture-only Intel iGPU etc).
+      // These appear as Vulkan devices but cannot hold model weights.
+      if (vramGb < 1) {
+        if (sharedMemoryOnly) {
+          console.log(`[HW] ${name}: skipped — no dedicated/UMA memory (shared aperture only)`);
+        }
+        continue;
+      }
+
+      // wmiPosition: the Vulkan-visible position of this GPU among non-NVIDIA devices.
+      // This is NOT simply the raw WMI loop index `i` because virtual display adapters
+      // (Parsec, Microsoft Remote Display Adapter, TeamViewer, etc.) appear in WMI but
+      // have no Vulkan ICD — they don't appear in Vulkan enumeration at all.
+      // Intel/AMD GPUs (even iGPUs with only shared memory) DO have Vulkan ICDs and
+      // DO shift the Vulkan slot numbers.
+      // So: count only Intel/AMD devices among items[0..i-1], not all WMI entries.
+      let vulkanVisiblePosition = 0;
+      for (let j = 0; j < i; j++) {
+        const prev = items[j];
+        const prevName = String(prev.Name ?? '');
+        const prevIsRealGpu = /Intel|AMD|Radeon|ATI|NVIDIA/i.test(prevName)
+          && !/Parsec|Remote|Virtual|TeamViewer|Indirect|IDD/i.test(prevName);
+        if (prevIsRealGpu) vulkanVisiblePosition++;
+      }
+
+      gpus.push({
+        index:         100 + nonNvidiaIdx,
+        name,
+        vramGb,
+        backend:       'vulkan',
+        unifiedMemory: unifiedMemory ?? undefined,
+        wmiPosition:   vulkanVisiblePosition,
+      });
       nonNvidiaIdx++;
     }
     return gpus;
@@ -443,12 +546,17 @@ async function assignRunnerProfiles(gpus: GpuDevice[]): Promise<void> {
     // that process context. GGML_VK_VISIBLE_DEVICES further filters within
     // that already-CUDA-hidden Vulkan list.
     //
-    // Positional index = position among non-NVIDIA GPUs only (0-based),
-    // NOT offset by nvidiaCount (those are hidden from this process).
-    const nonNvidiaPosition = gpus.filter(g =>
-      g.backend !== 'cuda' && g.backend !== 'metal' && g.index < gpu.index
-    ).length;
-    const positionalIndex = nonNvidiaPosition; // 0-based within non-NVIDIA only
+    // Positional index: use gpu.wmiPosition (raw WMI enumeration order, 0-based)
+    // when available. This is the correct Vulkan slot because Vulkan enumerates
+    // ALL non-NVIDIA GPUs — including ones we skipped for inference (e.g. Intel
+    // UHD 620 with no qwMemorySize). Counting only the filtered gpus[] array
+    // would assign Vulkan0 to the Radeon even when Intel occupies Vulkan0.
+    // Fall back to counting filtered gpus[] only when wmiPosition is absent
+    // (Linux, or Windows entries added without a WMI position).
+    const nonNvidiaPosition = gpu.wmiPosition !== undefined
+      ? gpu.wmiPosition
+      : gpus.filter(g => g.backend !== 'cuda' && g.backend !== 'metal' && g.index < gpu.index).length;
+    const positionalIndex = nonNvidiaPosition;
     // Prefer the CUDA-hidden enumeration index — this matches what the spawned
     // process will see when CUDA_VISIBLE_DEVICES=-1 is set. Fall back to full
     // enumeration, then positional.
@@ -482,29 +590,46 @@ async function assignRunnerProfiles(gpus: GpuDevice[]): Promise<void> {
 // Hardware doesn't change at runtime. Cache indefinitely after first successful detection.
 // Call invalidateHardwareCache() if a model switch needs fresh VRAM readings (future).
 let _hwCache: HardwareProfile | null = null;
+let _hwInFlight: Promise<HardwareProfile> | null = null;
 
 export function invalidateHardwareCache(): void {
   _hwCache = null;
+  _hwInFlight = null;
+}
+
+/** Synchronous read of the hardware cache. Returns null before first detectHardware() call completes. */
+export function getCachedHardware(): HardwareProfile | null {
+  return _hwCache;
 }
 
 export async function detectHardware(): Promise<HardwareProfile> {
   if (_hwCache) return _hwCache;
+  // Deduplicate concurrent calls — all callers share one in-flight detection run.
+  // Without this, two simultaneous reconcile calls both see _hwCache=null, run
+  // detection in parallel, produce different gpu object instances, and the runner
+  // profiles set by assignRunnerProfiles on one instance are not visible via the other.
+  if (_hwInFlight) return _hwInFlight;
 
-  const ramGb    = Math.floor(os.totalmem() / (1024 ** 3));
-  const cpuCores = os.cpus().length;
-  const cpuName  = os.cpus()[0]?.model?.trim() ?? 'Unknown CPU';
+  _hwInFlight = (async () => {
+    const ramGb    = Math.floor(os.totalmem() / (1024 ** 3));
+    const cpuCores = os.cpus().length;
+    const cpuName  = os.cpus()[0]?.model?.trim() ?? 'Unknown CPU';
 
-  const [nvidiaGpus, nonNvidiaWin, nonNvidiaLinux, appleGpus] = await Promise.all([
-    detectNvidiaGpus(),
-    detectNonNvidiaGpus(),
-    detectLinuxNonNvidiaGpus(),
-    detectAppleSilicon(),
-  ]);
+    const [nvidiaGpus, nonNvidiaWin, nonNvidiaLinux, appleGpus] = await Promise.all([
+      detectNvidiaGpus(),
+      detectNonNvidiaGpus(),
+      detectLinuxNonNvidiaGpus(),
+      detectAppleSilicon(),
+    ]);
 
-  const gpus = [...nvidiaGpus, ...nonNvidiaWin, ...nonNvidiaLinux, ...appleGpus];
-  await assignRunnerProfiles(gpus);
-  _hwCache = { ramGb, cpuCores, cpuName, gpus };
-  return _hwCache;
+    const gpus = [...nvidiaGpus, ...nonNvidiaWin, ...nonNvidiaLinux, ...appleGpus];
+    await assignRunnerProfiles(gpus);
+    _hwCache = { ramGb, cpuCores, cpuName, gpus };
+    _hwInFlight = null;
+    return _hwCache;
+  })();
+
+  return _hwInFlight;
 }
 
 // ── GGUF model catalogue ──────────────────────────────────────────────────────
@@ -921,6 +1046,47 @@ export interface ImageModelSpec {
   estSecondsCpu: number;
   license: string;
   licenseUrl: string;
+  /** Per-model generation profile — drives defaults, UI, and SAYON prompt engineering */
+  profile?: ImageModelProfile;
+}
+
+/**
+ * Per-model generation profile. Consumed by:
+ *   - buildSdxlArgs / buildChromaArgs / etc (generation defaults)
+ *   - WorkflowPanel (UI defaults when creating a new workflow node)
+ *   - SAYON (prompt engineering context via sayonBrief)
+ *
+ * When profile is undefined, the arg builder falls back to runner-level defaults.
+ */
+export interface ImageModelProfile {
+  // ── Generation defaults ─────────────────────────────────
+  defaultSteps:      number;
+  defaultCfgScale:   number;
+  defaultWidth:      number;
+  defaultHeight:     number;
+  defaultSampler:    string;
+  defaultScheduler?: string;        // 'discrete' | 'karras' | 'simple' — omit for sd-cli default
+  defaultNegative:   string;        // recommended negative prompt — empty string if model doesn't benefit
+
+  // ── Prompt style ────────────────────────────────────────
+  /** How SAYON should format prompts for this model:
+   *   natural: prose sentences — "a bear walking through misty woods at dawn"
+   *   tags:    comma-separated descriptors — "photorealistic, 8k, detailed, sharp focus"
+   *   booru:   danbooru-style tags — "score_9, score_8_up, 1girl, masterpiece"
+   */
+  promptStyle:       'natural' | 'tags' | 'booru';
+
+  // ── SAYON brief ─────────────────────────────────────────
+  /** Injected into SAYON's system prompt when this model is active.
+   *  Tells SAYON how to write effective prompts for this specific model.
+   *  Should be concise (2-4 sentences) and actionable. */
+  sayonBrief:        string;
+
+  // ── Capabilities ────────────────────────────────────────
+  supportsNegative:  boolean;        // false for guidance-free distilled models (turbo cfg=0)
+  supportsLoRA:      boolean;        // true for all SDXL, false for FLUX/Chroma in sd-cli
+  maxDimension:      number;         // hard cap before quality degrades severely
+  nativeDimension:   number;         // trained resolution — best quality at this size
 }
 
 /** Backward-compat alias — existing code that imports FluxSpec still works */
@@ -1150,6 +1316,13 @@ export const FLUX_CATALOGUE: FluxSpec[] = [
     estSecondsCpu:    480,
     license:          'apache-2.0',
     licenseUrl:       'https://huggingface.co/black-forest-labs/FLUX.1-schnell/blob/main/LICENSE.md',
+    profile: {
+      defaultSteps: 4, defaultCfgScale: 1, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'euler', defaultNegative: '',
+      promptStyle: 'natural',
+      sayonBrief: 'FLUX.1-schnell is a 4-step distilled model from Black Forest Labs. Write natural prose prompts describing the scene. Negative prompts have no effect (guidance=3.5 is baked in). Keep prompts descriptive but not excessively long. This model is fast but superseded by Chroma and FLUX.2 for quality.',
+      supportsNegative: false, supportsLoRA: false, maxDimension: 2048, nativeDimension: 1024,
+    },
   },
   {
     modelId:          'flux-schnell-q8',
@@ -1168,6 +1341,13 @@ export const FLUX_CATALOGUE: FluxSpec[] = [
     estSecondsCpu:    600,
     license:          'apache-2.0',
     licenseUrl:       'https://huggingface.co/black-forest-labs/FLUX.1-schnell/blob/main/LICENSE.md',
+    profile: {
+      defaultSteps: 4, defaultCfgScale: 1, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'euler', defaultNegative: '',
+      promptStyle: 'natural',
+      sayonBrief: 'FLUX.1-schnell Q8 is the higher-quality quantization of the 4-step distilled model. Write natural prose prompts. Negative prompts have no effect. Higher fidelity than Q4 but requires more VRAM.',
+      supportsNegative: false, supportsLoRA: false, maxDimension: 2048, nativeDimension: 1024,
+    },
   },
   // ── dev — non-commercial, 20-50 step generation ──────────────────────────
   {
@@ -1187,6 +1367,13 @@ export const FLUX_CATALOGUE: FluxSpec[] = [
     estSecondsCpu:    3600,
     license:          'FLUX-1-dev-Non-Commercial',
     licenseUrl:       'https://huggingface.co/black-forest-labs/FLUX.1-dev/blob/main/LICENSE.md',
+    profile: {
+      defaultSteps: 20, defaultCfgScale: 3.5, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'euler', defaultNegative: '',
+      promptStyle: 'natural',
+      sayonBrief: 'FLUX.1-dev is a high-quality 12B parameter model from Black Forest Labs. Use guidance=3.5 with 20-28 steps. Write detailed natural prose prompts — describe the subject, scene composition, lighting, and atmosphere in full sentences. Negative prompts are not effective. This model excels at text rendering and complex compositions.',
+      supportsNegative: false, supportsLoRA: false, maxDimension: 2048, nativeDimension: 1024,
+    },
   },
   {
     modelId:          'flux-dev-q8',
@@ -1205,6 +1392,13 @@ export const FLUX_CATALOGUE: FluxSpec[] = [
     estSecondsCpu:    4200,
     license:          'FLUX-1-dev-Non-Commercial',
     licenseUrl:       'https://huggingface.co/black-forest-labs/FLUX.1-dev/blob/main/LICENSE.md',
+    profile: {
+      defaultSteps: 20, defaultCfgScale: 3.5, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'euler', defaultNegative: '',
+      promptStyle: 'natural',
+      sayonBrief: 'FLUX.1-dev Q8 is the highest fidelity FLUX.1 variant. Use guidance=3.5 with 20-28 steps. Write rich natural prose prompts. Best quality among FLUX.1 variants but requires 12+ GB VRAM and is slow. Ideal for final production renders.',
+      supportsNegative: false, supportsLoRA: false, maxDimension: 2048, nativeDimension: 1024,
+    },
   },
 ];
 
@@ -1232,100 +1426,257 @@ export const CHROMA_CATALOGUE: ImageModelSpec[] = [
     estSecondsCpu:    500,
     license:          'Apache-2.0',
     licenseUrl:       'https://huggingface.co/lodestones/Chroma/blob/main/LICENSE',
+    profile: {
+      defaultSteps: 20, defaultCfgScale: 0, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'euler', defaultNegative: '',
+      promptStyle: 'natural',
+      sayonBrief: 'Chroma is a FLUX-architecture model that uses guidance=0 (unconditional). Write natural prose prompts with vivid scene descriptions. Detail lighting, atmosphere, and composition. Negative prompts have no effect. Chroma excels at photorealism and cinematic scenes.',
+      supportsNegative: false, supportsLoRA: false, maxDimension: 2048, nativeDimension: 1024,
+    },
   },
 ];
 
-// ── SDXL shared aux files ─────────────────────────────────────────────────────
-// Downloaded once, shared by ALL SDXL models.
-// SDXL_CLIP_L re-uses the same file as FLUX — if FLUX is installed it's already present.
-// VAE is baked into all GGUF models in the SDXL catalogue — no separate download needed.
-
-export const SDXL_CLIP_L: FluxAuxFile = {
-  id:        'sdxl-clip-l',
-  label:     'SDXL CLIP-L encoder',
-  hfRepo:    'comfyanonymous/flux_text_encoders',
-  hfFile:    'clip_l.safetensors',
-  sizeBytes: 246_000_000,
-  cliFlag:   '--clip_l',
-  license:    'MIT',
-  licenseUrl: 'https://huggingface.co/comfyanonymous/flux_text_encoders/blob/main/LICENSE',
-};
-
-export const SDXL_CLIP_G: FluxAuxFile = {
-  id:        'sdxl-clip-g',
-  label:     'SDXL CLIP-G encoder',
-  hfRepo:    'second-state/stable-diffusion-3.5-large-GGUF',
-  hfFile:    'clip_g.safetensors',
-  sizeBytes: 1_390_000_000,
-  cliFlag:   '--clip_g',
-  license:    'Apache-2.0',
-  licenseUrl: 'https://huggingface.co/second-state/stable-diffusion-3.5-large-GGUF/blob/main/LICENSE',
-};
-
-export const SDXL_VAE: FluxAuxFile = {
-  id:        'sdxl-vae',
-  label:     'SDXL VAE (fp16 fix)',
-  hfRepo:    'madebyollin/sdxl-vae-fp16-fix',
-  hfFile:    'sdxl_vae.safetensors',
-  sizeBytes: 335_000_000,
-  cliFlag:   '--vae',
-  license:    'Apache-2.0',
-  licenseUrl: 'https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/blob/main/LICENSE',
-};
-
-/** Always-required SDXL aux files. VAE omitted — baked into all GGUF models in catalogue. */
-export const SDXL_AUX_REQUIRED: FluxAuxFile[] = [SDXL_CLIP_L, SDXL_CLIP_G];
-
 // ── SDXL catalogue ────────────────────────────────────────────────────────────
-// hum-ma GGUFs are ComfyUI-only (city96 tensor naming, incompatible with sd.cpp loader).
-// SDXL infrastructure (types, paths, arg builder, aux constants) remains in place.
-// Re-enable by adding ...SDXL_CATALOGUE back to IMAGE_MODEL_CATALOGUE once a
-// sd.cpp-compatible GGUF source is available.
+// SDXL single-file safetensors: VAE, CLIP-L, CLIP-G all baked in. No aux files.
+// sd-cli uses -m (auto-detects SDXL architecture from the safetensors).
+// Each entry has a full profile: generation defaults, prompt style, SAYON brief, capabilities.
+
+/** SDXL single-file models need NO aux files — empty array. */
+export const SDXL_AUX_REQUIRED: FluxAuxFile[] = [];
 
 export const SDXL_CATALOGUE: ImageModelSpec[] = [
-  // ── Realistic ────────────────────────────────────────────────────────────
+  // ── Fast / Turbo (1-6 steps) ────────────────────────────────────────────
   {
-    modelId:          'realvis-xl-v5-q4',
-    label:            'RealVisXL V5.0 Q4',
+    modelId:          'sdxl-turbo-fp16',
+    label:            'SDXL Turbo FP16',
+    displayName:      'SDXL Turbo',
+    runnerProfile:    'sdxl',
+    category:         'realistic',
+    variant:          'sdxl',
+    quantization:     'f16',
+    hfRepo:           'stabilityai/sdxl-turbo',
+    hfFile:           'sd_xl_turbo_1.0_fp16.safetensors',
+    sizeBytes:        6_940_000_000,
+    vramRequiredGb:   6,
+    estSecondsCuda:   3,
+    estSecondsVulkan: 12,
+    estSecondsCpu:    60,
+    license:          'sai-nc-community',
+    licenseUrl:       'https://huggingface.co/stabilityai/sdxl-turbo/blob/main/LICENSE.md',
+    profile: {
+      defaultSteps: 4, defaultCfgScale: 1, defaultWidth: 512, defaultHeight: 512,
+      defaultSampler: 'euler_a', defaultNegative: '',
+      promptStyle: 'natural',
+      sayonBrief: 'SDXL Turbo is a distilled model that generates in 1-4 steps. Use cfg-scale=1. Write short, clear natural language prompts. Negative prompts have minimal effect. Best at 512×512. Keep prompts concise — detail terms like "8k" add noise at low step counts.',
+      supportsNegative: false, supportsLoRA: true, maxDimension: 1024, nativeDimension: 512,
+    },
+  },
+  {
+    modelId:          'dreamshaper-xl-turbo-v2',
+    label:            'DreamShaper XL Turbo V2.1',
+    displayName:      'DreamShaper XL Turbo',
+    runnerProfile:    'sdxl',
+    category:         'realistic',
+    variant:          'sdxl',
+    quantization:     'f16',
+    hfRepo:           'Lykon/dreamshaper-xl-v2-turbo',
+    hfFile:           'DreamShaperXL_Turbo_v2_1.safetensors',
+    sizeBytes:        6_940_000_000,
+    vramRequiredGb:   6,
+    estSecondsCuda:   4,
+    estSecondsVulkan: 15,
+    estSecondsCpu:    90,
+    license:          'openrail++',
+    licenseUrl:       'https://huggingface.co/Lykon/dreamshaper-xl-v2-turbo',
+    profile: {
+      defaultSteps: 6, defaultCfgScale: 2, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'dpm++2m', defaultNegative: '',
+      promptStyle: 'natural',
+      sayonBrief: 'DreamShaper XL Turbo is a fast artistic general-purpose model. Use cfg-scale=2 with 4-6 steps and DPM++ 2M sampler. Write natural language prompts. Good at both photorealism and stylized art. Negative prompts have minimal effect at low cfg. Works well at 1024×1024.',
+      supportsNegative: false, supportsLoRA: true, maxDimension: 2048, nativeDimension: 1024,
+    },
+  },
+  {
+    modelId:          'realvisxl-v5-lightning',
+    label:            'RealVisXL V5.0 Lightning FP16',
+    displayName:      'RealVisXL V5 Lightning',
+    runnerProfile:    'sdxl',
+    category:         'realistic',
+    variant:          'sdxl',
+    quantization:     'f16',
+    hfRepo:           'SG161222/RealVisXL_V5.0_Lightning',
+    hfFile:           'RealVisXL_V5.0_Lightning_fp16.safetensors',
+    sizeBytes:        6_940_000_000,
+    vramRequiredGb:   6,
+    estSecondsCuda:   4,
+    estSecondsVulkan: 15,
+    estSecondsCpu:    90,
+    license:          'openrail++',
+    licenseUrl:       'https://huggingface.co/SG161222/RealVisXL_V5.0_Lightning',
+    profile: {
+      defaultSteps: 6, defaultCfgScale: 2, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'dpm++2m', defaultNegative: 'blurry, low quality, deformed, watermark',
+      promptStyle: 'tags',
+      sayonBrief: 'RealVisXL V5 Lightning is a photorealistic distilled model. Use cfg-scale=1.5-2.0 with 4-8 steps. Write comma-separated descriptive tags: subject, setting, lighting, quality terms (photorealistic, detailed, 8k). Use negative prompt for quality control. Excellent for portraits and product photography.',
+      supportsNegative: true, supportsLoRA: true, maxDimension: 2048, nativeDimension: 1024,
+    },
+  },
+  {
+    modelId:          'juggernaut-xl-v9-lightning',
+    label:            'Juggernaut XL V9 Lightning FP16',
+    displayName:      'Juggernaut XL Lightning',
+    runnerProfile:    'sdxl',
+    category:         'realistic',
+    variant:          'sdxl',
+    quantization:     'f16',
+    hfRepo:           'AiWise/Juggernaut-XL-V9-GE-RDPhoto2-Lightning_4S',
+    hfFile:           'juggernautXL_v9Rdphoto2Lightning.safetensors',
+    sizeBytes:        7_110_000_000,
+    vramRequiredGb:   6,
+    estSecondsCuda:   4,
+    estSecondsVulkan: 15,
+    estSecondsCpu:    90,
+    license:          'openrail++',
+    licenseUrl:       'https://huggingface.co/RunDiffusion/Juggernaut-XL-v9',
+    profile: {
+      defaultSteps: 6, defaultCfgScale: 2, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'dpm++2m', defaultNegative: 'blurry, ugly, deformed, watermark',
+      promptStyle: 'tags',
+      sayonBrief: 'Juggernaut XL Lightning is a fast photorealistic model with strong skin detail and lighting. Use cfg-scale=1.5-2.0 with 4-6 steps. Write tag-style prompts: subject first, then environment, lighting, and quality modifiers. Excellent at human subjects, portraits, and cinematic scenes. Keep negative prompt short.',
+      supportsNegative: true, supportsLoRA: true, maxDimension: 2048, nativeDimension: 1024,
+    },
+  },
+  // ── Full quality (20-30 steps) ──────────────────────────────────────────
+  {
+    modelId:          'sdxl-base-fp16',
+    label:            'SDXL Base 1.0 FP16',
+    displayName:      'SDXL Base',
+    runnerProfile:    'sdxl',
+    category:         'realistic',
+    variant:          'sdxl',
+    quantization:     'f16',
+    hfRepo:           'stabilityai/stable-diffusion-xl-base-1.0',
+    hfFile:           'sd_xl_base_1.0.safetensors',
+    sizeBytes:        6_940_000_000,
+    vramRequiredGb:   8,
+    estSecondsCuda:   15,
+    estSecondsVulkan: 60,
+    estSecondsCpu:    600,
+    license:          'openrail++',
+    licenseUrl:       'https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/main/LICENSE.md',
+    profile: {
+      defaultSteps: 25, defaultCfgScale: 7, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'euler_a', defaultNegative: 'blurry, low quality, bad anatomy, watermark, text',
+      promptStyle: 'tags',
+      sayonBrief: 'SDXL Base is the official Stability AI foundation model. Use cfg-scale=7 with 20-30 steps. Write tag-style prompts: start with the subject, add style terms (photorealistic, digital art, anime), then quality terms (8k, detailed, sharp focus, studio lighting). Negative prompt is important — include quality defects and unwanted elements. Native resolution is 1024×1024.',
+      supportsNegative: true, supportsLoRA: true, maxDimension: 2048, nativeDimension: 1024,
+    },
+  },
+  {
+    modelId:          'realvisxl-v5-fp16',
+    label:            'RealVisXL V5.0 FP16',
     displayName:      'RealVisXL V5',
     runnerProfile:    'sdxl',
     category:         'realistic',
     variant:          'sdxl',
-    quantization:     'Q4_0',
-    hfRepo:           'hum-ma/SDXL-models-GGUF',
-    hfFile:           'RealVisXL_V5.0-Q4_0.gguf',
-    sizeBytes:        1_490_000_000,
-    vramRequiredGb:   4,
-    estSecondsCuda:   10,
-    estSecondsVulkan: 35,
-    estSecondsCpu:    360,
-    license:          'creativeml-openrail-m',
-    licenseUrl:       'https://huggingface.co/SG161222/RealVisXL_V5.0/blob/main/LICENSE.md',
+    quantization:     'f16',
+    hfRepo:           'SG161222/RealVisXL_V5.0',
+    hfFile:           'RealVisXL_V5.0_fp16.safetensors',
+    sizeBytes:        6_940_000_000,
+    vramRequiredGb:   8,
+    estSecondsCuda:   15,
+    estSecondsVulkan: 60,
+    estSecondsCpu:    600,
+    license:          'openrail++',
+    licenseUrl:       'https://huggingface.co/SG161222/RealVisXL_V5.0',
+    profile: {
+      defaultSteps: 25, defaultCfgScale: 7, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'dpm++2m', defaultScheduler: 'karras',
+      defaultNegative: '(face asymmetry, eyes asymmetry, deformed eyes, open mouth), blurry, low quality, watermark',
+      promptStyle: 'tags',
+      sayonBrief: 'RealVisXL V5 is a top-tier photorealistic model. Use cfg-scale=7 with 25+ steps and DPM++ 2M Karras sampler. Write tag-style prompts focused on subject, lighting, and atmosphere. This model excels at human faces and skin — add detail terms like "detailed skin texture, pores, subsurface scattering". Negative prompt matters — include face/anatomy defects.',
+      supportsNegative: true, supportsLoRA: true, maxDimension: 2048, nativeDimension: 1024,
+    },
   },
-  // ── Anime ─────────────────────────────────────────────────────────────────
-  // nsfw-anime slot covered by Chroma1-HD in CHROMA_CATALOGUE (FLUX runner, Apache 2.0).
-  // ── NSFW Realistic ────────────────────────────────────────────────────────
   {
-    modelId:          'cyberrealistic-pony-q4',
-    label:            'CyberRealistic Pony V12 Q4',
-    displayName:      'CyberRealistic Pony',
+    modelId:          'juggernaut-xl-v9-fp16',
+    label:            'Juggernaut XL V9 RunDiffusion FP16',
+    displayName:      'Juggernaut XL V9',
     runnerProfile:    'sdxl',
-    category:         'nsfw-realistic',
-    variant:          'pony',
-    quantization:     'Q4_0',
-    hfRepo:           'Green-Sky/CyberRealisticPony-GGUF',
-    hfFile:           'CyberRealisticPony_V12.7-vae_f16-q4_0.gguf',
-    sizeBytes:        2_600_000_000,
-    vramRequiredGb:   6,
-    estSecondsCuda:   10,
-    estSecondsVulkan: 35,
-    estSecondsCpu:    360,
-    license:          'creativeml-openrail-m',
-    licenseUrl:       'https://huggingface.co/cyberdelia/CyberRealisticPony/blob/main/LICENSE.md',
+    category:         'realistic',
+    variant:          'sdxl',
+    quantization:     'f16',
+    hfRepo:           'RunDiffusion/Juggernaut-XL-v9',
+    hfFile:           'Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors',
+    sizeBytes:        7_110_000_000,
+    vramRequiredGb:   8,
+    estSecondsCuda:   15,
+    estSecondsVulkan: 60,
+    estSecondsCpu:    600,
+    license:          'openrail++',
+    licenseUrl:       'https://huggingface.co/RunDiffusion/Juggernaut-XL-v9',
+    profile: {
+      defaultSteps: 25, defaultCfgScale: 7, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'dpm++2m', defaultScheduler: 'karras',
+      defaultNegative: 'blurry, ugly, deformed, bad anatomy, watermark, text, extra fingers',
+      promptStyle: 'tags',
+      sayonBrief: 'Juggernaut XL V9 is a premium photorealistic model with RunDiffusion Photo V2 enhancement. Use cfg-scale=5-7 with 25-30 steps. Write tag-style prompts: describe the subject clearly, then add environment and lighting. Start with no negative prompt, then add specifics for things you do not want. Strong at photographic scenes, portraits, and cinematic compositions.',
+      supportsNegative: true, supportsLoRA: true, maxDimension: 2048, nativeDimension: 1024,
+    },
   },
-  // ── NSFW Anime ────────────────────────────────────────────────────────────
-  // WAI-NSFW-Illustrious removed: requires custom Illustrious CLIP encoders
-  // incompatible with standard SDXL aux files. nsfw-anime covered by Chroma.
+  {
+    modelId:          'dreamshaper-xl-lightning',
+    label:            'DreamShaper XL Lightning FP16',
+    displayName:      'DreamShaper XL Lightning',
+    runnerProfile:    'sdxl',
+    category:         'realistic',
+    variant:          'sdxl',
+    quantization:     'f16',
+    hfRepo:           'Lykon/dreamshaper-xl-v2-turbo',
+    hfFile:           'DreamShaperXL_Turbo_V2-SFW.safetensors',
+    sizeBytes:        6_940_000_000,
+    vramRequiredGb:   8,
+    estSecondsCuda:   8,
+    estSecondsVulkan: 30,
+    estSecondsCpu:    300,
+    license:          'openrail++',
+    licenseUrl:       'https://huggingface.co/Lykon/dreamshaper-xl-v2-turbo',
+    profile: {
+      defaultSteps: 6, defaultCfgScale: 2, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'dpm++2m', defaultScheduler: 'karras',
+      defaultNegative: 'blurry, low quality, watermark',
+      promptStyle: 'natural',
+      sayonBrief: 'DreamShaper XL Lightning is a versatile artistic model distilled for speed. Use cfg-scale=2 with 3-6 steps and DPM++ SDE Karras sampler. Write natural prose prompts. This model is a strong general-purpose generator — equally good at photos, art, anime, and fantasy. Short negative prompts are sufficient.',
+      supportsNegative: true, supportsLoRA: true, maxDimension: 2048, nativeDimension: 1024,
+    },
+  },
+  // ── Anime / Stylized ────────────────────────────────────────────────────
+  {
+    modelId:          'pony-diffusion-v6-xl',
+    label:            'Pony Diffusion V6 XL FP16',
+    displayName:      'Pony Diffusion V6 XL',
+    runnerProfile:    'sdxl',
+    category:         'anime',
+    variant:          'sdxl',
+    quantization:     'f16',
+    hfRepo:           'LyliaEngine/Pony_Diffusion_V6_XL',
+    hfFile:           'ponyDiffusionV6XL_v6StartWithThisOne.safetensors',
+    sizeBytes:        6_460_000_000,
+    vramRequiredGb:   8,
+    estSecondsCuda:   15,
+    estSecondsVulkan: 60,
+    estSecondsCpu:    600,
+    license:          'openrail++',
+    licenseUrl:       'https://civitai.com/models/257749/pony-diffusion-v6-xl',
+    profile: {
+      defaultSteps: 25, defaultCfgScale: 7, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'euler_a',
+      defaultNegative: 'score_4, score_3, score_2, score_1, blurry, low quality, watermark, text',
+      promptStyle: 'booru',
+      sayonBrief: 'Pony Diffusion V6 XL uses booru-style tags (danbooru format). Always start prompts with quality tags: "score_9, score_8_up, score_7_up". Then add subject tags, style tags, and content tags separated by commas. Use underscores within multi-word tags (e.g. "long_hair" not "long hair"). Negative prompt should include low quality score tags. This model is trained on western art and anime — specify "source_anime" or "source_cartoon" for style control.',
+      supportsNegative: true, supportsLoRA: true, maxDimension: 2048, nativeDimension: 1024,
+    },
+  },
 ];
 
 // ── FLUX Kontext catalogue ────────────────────────────────────────────────────
@@ -1350,6 +1701,13 @@ export const KONTEXT_CATALOGUE: ImageModelSpec[] = [
     estSecondsCpu:    2400,
     license:          'FLUX-1-dev-Non-Commercial',
     licenseUrl:       'https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev/blob/main/LICENSE.md',
+    profile: {
+      defaultSteps: 28, defaultCfgScale: 1, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'euler', defaultNegative: '',
+      promptStyle: 'natural',
+      sayonBrief: 'FLUX Kontext is a prompt-based image editor. It takes a reference image and applies edits described in the prompt. Write editing instructions as natural prose: "make the cat blue", "change the background to a beach", "add sunglasses to the person". Be specific about what to change and what to preserve. This model does NOT generate from scratch — it always needs a reference image.',
+      supportsNegative: false, supportsLoRA: false, maxDimension: 2048, nativeDimension: 1024,
+    },
   },
 ];
 
@@ -1376,6 +1734,13 @@ export const FLUX2_CATALOGUE: ImageModelSpec[] = [
     estSecondsCpu:    480,
     license:          'Apache-2.0',
     licenseUrl:       'https://huggingface.co/unsloth/FLUX.2-klein-4B-GGUF',
+    profile: {
+      defaultSteps: 4, defaultCfgScale: 1, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'euler', defaultNegative: '',
+      promptStyle: 'natural',
+      sayonBrief: 'FLUX.2-klein-4B is a fast 4-step model using an LLM text encoder (Qwen3-4B). Write natural prose prompts — the LLM encoder understands complex instructions better than CLIP. Good at text rendering and instruction following. Apache 2.0 license (commercial use OK). Flash attention enabled for speed.',
+      supportsNegative: false, supportsLoRA: false, maxDimension: 2048, nativeDimension: 1024,
+    },
   },
   {
     modelId:          'flux2-klein-9b-q4',
@@ -1394,6 +1759,13 @@ export const FLUX2_CATALOGUE: ImageModelSpec[] = [
     estSecondsCpu:    660,
     license:          'FLUX-Non-Commercial',
     licenseUrl:       'https://huggingface.co/unsloth/FLUX.2-klein-9B-GGUF',
+    profile: {
+      defaultSteps: 4, defaultCfgScale: 1, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'euler', defaultNegative: '',
+      promptStyle: 'natural',
+      sayonBrief: 'FLUX.2-klein-9B is the higher-quality FLUX.2 variant with Qwen3-8B text encoder. Write detailed natural prose prompts — the larger LLM encoder handles nuanced instructions exceptionally well. Superior text rendering and composition compared to the 4B variant. Requires 16+ GB VRAM.',
+      supportsNegative: false, supportsLoRA: false, maxDimension: 2048, nativeDimension: 1024,
+    },
   },
 ];
 
@@ -1419,6 +1791,13 @@ export const ZIMAGE_CATALOGUE: ImageModelSpec[] = [
     estSecondsCpu:    320,
     license:          'Apache-2.0',
     licenseUrl:       'https://huggingface.co/leejet/Z-Image-Turbo-GGUF',
+    profile: {
+      defaultSteps: 4, defaultCfgScale: 1, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'euler', defaultScheduler: 'discrete', defaultNegative: '',
+      promptStyle: 'natural',
+      sayonBrief: 'Z-Image Turbo is a fast 4-step Apache 2.0 model using Qwen3-4B as text encoder. Write natural prose prompts — the LLM encoder understands detailed descriptions well. Very fast generation with good quality. Negative prompts are not effective at low cfg. Commercial use permitted.',
+      supportsNegative: false, supportsLoRA: false, maxDimension: 2048, nativeDimension: 1024,
+    },
   },
   {
     modelId:          'z-image-base-q6',
@@ -1437,6 +1816,13 @@ export const ZIMAGE_CATALOGUE: ImageModelSpec[] = [
     estSecondsCpu:    1400,
     license:          'Apache-2.0',
     licenseUrl:       'https://huggingface.co/unsloth/Z-Image-GGUF',
+    profile: {
+      defaultSteps: 20, defaultCfgScale: 1, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'euler', defaultScheduler: 'discrete', defaultNegative: '',
+      promptStyle: 'natural',
+      sayonBrief: 'Z-Image Base is a high-quality 20-step model using Qwen3-4B text encoder. Write detailed natural prose prompts — describe subject, composition, lighting, and mood. Longer prompts work well with the LLM encoder. Higher quality than Turbo variant but significantly slower. Apache 2.0 (commercial OK).',
+      supportsNegative: false, supportsLoRA: false, maxDimension: 2048, nativeDimension: 1024,
+    },
   },
 ];
 
@@ -1462,6 +1848,13 @@ export const QWEN_IMAGE_CATALOGUE: ImageModelSpec[] = [
     estSecondsCpu:    2800,
     license:          'Apache-2.0',
     licenseUrl:       'https://huggingface.co/unsloth/Qwen-Image-2512-GGUF',
+    profile: {
+      defaultSteps: 20, defaultCfgScale: 2.5, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'euler', defaultNegative: '',
+      promptStyle: 'natural',
+      sayonBrief: 'Qwen-Image uses Qwen2.5-VL-7B as its text encoder — the best text rendering of any local model. Write detailed natural prose prompts. This model excels at generating images with readable text, signs, labels, and typography. Use --flow-shift 3 for optimal results. Also supports image editing via reference images (Qwen-Image-Edit variant).',
+      supportsNegative: false, supportsLoRA: false, maxDimension: 2048, nativeDimension: 1024,
+    },
   },
 ];
 
@@ -1489,6 +1882,13 @@ export const WAN_CATALOGUE: ImageModelSpec[] = [
     estSecondsCpu:    600,
     license:          'Apache-2.0',
     licenseUrl:       'https://huggingface.co/samuelchristlie/Wan2.1-T2V-1.3B-GGUF',
+    profile: {
+      defaultSteps: 20, defaultCfgScale: 5, defaultWidth: 832, defaultHeight: 480,
+      defaultSampler: 'euler', defaultScheduler: 'simple', defaultNegative: '',
+      promptStyle: 'natural',
+      sayonBrief: 'Wan 2.1 T2V 1.3B is a lightweight text-to-video model. Write natural prose describing the scene and motion: "a cat jumping from a table to the floor, slow motion". Describe what moves and how. Default resolution is 832×480 (landscape 480P). This is the fastest Wan model — good for quick video drafts. 49 frames at 12fps = 4 seconds of video.',
+      supportsNegative: false, supportsLoRA: false, maxDimension: 1280, nativeDimension: 480,
+    },
   },
   {
     modelId:          'wan21-t2v-14b-q4',
@@ -1507,6 +1907,13 @@ export const WAN_CATALOGUE: ImageModelSpec[] = [
     estSecondsCpu:    3600,
     license:          'Apache-2.0',
     licenseUrl:       'https://huggingface.co/city96/Wan2.1-T2V-14B-gguf',
+    profile: {
+      defaultSteps: 20, defaultCfgScale: 5, defaultWidth: 832, defaultHeight: 480,
+      defaultSampler: 'euler', defaultScheduler: 'simple', defaultNegative: '',
+      promptStyle: 'natural',
+      sayonBrief: 'Wan 2.1 T2V 14B is a high-quality text-to-video model. Write detailed natural prose describing the scene, camera movement, and subject motion: "drone shot flying over a coastal city at sunset, waves crashing on rocks below". Be specific about motion dynamics. Produces 49 frames at 12fps (4 seconds). Higher quality than 1.3B but requires 16+ GB VRAM and takes several minutes.',
+      supportsNegative: false, supportsLoRA: false, maxDimension: 1280, nativeDimension: 480,
+    },
   },
   {
     modelId:          'wan21-i2v-14b-480p-q4',
@@ -1525,6 +1932,13 @@ export const WAN_CATALOGUE: ImageModelSpec[] = [
     estSecondsCpu:    3600,
     license:          'Apache-2.0',
     licenseUrl:       'https://huggingface.co/city96/Wan2.1-I2V-14B-480P-gguf',
+    profile: {
+      defaultSteps: 20, defaultCfgScale: 5, defaultWidth: 832, defaultHeight: 480,
+      defaultSampler: 'euler', defaultScheduler: 'simple', defaultNegative: '',
+      promptStyle: 'natural',
+      sayonBrief: 'Wan 2.1 I2V (image-to-video) animates a still image into video. Write a prompt describing the desired motion: "the woman turns her head and smiles", "the waterfall begins to flow". The input image provides the visual content — the prompt controls only the motion and animation. Keep prompts focused on action and movement, not appearance.',
+      supportsNegative: false, supportsLoRA: false, maxDimension: 1280, nativeDimension: 480,
+    },
   },
   // ── Wan 2.2 ───────────────────────────────────────────────────────────────
   // Same architecture and aux files as 2.1 (WAN_VAE + WAN_T5_Q5 + same runner).
@@ -1546,6 +1960,13 @@ export const WAN_CATALOGUE: ImageModelSpec[] = [
     estSecondsCpu:    3600,
     license:          'Apache-2.0',
     licenseUrl:       'https://huggingface.co/city96/Wan2.2-T2V-14B-gguf',
+    profile: {
+      defaultSteps: 20, defaultCfgScale: 5, defaultWidth: 832, defaultHeight: 480,
+      defaultSampler: 'euler', defaultScheduler: 'simple', defaultNegative: '',
+      promptStyle: 'natural',
+      sayonBrief: 'Wan 2.2 T2V 14B is the latest text-to-video model with improved motion quality and prompt adherence over Wan 2.1. Write detailed natural prose describing scene dynamics and camera work. This version handles complex multi-subject motion better. Same VRAM requirements and resolution as 2.1 (832×480, 49 frames). Prefer this over 2.1 when available.',
+      supportsNegative: false, supportsLoRA: false, maxDimension: 1280, nativeDimension: 480,
+    },
   },
 ];
 
@@ -1553,12 +1974,12 @@ export const WAN_CATALOGUE: ImageModelSpec[] = [
 export const IMAGE_MODEL_CATALOGUE: ImageModelSpec[] = [
   ...CHROMA_CATALOGUE,
   ...ZIMAGE_CATALOGUE,
+  ...SDXL_CATALOGUE,
   ...FLUX2_CATALOGUE,
   ...KONTEXT_CATALOGUE,
   ...QWEN_IMAGE_CATALOGUE,
   ...WAN_CATALOGUE,
   ...FLUX_CATALOGUE,           // schnell entries are now category:'legacy'
-  // SDXL_CATALOGUE omitted — hum-ma GGUFs incompatible with sd.cpp loader (city96 tensor naming)
 ];
 
 export function getImageModelSpec(modelId: string): ImageModelSpec | undefined {
@@ -1637,6 +2058,14 @@ export function listDownloadedFlux(): FluxSpec[] {
   return FLUX_CATALOGUE.filter(isFluxDownloaded);
 }
 
+// ── VRAM tolerance ──────────────────────────────────────────────────────────
+// GPUs report physical VRAM but ~1 GB is consumed by the driver and OS.
+// e.g. RTX 5080: 16 GB physical → ~15 GB usable. sd-cli manages memory
+// mapping and can run models whose vramRequiredGb slightly exceeds usable VRAM.
+// This tolerance prevents recommendation functions from excluding models
+// that genuinely run fine on the hardware.
+const IMAGE_VRAM_TOLERANCE_GB = 1;
+
 /**
  * Returns the best downloaded FLUX model for the given VRAM budget.
  * Preference order: schnell Q8 → schnell Q4 → dev Q8 → dev Q4.
@@ -1646,7 +2075,7 @@ export function recommendFluxModel(vramGb: number): FluxSpec | null {
   const preference = ['flux-schnell-q8', 'flux-schnell-q4', 'flux-dev-q8', 'flux-dev-q4'];
   for (const id of preference) {
     const spec = getFluxSpec(id);
-    if (spec && isFluxDownloaded(spec) && spec.vramRequiredGb <= vramGb) return spec;
+    if (spec && isFluxDownloaded(spec) && spec.vramRequiredGb <= vramGb + IMAGE_VRAM_TOLERANCE_GB) return spec;
   }
   return null;
 }
@@ -1664,11 +2093,12 @@ export function recommendFluxModel(vramGb: number): FluxSpec | null {
  *                         With --offload-to-cpu, the full RAM pool is usable.
  */
 export function recommendImageModel(vramGb: number, isUnifiedMemory = false): ImageModelSpec | null {
-  // Preference order: Chroma (best quality/compat) → Z-Image (fast, Apache 2.0) →
+  // Preference order: Chroma (best quality) → Z-Image (fast) → SDXL (wide ecosystem, LoRA) →
   // FLUX.2 → Kontext → Qwen-Image → FLUX dev. FLUX schnell excluded (legacy category).
   const ordered = [
     ...CHROMA_CATALOGUE,
     ...ZIMAGE_CATALOGUE,
+    ...SDXL_CATALOGUE,
     ...FLUX2_CATALOGUE,
     ...KONTEXT_CATALOGUE,
     ...QWEN_IMAGE_CATALOGUE,
@@ -1678,8 +2108,10 @@ export function recommendImageModel(vramGb: number, isUnifiedMemory = false): Im
     // Unified memory: --offload-to-cpu uses full RAM pool. No discrete VRAM gate.
     return ordered.find(m => isImageModelDownloaded(m)) ?? null;
   }
-  // Discrete GPU: only GPU VRAM available. Flux/Chroma need ≥8 GB.
-  return ordered.find(m => m.vramRequiredGb <= vramGb && isImageModelDownloaded(m)) ?? null;
+  // Discrete GPU: allow 1 GB tolerance for driver/OS overhead.
+  // e.g. RTX 5080 reports 16 GB physical but only ~15 GB usable — a model
+  // requiring 16 GB still runs fine because sd-cli manages memory mapping.
+  return ordered.find(m => m.vramRequiredGb <= vramGb + IMAGE_VRAM_TOLERANCE_GB && isImageModelDownloaded(m)) ?? null;
 }
 
 
@@ -1899,7 +2331,7 @@ function recommendOptionalImageModel(
   // Filter by VRAM (unified memory can offload, so no VRAM gate)
   const fitting = isUnifiedMemory
     ? candidates
-    : candidates.filter(m => m.vramRequiredGb <= vramGb);
+    : candidates.filter(m => m.vramRequiredGb <= vramGb + IMAGE_VRAM_TOLERANCE_GB);
   if (fitting.length === 0) return null;
 
   // Sort by estimated CUDA speed (fastest first), then by VRAM requirement (smallest first)
@@ -1921,7 +2353,7 @@ function recommendOptionalVideoModel(
 
   const fitting = isUnifiedMemory
     ? candidates
-    : candidates.filter(m => m.vramRequiredGb <= vramGb);
+    : candidates.filter(m => m.vramRequiredGb <= vramGb + IMAGE_VRAM_TOLERANCE_GB);
   if (fitting.length === 0) return null;
 
   // Prefer smallest (fastest) video model

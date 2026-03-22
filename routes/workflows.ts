@@ -21,6 +21,7 @@ import {
 
 import {
   getImageModelSpec,
+  type ImageModelProfile,
 } from '../phobos/PhobosLocalManager.js';
 
 import {
@@ -35,38 +36,39 @@ import {
 
 // ── Default node for a brand-new workflow ────────────────────────────────────
 // New workflows start with a single Generate node pre-populated.
+// When a model profile is available, all defaults come from the profile.
+// This ensures SDXL Turbo gets 4 steps/512px, Pony gets booru-style defaults,
+// Chroma gets guidance=0, etc.
 
-function defaultGenerateNode(variant?: string) {
-  // schnell is designed for 4 steps; chroma/dev benefit from 20
-  const steps = variant === 'schnell' ? 4 : 20;
+function defaultGenerateNode(profile?: ImageModelProfile | null, variant?: string) {
   return {
     type: 'Generate' as const,
     label: 'Generate',
     params: {
       prompt:          '',
-      negativePrompt:  '',
-      steps,
-      width:           1024,
-      height:          1024,
+      negativePrompt:  profile?.defaultNegative ?? '',
+      steps:           profile?.defaultSteps    ?? (variant === 'schnell' ? 4 : 20),
+      width:           profile?.defaultWidth     ?? 1024,
+      height:          profile?.defaultHeight    ?? 1024,
       seed:            -1,
-      sampler:         'euler',
+      sampler:         profile?.defaultSampler   ?? 'euler',
     },
   };
 }
 
-function defaultVideoGenerateNode() {
+function defaultVideoGenerateNode(profile?: ImageModelProfile | null) {
   return {
     type: 'VideoGenerate' as const,
     label: 'Generate',
     params: {
-      prompt:        '',
-      negativePrompt: '',
-      steps:         20,
-      width:         832,   // landscape 480P — safe on all VRAM budgets
-      height:        480,
-      seed:          -1,
-      fps:           12,
-      videoFrames:   49,    // ~4s at 12fps — safe default for both 1.3B and 14B
+      prompt:         '',
+      negativePrompt: profile?.defaultNegative ?? '',
+      steps:          profile?.defaultSteps    ?? 20,
+      width:          profile?.defaultWidth     ?? 832,   // landscape 480P — safe on all VRAM budgets
+      height:         profile?.defaultHeight    ?? 480,
+      seed:           -1,
+      fps:            12,
+      videoFrames:    49,    // ~4s at 12fps — safe default for both 1.3B and 14B
     },
   };
 }
@@ -159,11 +161,12 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
       const name = req.body?.name?.trim() || `${defaultLabel} ${new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
 
       const spec = modelId !== 'unknown' ? getImageModelSpec(modelId) : null;
+      const profile = spec?.profile ?? null;
       const variant = spec?.variant;
 
       const nodes = workflowType === 'video'
-        ? [defaultVideoGenerateNode()]
-        : [defaultGenerateNode(variant)];
+        ? [defaultVideoGenerateNode(profile)]
+        : [defaultGenerateNode(profile, variant)];
 
       const session = createSession(threadId, name, modelId, nodes, workflowType);
 
@@ -533,6 +536,7 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
     generating:   boolean;
     phases:       { renderPhase: string; detail: string; done: boolean }[];
     progress:     { nodeIndex: number; step: number; totalSteps: number } | null;
+    preview:      string | null;        // base64 PNG from latent preview — null when no preview available
     activeNode:   number;
     error:        string | null;
     completedAt:  number | null;  // Date.now() when done — cleared after frontend reads it
@@ -546,12 +550,16 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const { workflowId } = req.params;
       const status = runStatus.get(workflowId);
-      if (!status) return reply.send({ generating: false, phases: [], progress: null, activeNode: 0, error: null });
+      if (!status) return reply.send({ generating: false, phases: [], progress: null, preview: null, activeNode: 0, error: null });
       // If completed more than 5s ago, clean up
       if (status.completedAt && Date.now() - status.completedAt > 5000) {
         runStatus.delete(workflowId);
       }
-      return reply.send(status);
+      // Send preview separately — clear after sending to avoid re-sending stale data.
+      // The frontend caches the last preview it received until the final image replaces it.
+      const preview = status.preview;
+      status.preview = null;
+      return reply.send({ ...status, preview });
     }
   );
 
@@ -608,6 +616,7 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
         aborted:     false,              // set by abort endpoint, checked at each wait point
         phases:      [] as { renderPhase: string; detail: string; done: boolean }[],
         progress:    null as { nodeIndex: number; step: number; totalSteps: number } | null,
+        preview:     null as string | null,
         activeNode:  resolvedTarget,
         error:       null as string | null,
         completedAt: null as number | null,
@@ -696,9 +705,13 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
             if (evt.phase === 'render_progress') {
               status.progress = { nodeIndex: evt.nodeIndex, step: evt.step, totalSteps: evt.totalSteps };
             }
+            if (evt.phase === 'render_preview') {
+              status.preview = evt.base64;
+            }
             if (evt.phase === 'node_done') {
               for (const p of status.phases) p.done = true;
               status.progress = null;
+              status.preview = null; // clear preview — final image replaces it
             }
             if (evt.phase === 'error') {
               status.error = evt.message;

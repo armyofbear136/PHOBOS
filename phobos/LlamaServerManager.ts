@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as net from 'net';
 import * as path from 'path';
-import { resolveLlamaServerBin, modelPath, getSpec, detectHardware, buildRecommendation, recommendContextSize } from './PhobosLocalManager.js';
+import { resolveLlamaServerBin, modelPath, getSpec, detectHardware, buildRecommendation, recommendContextSize, getCachedHardware } from './PhobosLocalManager.js';
 
 // ── Ports — permanent wire contract ──────────────────────────────────────────
 export const SAYON_PORT   = 52626;   // coordinator
@@ -70,7 +70,14 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
     await stopServer(role);
   }
 
-  if (managed.state === 'running' && managed.config.modelId === cfg.modelId) return;
+  // Already running or starting with same model on same device — nothing to do.
+  // Guard 'starting' explicitly: a second reconcile call while the server is still
+  // coming up must not stop and re-launch it, which would reset state to 'starting'
+  // again and send GGML_VK_VISIBLE_DEVICES from a potentially stale hw lookup.
+  if ((managed.state === 'running' || managed.state === 'starting')
+    && managed.config.modelId === cfg.modelId
+    && managed.config.deviceIndex === cfg.deviceIndex
+    && managed.config.gpuBackend === cfg.gpuBackend) return;
 
   const spec = getSpec(cfg.modelId);
   if (!spec) throw new Error(`Unknown model ID: ${cfg.modelId}`);
@@ -207,20 +214,36 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
       // Non-NVIDIA Vulkan GPU (AMD discrete, AMD iGPU, Intel iGPU).
       // GGML_VK_VISIBLE_DEVICES filters to one device; it becomes Vulkan0.
       //
-      // vulkanIndex resolution priority:
-      //   1. cfg.vulkanIndex from runner profile (most accurate — runtime-enumerated or positional)
-      //   2. positional fallback: non-NVIDIA devices use 100+ deviceIndex, subtract 100
-      //   3. deviceIndex as-is (last resort, almost certainly wrong but avoids crashing)
+      // vulkanIndex resolution — always derive from the hardware profile runner,
+      // never trust cfg.vulkanIndex from callers (it may be undefined when the
+      // request came through /api/phobos/start which doesn't populate it).
+      // detectHardware() returns the cached profile synchronously after first boot.
       //
-      // NOTE: cfg.vulkanIndex can be 0 (falsy) for the first non-NVIDIA GPU.
-      // Use explicit null/undefined check, NOT the ?? operator, to avoid treating 0 as unset.
-      const vkIdx = cfg.vulkanIndex !== undefined && cfg.vulkanIndex !== null
-        ? cfg.vulkanIndex
-        : (cfg.deviceIndex !== undefined && cfg.deviceIndex >= 100
-            ? cfg.deviceIndex - 100
-            : cfg.deviceIndex ?? 0);
+      // Priority:
+      //   1. hw cache runner profile (authoritative — wmiPosition-based or runtime enum)
+      //   2. cfg.vulkanIndex if caller happened to supply it
+      //   3. positional fallback: deviceIndex - 100 (last resort, may be wrong if skipped GPUs exist)
+      //
+      // NOTE: vulkanIndex can be 0 (falsy). Use explicit undefined check, never ??.
+      let vkIdx: number;
+      let vkSrc: string;
 
-      const vkSrc = cfg.vulkanIndex !== undefined ? 'runner' : (cfg.deviceIndex !== undefined && cfg.deviceIndex >= 100 ? 'fallback' : 'fallback');
+      // Always try the hw cache first — it has the runner profile with the correct index.
+      const hwNow = getCachedHardware(); // sync read of module-level cache, no await needed
+      const gpuRunner = hwNow?.gpus.find(g => g.index === cfg.deviceIndex)?.runner;
+      if (gpuRunner?.vulkanIndex !== undefined) {
+        vkIdx  = gpuRunner.vulkanIndex;
+        vkSrc  = 'runner';
+      } else if (cfg.vulkanIndex !== undefined && cfg.vulkanIndex !== null) {
+        vkIdx  = cfg.vulkanIndex;
+        vkSrc  = 'cfg';
+      } else {
+        vkIdx  = (cfg.deviceIndex !== undefined && cfg.deviceIndex >= 100)
+          ? cfg.deviceIndex - 100
+          : cfg.deviceIndex ?? 0;
+        vkSrc  = 'fallback';
+      }
+
       console.log(`[LlamaServerManager] ${role}: GGML_VK_VISIBLE_DEVICES=${vkIdx} (vulkanIndex=${vkIdx}, src=${vkSrc}, deviceIndex=${cfg.deviceIndex})`);
       env.CUDA_VISIBLE_DEVICES    = '-1'; // hide CUDA — no NVIDIA context overhead
       env.HIP_VISIBLE_DEVICES     = '-1'; // hide ROCm
@@ -374,19 +397,34 @@ export async function reconcilePhobosServers(config: {
   }
 
   // ── Resolve device assignments for both roles ─────────────────────────────
+  // Priority: explicit config > currently running device > recommendation > auto
+  // The "currently running" check prevents flip-flopping on machines with multiple
+  // similarly-scored GPUs where buildRecommendation may return different devices
+  // on successive calls due to non-deterministic hardware enumeration order.
+  const runningSayon = servers.sayon.state === 'running' ? servers.sayon.config : null;
+  const runningSeren = servers.seren.state === 'running' ? servers.seren.config : null;
+
   const explicitCpuSayon = config.coordinator.deviceIndex === -1;
   const sayonDeviceIndex = explicitCpuSayon ? undefined
-    : config.coordinator.deviceIndex ?? (rec ? (rec.sayonDevice === 'cpu' ? undefined : rec.sayonDevice) : undefined);
+    : config.coordinator.deviceIndex
+      ?? (runningSayon && runningSayon.modelId === config.coordinator.model ? runningSayon.deviceIndex : undefined)
+      ?? (rec ? (rec.sayonDevice === 'cpu' ? undefined : rec.sayonDevice) : undefined);
   const sayonGpuBackend  = explicitCpuSayon ? undefined
-    : config.coordinator.gpuBackend ?? (sayonDeviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === sayonDeviceIndex)?.backend : undefined);
+    : config.coordinator.gpuBackend
+      ?? (runningSayon && runningSayon.modelId === config.coordinator.model ? runningSayon.gpuBackend : undefined)
+      ?? (sayonDeviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === sayonDeviceIndex)?.backend : undefined);
   const sayonGpuLayers   = explicitCpuSayon ? 0
     : config.coordinator.gpuLayers ?? (sayonDeviceIndex !== undefined ? 99 : 0);
 
   const explicitCpuSeren = config.engine.deviceIndex === -1;
   const serenDeviceIndex = explicitCpuSeren ? undefined
-    : config.engine.deviceIndex ?? (rec ? (rec.serenDevice === 'cpu' ? undefined : rec.serenDevice) : undefined);
+    : config.engine.deviceIndex
+      ?? (runningSeren && runningSeren.modelId === config.engine.model ? runningSeren.deviceIndex : undefined)
+      ?? (rec ? (rec.serenDevice === 'cpu' ? undefined : rec.serenDevice) : undefined);
   const serenGpuBackend  = explicitCpuSeren ? undefined
-    : config.engine.gpuBackend ?? (serenDeviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === serenDeviceIndex)?.backend : undefined);
+    : config.engine.gpuBackend
+      ?? (runningSeren && runningSeren.modelId === config.engine.model ? runningSeren.gpuBackend : undefined)
+      ?? (serenDeviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === serenDeviceIndex)?.backend : undefined);
   const serenGpuLayers   = explicitCpuSeren ? 0
     : config.engine.gpuLayers ?? (serenDeviceIndex !== undefined ? 99 : 0);
 

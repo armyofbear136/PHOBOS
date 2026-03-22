@@ -1,4 +1,4 @@
-// test-sdxl.ts — RealVisXL V5 end-to-end CLI test
+// test-sdxl.ts — SDXL Turbo end-to-end test via PhobosLocalManager
 // npx tsx test-sdxl.ts
 
 import * as fs   from 'fs';
@@ -8,52 +8,22 @@ import {
   detectHardware,
   resolveSdServerBin,
   fluxModelPath,
-  fluxAuxPath,
   getImageModelSpec,
-  SDXL_CLIP_L,
-  SDXL_CLIP_G,
-  SDXL_VAE,
+  IMAGE_SDXL_DIR,
 } from './phobos/PhobosLocalManager.js';
 
-const PROMPT  = 'a red apple on a wooden table, studio lighting, photorealistic';
-const OUT_DIR = path.resolve('./test-outputs');
-const OUT     = path.join(OUT_DIR, `sdxl-test-${Date.now()}.png`);
-
-// ── SDXL arg builder ──────────────────────────────────────────────────────────
-// hum-ma GGUFs are UNet-only (quantized via llama.cpp, not sd.cpp).
-// Must use --diffusion-model (not -m) + explicit --vae + --clip_l + --clip_g.
-// --cfg-scale instead of --guidance. euler_a sampler preferred.
-
-function buildSdxlArgs(
-  modelPath: string,
-  vaePath:   string,
-  clipLPath: string,
-  clipGPath: string,
-  outPath:   string,
-  prompt:    string,
-): string[] {
-  return [
-    '--diffusion-model', modelPath,
-    '--vae',             vaePath,
-    '--clip_l',          clipLPath,
-    '--clip_g',          clipGPath,
-    '--prediction',      'eps',
-    '--force-sdxl-vae-conv-scale',   // required for SDXL VAE in split-file mode
-    '--prompt',          prompt,
-    '--steps',           '25',
-    '--width',           '1024',
-    '--height',          '1024',
-    '--seed',            '42',
-    '--sampling-method', 'euler_a',
-    '--cfg-scale',       '7.0',
-    '--output',          outPath,
-  ];
-}
+// ── Configuration ─────────────────────────────────────────────────────────────
+const MODEL_ID = process.env.SDXL_MODEL_ID ?? 'sdxl-turbo-fp16';
+const PROMPT   = 'a red apple on a wooden table, studio lighting, photorealistic';
+const NEG      = 'blurry, low quality, watermark, text';
+const OUT_DIR  = path.resolve('./test-outputs');
+const OUT      = path.join(OUT_DIR, `sdxl-${MODEL_ID}-${Date.now()}.png`);
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-console.log('\n=== RealVisXL V5 End-to-End Test ===\n');
+console.log(`\n=== SDXL Test: ${MODEL_ID} ===\n`);
 
+// Step 1: Hardware
 console.log('Step 1: Detecting hardware...');
 const hw  = await detectHardware();
 const backendScore = (g: typeof hw.gpus[0]): number =>
@@ -67,60 +37,75 @@ const gpu = [...hw.gpus].sort((a, b) => {
 })[0];
 console.log(`  GPU:     ${gpu?.name ?? 'none'}`);
 console.log(`  VRAM:    ${gpu?.vramGb ?? 0} GB${gpu?.unifiedMemory ? ' (unified)' : ''}`);
-console.log(`  Backend: ${gpu?.backend ?? 'cpu'}`);
-console.log('');
+console.log(`  Backend: ${gpu?.backend ?? 'cpu'}\n`);
 
-console.log('Step 2: Resolving RealVisXL model and aux paths...');
-const spec = getImageModelSpec('realvis-xl-v5-q4');
+// Step 2: Resolve model from catalogue
+console.log('Step 2: Looking up model in catalogue...');
+const spec = getImageModelSpec(MODEL_ID);
 if (!spec) {
-  console.error('FAIL: realvis-xl-v5-q4 not found in IMAGE_MODEL_CATALOGUE');
-  process.exit(1);
-}
-const modelPath = fluxModelPath(spec);
-const vaePath   = fluxAuxPath(SDXL_VAE);
-const clipLPath = fluxAuxPath(SDXL_CLIP_L);
-const clipGPath = fluxAuxPath(SDXL_CLIP_G);
-
-console.log(`  Model:  ${spec.label}`);
-console.log(`  Aux:    ${SDXL_VAE.label} + ${SDXL_CLIP_L.label} + ${SDXL_CLIP_G.label}`);
-console.log('');
-
-console.log('Step 3: Verifying files exist on disk...');
-const required: [string, string][] = [
-  ['model',  modelPath],
-  ['vae',    vaePath],
-  ['clip_l', clipLPath],
-  ['clip_g', clipGPath],
-];
-let missing = false;
-for (const [label, p] of required) {
-  if (fs.existsSync(p)) {
-    console.log(`  ✓ ${label}: ${path.basename(p)}`);
-  } else {
-    console.error(`  ✗ ${label} MISSING: ${p}`);
-    missing = true;
+  console.error(`  ✗ Model ID "${MODEL_ID}" not found in IMAGE_MODEL_CATALOGUE`);
+  console.error('    Available SDXL models:');
+  const { IMAGE_MODEL_CATALOGUE } = await import('./phobos/PhobosLocalManager.js');
+  for (const m of IMAGE_MODEL_CATALOGUE.filter((s: any) => s.runnerProfile === 'sdxl')) {
+    console.error(`      ${m.modelId} — ${m.label}`);
   }
-}
-if (missing) {
-  console.error('\nFAIL: Missing files. Download realvis-xl-v5-q4 and all SDXL aux files first.');
   process.exit(1);
 }
-console.log('');
+console.log(`  Model:   ${spec.label} (${spec.runnerProfile} runner)`);
+console.log(`  File:    ${spec.hfFile}`);
+console.log(`  Size:    ${(spec.sizeBytes / (1024 ** 3)).toFixed(1)} GB`);
+console.log(`  VRAM:    ${spec.vramRequiredGb} GB required\n`);
 
-console.log('Step 4: Generating image (sd-cli load → generate → exit)...');
-console.log(`  Prompt: "${PROMPT}"`);
-fs.mkdirSync(OUT_DIR, { recursive: true });
+// Step 3: Check file exists
+console.log('Step 3: Checking model file on disk...');
+const modelPath = fluxModelPath(spec);
+if (!fs.existsSync(modelPath)) {
+  console.error(`  ✗ Model file not found: ${modelPath}`);
+  console.error(`\n  Download it:`);
+  console.error(`    https://huggingface.co/${spec.hfRepo}/resolve/main/${spec.hfFile}`);
+  console.error(`\n  Place it in: ${IMAGE_SDXL_DIR}/`);
+  process.exit(1);
+}
+const fileSizeMb = (fs.statSync(modelPath).size / (1024 ** 2)).toFixed(0);
+console.log(`  ✓ ${path.basename(modelPath)} (${fileSizeMb} MB)\n`);
 
+// Step 4: Resolve binary
+console.log('Step 4: Resolving sd-cli binary...');
 const bin = resolveSdServerBin();
 if (process.platform !== 'win32') {
   try { fs.chmodSync(bin, 0o755); } catch { /* ignore */ }
 }
-const args = buildSdxlArgs(modelPath, vaePath, clipLPath, clipGPath, path.resolve(OUT), PROMPT);
+console.log(`  Binary:  ${path.relative('.', bin)}\n`);
 
-console.log('');
-console.log(`  Binary: ${path.basename(bin)}`);
-console.log(`  Args:   ${args.join(' ')}`);
-console.log('');
+// Step 5: Build args — matches the new buildSdxlArgs in ImageServerManager
+const isTurbo = spec.modelId.includes('turbo');
+const args = [
+  '-m',                modelPath,
+  '--prompt',          PROMPT,
+  '--negative-prompt', NEG,
+  '--steps',           String(isTurbo ? 4 : 25),
+  '--width',           String(isTurbo ? 512 : 1024),
+  '--height',          String(isTurbo ? 512 : 1024),
+  '--seed',            '42',
+  '--sampling-method', 'euler_a',
+  '--cfg-scale',       String(isTurbo ? 0 : 7.0),
+  '--vae-tiling',
+  '--output',          path.resolve(OUT),
+  '-v',
+  // Live preview — sd-cli flag is 'proj' (lightweight linear projection, no VAE decode)
+  '--preview',          'proj',
+  '--preview-interval', '1',
+  '--preview-path',     path.join(OUT_DIR, 'preview.png'),
+];
+
+console.log('Step 5: Generating image...');
+console.log(`  Prompt:  "${PROMPT}"`);
+console.log(`  Steps:   ${isTurbo ? 4 : 25} (${isTurbo ? 'Turbo' : 'Base'})`);
+console.log(`  Size:    ${isTurbo ? '512×512' : '1024×1024'}`);
+console.log(`  CFG:     ${isTurbo ? 0 : 7.0}`);
+console.log(`  Preview: proj (writing to ${OUT_DIR}/preview.png)\n`);
+
+fs.mkdirSync(OUT_DIR, { recursive: true });
 
 const startMs = Date.now();
 try {
@@ -130,9 +115,22 @@ try {
       env:   { ...process.env },
       cwd:   path.dirname(bin),
     });
-    proc.stdout?.on('data', (d: Buffer) => { const l = d.toString().trim(); if (l) console.log(`  [sd-cli] ${l}`); });
-    proc.stderr?.on('data', (d: Buffer) => { const l = d.toString().trim(); if (l) console.log(`  [sd-cli] ${l}`); });
-    proc.on('exit',  (code, sig) => code === 0 ? resolve() : reject(new Error(`exit ${code} (signal: ${sig})`)));
+    proc.stdout?.on('data', (d: Buffer) => {
+      for (const l of d.toString().split('\n')) {
+        const t = l.trim();
+        if (t) console.log(`  [sd-cli] ${t}`);
+      }
+    });
+    proc.stderr?.on('data', (d: Buffer) => {
+      for (const l of d.toString().split('\n')) {
+        const t = l.trim();
+        if (t) console.log(`  [sd-cli] ${t}`);
+      }
+    });
+    proc.on('exit', (code, sig) => {
+      if (code === 0) resolve();
+      else reject(new Error(`sd-cli exited with code ${code} (signal: ${sig})`));
+    });
     proc.on('error', reject);
   });
 } catch (err) {
@@ -142,14 +140,17 @@ try {
 
 const elapsedMs = Date.now() - startMs;
 
-console.log('');
 if (!fs.existsSync(OUT)) {
-  console.error('FAIL: sd-cli exited 0 but output file not found');
+  console.error('\nFAIL: sd-cli exited 0 but output file not found');
   process.exit(1);
 }
 
-console.log('=== PASS ===');
-console.log(`  Output: ${OUT}`);
-console.log(`  Seed:   42`);
-console.log(`  Time:   ${(elapsedMs / 1000).toFixed(1)}s`);
+const outKb = (fs.statSync(OUT).size / 1024).toFixed(0);
+const previewExists = fs.existsSync(path.join(OUT_DIR, 'preview.png'));
+
+console.log('\n=== PASS ===');
+console.log(`  Output:   ${OUT} (${outKb} KB)`);
+console.log(`  Seed:     42`);
+console.log(`  Time:     ${(elapsedMs / 1000).toFixed(1)}s`);
+console.log(`  Preview:  ${previewExists ? '✓ preview.png was written' : '✗ no preview file'}`);
 console.log('');

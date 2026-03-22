@@ -237,6 +237,7 @@ export type WorkflowEvent =
   | { phase: 'vision_done';      nodeIndex: number; artifactPath: string }
   | { phase: 'render_progress';  nodeIndex: number; step: number; totalSteps: number; previewPath?: string }
   | { phase: 'render_phase';     nodeIndex: number; renderPhase: RenderPhase; detail?: string }
+  | { phase: 'render_preview';   nodeIndex: number; base64: string }
   | { phase: 'node_done';        nodeIndex: number; outputPath: string }
   | { phase: 'stale_flagged';    fromIndex: number; toIndex: number }
   | { phase: 'workflow_done';    finalOutputPath: string; isFinal: boolean }
@@ -425,6 +426,10 @@ function parseProgressLine(line: string): { step: number; total: number } | null
 // ── sd-cli output line classifier ────────────────────────────────────────────
 
 function classifySdLine(line: string, nodeIndex: number): WorkflowEvent | null {
+  // Live preview — base64 image data pushed by the preview file watcher in generateImage()
+  if (line.startsWith('__PREVIEW__')) {
+    return { phase: 'render_preview', nodeIndex, base64: line.slice(11) };
+  }
   if (line.includes('loading diffusion model') || line.includes('loading t5xxl') ||
       line.includes('loading vae') || line.includes('loading clip')) {
     const model = line.includes('diffusion') ? 'diffusion' : line.includes('t5xxl') ? 't5xxl' : line.includes('vae') ? 'vae' : 'clip';

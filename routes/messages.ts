@@ -842,16 +842,19 @@ async function handleDirectResponse(
       sendEvent({ type: 'status', content: isVideo ? 'Preparing video generation…' : 'Preparing image generation…' });
 
       // ── Discover installed image/video models to inform SAYON ──
-      const { IMAGE_MODEL_CATALOGUE, isFluxDownloaded } = await import('../phobos/PhobosLocalManager.js');
+      const { IMAGE_MODEL_CATALOGUE, isFluxDownloaded, getImageModelSpec } = await import('../phobos/PhobosLocalManager.js');
       const { buildSdConfig } = await import('../phobos/ImageServerManager.js');
 
       // Speed-ordered preference for image models (fastest first)
       const IMAGE_SPEED_ORDER = [
-        'z-image-turbo-q4', 'flux2-klein-4b-q4', 'flux-schnell-q4', 'flux-schnell-q8',
-        'chroma-q4', 'flux2-klein-9b-q4', 'flux-dev-q4', 'z-image-base-q6', 'qwen-image-q4', 'kontext-dev-q5',
+        'sdxl-turbo-fp16', 'dreamshaper-xl-turbo-v2', 'z-image-turbo-q4', 'flux2-klein-4b-q4',
+        'realvisxl-v5-lightning', 'juggernaut-xl-v9-lightning', 'dreamshaper-xl-lightning',
+        'flux-schnell-q4', 'flux-schnell-q8', 'chroma-q4',
+        'sdxl-base-fp16', 'realvisxl-v5-fp16', 'juggernaut-xl-v9-fp16', 'pony-diffusion-v6-xl',
+        'flux2-klein-9b-q4', 'flux-dev-q4', 'z-image-base-q6', 'qwen-image-q4', 'kontext-dev-q5',
       ];
       // Speed-ordered preference for video models (fastest first)
-      const VIDEO_SPEED_ORDER = ['wan21-t2v-1.3b-q4', 'wan21-t2v-14b-q4', 'wan21-i2v-14b-480p-q4'];
+      const VIDEO_SPEED_ORDER = ['wan21-t2v-1.3b-q4', 'wan22-t2v-14b-q4', 'wan21-t2v-14b-q4', 'wan21-i2v-14b-480p-q4'];
 
       const installedImageModels = IMAGE_MODEL_CATALOGUE
         .filter(m => m.category !== 'video' && isFluxDownloaded(m))
@@ -966,23 +969,27 @@ async function handleDirectResponse(
       }
 
       const nodeType  = isVideo ? 'VideoGenerate' as const : 'Generate' as const;
+      const spec      = getImageModelSpec(modelId);
+      const profile   = spec?.profile;
+
+      // Use profile defaults when available — falls back to safe hardcoded defaults
       const nodeParams = isVideo ? {
         prompt:         enhancedPrompt,
-        negativePrompt: fullNegative,
-        steps:          20,
-        width:          832,
-        height:         480,
+        negativePrompt: enhancedNegative || profile?.defaultNegative || '',
+        steps:          profile?.defaultSteps   ?? 20,
+        width:          profile?.defaultWidth    ?? 832,
+        height:         profile?.defaultHeight   ?? 480,
         seed:           -1,
         fps:            12,
         videoFrames:    49,
       } : {
         prompt:         enhancedPrompt,
-        negativePrompt: fullNegative,
-        steps:          20,
-        width:          1024,
-        height:         1024,
+        negativePrompt: enhancedNegative || profile?.defaultNegative || fullNegative,
+        steps:          profile?.defaultSteps   ?? 20,
+        width:          profile?.defaultWidth    ?? 1024,
+        height:         profile?.defaultHeight   ?? 1024,
         seed:           -1,
-        sampler:        'euler',
+        sampler:        profile?.defaultSampler  ?? 'euler',
       };
 
       const session = createSession(

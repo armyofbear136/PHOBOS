@@ -156,14 +156,6 @@ export class ModelConfigStore {
       if (!parsed.provider) {
         parsed.provider = parsed.endpoint?.includes('52625') ? 'fastflowllm' : 'ollama';
       }
-      // Migrate stale deviceIndex values set before the WMI index-counting fix.
-      // Previously a virtual adapter at WMI position 0 caused real GPU at position 1
-      // to get deviceIndex=101 instead of 100, etc. Normalize by re-computing
-      // the base offset: anything >= 101 that was set as a non-NVIDIA target is shifted.
-      // Safe to apply unconditionally — NVIDIA devices use 0,1,2... never 100+.
-      if (parsed.deviceIndex !== undefined && parsed.deviceIndex > 100) {
-        parsed.deviceIndex = 100; // reset to first non-NVIDIA GPU; reconcile will re-detect
-      }
       return parsed as RoleConfig;
     } catch { return DEFAULT_COORDINATOR; }
   }
@@ -180,10 +172,6 @@ export class ModelConfigStore {
       // Engine must use SEREN port 52627; coordinator uses SAYON port 52626.
       if (parsed.provider === 'phobos' && parsed.endpoint?.includes('52626')) {
         parsed.endpoint = parsed.endpoint.replace('52626', '52627');
-      }
-      // Migrate stale deviceIndex > 100 (see coordinator migration comment above).
-      if (parsed.deviceIndex !== undefined && parsed.deviceIndex > 100) {
-        parsed.deviceIndex = 100;
       }
       return parsed as RoleConfig;
     } catch { return DEFAULT_ENGINE; }

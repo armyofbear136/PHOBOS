@@ -193,32 +193,47 @@ function buildSdxlArgs(
   opts:    GenerateImageOptions,
   outPath: string,
 ): string[] {
-  const steps  = opts.steps  ?? cfg.steps  ?? 25;
-  const width  = opts.width  ?? cfg.width  ?? 1024;
-  const height = opts.height ?? cfg.height ?? 1024;
-  const seed   = opts.seed   ?? 42;
+  const spec    = cfg.fluxSpec;
+  const profile = spec.profile;
+  const id      = spec.modelId;
 
-  // SDXL differences from FLUX:
-  //   - -m instead of --diffusion-model (single-file format, VAE baked in)
-  //   - --clip_l + --clip_g (no --t5xxl, no --vae)
-  //   - --cfg-scale instead of --guidance
-  //   - euler_a sampler preferred
+  // Profile-driven defaults when available, otherwise fall back to tier detection:
+  //   Turbo:     cfg=1, 4 steps, 512×512 (distilled — cfg must be 1, not 0, or prompt is ignored)
+  //   Lightning: cfg=2, 6 steps, 1024×1024 (distilled but cfg-guided, trained at 1024)
+  //   Base:      cfg=7, 25 steps, 1024×1024 (full denoising schedule)
+  const isTurbo     = id.includes('turbo');
+  const isLightning = id.includes('lightning');
+
+  const steps    = opts.steps    ?? cfg.steps    ?? profile?.defaultSteps    ?? (isTurbo ? 4 : isLightning ? 6 : 25);
+  const width    = opts.width    ?? cfg.width    ?? profile?.defaultWidth    ?? (isTurbo ? 512 : 1024);
+  const height   = opts.height   ?? cfg.height   ?? profile?.defaultHeight   ?? (isTurbo ? 512 : 1024);
+  const seed     = opts.seed     ?? 42;
+  const cfgScale = cfg.cfgScale  ?? profile?.defaultCfgScale  ?? (isTurbo ? 1 : isLightning ? 2 : 7.0);
+  const sampler  = opts.sampler  ?? profile?.defaultSampler   ?? (isLightning ? 'dpm++2m' : 'euler_a');
+
+  // SDXL single-file safetensors: -m auto-detects architecture, no aux files.
+  // All encoders (CLIP-L, CLIP-G) and VAE are baked into the safetensors.
   const args: string[] = [
-    '-m',                fluxModelPath(cfg.fluxSpec),
-    '--clip_l',          fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--clip_l')!),
-    '--clip_g',          fluxAuxPath(cfg.auxFiles.find(a => a.cliFlag === '--clip_g')!),
+    '-m',                fluxModelPath(spec),
     '--prompt',          opts.prompt,
     '--steps',           String(steps),
     '--width',           String(width),
     '--height',          String(height),
     '--seed',            String(seed),
-    '--sampling-method', opts.sampler ?? 'euler_a',
-    '--cfg-scale',       String(cfg.cfgScale ?? 7.0),
+    '--sampling-method', sampler,
+    '--cfg-scale',       String(cfgScale),
     '-o',                outPath,
-    '--rng',    'cuda',  // GPU-side RNG
+    '--vae-tiling',      // safe for all VRAM levels, prevents OOM on VAE decode
   ];
 
-  if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
+  // Scheduler override from profile (e.g. 'karras' for RealVisXL, DreamShaper Lightning)
+  if (profile?.defaultScheduler) args.push('--scheduler', profile.defaultScheduler);
+
+  // Negative prompt: use explicit user override, or profile default, or nothing
+  const neg = opts.negativePrompt ?? (profile?.defaultNegative || undefined);
+  if (neg) args.push('--negative-prompt', neg);
+
+  if (cfg.offloadToCpu) args.push('--offload-to-cpu');
   appendWorkflowFlags(args, opts);
   return args;
 }
@@ -667,6 +682,22 @@ export async function generateImage(
   const args = buildArgs(cfg, { ...opts, seed }, outputPath);
   const env  = buildEnv(cfg);
 
+  // ── Live preview setup ──────────────────────────────────────────────────────
+  // sd-cli writes a latent-decoded preview image to disk at each step interval.
+  // We watch the file and push base64 updates through onProgress as special
+  // __PREVIEW__ lines that the WorkflowEngine parses and forwards to the frontend.
+  const previewDir = path.join(path.dirname(outputPath), '..', 'vision-scratch');
+  fs.mkdirSync(previewDir, { recursive: true });
+  const previewPath = path.join(previewDir, 'preview.png');
+  // Clean up stale preview from previous run
+  try { if (fs.existsSync(previewPath)) fs.unlinkSync(previewPath); } catch { /* ignore */ }
+
+  // Append preview flags — proj preview is near-free (linear projection, no VAE decode)
+  args.push('--preview', 'proj', '--preview-interval', '1', '--preview-path', previewPath);
+
+  let previewWatcher: ReturnType<typeof setInterval> | null = null;
+  let lastPreviewMtime = 0;
+
   // macOS: the CI-built sd-cli binary has @rpath baked to the GitHub runner's
   // build directory, which doesn't exist on user machines. DYLD_LIBRARY_PATH
   // tells dyld to also search the binary's own directory for companion dylibs
@@ -691,6 +722,20 @@ export async function generateImage(
     killProc = () => { try { proc.kill('SIGTERM'); } catch { /* already gone */ } };
     if (aborted) { killProc(); } // abort was pressed between poll and spawn
 
+    // Start preview file watcher — polls every 500ms for file changes
+    previewWatcher = setInterval(() => {
+      try {
+        if (!fs.existsSync(previewPath)) return;
+        const stat = fs.statSync(previewPath);
+        const mtime = stat.mtimeMs;
+        if (mtime <= lastPreviewMtime || stat.size < 100) return; // unchanged or too small
+        lastPreviewMtime = mtime;
+        const data = fs.readFileSync(previewPath);
+        const b64 = data.toString('base64');
+        onProgress?.(`__PREVIEW__${b64}`);
+      } catch { /* file may be mid-write — skip this tick */ }
+    }, 500);
+
     proc.stdout?.on('data', (d: Buffer) => {
       const line = d.toString().trim();
       if (line) {
@@ -704,11 +749,15 @@ export async function generateImage(
     });
 
     proc.on('exit', (code, signal) => {
+      if (previewWatcher) { clearInterval(previewWatcher); previewWatcher = null; }
       if (code === 0 || signal === 'SIGTERM' || signal === 'SIGKILL') resolve();
       else reject(new Error(`sd-cli exited with code ${code} (signal: ${signal})`));
     });
 
-    proc.on('error', reject);
+    proc.on('error', (err) => {
+      if (previewWatcher) { clearInterval(previewWatcher); previewWatcher = null; }
+      reject(err);
+    });
   });
 
   const elapsedMs = Date.now() - startMs;

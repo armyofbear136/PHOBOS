@@ -59,6 +59,12 @@ import {
   SEREN_PORT,
 } from '../phobos/LlamaServerManager.js';
 
+// ── Image download lock ─────────────────────────────────────────────────────
+// Prevents model deletion while a download is in progress.
+// Set true when the image download SSE stream starts, cleared in its finally block.
+let _imageDownloadActive = false;
+export function isImageDownloadActive(): boolean { return _imageDownloadActive; }
+
 export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> {
 
   // GET /api/phobos/hardware
@@ -518,6 +524,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         try { reply.raw.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* socket closed */ }
       };
 
+      _imageDownloadActive = true;
       try {
         const hw        = await detectHardware();
         const _bScore   = (g: typeof hw.gpus[0]): number =>
@@ -596,6 +603,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         console.error(`[phobosLocal] image download error (${modelId}): ${err}`);
         send({ fileId: 'error', phase: 'error', label: String(err), bytesReceived: 0, bytesTotal: 0, done: true, error: String(err) });
       } finally {
+        _imageDownloadActive = false;
         try { reply.raw.end(); } catch { /* already closed */ }
       }
     }
@@ -605,6 +613,9 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
   fastify.delete<{ Params: { modelId: string } }>(
     '/api/phobos/image/:modelId',
     async (req, reply) => {
+      if (_imageDownloadActive) {
+        return reply.status(409).send({ error: 'Cannot delete models while a download is in progress' });
+      }
       const spec = getImageModelSpec(req.params.modelId);
       if (!spec) return reply.status(404).send({ error: 'Unknown image model' });
       const p = fluxModelPath(spec);

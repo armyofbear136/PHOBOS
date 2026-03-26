@@ -21,6 +21,8 @@ import {
 
 import {
   getImageModelSpec,
+  detectHardware,
+  queryGpuFreeVram,
   type ImageModelProfile,
 } from '../phobos/PhobosLocalManager.js';
 
@@ -718,31 +720,39 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
 
             if (status.aborted) return;
 
-            // Re-query VRAM after stop settles.
+            // Re-query VRAM after stop settles using LIVE hardware query.
             // Poll until free VRAM stops rising (stable = driver finished reclaiming).
-            // Never use an absolute threshold — a CPU llama-server holding a CUDA context
-            // permanently reduces peak free VRAM and an absolute target may never fire.
-            const SETTLE_POLL_MS = 500;
-            const SETTLE_MAX_MS  = 5000;
-            const SETTLE_START   = Date.now();
-            let lastFreeGb = sdCfg!.freeVramGb ?? 0;
+            // Uses queryGpuFreeVram() — never the cached hardware profile.
+            // Skipped for CPU-only paths (no discrete VRAM to settle).
+            const isDiscreteTarget = sdCfg!.gpuBackend === 'cuda' || sdCfg!.gpuBackend === 'vulkan';
+            if (isDiscreteTarget && sdCfg!.sdBinary !== 'cpu') {
+              const hw = await detectHardware();
+              const targetGpu = hw.gpus.find(g => g.index === (sdCfg!.deviceIndex ?? 0));
 
-            while (true) {
-              await new Promise(r => setTimeout(r, SETTLE_POLL_MS));
-              if (status.aborted) break;
-              const candidate = await buildSdConfig({
-                modelId: session.modelId,
-                targetGpuIndex: (session as any).targetGpuIndex,
-              });
-              if (candidate) {
-                sdCfg = candidate;
-                const free    = candidate.freeVramGb ?? 0;
-                const elapsed = Date.now() - SETTLE_START;
-                const stable  = free <= lastFreeGb;
-                lastFreeGb    = free;
-                if (stable || elapsed >= SETTLE_MAX_MS) break;
-              } else if (Date.now() - SETTLE_START >= SETTLE_MAX_MS) {
-                break;
+              if (targetGpu) {
+                const SETTLE_POLL_MS = 500;
+                const SETTLE_MAX_MS  = 5000;
+                const SETTLE_START   = Date.now();
+                let lastFreeMb = 0;
+
+                while (true) {
+                  await new Promise(r => setTimeout(r, SETTLE_POLL_MS));
+                  if (status.aborted) break;
+                  const freeMb  = await queryGpuFreeVram(targetGpu) ?? 0;
+                  const elapsed = Date.now() - SETTLE_START;
+                  const stable  = freeMb <= lastFreeMb;
+                  lastFreeMb    = freeMb;
+                  if (stable || elapsed >= SETTLE_MAX_MS) break;
+                }
+
+                // Update sdCfg with final accurate free VRAM reading
+                if (!status.aborted) {
+                  const refreshed = await buildSdConfig({
+                    modelId: session.modelId,
+                    targetGpuIndex: (session as any).targetGpuIndex,
+                  });
+                  if (refreshed) sdCfg = refreshed;
+                }
               }
             }
 

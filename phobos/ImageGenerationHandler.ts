@@ -8,6 +8,7 @@ import {
   type SdServerConfig,
 } from './ImageServerManager.js';
 import { stopServer, startServer, getServerStatus } from './LlamaServerManager.js';
+import { detectHardware, queryGpuFreeVram } from './PhobosLocalManager.js';
 
 // ── Output directory ──────────────────────────────────────────────────────────
 
@@ -140,36 +141,37 @@ export async function* generateWithFlux(
   }
 
   // ── Re-query VRAM now that the LLM has freed its memory ───────────────────
-  // nvidia-smi reports stale numbers immediately after a process dies — the GPU
-  // driver takes up to ~2s to reclaim and update accounting.
-  // Strategy: poll until free VRAM stops rising (two consecutive equal readings),
-  // which means the driver has finished reclaiming. Fall back to 5s max timeout.
-  // We do NOT use an absolute threshold — on machines where a CPU-only llama-server
-  // holds a CUDA context (typically ~1-2 GB overhead on Windows), the theoretical
-  // peak free VRAM is permanently reduced and an absolute threshold may never fire.
+  // Poll LIVE free VRAM via queryGpuFreeVram() until readings stabilize
+  // (driver finished reclaiming). Then rebuild sdCfg with accurate budget.
+  // Skipped for CPU-only paths (no discrete VRAM to settle).
   if (!sdCfg) {
-    const SETTLE_POLL_MS = 500;
-    const SETTLE_MAX_MS  = 8000; // extra time for cuBLASLt workspace release after sd-cli exits
-    const SETTLE_START   = Date.now();
-    let lastFreeGb       = sdCfgPrelim.freeVramGb ?? 0;
+    const isDiscreteTarget = (sdCfgPrelim.gpuBackend === 'cuda' || sdCfgPrelim.gpuBackend === 'vulkan')
+      && sdCfgPrelim.sdBinary !== 'cpu';
 
-    while (true) {
-      await new Promise(r => setTimeout(r, SETTLE_POLL_MS));
-      const candidate = await buildSdConfig();
-      if (candidate) {
-        sdCfg = candidate;
-        const free    = candidate.freeVramGb ?? 0;
-        const elapsed = Date.now() - SETTLE_START;
-        console.log(`[ImageGenerationHandler] Post-stop VRAM: ${free.toFixed(1)} GB free (${elapsed}ms elapsed)`);
-        // Stable = free VRAM has not risen since last poll — driver is done reclaiming
-        const stable = free <= lastFreeGb;
-        lastFreeGb = free;
-        if (stable || elapsed >= SETTLE_MAX_MS) break;
-      } else if (Date.now() - SETTLE_START >= SETTLE_MAX_MS) {
-        break;
+    if (isDiscreteTarget) {
+      const hw = await detectHardware();
+      const targetGpu = hw.gpus.find(g => g.index === (sdCfgPrelim.deviceIndex ?? 0));
+
+      if (targetGpu) {
+        const SETTLE_POLL_MS = 500;
+        const SETTLE_MAX_MS  = 8000;
+        const SETTLE_START   = Date.now();
+        let lastFreeMb       = 0;
+
+        while (true) {
+          await new Promise(r => setTimeout(r, SETTLE_POLL_MS));
+          const freeMb  = await queryGpuFreeVram(targetGpu) ?? 0;
+          const elapsed = Date.now() - SETTLE_START;
+          console.log(`[ImageGenerationHandler] Post-stop VRAM: ${freeMb} MB free (${elapsed}ms elapsed)`);
+          const stable = freeMb <= lastFreeMb;
+          lastFreeMb   = freeMb;
+          if (stable || elapsed >= SETTLE_MAX_MS) break;
+        }
       }
     }
 
+    // Rebuild sdCfg with final accurate readings
+    sdCfg = await buildSdConfig();
     if (!sdCfg) {
       yield { phase: 'error', message: 'Hardware config lost after server stop.', error: 'NO_IMAGE_MODEL' };
       return;
@@ -264,19 +266,28 @@ export function snapshotAllServersOnDevice(deviceIndex?: number): ServerSnapshot
   const roles: ServerRole[] = ['seren', 'sayon'];
   const snaps: ServerSnapshot[] = [];
 
+  // When deviceIndex is undefined, image gen targets CPU (sd-cpu binary) and
+  // will consume system RAM. In that case we must stop ALL running LLM servers
+  // — both GPU-bound (holding VRAM that blocks sd-cli if it also uses GPU) and
+  // CPU-bound (holding system RAM that sd-cpu needs).
+  const targetIsCpu = deviceIndex === undefined;
+
   for (const role of roles) {
     const s = status[role];
     if (s.state !== 'running' || !s.modelId) continue;
 
-    // Only stop a server if it is actually occupying the target GPU:
-    //   1. gpuLayers must be > 0 — ngl=0 means CPU-only, holds no VRAM, never stop it.
-    //   2. deviceIndex must match the target device when both are defined.
-    // A server on CPU (ngl=0 or deviceIndex=undefined) is never a VRAM competitor.
-    if (s.gpuLayers === 0) continue;
-
-    if (deviceIndex !== undefined && s.deviceIndex !== undefined) {
-      if (s.deviceIndex !== deviceIndex) continue;
+    if (targetIsCpu) {
+      // CPU target: only stop CPU-bound servers (ngl=0) that consume system RAM.
+      // GPU-bound servers (ngl>0) hold VRAM, not RAM — they're not competing
+      // with sd-cpu and stopping them needlessly takes SEREN offline.
+      if (s.gpuLayers > 0) continue;
+    } else {
+      // GPU target: only stop servers actually occupying that GPU.
+      // ngl=0 servers hold no VRAM — skip them.
+      if (s.gpuLayers === 0) continue;
+      if (s.deviceIndex !== undefined && s.deviceIndex !== deviceIndex) continue;
     }
+
     snaps.push({
       role,
       modelId:     s.modelId,

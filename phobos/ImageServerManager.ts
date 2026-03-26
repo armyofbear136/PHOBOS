@@ -21,6 +21,8 @@ import {
   WAN_AUX_REQUIRED,
   WAN_I2V_AUX_REQUIRED,
   detectHardware,
+  queryGpuFreeVram,
+  type GpuDevice,
   type ImageModelSpec,
   type FluxAuxFile,
 } from './PhobosLocalManager.js';
@@ -605,9 +607,10 @@ export async function generateImage(
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
   // ── Pre-flight VRAM check with retry ────────────────────────────────────────
-  // Computes exact VRAM needed from model component sizes, then polls live free
-  // VRAM up to 10 times (3s apart = 30s max). This replaces both the old static
-  // pre-flight and the VRAM settle loop.
+  // Computes exact VRAM needed from model component sizes, then polls LIVE free
+  // VRAM up to 10 times (3s apart = 30s max). Uses queryGpuFreeVram() which
+  // calls nvidia-smi (NVIDIA), DXGI counters (Windows AMD/Intel), or sysfs (Linux AMD)
+  // — never the cached hardware profile.
   // Skipped for: CPU binary (no VRAM), unified memory (RAM pool, no discrete gate).
   const isDiscreteGpuPath = (cfg.gpuBackend === 'cuda' || cfg.gpuBackend === 'vulkan')
     && cfg.sdBinary !== 'cpu'
@@ -623,21 +626,28 @@ export async function generateImage(
     }
     const vaeMb     = spec.vaeMb ?? 160;
     const workingMb = cfg.gpuBackend === 'cuda' ? 512 : 256;
-    const requiredMb = diffMb + encMb + vaeMb + workingMb;
+    // With --offload-to-cpu, only the largest single component is in VRAM at once.
+    // Without offload, all components must fit simultaneously.
+    const modelMb   = cfg.offloadToCpu
+      ? Math.max(diffMb, encMb, vaeMb)
+      : diffMb + encMb + vaeMb;
+    const requiredMb = modelMb + workingMb;
 
     console.log(
-      `[ImageServerManager] Pre-flight VRAM (${cfg.gpuBackend}): need ~${requiredMb} MB ` +
-      `(diffusion ${diffMb} + encoder ${encMb} + VAE ${vaeMb} + working ${workingMb})`
+      `[ImageServerManager] Pre-flight VRAM (${cfg.gpuBackend}${cfg.offloadToCpu ? ', offload' : ''}): need ~${requiredMb} MB ` +
+      `(${cfg.offloadToCpu ? 'peak component' : 'total'}: diffusion ${diffMb}, encoder ${encMb}, VAE ${vaeMb} + working ${workingMb})`
     );
+
+    // Resolve target GPU object once — used for all live queries in the loop.
+    const hw = await detectHardware();
+    const targetGpu = hw.gpus.find(g => g.index === (cfg.deviceIndex ?? 0));
 
     const MAX_ATTEMPTS = 10;
     const WAIT_MS      = 3000;
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (aborted) return { outputPath, seed: -1, elapsedMs: 0 };
       try {
-        const hw  = await detectHardware();
-        const gpu = hw.gpus.find(g => g.index === (cfg.deviceIndex ?? 0));
-        const freeMb = gpu ? Math.round((gpu.freeVramGb ?? 0) * 1024) : 0;
+        const freeMb = targetGpu ? (await queryGpuFreeVram(targetGpu) ?? 0) : 0;
 
         console.log(`[ImageServerManager] VRAM check ${attempt + 1}/${MAX_ATTEMPTS}: need ${requiredMb} MB, have ${freeMb} MB free`);
 
@@ -653,7 +663,7 @@ export async function generateImage(
         }
       } catch (err) {
         if ((err as Error).message?.includes('Not enough free VRAM')) throw err;
-        // Hardware detection failed — continue trying
+        // Live query failed — continue trying
       }
       await new Promise(r => setTimeout(r, WAIT_MS));
     }
@@ -838,6 +848,53 @@ export async function buildSdConfig(
   let gpuName         = '';
   let sdBinaryChoice: 'cuda' | 'vulkan' | 'rocm' | 'cpu' = 'cuda';
 
+  // ── CPU override: targetGpuIndex === -1 means user explicitly selected CPU ──
+  if (overrides.targetGpuIndex === -1) {
+    const os = await import('os');
+    const ramGb = Math.floor(os.default.totalmem() / (1024 ** 3));
+    console.log(`[ImageServerManager] CPU selected by user — using system RAM (${ramGb} GB)`);
+
+    let spec: ImageModelSpec | null = null;
+    if (overrides.modelId) {
+      spec = getImageModelSpec(overrides.modelId) ?? null;
+      if (spec && !isImageModelDownloaded(spec)) spec = null;
+    }
+    if (!spec) spec = recommendImageModel(ramGb, true, 'cpu');
+    if (!spec) {
+      console.warn('[ImageServerManager] No image model available for CPU');
+      return null;
+    }
+
+    let auxFiles: FluxAuxFile[];
+    switch (spec.runnerProfile) {
+      case 'sdxl':  auxFiles = [...SDXL_AUX_REQUIRED]; break;
+      case 'flux1-kontext': {
+        const t5 = recommendT5Encoder(spec, ramGb, true);
+        auxFiles = [...KONTEXT_AUX_REQUIRED, t5]; break;
+      }
+      case 'flux2':  auxFiles = spec.modelId.includes('9b') ? [...FLUX2_9B_AUX_REQUIRED] : [...FLUX2_4B_AUX_REQUIRED]; break;
+      case 'z-image': auxFiles = [...ZIMAGE_AUX_REQUIRED]; break;
+      case 'qwen-image': auxFiles = [...QWEN_IMAGE_AUX_REQUIRED]; break;
+      case 'wan': auxFiles = [...WAN_AUX_REQUIRED]; break;
+      default: {
+        const t5 = recommendT5Encoder(spec, ramGb, true);
+        auxFiles = spec.variant === 'chroma' ? [...CHROMA_AUX_REQUIRED, t5] : [...FLUX_AUX_REQUIRED, t5];
+      }
+    }
+    console.log(`[ImageServerManager] Selected model: ${spec.label} (CPU)`);
+    return {
+      modelType: spec.runnerProfile === 'sdxl' ? 'sdxl' : (spec.runnerProfile ?? 'flux') as SdModelType,
+      fluxSpec: spec,
+      auxFiles,
+      deviceIndex: undefined,
+      vulkanIndex: undefined,
+      gpuBackend: undefined,
+      sdBinary: 'cpu',
+      freeVramGb: 0,
+      gpuName: 'CPU',
+    };
+  }
+
   try {
     const hw = await detectHardware();
     const backendScore = (g: typeof hw.gpus[0]): number => {
@@ -894,6 +951,12 @@ export async function buildSdConfig(
   // If a specific modelId was requested, look it up directly instead of auto-recommending.
   // Still validate that the current GPU can actually run it — if not, clear spec so the
   // VRAM-aware selection and CPU fallback below can take over.
+  //
+  // VRAM gate uses the largest single component (max of diffusion, encoder, VAE) because
+  // --offload-to-cpu loads only the active component into VRAM at any given time.
+  // sd-cli's offload: text_encoder → VRAM → run → free, diffusion → VRAM → denoise → free,
+  // VAE → VRAM → decode → free. Peak VRAM = largest single component, not the sum.
+  // Confirmed working on 4 GB GPUs per leejet/stable-diffusion.cpp wiki.
   let spec: ImageModelSpec | null = null;
   if (overrides.modelId) {
     spec = getImageModelSpec(overrides.modelId) ?? null;
@@ -901,14 +964,18 @@ export async function buildSdConfig(
       console.warn(`[ImageServerManager] Requested model ${overrides.modelId} is not downloaded`);
       spec = null;
     }
-    // VRAM gate: if we have a discrete GPU with known VRAM that can't fit this model,
-    // clear spec so the fallback block routes to CPU instead of failing at pre-flight.
-    if (spec && !isUnifiedMemory && totalVramGb > 0 && spec.vramRequiredGb > totalVramGb) {
-      console.warn(
-        `[ImageServerManager] Requested model ${overrides.modelId} needs ${spec.vramRequiredGb} GB VRAM ` +
-        `but only ${totalVramGb} GB available — will route to CPU`
-      );
-      spec = null;
+    // VRAM gate: compare peak single-component VRAM against total GPU VRAM.
+    // With --offload-to-cpu, only the largest component needs to fit at once.
+    if (spec && !isUnifiedMemory && totalVramGb > 0) {
+      const peakMb = Math.max(spec.diffusionMb, spec.encoderMb, spec.vaeMb);
+      const peakGb = peakMb / 1024;
+      if (peakGb > totalVramGb) {
+        console.warn(
+          `[ImageServerManager] Requested model ${overrides.modelId} largest component ${peakGb.toFixed(1)} GB ` +
+          `exceeds ${totalVramGb} GB VRAM — will route to CPU`
+        );
+        spec = null;
+      }
     }
   }
   if (!spec) {
@@ -951,17 +1018,25 @@ export async function buildSdConfig(
     return null;
   }
 
-  // ── Tight-VRAM: no offload needed, just VAE tiling ─────────────────────────
-  // On 8 GB cards Windows eats 1+ GB for display/driver, leaving ~7 GB free.
-  // Chroma Q4 (5.18 GB) + T5 Q3 (2.3 GB) + VAE (0.09 GB) = 7.5 GB — fits via
-  // CUDA VMM which spills ~0.4 GB to system RAM during model load.
-  // Diffusion steps run fine, but VAE decode needs ~2.5 GB working memory and
-  // OOMs. --vae-tiling drops VAE working memory from ~2560 MB to ~176 MB.
+  // ── Tight-VRAM: enable --offload-to-cpu when needed ─────────────────────────
+  // With --offload-to-cpu, sd-cli loads only the active component (encoder,
+  // diffusion, VAE) into VRAM one at a time. Peak VRAM = largest single component.
+  // This enables 4 GB GPUs to run models whose total footprint exceeds VRAM.
+  // Confirmed working on 4 GB GPUs per leejet/stable-diffusion.cpp wiki.
   //
-  // --offload-to-cpu was tried but crashes on Pascal (GTX 1070, sm_61) with
-  // access violation during split-backend tensor allocation. Not viable.
-  //
-  // offloadToCpu remains enabled for unified memory (set earlier, line ~492).
+  // Enable offload on discrete GPUs when total model footprint exceeds VRAM.
+  // Already enabled for unified memory (set earlier).
+  if (!offloadToCpu && spec && totalVramGb > 0) {
+    const totalModelMb = spec.diffusionMb + spec.encoderMb + spec.vaeMb;
+    const totalModelGb = totalModelMb / 1024;
+    if (totalModelGb > totalVramGb) {
+      offloadToCpu = true;
+      console.log(
+        `[ImageServerManager] Model total ${totalModelGb.toFixed(1)} GB exceeds ${totalVramGb} GB VRAM ` +
+        `— enabling --offload-to-cpu (peak component ${(Math.max(spec.diffusionMb, spec.encoderMb, spec.vaeMb) / 1024).toFixed(1)} GB fits)`
+      );
+    }
+  }
 
   // Aux selection by runner profile
   let auxFiles: FluxAuxFile[];

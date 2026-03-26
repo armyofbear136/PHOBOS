@@ -661,6 +661,161 @@ export async function detectHardware(): Promise<HardwareProfile> {
   return _hwInFlight;
 }
 
+// ── Live VRAM query (cross-vendor) ───────────────────────────────────────────
+// Returns free VRAM in MB for a specific GPU. Independent of _hwCache.
+// NVIDIA: nvidia-smi per-device query.
+// Windows AMD/Intel: DXGI performance counters via PowerShell.
+// Linux AMD: sysfs mem_info_vram_used / mem_info_vram_total.
+// macOS / unified: returns undefined (always fits, handled by offloadToCpu).
+
+export async function queryGpuFreeVram(gpu: GpuDevice): Promise<number | undefined> {
+  if (gpu.unifiedMemory) return undefined;   // unified memory — no discrete VRAM gate
+  if (gpu.backend === 'metal') return undefined;
+
+  // ── NVIDIA — nvidia-smi per-device query ──────────────────────────────────
+  if (gpu.backend === 'cuda') {
+    try {
+      const { stdout } = await execFileAsync('nvidia-smi', [
+        '--query-gpu=memory.free',
+        '--format=csv,noheader,nounits',
+        '-i', String(gpu.index),
+      ], { timeout: 3000 });
+      const freeMb = parseInt(stdout.trim(), 10);
+      if (!isNaN(freeMb)) return freeMb;
+    } catch { /* fall through */ }
+    return undefined;
+  }
+
+  // ── Windows non-NVIDIA — DXGI GPU performance counters via WMI ─────────
+  // Two-step approach: query adapter list (with names + LUIDs) and memory
+  // counters (with DedicatedUsage + LUIDs). Cross-reference by LUID to match
+  // the correct adapter's memory usage to our GPU name.
+  //
+  // WMI adapter memory Name format: "luid_0xHIGH_0xLOW_phys_N" — no adapter name.
+  // So we extract the LUID prefix and match it against adapters queried separately.
+  if (process.platform === 'win32') {
+    try {
+      // Single PowerShell call: get both adapters (with LUID) and memory counters.
+      const { stdout } = await execFileAsync('powershell', [
+        '-NoProfile', '-Command',
+        // Get adapter names with their LUID from PnP GPU instance paths.
+        // The GPU Adapter Memory counter Name starts with "luid_0xHIGH_0xLOW_".
+        // Win32_VideoController gives us the adapter name. We match via DeviceID index.
+        //
+        // Simpler approach: just get all GPU adapter memory entries and pick by position.
+        // The order matches WMI adapter enumeration order, which is how wmiPosition was computed.
+        `Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory ` +
+        `| Select-Object Name, DedicatedUsage, SharedUsage | ConvertTo-Json -Compress`,
+      ], { timeout: 8000 });
+      if (stdout.trim()) {
+        const raw = JSON.parse(stdout.trim());
+        const items = Array.isArray(raw) ? raw : [raw];
+
+        // Deduplicate by LUID — multiple entries per adapter (different phys nodes).
+        // Keep the one with highest DedicatedUsage per unique LUID prefix.
+        const byLuid = new Map<string, number>();
+        for (const item of items) {
+          const name = String(item.Name ?? '');
+          // Extract LUID: "luid_0xHIGH_0xLOW_phys_N" → "luid_0xHIGH_0xLOW"
+          const luidMatch = name.match(/^(luid_0x[0-9a-f]+_0x[0-9a-f]+)/i);
+          if (!luidMatch) continue;
+          const luid  = luidMatch[1].toLowerCase();
+          const usage = Number(item.DedicatedUsage ?? 0);
+          const prev  = byLuid.get(luid) ?? -1;
+          if (usage > prev) byLuid.set(luid, usage);
+        }
+
+        // Convert to ordered array — WMI enumeration order matches adapter order.
+        const adapters = [...byLuid.entries()]; // [[luid, usage], ...]
+
+        // Match by position: gpu.wmiPosition is the non-NVIDIA adapter index
+        // from WMI enumeration during detectHardware(). The DXGI adapter order
+        // should match. For NVIDIA GPUs (which hit the nvidia-smi path above),
+        // they still appear in the DXGI list, so we need to skip them.
+        //
+        // Strategy: if we have wmiPosition, use it directly as index into the
+        // non-NVIDIA DXGI adapters. If not, fall back to first adapter with
+        // non-zero dedicated usage.
+        //
+        // Actually simpler: gpu.wmiPosition counts non-NVIDIA WMI adapters.
+        // But DXGI includes ALL adapters (NVIDIA too). So we can't index directly.
+        // Instead: try name-based match first (some Windows versions include names),
+        // then fall back to LUID positional match excluding NVIDIA LUIDs.
+        //
+        // Simplest reliable approach: since this function is only called for
+        // non-NVIDIA GPUs (NVIDIA hits nvidia-smi above), and the 9060 XT system
+        // has only one discrete GPU, just pick the LUID with the highest
+        // DedicatedUsage (the discrete GPU, not the iGPU).
+        // On multi-AMD systems, use wmiPosition to index.
+        let usageBytes = -1;
+        if (adapters.length === 1) {
+          usageBytes = adapters[0][1];
+        } else if (gpu.wmiPosition !== undefined && gpu.wmiPosition < adapters.length) {
+          usageBytes = adapters[gpu.wmiPosition][1];
+        } else {
+          // Fallback: pick adapter with highest dedicated usage (likely the discrete GPU)
+          for (const [, usage] of adapters) {
+            if (usage > usageBytes) usageBytes = usage;
+          }
+        }
+
+        if (usageBytes >= 0) {
+          const totalMb = gpu.vramGb * 1024;
+          const usedMb  = Math.round(usageBytes / (1024 * 1024));
+          const freeMb  = Math.max(0, totalMb - usedMb);
+          console.log(`[HW] DXGI VRAM for ${gpu.name}: ${usedMb} MB used / ${totalMb} MB total → ${freeMb} MB free (${adapters.length} adapters)`);
+          return freeMb;
+        }
+        console.warn(`[HW] DXGI VRAM: no adapters found in performance counters`);
+      }
+    } catch (err) {
+      console.warn(`[HW] DXGI VRAM query failed for ${gpu.name}: ${(err as Error).message}`);
+    }
+    return undefined;
+  }
+
+  // ── Linux AMD — sysfs ─────────────────────────────────────────────────────
+  // Enumerate /sys/class/drm/card*/device/ to find AMD GPUs (vendor 0x1002).
+  // Match by order among AMD cards — gpu.index offset 100+ maps to drm card order.
+  if (process.platform === 'linux') {
+    try {
+      const drmBase = '/sys/class/drm';
+      const cards = fs.readdirSync(drmBase)
+        .filter(d => /^card\d+$/.test(d))
+        .sort((a, b) => parseInt(a.slice(4)) - parseInt(b.slice(4)));
+
+      let amdIdx = 0;
+      for (const card of cards) {
+        const vendorPath = path.join(drmBase, card, 'device', 'vendor');
+        const totalPath  = path.join(drmBase, card, 'device', 'mem_info_vram_total');
+        const usedPath   = path.join(drmBase, card, 'device', 'mem_info_vram_used');
+        if (!fs.existsSync(vendorPath)) continue;
+        const vendor = fs.readFileSync(vendorPath, 'utf-8').trim();
+        if (vendor !== '0x1002') continue; // AMD vendor ID
+        // gpu.index is 100+N where N is the non-NVIDIA GPU index from detection.
+        // Match by counting AMD sysfs cards in order.
+        if (100 + amdIdx === gpu.index) {
+          if (fs.existsSync(totalPath) && fs.existsSync(usedPath)) {
+            const totalBytes = parseInt(fs.readFileSync(totalPath, 'utf-8').trim(), 10);
+            const usedBytes  = parseInt(fs.readFileSync(usedPath, 'utf-8').trim(), 10);
+            if (!isNaN(totalBytes) && !isNaN(usedBytes)) {
+              const freeMb = Math.round((totalBytes - usedBytes) / (1024 * 1024));
+              console.log(`[HW] sysfs VRAM for ${gpu.name} (${card}): ${freeMb} MB free`);
+              return Math.max(0, freeMb);
+            }
+          }
+        }
+        amdIdx++;
+      }
+    } catch (err) {
+      console.warn(`[HW] sysfs VRAM query failed for ${gpu.name}: ${(err as Error).message}`);
+    }
+    return undefined;
+  }
+
+  return undefined;
+}
+
 // ── GGUF model catalogue ──────────────────────────────────────────────────────
 
 export interface GGUFSpec {
@@ -1084,6 +1239,9 @@ export interface ImageModelSpec {
   licenseUrl: string;
   /** Per-model generation profile — drives defaults, UI, and SAYON prompt engineering */
   profile?: ImageModelProfile;
+  /** If true, model is hidden from download/selection UI. Used for models that require
+   *  pipeline features not yet implemented (e.g. Wan 2.2 dual HighNoise/LowNoise GGUF). */
+  blocked?: boolean;
 }
 
 /**
@@ -1725,13 +1883,13 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
       supportsNegative: true, supportsLoRA: true, maxDimension: 2048, nativeDimension: 1024,
     },
   },
-  // ── Anime / Stylized ────────────────────────────────────────────────────
+  // ── Anime / Stylized (NSFW-capable) ─────────────────────────────────────
   {
     modelId:          'pony-diffusion-v6-xl',
     label:            'Pony Diffusion V6 XL FP16',
     displayName:      'Pony Diffusion V6 XL',
     runnerProfile:    'sdxl',
-    category:         'anime',
+    category:         'nsfw-anime',
     variant:          'sdxl',
     quantization:     'f16',
     hfRepo:           'LyliaEngine/Pony_Diffusion_V6_XL',
@@ -1752,6 +1910,36 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
       defaultNegative: 'score_4, score_3, score_2, score_1, blurry, low quality, watermark, text',
       promptStyle: 'booru',
       sayonBrief: 'Pony Diffusion V6 XL uses booru-style tags (danbooru format). Always start prompts with quality tags: "score_9, score_8_up, score_7_up". Then add subject tags, style tags, and content tags separated by commas. Use underscores within multi-word tags (e.g. "long_hair" not "long hair"). Negative prompt should include low quality score tags. This model is trained on western art and anime — specify "source_anime" or "source_cartoon" for style control.',
+      supportsNegative: true, supportsLoRA: true, maxDimension: 2048, nativeDimension: 1024,
+    },
+  },
+  // ── NSFW Realistic ─────────────────────────────────────────────────────
+  {
+    modelId:          'pony-realism-v21',
+    label:            'Pony Realism V2.1 FP16',
+    displayName:      'Pony Realism V2.1',
+    runnerProfile:    'sdxl',
+    category:         'nsfw-realistic',
+    variant:          'pony',
+    quantization:     'f16',
+    hfRepo:           'LyliaEngine/ponyRealism_v21MainVAE',
+    hfFile:           'ponyRealism_v21MainVAE.safetensors',
+    sizeBytes:        7_110_000_000,
+    vramRequiredGb:   8,
+    diffusionMb:      3500,
+    encoderMb:        0,
+    vaeMb:            0,
+    estSecondsCuda:   15,
+    estSecondsVulkan: 60,
+    estSecondsCpu:    600,
+    license:          'cdla-permissive-2.0',
+    licenseUrl:       'https://civitai.com/models/372465/pony-realism',
+    profile: {
+      defaultSteps: 25, defaultCfgScale: 7, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'dpm++2m', defaultScheduler: 'karras',
+      defaultNegative: 'score_4, score_3, score_2, score_1, blurry, low quality, watermark, text, 3d, cartoon, anime',
+      promptStyle: 'booru',
+      sayonBrief: 'Pony Realism V2.1 is a photorealistic model built on the Pony Diffusion V6 XL base. Uses booru-style tags. Start with quality tags: "score_9, score_8_up, score_7_up". Add subject description, lighting, and camera tags. Use DPM++ 2M Karras sampler at cfg-scale 7 for best results. Excellent skin detail, lighting, and anatomical accuracy. Negative prompts should include low score tags plus "3d, cartoon, anime" for photorealism.',
       supportsNegative: true, supportsLoRA: true, maxDimension: 2048, nativeDimension: 1024,
     },
   },
@@ -2056,8 +2244,8 @@ export const WAN_CATALOGUE: ImageModelSpec[] = [
     category:         'video',
     variant:          'wan',
     quantization:     'Q4_K_M',
-    hfRepo:           'city96/Wan2.2-T2V-14B-gguf',
-    hfFile:           'wan2.2-t2v-14b-Q4_K_M.gguf',
+    hfRepo:           'QuantStack/Wan2.2-T2V-A14B-GGUF',
+    hfFile:           'HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf',
     sizeBytes:        10_100_000_000,
     vramRequiredGb:   16,
     diffusionMb:      9600,
@@ -2067,7 +2255,12 @@ export const WAN_CATALOGUE: ImageModelSpec[] = [
     estSecondsVulkan: 720,
     estSecondsCpu:    3600,
     license:          'Apache-2.0',
-    licenseUrl:       'https://huggingface.co/city96/Wan2.2-T2V-14B-gguf',
+    licenseUrl:       'https://huggingface.co/QuantStack/Wan2.2-T2V-A14B-GGUF',
+    // Blocked: Wan 2.2 MoE architecture requires TWO diffusion model files
+    // (HighNoise + LowNoise) and --high-noise-diffusion-model flag.
+    // Current single-file pipeline cannot handle this. Unblock when dual-model
+    // arg builder and download logic are implemented.
+    blocked:          true,
     profile: {
       defaultSteps: 20, defaultCfgScale: 5, defaultWidth: 832, defaultHeight: 480,
       defaultSampler: 'euler', defaultScheduler: 'simple', defaultNegative: '',
@@ -2238,9 +2431,13 @@ export function recommendImageModel(
       return isImageModelDownloaded(m);
     }) ?? null;
   }
+  // With --offload-to-cpu, only the largest single component needs to fit in VRAM
+  // at any given time: text_encoder → run → free, diffusion → run → free, VAE → run → free.
+  // Use max(diffusionMb, encoderMb, vaeMb) converted to GB as the VRAM requirement.
   return ordered.find(m => {
     if (isVulkan && vulkanLargeEncoderModels.has(m.modelId)) return false;
-    return m.vramRequiredGb <= vramGb + IMAGE_VRAM_TOLERANCE_GB && isImageModelDownloaded(m);
+    const peakGb = Math.max(m.diffusionMb, m.encoderMb, m.vaeMb) / 1024;
+    return peakGb <= vramGb + IMAGE_VRAM_TOLERANCE_GB && isImageModelDownloaded(m);
   }) ?? null;
 }
 

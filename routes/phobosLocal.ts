@@ -82,12 +82,22 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
     const hw  = await detectHardware();
     const rec = buildRecommendation(hw);
 
-    // ── Hardcoded image/video picks for auto-config ──
-    const AUTO_IMAGE_ID = 'z-image-turbo-q4';
-    const AUTO_VIDEO_ID = 'wan21-t2v-1.3b-q4';
+    // ── VRAM-tiered image/video picks for auto-config ──
+    // Use the best GPU's total VRAM to pick the right tier.
+    const bestGpuVram = hw.gpus.reduce((max, g) => Math.max(max, g.vramGb), 0);
 
-    const imageSpec = getImageModelSpec(AUTO_IMAGE_ID) ?? null;
-    const videoSpec = getImageModelSpec(AUTO_VIDEO_ID) ?? null;
+    // Image: ≤6 GB → DreamShaper XL Lightning, 8-10 GB → FLUX.2 Klein 4B, ≥12 GB → FLUX.2 Klein 9B
+    const autoImageId = bestGpuVram >= 12 ? 'flux2-klein-9b-q4'
+                      : bestGpuVram >= 8  ? 'flux2-klein-4b-q4'
+                      : 'dreamshaper-xl-lightning';
+
+    // Video: ≤10 GB → Wan 2.1 1.3B, ≥12 GB → Wan 2.1 14B
+    // (Wan 2.2 14B blocked — requires dual HighNoise/LowNoise GGUF pipeline not yet implemented)
+    const autoVideoId = bestGpuVram >= 12 ? 'wan21-t2v-14b-q4'
+                      : 'wan21-t2v-1.3b-q4';
+
+    const imageSpec = getImageModelSpec(autoImageId) ?? null;
+    const videoSpec = getImageModelSpec(autoVideoId) ?? null;
 
     // ── LLM models: what needs downloading ──
     const llmNeeded: string[] = [];
@@ -417,7 +427,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       })),
     };
 
-    const models = IMAGE_MODEL_CATALOGUE.map(spec => {
+    const models = IMAGE_MODEL_CATALOGUE.filter(spec => !spec.blocked).map(spec => {
       // Determine aux files for this model.
       // For T5-dependent models, collect T5 encoders for ALL GPUs so the
       // download includes every T5 size any GPU in the system might need.

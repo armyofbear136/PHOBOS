@@ -1065,8 +1065,15 @@ export interface ImageModelSpec {
   hfRepo: string;
   hfFile: string;
   sizeBytes: number;
-  /** Minimum VRAM in GB */
+  /** Minimum VRAM in GB — kept for backward compat / sorting. Use diffusionMb+encoderMb+vaeMb for precise checks. */
   vramRequiredGb: number;
+  /** Diffusion model weights in VRAM (MB). From sd-cli "diffusion_model" log. */
+  diffusionMb: number;
+  /** Built-in encoder weights in VRAM (MB). For models with LLM encoder (Z-Image, Klein, Qwen-Image).
+   *  0 for models that use external T5/CLIP (FLUX, Chroma) or have everything baked in (SDXL). */
+  encoderMb: number;
+  /** VAE weights in VRAM (MB). ~95 for FLUX/Chroma ae.safetensors, ~164 for FLUX.2 vae, 0 for SDXL (baked in). */
+  vaeMb: number;
   /** Estimated generation time on CUDA (RTX 3080 class), seconds */
   estSecondsCuda: number;
   /** Estimated generation time on Vulkan (iGPU class), seconds */
@@ -1340,6 +1347,9 @@ export const FLUX_CATALOGUE: FluxSpec[] = [
     hfFile:           'flux1-schnell-q4_k_m.gguf',
     sizeBytes:        6_800_000_000,
     vramRequiredGb:   8,
+    diffusionMb:      6525,
+    encoderMb:        0,
+    vaeMb:            95,
     estSecondsCuda:   12,
     estSecondsVulkan: 45,
     estSecondsCpu:    480,
@@ -1365,6 +1375,9 @@ export const FLUX_CATALOGUE: FluxSpec[] = [
     hfFile:           'flux1-schnell-Q8_0.gguf',
     sizeBytes:        11_900_000_000,
     vramRequiredGb:   12,
+    diffusionMb:      12400,
+    encoderMb:        0,
+    vaeMb:            95,
     estSecondsCuda:   15,
     estSecondsVulkan: 60,
     estSecondsCpu:    600,
@@ -1391,6 +1404,9 @@ export const FLUX_CATALOGUE: FluxSpec[] = [
     hfFile:           'flux1-dev-Q4_0.gguf',
     sizeBytes:        6_790_000_000,
     vramRequiredGb:   8,
+    diffusionMb:      6525,
+    encoderMb:        0,
+    vaeMb:            95,
     estSecondsCuda:   90,
     estSecondsVulkan: 300,
     estSecondsCpu:    3600,
@@ -1416,6 +1432,9 @@ export const FLUX_CATALOGUE: FluxSpec[] = [
     hfFile:           'flux1-dev-Q8_0.gguf',
     sizeBytes:        11_900_000_000,
     vramRequiredGb:   12,
+    diffusionMb:      12400,
+    encoderMb:        0,
+    vaeMb:            95,
     estSecondsCuda:   110,
     estSecondsVulkan: 380,
     estSecondsCpu:    4200,
@@ -1450,6 +1469,9 @@ export const CHROMA_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'Chroma1-HD-Q4_0.gguf',
     sizeBytes:        5_430_000_000,
     vramRequiredGb:   8,
+    diffusionMb:      5225,
+    encoderMb:        0,
+    vaeMb:            95,
     estSecondsCuda:   14,
     estSecondsVulkan: 50,
     estSecondsCpu:    500,
@@ -1487,6 +1509,9 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'sd_xl_turbo_1.0_fp16.safetensors',
     sizeBytes:        6_940_000_000,
     vramRequiredGb:   6,
+    diffusionMb:      3400,
+    encoderMb:        0,
+    vaeMb:            0,
     estSecondsCuda:   3,
     estSecondsVulkan: 12,
     estSecondsCpu:    60,
@@ -1512,6 +1537,9 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'DreamShaperXL_Turbo_v2_1.safetensors',
     sizeBytes:        6_940_000_000,
     vramRequiredGb:   6,
+    diffusionMb:      3400,
+    encoderMb:        0,
+    vaeMb:            0,
     estSecondsCuda:   4,
     estSecondsVulkan: 15,
     estSecondsCpu:    90,
@@ -1537,6 +1565,9 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'RealVisXL_V5.0_Lightning_fp16.safetensors',
     sizeBytes:        6_940_000_000,
     vramRequiredGb:   6,
+    diffusionMb:      3400,
+    encoderMb:        0,
+    vaeMb:            0,
     estSecondsCuda:   4,
     estSecondsVulkan: 15,
     estSecondsCpu:    90,
@@ -1562,6 +1593,9 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'juggernautXL_v9Rdphoto2Lightning.safetensors',
     sizeBytes:        7_110_000_000,
     vramRequiredGb:   6,
+    diffusionMb:      3500,
+    encoderMb:        0,
+    vaeMb:            0,
     estSecondsCuda:   4,
     estSecondsVulkan: 15,
     estSecondsCpu:    90,
@@ -1588,6 +1622,9 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'sd_xl_base_1.0.safetensors',
     sizeBytes:        6_940_000_000,
     vramRequiredGb:   8,
+    diffusionMb:      3400,
+    encoderMb:        0,
+    vaeMb:            0,
     estSecondsCuda:   15,
     estSecondsVulkan: 60,
     estSecondsCpu:    600,
@@ -1613,6 +1650,9 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'RealVisXL_V5.0_fp16.safetensors',
     sizeBytes:        6_940_000_000,
     vramRequiredGb:   8,
+    diffusionMb:      3400,
+    encoderMb:        0,
+    vaeMb:            0,
     estSecondsCuda:   15,
     estSecondsVulkan: 60,
     estSecondsCpu:    600,
@@ -1639,6 +1679,9 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors',
     sizeBytes:        7_110_000_000,
     vramRequiredGb:   8,
+    diffusionMb:      3500,
+    encoderMb:        0,
+    vaeMb:            0,
     estSecondsCuda:   15,
     estSecondsVulkan: 60,
     estSecondsCpu:    600,
@@ -1665,6 +1708,9 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'DreamShaperXL_Turbo_V2-SFW.safetensors',
     sizeBytes:        6_940_000_000,
     vramRequiredGb:   8,
+    diffusionMb:      3400,
+    encoderMb:        0,
+    vaeMb:            0,
     estSecondsCuda:   8,
     estSecondsVulkan: 30,
     estSecondsCpu:    300,
@@ -1692,6 +1738,9 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'ponyDiffusionV6XL_v6StartWithThisOne.safetensors',
     sizeBytes:        6_460_000_000,
     vramRequiredGb:   8,
+    diffusionMb:      3200,
+    encoderMb:        0,
+    vaeMb:            0,
     estSecondsCuda:   15,
     estSecondsVulkan: 60,
     estSecondsCpu:    600,
@@ -1725,6 +1774,9 @@ export const KONTEXT_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'flux1-kontext-dev-Q5_K_S.gguf',
     sizeBytes:        8_280_000_000,
     vramRequiredGb:   12,
+    diffusionMb:      7900,
+    encoderMb:        0,
+    vaeMb:            95,
     estSecondsCuda:   60,
     estSecondsVulkan: 240,
     estSecondsCpu:    2400,
@@ -1758,6 +1810,9 @@ export const FLUX2_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'flux-2-klein-4b-Q4_K_M.gguf',
     sizeBytes:        2_280_000_000,
     vramRequiredGb:   7,
+    diffusionMb:      2484,
+    encoderMb:        3555,
+    vaeMb:            164,
     estSecondsCuda:   12,
     estSecondsVulkan: 50,
     estSecondsCpu:    480,
@@ -1783,6 +1838,9 @@ export const FLUX2_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'flux-2-klein-9b-Q4_K_M.gguf',
     sizeBytes:        5_400_000_000,
     vramRequiredGb:   16,
+    diffusionMb:      4800,
+    encoderMb:        5200,
+    vaeMb:            164,
     estSecondsCuda:   18,
     estSecondsVulkan: 70,
     estSecondsCpu:    660,
@@ -1815,6 +1873,9 @@ export const ZIMAGE_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'z_image_turbo-Q4_K.gguf',
     sizeBytes:        3_860_000_000,
     vramRequiredGb:   8,
+    diffusionMb:      3685,
+    encoderMb:        3555,
+    vaeMb:            95,
     estSecondsCuda:   8,
     estSecondsVulkan: 35,
     estSecondsCpu:    320,
@@ -1840,6 +1901,9 @@ export const ZIMAGE_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'z-image-Q6_K.gguf',
     sizeBytes:        6_100_000_000,
     vramRequiredGb:   12,
+    diffusionMb:      5500,
+    encoderMb:        3555,
+    vaeMb:            95,
     estSecondsCuda:   35,
     estSecondsVulkan: 140,
     estSecondsCpu:    1400,
@@ -1872,6 +1936,9 @@ export const QWEN_IMAGE_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'qwen-image-2512-Q4_K_M.gguf',
     sizeBytes:        13_200_000_000,
     vramRequiredGb:   12,
+    diffusionMb:      2200,
+    encoderMb:        4700,
+    vaeMb:            164,
     estSecondsCuda:   70,
     estSecondsVulkan: 280,
     estSecondsCpu:    2800,
@@ -1906,6 +1973,9 @@ export const WAN_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'Wan2.1-T2V-1.3B-Q4_K_M.gguf',
     sizeBytes:        983_000_000,
     vramRequiredGb:   8,
+    diffusionMb:      900,
+    encoderMb:        0,
+    vaeMb:            160,
     estSecondsCuda:   30,
     estSecondsVulkan: 120,
     estSecondsCpu:    600,
@@ -1931,6 +2001,9 @@ export const WAN_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'wan2.1-t2v-14b-Q4_K_M.gguf',
     sizeBytes:        10_100_000_000,
     vramRequiredGb:   16,
+    diffusionMb:      9600,
+    encoderMb:        0,
+    vaeMb:            160,
     estSecondsCuda:   180,
     estSecondsVulkan: 720,
     estSecondsCpu:    3600,
@@ -1956,6 +2029,9 @@ export const WAN_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'wan2.1-i2v-14b-480p-Q4_K_M.gguf',
     sizeBytes:        10_100_000_000,
     vramRequiredGb:   16,
+    diffusionMb:      9600,
+    encoderMb:        0,
+    vaeMb:            160,
     estSecondsCuda:   180,
     estSecondsVulkan: 720,
     estSecondsCpu:    3600,
@@ -1984,6 +2060,9 @@ export const WAN_CATALOGUE: ImageModelSpec[] = [
     hfFile:           'wan2.2-t2v-14b-Q4_K_M.gguf',
     sizeBytes:        10_100_000_000,
     vramRequiredGb:   16,
+    diffusionMb:      9600,
+    encoderMb:        0,
+    vaeMb:            160,
     estSecondsCuda:   180,
     estSecondsVulkan: 720,
     estSecondsCpu:    3600,
@@ -2179,7 +2258,13 @@ export function recommendImageModel(
  * swaps tensors to system RAM via VMM, causing 10-100x slowdowns.
  */
 export function recommendT5Encoder(fluxSpec: FluxSpec, totalVramGb: number, isUnifiedMemory = false): FluxAuxFile {
-  if (isUnifiedMemory) return FLUX_T5_Q3;
+  // Unified memory (AMD APU, Apple Silicon): RAM IS VRAM. The T5 encoder
+  // lives in the same pool regardless of --offload-to-cpu, so we can use
+  // the largest tier that fits. Only fall back to Q3 if total RAM is very low.
+  if (isUnifiedMemory) {
+    if (totalVramGb >= 16) return FLUX_T5_Q8;  // 16+ GB unified → Q8
+    return FLUX_T5_Q3;                          // <16 GB → Q3 (tight budget)
+  }
 
   const totalVramMb = totalVramGb * 1024;
   // 1.5 GB headroom for CUDA working memory, attention caches, and OS.

@@ -408,6 +408,13 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       isUnifiedMemory: isUnified,
       gpuName:  bestGpu?.name ?? 'Unknown',
       backend:  bestGpu?.backend ?? 'cpu',
+      gpus: imageCapableGpus.map(g => ({
+        index:    g.index,
+        name:     g.name,
+        vramGb:   g.vramGb,
+        backend:  g.backend,
+        unified:  g.unifiedMemory === true,
+      })),
     };
 
     const models = IMAGE_MODEL_CATALOGUE.map(spec => {
@@ -440,6 +447,19 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       }
 
       const mainDownloaded = isImageModelDownloaded(spec);
+
+      // Build a map of T5 aux file -> which GPUs use it
+      const t5GpuMap = new Map<string, string[]>();
+      if (spec.runnerProfile !== 'sdxl' && spec.runnerProfile !== 'flux2' && spec.runnerProfile !== 'z-image' && spec.runnerProfile !== 'qwen-image' && spec.runnerProfile !== 'wan') {
+        for (const gpu of imageCapableGpus) {
+          const isUnifiedG = gpu.unifiedMemory === true;
+          const t5 = recommendT5Encoder(spec, gpu.vramGb, isUnifiedG);
+          const shortName = gpu.name.replace(/NVIDIA |AMD |Intel |Apple |Radeon\(TM\) |GeForce /g, '').trim();
+          if (!t5GpuMap.has(t5.id)) t5GpuMap.set(t5.id, []);
+          t5GpuMap.get(t5.id)!.push(shortName);
+        }
+      }
+
       const auxStatus = auxFiles.map(a => ({
         id:         a.id,
         label:      a.label,
@@ -447,6 +467,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         downloaded: isFluxAuxDownloaded(a),
         license:    a.license,
         licenseUrl: a.licenseUrl,
+        forGpus:    t5GpuMap.get(a.id) ?? undefined,
       }));
       const allDownloaded = mainDownloaded && auxStatus.every(a => a.downloaded);
       const totalDownloadBytes = (mainDownloaded ? 0 : spec.sizeBytes)
@@ -485,6 +506,75 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       const allFilesDownloaded = allDownloaded && allPrereqsDownloaded;
       const prereqDownloadBytes = nodePrereqStatus.reduce((s, p) => s + (p.downloaded ? 0 : p.sizeBytes), 0);
 
+      // ── Per-GPU VRAM compatibility ──────────────────────────────────────────
+      // Models with encoderMb > 0 have a built-in LLM encoder (Z-Image, Klein, Qwen-Image).
+      // Models with encoderMb === 0 use external T5 (FLUX/Chroma) or have everything baked in (SDXL).
+      // For external-T5 models, encoder size = the T5 tier recommended for THAT GPU.
+      const vulkanBlockedEncoderModels = new Set(['flux2-klein-9b-q4', 'qwen-image-q4']);
+      const vulkanBlockedLargeModels   = new Set([
+        'flux-dev-q4', 'flux-dev-q8', 'flux-schnell-q8',  // huge diffusion, impractical on Vulkan
+        'wan21-t2v-14b-q4', 'wan21-i2v-14b-480p-q4', 'wan22-t2v-14b-q4',  // 14B video models
+      ]);
+
+      const gpuCompat = imageCapableGpus.map(gpu => {
+        const vramMb     = gpu.vramGb * 1024;
+        const isVulkan   = gpu.backend === 'vulkan';
+        const isUnifiedG = gpu.unifiedMemory === true;
+        const workingMb  = gpu.backend === 'cuda' ? 512 : 256;
+
+        // Determine encoder size for this GPU
+        let encMb = spec.diffusionMb > 0 ? spec.encoderMb : 0;
+        if (encMb === 0 && spec.runnerProfile !== 'sdxl') {
+          // External T5 — pick tier based on this GPU's budget
+          if (isUnifiedG) {
+            // Unified memory: use Q8 if >= 16GB total, else Q3
+            encMb = gpu.vramGb >= 16 ? 5100 : 2300;
+          } else {
+            const t5Budget = vramMb - spec.diffusionMb - (spec.vaeMb || 95) - workingMb;
+            if (t5Budget >= 5100)      encMb = 5100;  // Q8
+            else if (t5Budget >= 2300) encMb = 2300;  // Q3
+            else                       encMb = 2300;  // minimum viable
+          }
+        }
+
+        const totalMb = spec.diffusionMb + encMb + (spec.vaeMb || 0) + workingMb;
+
+        // Vulkan-specific blocks — applies to ALL Vulkan GPUs including unified.
+        // The Vulkan per-allocation buffer limit (~2 GB) is a driver/API constraint,
+        // not a VRAM capacity issue. Unified memory doesn't bypass it.
+        let vulkanBlocked = false;
+        let reason: string | undefined;
+        if (isVulkan) {
+          if (vulkanBlockedEncoderModels.has(spec.modelId)) {
+            vulkanBlocked = true;
+            reason = 'Encoder exceeds Vulkan 2GB buffer limit';
+          } else if (vulkanBlockedLargeModels.has(spec.modelId)) {
+            vulkanBlocked = true;
+            reason = 'Impractical on Vulkan (use CUDA or ROCm)';
+          }
+        }
+
+        // VRAM fit check — unified memory always fits (RAM = VRAM pool),
+        // but vulkanBlocked overrides even if it fits.
+        const fits = isUnifiedG ? !vulkanBlocked : (totalMb <= vramMb && !vulkanBlocked);
+
+        if (!fits && !isUnifiedG && !vulkanBlocked) {
+          const shortMb = totalMb - vramMb;
+          reason = `${(shortMb / 1024).toFixed(1)} GB short`;
+        }
+
+        return {
+          gpuIndex:  gpu.index,
+          gpuName:   gpu.name,
+          backend:   gpu.backend as string,
+          vramMb,
+          totalNeededMb: totalMb,
+          fits,
+          vulkanBlocked,
+          reason,
+        };
+      });
+
       return {
         modelId:            spec.modelId,
         label:              spec.label,
@@ -505,6 +595,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         ...(recommendedT5 ? { recommendedT5 } : {}),
         totalDownloadBytes: totalDownloadBytes + prereqDownloadBytes,
         profile:            spec.profile ?? null,
+        gpuCompat,
       };
     });
 

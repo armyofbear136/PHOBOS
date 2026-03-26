@@ -604,87 +604,67 @@ export async function generateImage(
   outputPath = path.resolve(outputPath);
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
-  // ── Pre-flight VRAM check ──────────────────────────────────────────────────
-  // Estimate total model footprint and compare against available VRAM.
-  // Applies to discrete GPU paths (CUDA + Vulkan).
+  // ── Pre-flight VRAM check with retry ────────────────────────────────────────
+  // Computes exact VRAM needed from model component sizes, then polls live free
+  // VRAM up to 10 times (3s apart = 30s max). This replaces both the old static
+  // pre-flight and the VRAM settle loop.
   // Skipped for: CPU binary (no VRAM), unified memory (RAM pool, no discrete gate).
   const isDiscreteGpuPath = (cfg.gpuBackend === 'cuda' || cfg.gpuBackend === 'vulkan')
-    && cfg.sdBinary !== 'cpu';
-  if (isDiscreteGpuPath && cfg.freeVramGb !== undefined && cfg.freeVramGb > 0) {
-    const diffusionMb = Math.ceil(spec.sizeBytes / (1024 * 1024));
-    // When offloading to CPU, T5 lives in system RAM — exclude from VRAM budget.
-    const t5Aux       = cfg.auxFiles.find(a => a.cliFlag === '--t5xxl');
-    const t5Mb        = (cfg.offloadToCpu || false) ? 0 : (t5Aux ? Math.ceil(t5Aux.sizeBytes / (1024 * 1024)) : 0);
-    const vaeMb       = 160;
-    const clipAux     = cfg.auxFiles.find(a => a.cliFlag === '--clip_l');
-    const clipMb      = clipAux ? Math.ceil(clipAux.sizeBytes / (1024 * 1024)) : 0;
-    const workingMb   = cfg.gpuBackend === 'cuda' ? 512 : 256;
-    const totalNeeded = diffusionMb + t5Mb + vaeMb + clipMb + workingMb;
-    const freeMb      = Math.round(cfg.freeVramGb * 1024);
+    && cfg.sdBinary !== 'cpu'
+    && !(cfg.offloadToCpu);  // unified memory with offload → skip VRAM gate
+
+  if (isDiscreteGpuPath) {
+    const diffMb    = spec.diffusionMb ?? Math.ceil(spec.sizeBytes / (1024 * 1024));
+    // Built-in encoder (Z-Image, Klein, Qwen-Image) or external T5
+    let encMb       = spec.encoderMb ?? 0;
+    if (encMb === 0 && spec.runnerProfile !== 'sdxl') {
+      const t5Aux   = cfg.auxFiles.find(a => a.cliFlag === '--t5xxl');
+      encMb         = t5Aux ? Math.ceil(t5Aux.sizeBytes / (1024 * 1024)) : 0;
+    }
+    const vaeMb     = spec.vaeMb ?? 160;
+    const workingMb = cfg.gpuBackend === 'cuda' ? 512 : 256;
+    const requiredMb = diffMb + encMb + vaeMb + workingMb;
 
     console.log(
-      `[ImageServerManager] Pre-flight VRAM (${cfg.gpuBackend}${cfg.offloadToCpu ? ', T5 offloaded' : ''}): need ~${totalNeeded} MB ` +
-      `(diffusion ${diffusionMb}${t5Mb > 0 ? ` + T5 ${t5Mb}` : ''} + VAE ${vaeMb} + CLIP ${clipMb} + working ${workingMb}), ` +
-      `have ${freeMb} MB free`
+      `[ImageServerManager] Pre-flight VRAM (${cfg.gpuBackend}): need ~${requiredMb} MB ` +
+      `(diffusion ${diffMb} + encoder ${encMb} + VAE ${vaeMb} + working ${workingMb})`
     );
 
-    if (totalNeeded > freeMb) {
-      const shortfallMb = totalNeeded - freeMb;
-      const SOFT_LIMIT_MB = 1536; // 1.5 GB — sd.cpp VMM can spill this to system RAM
+    const MAX_ATTEMPTS = 10;
+    const WAIT_MS      = 3000;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (aborted) return { outputPath, seed: -1, elapsedMs: 0 };
+      try {
+        const hw  = await detectHardware();
+        const gpu = hw.gpus.find(g => g.index === (cfg.deviceIndex ?? 0));
+        const freeMb = gpu ? Math.round((gpu.freeVramGb ?? 0) * 1024) : 0;
 
-      if (shortfallMb > SOFT_LIMIT_MB) {
-        throw new Error(
-          `Not enough VRAM for GPU generation: model needs ~${(totalNeeded / 1024).toFixed(1)} GB ` +
-          `but only ${cfg.freeVramGb.toFixed(1)} GB is free (${(shortfallMb / 1024).toFixed(1)} GB short). ` +
-          `Flux and Chroma require at least 8 GB discrete VRAM.`
-        );
+        console.log(`[ImageServerManager] VRAM check ${attempt + 1}/${MAX_ATTEMPTS}: need ${requiredMb} MB, have ${freeMb} MB free`);
+
+        if (freeMb >= requiredMb) break; // enough VRAM, proceed
+
+        if (attempt === MAX_ATTEMPTS - 1) {
+          const shortGb = ((requiredMb - freeMb) / 1024).toFixed(1);
+          throw new Error(
+            `Not enough free VRAM: model needs ~${(requiredMb / 1024).toFixed(1)} GB ` +
+            `but only ${(freeMb / 1024).toFixed(1)} GB is available (${shortGb} GB short). ` +
+            `Close other GPU applications and try again, or select a smaller model.`
+          );
+        }
+      } catch (err) {
+        if ((err as Error).message?.includes('Not enough free VRAM')) throw err;
+        // Hardware detection failed — continue trying
       }
-      // Within soft limit — warn and let sd.cpp handle the spill via CUDA VMM.
-      // This covers 8 GB cards with ~7 GB free (shortfall ~0.9 GB for Chroma Q4).
-      console.warn(
-        `[ImageServerManager] Pre-flight VRAM tight: ~${(shortfallMb / 1024).toFixed(1)} GB short — ` +
-        `proceeding anyway (sd.cpp CUDA VMM will spill to system RAM if needed)`
-      );
+      await new Promise(r => setTimeout(r, WAIT_MS));
     }
   }
+
+  if (aborted) return { outputPath, seed: -1, elapsedMs: 0 }; // abort before spawn
 
   const bin = resolveSdServerBin(cfg.sdBinary ?? (cfg.gpuBackend === 'cuda' ? 'cuda' : cfg.gpuBackend === 'vulkan' ? 'vulkan' : 'cpu'));
   if (process.platform !== 'win32') {
     try { fs.chmodSync(bin, 0o755); } catch { /* ignore */ }
   }
-
-  // Wait for CUDA driver to reclaim VRAM from any previous sd-cli process.
-  // The cuBLASLt workspace (~630 MB) can remain held for 10-30s after process
-  // exit. nvidia-smi reports stale numbers during this window, making the
-  // pre-flight check pass while the actual available VRAM is lower.
-  // Poll until free VRAM is stable AND above the threshold needed by this run,
-  // or fall back after 30s max.
-  if (cfg.gpuBackend === 'cuda' && cfg.sdBinary !== 'cpu' && cfg.freeVramGb !== undefined) {
-    const diffusionMb = Math.ceil(spec.sizeBytes / (1024 * 1024));
-    const t5Aux       = cfg.auxFiles.find(a => a.cliFlag === '--t5xxl');
-    const t5Mb        = (cfg.offloadToCpu) ? 0 : (t5Aux ? Math.ceil(t5Aux.sizeBytes / (1024 * 1024)) : 0);
-    const minFreeMb   = diffusionMb + t5Mb + 500; // model + 500 MB safety margin
-    const minFreeGb   = minFreeMb / 1024;
-    const POLL_MS     = 1000;
-    const MAX_WAIT_MS = 30000;
-    const waitStart   = Date.now();
-    let lastFreeGb    = cfg.freeVramGb;
-
-    while (Date.now() - waitStart < MAX_WAIT_MS) {
-      await new Promise(r => setTimeout(r, POLL_MS));
-      if (aborted) return { outputPath, seed: -1, elapsedMs: 0 }; // abort during VRAM settle
-      try {
-        const hw  = await detectHardware();
-        const gpu = hw.gpus.find(g => g.index === (cfg.deviceIndex ?? 0));
-        if (!gpu) break;
-        const freeGb = gpu.freeVramGb ?? 0;
-        if (freeGb >= minFreeGb && freeGb <= lastFreeGb + 0.1) break; // stable and sufficient
-        lastFreeGb = freeGb;
-      } catch { break; }
-    }
-  }
-
-  if (aborted) return { outputPath, seed: -1, elapsedMs: 0 }; // abort before spawn
 
   const seed = opts.seed ?? 42;
   const args = buildArgs(cfg, { ...opts, seed }, outputPath);

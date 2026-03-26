@@ -32,6 +32,7 @@ export interface SdServerConfig {
   fluxSpec:     ImageModelSpec;  // unified — covers flux, chroma, and sdxl specs
   auxFiles:     FluxAuxFile[];
   deviceIndex?: number;
+  vulkanIndex?: number;          // physical Vulkan enumeration index (from GpuRunnerProfile)
   gpuBackend?:  'cuda' | 'vulkan' | 'metal';
   freeVramGb?:  number;         // live free VRAM at config-build time (for polling/logging)
   needsPtxJit?: boolean;        // true for Blackwell+ GPUs lacking native cubins in sd-cli
@@ -142,9 +143,11 @@ function buildFluxArgs(
 
   if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
   if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
-  // VAE decode needs ~2.5 GB working memory. On tight-VRAM cards (≤10 GB)
-  // this OOMs after diffusion completes. --vae-tiling drops it to ~176 MB.
-  if (cfg.freeVramGb !== undefined && cfg.freeVramGb <= 10) args.push('--vae-tiling');
+  // VAE decode needs ~2.5 GB working memory at 1024×1024. After loading the
+  // diffusion model + T5 encoder (~10 GB for Flux), there's rarely enough free
+  // VRAM for the full decode buffer. --vae-tiling splits it into 512×512 tiles,
+  // dropping peak to ~176 MB with negligible quality/speed cost.
+  args.push('--vae-tiling');
   appendWorkflowFlags(args, opts);
   return args;
 }
@@ -181,9 +184,9 @@ function buildChromaArgs(
 
   if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
   if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
-  // VAE decode needs ~2.5 GB working memory. On tight-VRAM cards (≤10 GB)
-  // this OOMs after diffusion completes. --vae-tiling drops it to ~176 MB.
-  if (cfg.freeVramGb !== undefined && cfg.freeVramGb <= 10) args.push('--vae-tiling');
+  // Always tile VAE — Chroma + T5 Q8 leaves only ~4.5 GB free on 16 GB cards,
+  // nowhere near the ~8.5 GB needed for a full 1024×1024 VAE decode buffer.
+  args.push('--vae-tiling');
   appendWorkflowFlags(args, opts);
   return args;
 }
@@ -271,7 +274,7 @@ function buildKontextArgs(
 
   if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
   if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
-  if (cfg.freeVramGb !== undefined && cfg.freeVramGb <= 10) args.push('--vae-tiling');
+  args.push('--vae-tiling');
   return args;
 }
 
@@ -309,6 +312,7 @@ function buildFlux2Args(
   if (opts.strength != null) args.push('--strength', String(opts.strength));
   if (opts.refImage)       args.push('-r', opts.refImage);
   if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
+  args.push('--vae-tiling');
   return args;
 }
 
@@ -345,9 +349,8 @@ function buildZImageArgs(
   if (opts.strength != null) args.push('--strength', String(opts.strength));
   if (opts.refImage)       args.push('-r', opts.refImage);
   if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
-  // VAE decode of a full-res latent exceeds 8 GB VRAM budget without tiling.
-  // --vae-tiling splits the decode into 512x512 tiles, reducing peak to ~176 MB.
-  if (cfg.freeVramGb !== undefined && cfg.freeVramGb <= 10) args.push('--vae-tiling');
+  // Always tile VAE — safe at all VRAM levels, prevents OOM on decode.
+  args.push('--vae-tiling');
   return args;
 }
 
@@ -383,6 +386,7 @@ function buildQwenImageArgs(
   if (opts.initImg)        args.push('--init-img', opts.initImg);
   if (opts.refImage)       args.push('--ref-images', opts.refImage);
   if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
+  args.push('--vae-tiling');
   return args;
 }
 
@@ -433,6 +437,7 @@ function buildWanArgs(
   // I2V: pass the input image as --init-img (same field reused from img2img)
   if (opts.initImg)        args.push('--init-img', opts.initImg);
   if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
+  args.push('--vae-tiling');
   return args;
 }
 
@@ -548,10 +553,13 @@ function buildEnv(cfg: SdServerConfig): NodeJS.ProcessEnv {
   // Vulkan — remove CUDA_VISIBLE_DEVICES entirely so an inherited value
   // does not confuse drivers that check it even in non-CUDA paths.
   delete env.CUDA_VISIBLE_DEVICES;
-  // On multi-GPU Windows systems, point sd-cli's Vulkan backend at the right device.
-  // Non-NVIDIA devices have index >= 100; WMI position = index - 100 = Vulkan position
-  // (when no NVIDIA GPU is present, which is always true if we're on Vulkan binary).
-  if (cfg.deviceIndex !== undefined && cfg.deviceIndex >= 100) {
+  // On multi-GPU systems, point sd-cli's Vulkan backend at the correct device.
+  // Use the resolved vulkanIndex from the GPU runner profile (accounts for
+  // NVIDIA GPUs occupying Vulkan slots ahead of AMD/Intel GPUs).
+  // Fall back to deviceIndex - 100 only as a last resort.
+  if (cfg.vulkanIndex !== undefined) {
+    env.GGML_VK_VISIBLE_DEVICES = String(cfg.vulkanIndex);
+  } else if (cfg.deviceIndex !== undefined && cfg.deviceIndex >= 100) {
     env.GGML_VK_VISIBLE_DEVICES = String(cfg.deviceIndex - 100);
   }
   return env;
@@ -712,6 +720,18 @@ export async function generateImage(
 
   const startMs = Date.now();
 
+  // ── ROCm crash detection ─────────────────────────────────────────────────
+  // Windows NTSTATUS codes that indicate the ROCm/HIP runtime is incompatible
+  // with the current GPU (e.g. gfx1200/RDNA 4 on HIP SDK 7.1).
+  // 0xC000001D = STATUS_ILLEGAL_INSTRUCTION — GPU kernel has unsupported instructions
+  // 0xC0000135 = STATUS_DLL_NOT_FOUND       — missing HIP runtime DLL
+  // When these occur with the ROCm binary, we retry once with Vulkan.
+  const ROCM_CRASH_CODES = new Set([
+    3221225501,  // 0xC000001D — ILLEGAL_INSTRUCTION
+    3221225781,  // 0xC0000135 — DLL_NOT_FOUND
+  ]);
+  let rocmCrashCode: number | null = null;
+
   await new Promise<void>((resolve, reject) => {
     const proc = spawn(bin, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -736,6 +756,8 @@ export async function generateImage(
       } catch { /* file may be mid-write — skip this tick */ }
     }, 500);
 
+    let sawRocmError = false;
+
     proc.stdout?.on('data', (d: Buffer) => {
       const line = d.toString().trim();
       if (line) {
@@ -745,12 +767,29 @@ export async function generateImage(
     });
     proc.stderr?.on('data', (d: Buffer) => {
       const line = d.toString().trim();
-      if (line) console.log(`[sd-cli] ${line}`);
+      if (line) {
+        console.log(`[sd-cli] ${line}`);
+        // Detect ROCm/HIP runtime errors in stderr — these indicate the GPU
+        // arch is unsupported by the bundled Tensile kernels or hipBLAS.
+        if (/CUBLAS_STATUS_INTERNAL_ERROR|hipblasSetStream|Cannot read TensileLibrary/i.test(line)) {
+          sawRocmError = true;
+        }
+      }
     });
 
     proc.on('exit', (code, signal) => {
       if (previewWatcher) { clearInterval(previewWatcher); previewWatcher = null; }
       if (code === 0 || signal === 'SIGTERM' || signal === 'SIGKILL') resolve();
+      else if (cfg.sdBinary === 'rocm' && code !== null && ROCM_CRASH_CODES.has(code)) {
+        // ROCm binary crashed with a known incompatibility code — flag for Vulkan retry
+        rocmCrashCode = code;
+        resolve(); // resolve (not reject) so the fallback below runs
+      }
+      else if (cfg.sdBinary === 'rocm' && sawRocmError && code !== 0) {
+        // ROCm error detected in stderr with a non-zero exit — treat as ROCm crash
+        rocmCrashCode = code ?? -1;
+        resolve();
+      }
       else reject(new Error(`sd-cli exited with code ${code} (signal: ${signal})`));
     });
 
@@ -759,6 +798,27 @@ export async function generateImage(
       reject(err);
     });
   });
+
+  // ── ROCm → Vulkan automatic fallback ───────────────────────────────────────
+  // If the ROCm binary crashed with an incompatible-GPU code, retry the exact
+  // same generation using the Vulkan binary. This happens on RDNA 4 (gfx1200)
+  // because HIP SDK 7.1's Tensile kernels emit instructions the GPU doesn't
+  // support. ROCm 7.2+ fixes this, but until the Windows HIP SDK ships 7.2,
+  // Vulkan is the reliable fallback path.
+  if (rocmCrashCode !== null) {
+    const hex = '0x' + (rocmCrashCode >>> 0).toString(16).toUpperCase();
+    console.warn(
+      `[ImageServerManager] ROCm binary crashed (${hex}) — ` +
+      `AMD HIP runtime incompatible with this GPU (likely gfx1200/RDNA 4 on HIP SDK <7.2). ` +
+      `Retrying with Vulkan backend…`
+    );
+    onProgress?.(`ROCm unavailable — switching to Vulkan backend…`);
+
+    // Mutate cfg to use Vulkan for this retry (and any subsequent calls in the
+    // same workflow run will inherit the Vulkan path via the same cfg object).
+    cfg.sdBinary = 'vulkan';
+    return generateImage(outputPath, cfg, opts, onProgress, onAbortRegister);
+  }
 
   const elapsedMs = Date.now() - startMs;
 
@@ -785,11 +845,12 @@ export function getSdServerStatus(): {
 // ── Auto-configure from hardware ──────────────────────────────────────────────
 
 export async function buildSdConfig(
-  overrides: Partial<SdServerConfig> & { modelId?: string } = {},
+  overrides: Partial<SdServerConfig> & { modelId?: string; targetGpuIndex?: number } = {},
 ): Promise<SdServerConfig | null> {
   let totalVramGb     = 0;
   let freeVramGb      = 0;
   let deviceIndex: number | undefined;
+  let vulkanIndex: number | undefined;
   let gpuBackend: SdServerConfig['gpuBackend'] | undefined;
   let isUnifiedMemory = false;
   let needsPtxJit     = false;
@@ -814,10 +875,16 @@ export async function buildSdConfig(
       const scoreDiff = backendScore(b) - backendScore(a);
       return scoreDiff !== 0 ? scoreDiff : b.vramGb - a.vramGb;
     });
-    const bestGpu = gpusByPriority[0];
+
+    // If a specific GPU was requested (from workflow panel dropdown), use that.
+    // Otherwise fall through to the auto-detected best GPU.
+    const bestGpu = overrides.targetGpuIndex !== undefined
+      ? hw.gpus.find(g => g.index === overrides.targetGpuIndex) ?? gpusByPriority[0]
+      : gpusByPriority[0];
     if (bestGpu) {
       totalVramGb     = bestGpu.vramGb;
       deviceIndex     = bestGpu.index;
+      vulkanIndex     = bestGpu.runner?.vulkanIndex;
       gpuBackend      = bestGpu.backend;
       isUnifiedMemory = bestGpu.unifiedMemory === true; // index>=100 is non-NVIDIA, not necessarily unified
       sdBinaryChoice  = bestGpu.runner?.sdBinary ?? (bestGpu.backend === 'cuda' ? 'cuda' : bestGpu.backend === 'vulkan' ? 'vulkan' : 'cpu');
@@ -874,10 +941,10 @@ export async function buildSdConfig(
       // Unified memory: use full system RAM pool (--offload-to-cpu, no PCIe cost)
       const os = await import('os');
       const ramGb = Math.floor(os.default.totalmem() / (1024 ** 3));
-      spec = recommendImageModel(ramGb, true);
+      spec = recommendImageModel(ramGb, true, sdBinaryChoice);
       if (spec) console.log(`[ImageServerManager] Unified memory system — using RAM pool (${ramGb} GB) for model selection`);
     } else {
-      spec = recommendImageModel(totalVramGb, false);
+      spec = recommendImageModel(totalVramGb, false, sdBinaryChoice);
     }
   }
 
@@ -887,7 +954,7 @@ export async function buildSdConfig(
   if (!spec) {
     const os = await import('os');
     const ramGb = Math.floor(os.default.totalmem() / (1024 ** 3));
-    spec = recommendImageModel(ramGb, true); // treat RAM as budget for CPU mode
+    spec = recommendImageModel(ramGb, true, 'cpu'); // CPU mode — no Vulkan buffer limits
     if (spec) {
       console.log(`[ImageServerManager] GPU VRAM insufficient for image gen — routing to CPU (${ramGb} GB RAM)`);
       sdBinaryChoice  = 'cpu';
@@ -988,6 +1055,7 @@ export async function buildSdConfig(
     fluxSpec: spec,
     auxFiles,
     deviceIndex,
+    vulkanIndex,
     gpuBackend,
     freeVramGb,
     needsPtxJit,

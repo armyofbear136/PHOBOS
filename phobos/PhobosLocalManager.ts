@@ -406,16 +406,23 @@ async function enumerateVulkanDevicesInternal(hideCuda: boolean): Promise<Map<st
     const bin = resolveLlamaServerBin();
     const extraEnv: Record<string, string> = { GGML_VK_VISIBLE_DEVICES: '' };
     if (hideCuda) {
-      // Simulate the environment of a non-NVIDIA spawned process
+      // Simulate the environment of a non-NVIDIA spawned process.
+      // NOTE: CUDA_VISIBLE_DEVICES=-1 hides NVIDIA from the CUDA backend only.
+      // NVIDIA GPUs still appear in Vulkan enumeration via the NVIDIA Vulkan ICD.
       extraEnv.CUDA_VISIBLE_DEVICES = '-1';
       extraEnv.HIP_VISIBLE_DEVICES  = '-1';
     }
+    const startMs = Date.now();
     const result = await execFileAsync(bin, ['--list-devices'], {
-      timeout: 8000,
+      timeout: 20000, // increased from 8s — ROCm/HIP SDK init can take 10-15s on Windows
       env: { ...process.env, ...extraEnv },
     }).catch((err: any) => {
       return { stdout: (err as any).stdout ?? '', stderr: (err as any).stderr ?? '' };
     });
+    const elapsed = Date.now() - startMs;
+    if (elapsed > 5000) {
+      console.log(`[HW] enumerateVulkanDevices(hideCuda=${hideCuda}): took ${(elapsed / 1000).toFixed(1)}s (ROCm/HIP init overhead)`);
+    }
     const output = (result.stdout ?? '') + '\n' + (result.stderr ?? '');
     for (const match of output.matchAll(/ggml_vulkan:\s+(\d+)\s*=\s*([^|\n]+)/g)) {
       const idx  = parseInt(match[1], 10);
@@ -438,13 +445,18 @@ async function enumerateVulkanDevices(): Promise<Map<string, number>> {
     // with a non-zero code but still initializes backends and prints device
     // lines to stderr — the .catch captures that output either way.
     // GGML_VK_VISIBLE_DEVICES='' ensures all devices are visible (no pre-filter).
+    const startMs = Date.now();
     const result = await execFileAsync(bin, ['--list-devices'], {
-      timeout: 8000,
+      timeout: 20000, // increased from 8s — ROCm/HIP SDK init can take 10-15s on Windows
       env: { ...process.env, GGML_VK_VISIBLE_DEVICES: '' },
     }).catch((err: any) => {
       // Non-zero exit is fine — ggml still printed device lines before exiting
       return { stdout: (err as any).stdout ?? '', stderr: (err as any).stderr ?? '' };
     });
+    const elapsed = Date.now() - startMs;
+    if (elapsed > 5000) {
+      console.log(`[HW] enumerateVulkanDevices: took ${(elapsed / 1000).toFixed(1)}s`);
+    }
 
     const output = (result.stdout ?? '') + '\n' + (result.stderr ?? '');
     for (const match of output.matchAll(/ggml_vulkan:\s+(\d+)\s*=\s*([^|\n]+)/g)) {
@@ -542,25 +554,27 @@ async function assignRunnerProfiles(gpus: GpuDevice[]): Promise<void> {
       continue;
     }
 
-    // Non-NVIDIA: runtime match primary, CUDA-hidden positional fallback.
+    // Non-NVIDIA: runtime match primary, positional fallback.
     //
-    // When CUDA_VISIBLE_DEVICES=-1 is set for the seren process, NVIDIA GPUs
-    // are hidden from ggml entirely. ggml Vulkan then enumerates only the
-    // non-NVIDIA devices, making the first non-NVIDIA GPU always Vulkan0 in
-    // that process context. GGML_VK_VISIBLE_DEVICES further filters within
-    // that already-CUDA-hidden Vulkan list.
+    // IMPORTANT: CUDA_VISIBLE_DEVICES=-1 hides NVIDIA from the CUDA backend
+    // but NOT from Vulkan. NVIDIA GPUs still appear in Vulkan enumeration via
+    // the NVIDIA Vulkan ICD. So on a mixed NVIDIA+AMD system, the Vulkan device
+    // list might be: [0]=RTX 3080, [1]=Radeon 890M.
     //
-    // Positional index: use gpu.wmiPosition (raw WMI enumeration order, 0-based)
-    // when available. This is the correct Vulkan slot because Vulkan enumerates
-    // ALL non-NVIDIA GPUs — including ones we skipped for inference (e.g. Intel
-    // UHD 620 with no qwMemorySize). Counting only the filtered gpus[] array
-    // would assign Vulkan0 to the Radeon even when Intel occupies Vulkan0.
-    // Fall back to counting filtered gpus[] only when wmiPosition is absent
-    // (Linux, or Windows entries added without a WMI position).
+    // GGML_VK_VISIBLE_DEVICES operates on the FULL Vulkan device list (including
+    // NVIDIA GPUs), not a CUDA-filtered subset. So we must include NVIDIA GPUs
+    // in the positional index calculation.
+    //
+    // Positional index: use gpu.wmiPosition when available (raw WMI order).
+    // On mixed systems, NVIDIA GPUs typically enumerate first in Vulkan, so
+    // offset by nvidiaCount. If wmiPosition is absent, count all GPUs with
+    // lower index.
     const nonNvidiaPosition = gpu.wmiPosition !== undefined
       ? gpu.wmiPosition
       : gpus.filter(g => g.backend !== 'cuda' && g.backend !== 'metal' && g.index < gpu.index).length;
-    const positionalIndex = nonNvidiaPosition;
+    // On mixed NVIDIA+AMD/Intel systems, NVIDIA GPUs occupy the first Vulkan
+    // slots. Offset by nvidiaCount so the first non-NVIDIA GPU gets the right index.
+    const positionalIndex = nvidiaCount + nonNvidiaPosition;
     // Prefer the CUDA-hidden enumeration index — this matches what the spawned
     // process will see when CUDA_VISIBLE_DEVICES=-1 is set. Fall back to full
     // enumeration, then positional.
@@ -584,7 +598,18 @@ async function assignRunnerProfiles(gpus: GpuDevice[]): Promise<void> {
     else                     kind = 'amd-discrete';
 
     let sdBin: 'rocm' | 'vulkan' | 'cpu' = 'vulkan';
-    if (isAmd && !isUnified) sdBin = _isRocmAvailable() ? 'rocm' : 'vulkan';
+    if (isAmd && !isUnified && _isRocmAvailable()) {
+      // RDNA 4 (RX 9xxx / gfx1200) on Windows: ROCm HIP SDK 7.1 ships Tensile
+      // kernels that crash with CUBLAS_STATUS_INTERNAL_ERROR or ILLEGAL_INSTRUCTION
+      // on gfx1200. Use Vulkan until Windows HIP SDK 7.2+ ships the fix.
+      // Linux ROCm 7.2+ works fine — this gate is Windows-only.
+      // TODO: Remove this gate when Windows HIP SDK ≥7.2 is available.
+      const isRdna4Windows = process.platform === 'win32' && /RX\s*9\d{3}/i.test(gpu.name);
+      sdBin = isRdna4Windows ? 'vulkan' : 'rocm';
+      if (isRdna4Windows) {
+        console.log(`[HW] ${gpu.name}: ROCm gfx1200 unsupported on Windows HIP SDK <7.2 — using Vulkan`);
+      }
+    }
 
     gpu.runner = { kind, vulkanIndex, sdBinary: sdBin };
   }
@@ -2096,26 +2121,48 @@ export function recommendFluxModel(vramGb: number): FluxSpec | null {
  * @param isUnifiedMemory  True for AMD iGPU, Apple Silicon — RAM = VRAM (same pool).
  *                         With --offload-to-cpu, the full RAM pool is usable.
  */
-export function recommendImageModel(vramGb: number, isUnifiedMemory = false): ImageModelSpec | null {
-  // Preference order: Chroma (best quality) → Z-Image (fast) → SDXL (wide ecosystem, LoRA) →
-  // FLUX.2 → Kontext → Qwen-Image → FLUX dev. FLUX schnell excluded (legacy category).
+export function recommendImageModel(
+  vramGb: number,
+  isUnifiedMemory = false,
+  sdBinary: 'cuda' | 'vulkan' | 'rocm' | 'cpu' = 'vulkan',
+): ImageModelSpec | null {
+  // Preference order: FLUX.2 Klein 4B (best default — fast, high quality, works everywhere) →
+  // Z-Image Turbo (fastest) → Chroma (best quality, slow) → SDXL → rest.
+  // FLUX.2 Klein 9B and Qwen-Image are deprioritized because their large LLM
+  // encoders (Qwen3-8B, Qwen2.5-VL-7B) exceed Vulkan's per-buffer allocation
+  // limit on many AMD and Intel GPUs, causing OOM even with plenty of total VRAM.
   const ordered = [
+    ...FLUX2_CATALOGUE.filter(m => m.modelId.includes('4b')),
+    ...ZIMAGE_CATALOGUE.filter(m => m.modelId.includes('turbo')),
     ...CHROMA_CATALOGUE,
-    ...ZIMAGE_CATALOGUE,
+    ...ZIMAGE_CATALOGUE.filter(m => !m.modelId.includes('turbo')),
     ...SDXL_CATALOGUE,
-    ...FLUX2_CATALOGUE,
+    ...FLUX2_CATALOGUE.filter(m => m.modelId.includes('9b')),
     ...KONTEXT_CATALOGUE,
     ...QWEN_IMAGE_CATALOGUE,
     ...FLUX_CATALOGUE.filter(m => m.variant !== 'schnell'),
   ];
+
+  // Vulkan per-buffer allocation limit: AMD/Intel Vulkan drivers often cap
+  // individual buffer allocations at ~2 GB even if total VRAM is 16+ GB.
+  // Models with LLM encoders >2 GB (FLUX.2 Klein 9B, Qwen-Image) silently
+  // fail to allocate on Vulkan. Skip them unless on CUDA/ROCm.
+  const vulkanLargeEncoderModels = new Set([
+    'flux2-klein-9b-q4',   // Qwen3-8B encoder: 2.49 GB single buffer
+    'qwen-image-q4',       // Qwen2.5-VL-7B encoder: 2.18 GB single buffer
+  ]);
+  const isVulkan = sdBinary === 'vulkan';
+
   if (isUnifiedMemory) {
-    // Unified memory: --offload-to-cpu uses full RAM pool. No discrete VRAM gate.
-    return ordered.find(m => isImageModelDownloaded(m)) ?? null;
+    return ordered.find(m => {
+      if (isVulkan && vulkanLargeEncoderModels.has(m.modelId)) return false;
+      return isImageModelDownloaded(m);
+    }) ?? null;
   }
-  // Discrete GPU: allow 1 GB tolerance for driver/OS overhead.
-  // e.g. RTX 5080 reports 16 GB physical but only ~15 GB usable — a model
-  // requiring 16 GB still runs fine because sd-cli manages memory mapping.
-  return ordered.find(m => m.vramRequiredGb <= vramGb + IMAGE_VRAM_TOLERANCE_GB && isImageModelDownloaded(m)) ?? null;
+  return ordered.find(m => {
+    if (isVulkan && vulkanLargeEncoderModels.has(m.modelId)) return false;
+    return m.vramRequiredGb <= vramGb + IMAGE_VRAM_TOLERANCE_GB && isImageModelDownloaded(m);
+  }) ?? null;
 }
 
 
@@ -2159,6 +2206,37 @@ export function recommendT5Encoder(fluxSpec: FluxSpec, totalVramGb: number, isUn
   if (availableForT5 >= 5060) return FLUX_T5_Q8;
   if (availableForT5 >= 2900) return FLUX_T5_Q4;
   return FLUX_T5_Q3;
+}
+
+/**
+ * Returns the set of T5 encoders needed across ALL GPUs in the system.
+ *
+ * Different GPUs have different VRAM budgets, so different T5 quant levels
+ * may be optimal for each. This function returns ALL distinct T5 files that
+ * any GPU in the system could use for the given model, deduplicated by id.
+ *
+ * Used by the download system to ensure all necessary T5 files are present
+ * regardless of which GPU is targeted at generation time.
+ */
+export function recommendT5EncodersForAllGpus(
+  fluxSpec: FluxSpec,
+  gpus: Array<{ vramGb: number; unifiedMemory?: boolean; backend?: string }>,
+): FluxAuxFile[] {
+  if (gpus.length === 0) return [FLUX_T5_Q3]; // no GPU info — download smallest
+
+  const seen = new Set<string>();
+  const result: FluxAuxFile[] = [];
+
+  for (const gpu of gpus) {
+    const isUnified = gpu.unifiedMemory === true;
+    const t5 = recommendT5Encoder(fluxSpec, gpu.vramGb, isUnified);
+    if (!seen.has(t5.id)) {
+      seen.add(t5.id);
+      result.push(t5);
+    }
+  }
+
+  return result;
 }
 
 export function deleteFluxModel(modelId: string): boolean {

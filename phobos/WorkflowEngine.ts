@@ -1035,6 +1035,10 @@ export async function* run(
 
     // ── Node succeeded: update state ────────────────────────────────────────
     node.outputPath    = outPath;
+    // Stamp the model that was actually used onto the node's params so the
+    // frontend dropdown reflects which model generated each node's output.
+    // This is a no-op if the user already set it via the dropdown.
+    (node.params as Record<string, unknown>).modelId = session.modelId;
     node.paramSnapshot = JSON.parse(JSON.stringify(node.params));
     node.executedAt    = new Date().toISOString();
     node.stale         = false;

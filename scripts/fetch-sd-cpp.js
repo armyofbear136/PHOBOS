@@ -236,6 +236,24 @@ async function extractAllFromZip(archivePath, destDir, filter = () => true) {
   return extracted;
 }
 
+/**
+ * Extracts a zip while preserving internal directory structure.
+ * Used for ROCm libs bundle where rocblas/library/ and hipblaslt/library/
+ * subdirectories must be maintained.
+ */
+async function extractZipPreservingDirs(archivePath, destDir) {
+  const cd = readZipCd(archivePath);
+  const extracted = [];
+  for (const entry of walkCd(cd)) {
+    if (entry.name.endsWith('/') || entry.uncompSize === 0) continue;
+    const outPath = path.join(destDir, entry.name);
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    await extractEntry(archivePath, entry, outPath);
+    extracted.push(entry.name);
+  }
+  return extracted;
+}
+
 // ── tar.gz extraction ─────────────────────────────────────────────────────────
 
 async function extractAllFromTarGz(archivePath, destDir) {
@@ -635,6 +653,29 @@ export async function fetchSdBinaries({ all = false } = {}) {
       dl(rocmFn), tmp(rocmFn), path.join(SD_ROCM_DIR, 'sd-server-win32-x64-rocm.exe'),
       extractTo(SD_ROCM_DIR), ['sd-cli.exe', 'sd.exe'],
     );
+
+    // ROCm runtime libraries — rocblas, hipblaslt, and Tensile kernel data files.
+    // Bundled from AMD HIP SDK 7.1. Without these, the ROCm sd-cli binary fails
+    // with "rocBLAS error: Cannot read TensileLibrary.dat" on any AMD GPU.
+    // This is the AMD equivalent of the CUDA cublas/cudart DLL bundle above.
+    // Note: The sd.cpp release zip ships its own rocblas.dll/hipblas.dll but does NOT
+    // include the Tensile kernel data directories — those come from our HIP SDK bundle.
+    const ROCM_LIBS_URL = 'https://github.com/armyofbear136/PHOBOS-BUILDS/releases/download/PHOBOS-CORE-LATEST/rocm-libs-win64-v7.1.zip';
+    const rocmLibsMarker = path.join(SD_ROCM_DIR, 'rocblas', 'library', 'TensileLibrary_lazy_gfx1200.dat');
+    if (!fs.existsSync(rocmLibsMarker)) {
+      console.log(`[win32] Downloading ROCm runtime libraries (rocblas + hipblaslt + Tensile kernels)...`);
+      const rocmLibsZip = path.join(TMP_DIR, 'rocm-libs-win64-v7.1.zip');
+      const dlResult = await downloadFile(ROCM_LIBS_URL, rocmLibsZip);
+      if (dlResult.status === 200) {
+        console.log(`[win32] Extracting ROCm libs to ${SD_ROCM_DIR}...`);
+        const files = await extractZipPreservingDirs(rocmLibsZip, SD_ROCM_DIR);
+        console.log(`✓  ROCm libs: ${files.length} files extracted`);
+      } else {
+        console.warn(`⚠  ROCm libs download failed (HTTP ${dlResult.status}) — ROCm image gen may not work`);
+      }
+    } else {
+      console.log(`✓  ROCm runtime libs (already present)`);
+    }
   }
 
   fs.rmSync(TMP_DIR, { recursive: true, force: true });
@@ -654,6 +695,10 @@ export async function fetchSdBinaries({ all = false } = {}) {
     expected.push({ label: 'CUDA cudart',    path: path.join(BIN_DIR, 'sd-cuda',   'cudart64_12.dll') });
     expected.push({ label: 'CUDA cublas',    path: path.join(BIN_DIR, 'sd-cuda',   'cublas64_12.dll') });
     expected.push({ label: 'CUDA cublasLt',  path: path.join(BIN_DIR, 'sd-cuda',   'cublasLt64_12.dll') });
+    expected.push({ label: 'ROCm rocblas',   path: path.join(BIN_DIR, 'sd-rocm',   'rocblas.dll') });
+    expected.push({ label: 'ROCm hipblas',   path: path.join(BIN_DIR, 'sd-rocm',   'hipblas.dll') });
+    expected.push({ label: 'ROCm hipblaslt', path: path.join(BIN_DIR, 'sd-rocm',   'hipblaslt.dll') });
+    expected.push({ label: 'ROCm Tensile',   path: path.join(BIN_DIR, 'sd-rocm',   'rocblas', 'library', 'TensileLibrary_lazy_gfx1200.dat') });
   }
   // ROCm on Linux uses sd-rocm/ subdirectory
   if (all || (p === 'linux' && a === 'x64')) {

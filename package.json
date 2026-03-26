@@ -30,6 +30,7 @@
     "duckdb": "1.4.4",
     "duckdb-async": "^1.4.2",
     "fastify": "^5.0.0",
+    "ninja": "^3.0.8",
     "openai": "^4.71.1",
     "tree-sitter": "^0.25.0",
     "zod": "^3.23.8"

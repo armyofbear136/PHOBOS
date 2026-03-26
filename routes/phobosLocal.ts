@@ -34,6 +34,7 @@ import {
   isFluxAuxDownloaded,
   getAuxFilesForModel,
   recommendT5Encoder,
+  recommendT5EncodersForAllGpus,
   downloadFluxModel,
   fluxModelPath,
   fluxAuxPath,
@@ -382,19 +383,25 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
   fastify.get('/api/phobos/image/catalogue', async (_req, reply) => {
     const hw = await detectHardware();
 
-    const backendScore = (g: typeof hw.gpus[0]): number =>
-      (g.unifiedMemory || g.index >= 100) ? 0
-      : g.backend === 'cuda'  ? 3
-      : g.backend === 'metal' ? 2
-      : 1;
-    const bestGpu = [...hw.gpus]
+    // ── Multi-GPU aware hardware summary ──────────────────────────────────────
+    // Collect ALL GPUs that could run image gen (discrete GPUs with VRAM).
+    // Each GPU gets its own T5 recommendation; we download the union of all.
+    // NOTE: unifiedMemory is determined by the GPU's actual property, NOT by
+    // whether index >= 100 (which just means non-NVIDIA, not unified).
+    const imageCapableGpus = hw.gpus.filter(g => g.vramGb > 0);
+
+    // Pick the "best" GPU for display/VRAM-ok checks (highest VRAM discrete first)
+    const bestGpu = [...imageCapableGpus]
       .sort((a, b) => {
-        const scoreDiff = backendScore(b) - backendScore(a);
-        return scoreDiff !== 0 ? scoreDiff : b.vramGb - a.vramGb;
+        // Discrete before unified
+        const uDiff = (a.unifiedMemory ? 1 : 0) - (b.unifiedMemory ? 1 : 0);
+        if (uDiff !== 0) return uDiff;
+        // Then by VRAM descending
+        return b.vramGb - a.vramGb;
       })[0] ?? null;
 
     const totalVramGb = bestGpu?.vramGb ?? 0;
-    const isUnified   = bestGpu?.unifiedMemory === true || (bestGpu?.index ?? 0) >= 100;
+    const isUnified   = bestGpu?.unifiedMemory === true;
 
     const hardware = {
       totalVramGb,
@@ -404,14 +411,16 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
     };
 
     const models = IMAGE_MODEL_CATALOGUE.map(spec => {
-      // Determine aux files for this model
+      // Determine aux files for this model.
+      // For T5-dependent models, collect T5 encoders for ALL GPUs so the
+      // download includes every T5 size any GPU in the system might need.
       let auxFiles: typeof FLUX_AUX_REQUIRED;
       let recommendedT5: string | undefined;
 
       if (spec.runnerProfile === 'flux1-kontext') {
-        const t5 = recommendT5Encoder(spec, totalVramGb, isUnified);
-        recommendedT5 = t5.id;
-        auxFiles = [...KONTEXT_AUX_REQUIRED, t5];
+        const t5s = recommendT5EncodersForAllGpus(spec, imageCapableGpus);
+        recommendedT5 = t5s[0]?.id;
+        auxFiles = [...KONTEXT_AUX_REQUIRED, ...t5s];
       } else if (spec.runnerProfile === 'flux2') {
         auxFiles = spec.modelId.includes('9b') ? [...FLUX2_9B_AUX_REQUIRED] : [...FLUX2_4B_AUX_REQUIRED];
       } else if (spec.runnerProfile === 'z-image') {
@@ -424,10 +433,10 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         auxFiles = [...SDXL_AUX_REQUIRED];
       } else {
         // flux and chroma — T5 tiered by VRAM; chroma skips CLIP-L
-        const t5 = recommendT5Encoder(spec, totalVramGb, isUnified);
-        recommendedT5 = t5.id;
+        const t5s = recommendT5EncodersForAllGpus(spec, imageCapableGpus);
+        recommendedT5 = t5s[0]?.id;
         const baseAux = spec.variant === 'chroma' ? CHROMA_AUX_REQUIRED : FLUX_AUX_REQUIRED;
-        auxFiles = [...baseAux, t5];
+        auxFiles = [...baseAux, ...t5s];
       }
 
       const mainDownloaded = isImageModelDownloaded(spec);
@@ -526,20 +535,13 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
 
       _imageDownloadActive = true;
       try {
-        const hw        = await detectHardware();
-        const _bScore   = (g: typeof hw.gpus[0]): number =>
-          (g.unifiedMemory || g.index >= 100) ? 0
-          : g.backend === 'cuda'  ? 3
-          : g.backend === 'metal' ? 2
-          : 1;
-        const bestGpu   = [...hw.gpus].sort((a, b) => { const d = _bScore(b) - _bScore(a); return d !== 0 ? d : b.vramGb - a.vramGb; })[0] ?? null;
-        const totalVram = bestGpu?.vramGb ?? 0;
-        const isUnified = bestGpu?.unifiedMemory === true || (bestGpu?.index ?? 0) >= 100;
+        const hw = await detectHardware();
+        const imageCapableGpus = hw.gpus.filter(g => g.vramGb > 0);
 
         let auxFiles: typeof FLUX_AUX_REQUIRED;
         if (spec.runnerProfile === 'flux1-kontext') {
-          const t5 = recommendT5Encoder(spec, totalVram, isUnified);
-          auxFiles = [...KONTEXT_AUX_REQUIRED, t5];
+          const t5s = recommendT5EncodersForAllGpus(spec, imageCapableGpus);
+          auxFiles = [...KONTEXT_AUX_REQUIRED, ...t5s];
         } else if (spec.runnerProfile === 'flux2') {
           auxFiles = spec.modelId.includes('9b') ? [...FLUX2_9B_AUX_REQUIRED] : [...FLUX2_4B_AUX_REQUIRED];
         } else if (spec.runnerProfile === 'z-image') {
@@ -551,10 +553,10 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         } else if (spec.runnerProfile === 'sdxl') {
           auxFiles = [...SDXL_AUX_REQUIRED];
         } else {
-          // flux and chroma
-          const t5 = recommendT5Encoder(spec, totalVram, isUnified);
+          // flux and chroma — download T5 encoders for all GPUs
+          const t5s = recommendT5EncodersForAllGpus(spec, imageCapableGpus);
           const baseAux = spec.variant === 'chroma' ? CHROMA_AUX_REQUIRED : FLUX_AUX_REQUIRED;
-          auxFiles = [...baseAux, t5];
+          auxFiles = [...baseAux, ...t5s];
         }
 
         for await (const progress of downloadFluxModel(spec, auxFiles)) {

@@ -73,6 +73,24 @@
         "sha256": "412aa0e2951fe65dff33c2d58649a235318eb9833b34b21615876526c1c08530",
         "size": 625152,
         "source": "unknown"
+      },
+      "sd-rocm/rocblas.dll": {
+        "source": "rocm-libs-win64-v7.1.zip"
+      },
+      "sd-rocm/libhipblas.dll": {
+        "source": "rocm-libs-win64-v7.1.zip"
+      },
+      "sd-rocm/libhipblaslt.dll": {
+        "source": "rocm-libs-win64-v7.1.zip"
+      },
+      "sd-rocm/amdhip64_7.dll": {
+        "source": "rocm-libs-win64-v7.1.zip"
+      },
+      "sd-rocm/rocblas/library/TensileLibrary_lazy_gfx1200.dat": {
+        "source": "rocm-libs-win64-v7.1.zip"
+      },
+      "sd-rocm/hipblaslt/library/TensileLibrary_lazy_gfx1200.dat": {
+        "source": "rocm-libs-win64-v7.1.zip"
       }
     }
   },

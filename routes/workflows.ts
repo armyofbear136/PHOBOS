@@ -215,6 +215,59 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
     }
   );
 
+  // ── PATCH /api/threads/:threadId/workflows/:workflowId/config ─────────────
+  // Updates workflow session config: modelId and/or targetGpuIndex.
+  // Used by the model/GPU dropdowns in the workflow panel header.
+  fastify.patch<{
+    Params: { threadId: string; workflowId: string };
+    Body:   { modelId?: string; targetGpuIndex?: number | null };
+  }>(
+    '/api/threads/:threadId/workflows/:workflowId/config',
+    async (req, reply) => {
+      const { threadId, workflowId } = req.params;
+      const session = readSession(threadId, workflowId);
+      if (!session) return reply.status(404).send({ error: 'Workflow not found' });
+
+      let changed = false;
+
+      if (req.body?.modelId && req.body.modelId !== session.modelId) {
+        session.modelId = req.body.modelId;
+        changed = true;
+      }
+
+      // targetGpuIndex: number = specific GPU, null/undefined = auto (default)
+      if (req.body?.targetGpuIndex !== undefined) {
+        (session as any).targetGpuIndex = req.body.targetGpuIndex;
+        changed = true;
+      }
+
+      if (!changed) return reply.send({ ok: true, session });
+
+      const dir  = path.join(resolveWorkspacesRoot(), threadId, 'workflows', workflowId);
+      const file = path.join(dir, 'session.json');
+      const tmp  = file + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(session, null, 2), 'utf8');
+      fs.renameSync(tmp, file);
+
+      // Update _index.json with new modelId
+      const idxPath = path.join(resolveWorkspacesRoot(), threadId, 'workflows', '_index.json');
+      if (fs.existsSync(idxPath)) {
+        try {
+          const entries = JSON.parse(fs.readFileSync(idxPath, 'utf8'));
+          const entry = entries.find((e: any) => e.workflowId === workflowId);
+          if (entry) {
+            entry.modelId = session.modelId;
+            const idxTmp = idxPath + '.tmp';
+            fs.writeFileSync(idxTmp, JSON.stringify(entries, null, 2), 'utf8');
+            fs.renameSync(idxTmp, idxPath);
+          }
+        } catch { /* non-fatal */ }
+      }
+
+      return reply.send({ ok: true, session });
+    }
+  );
+
   // ── POST /api/threads/:threadId/workflows/:workflowId/nodes/:nodeId/source ─
   // Uploads a source image for a Source node. Accepts base64 PNG/JPG/WEBP.
   fastify.post<{
@@ -586,12 +639,26 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
         return reply.status(409).send({ error: 'Already generating' });
       }
 
-      let sdCfg = await buildSdConfig({ modelId: session.modelId });
+      const resolvedTarget = targetNodeIndex ?? (session.nodes.length - 1);
+
+      // Per-node model: read modelId from the target node's params if set,
+      // falling back to the session-level default. This lets each node remember
+      // which model was used to generate it.
+      const targetNode = session.nodes[resolvedTarget];
+      const effectiveModelId = ((targetNode?.params as Record<string, unknown>)?.modelId as string) || session.modelId;
+
+      // Sync session-level modelId so the WorkflowEngine (which reads session.modelId)
+      // uses the node's model. This is a runtime override — the persisted session keeps
+      // its original modelId as the default for new nodes.
+      session.modelId = effectiveModelId;
+
+      let sdCfg = await buildSdConfig({
+        modelId: effectiveModelId,
+        targetGpuIndex: (session as any).targetGpuIndex,
+      });
       if (!sdCfg) {
         return reply.status(503).send({ error: 'No image model is downloaded.' });
       }
-
-      const resolvedTarget = targetNodeIndex ?? (session.nodes.length - 1);
 
       // Force-dirty the clicked node (but not Source nodes — they don't generate)
       if (forceNodeIndex !== undefined && forceNodeIndex < session.nodes.length
@@ -663,7 +730,10 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
             while (true) {
               await new Promise(r => setTimeout(r, SETTLE_POLL_MS));
               if (status.aborted) break;
-              const candidate = await buildSdConfig({ modelId: session.modelId });
+              const candidate = await buildSdConfig({
+                modelId: session.modelId,
+                targetGpuIndex: (session as any).targetGpuIndex,
+              });
               if (candidate) {
                 sdCfg = candidate;
                 const free    = candidate.freeVramGb ?? 0;
@@ -720,7 +790,15 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
         } catch (err) {
           status.error = (err as Error).message;
         } finally {
-          // Restart all LLM servers that were stopped
+          // Mark generation as complete FIRST so the frontend overlay clears
+          // immediately. LLM restart happens in the background — if SEREN
+          // fails to come back (OOM, wrong GPU, etc.), the user shouldn't
+          // be stuck on the generating screen.
+          status.generating = false;
+          _imageGenerating = false;
+          status.completedAt = Date.now();
+
+          // Restart all LLM servers that were stopped (background, non-blocking)
           if (snaps.length > 0) {
             pushPhase('restarting_llm', `Reloading ${snaps.map(s => s.role.toUpperCase()).join(' + ')}…`);
             for (const snap of snaps) {
@@ -737,9 +815,6 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
               } catch { /* non-fatal */ }
             }
           }
-          status.generating = false;
-          _imageGenerating = false;
-          status.completedAt = Date.now();
         }
       })();
     }

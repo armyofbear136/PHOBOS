@@ -504,6 +504,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         auxFiles:           [...auxStatus, ...nodePrereqStatus],
         ...(recommendedT5 ? { recommendedT5 } : {}),
         totalDownloadBytes: totalDownloadBytes + prereqDownloadBytes,
+        profile:            spec.profile ?? null,
       };
     });
 

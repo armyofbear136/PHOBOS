@@ -1328,7 +1328,7 @@ export type ImageRunnerProfile =
  * a content warning in the UI but use the same download infrastructure.
  * legacy = superseded models (FLUX schnell) — collapsed behind a toggle.
  */
-export type ImageModelCategory = 'realistic' | 'artistic' | 'anime' | 'nsfw-realistic' | 'nsfw-anime' | 'civitai' | 'legacy' | 'video' | 'kontext';
+export type ImageModelCategory = 'realistic' | 'nsfw-artistic' | 'anime' | 'nsfw-realistic' | 'nsfw-anime' | 'civitai' | 'legacy' | 'video' | 'kontext';
 
 export interface ImageModelSpec {
   modelId: string;
@@ -1754,7 +1754,7 @@ export const CHROMA_CATALOGUE: ImageModelSpec[] = [
     label:            'Chroma1-HD Q4',
     displayName:      'Chroma1-HD',
     runnerProfile:    'flux',
-    category:         'artistic',
+    category:         'nsfw-artistic',
     variant:          'chroma',
     quantization:     'Q4_0',
     hfRepo:           'silveroxides/Chroma1-HD-GGUF',
@@ -1822,7 +1822,7 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     label:            'DreamShaper XL Turbo V2.1',
     displayName:      'DreamShaper XL Turbo',
     runnerProfile:    'sdxl',
-    category:         'nsfw-realistic',
+    category:         'realistic',
     variant:          'sdxl',
     quantization:     'f16',
     hfRepo:           'Lykon/dreamshaper-xl-v2-turbo',
@@ -1850,7 +1850,7 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     label:            'RealVisXL V5.0 Lightning FP16',
     displayName:      'RealVisXL V5 Lightning',
     runnerProfile:    'sdxl',
-    category:         'nsfw-realistic',
+    category:         'realistic',
     variant:          'sdxl',
     quantization:     'f16',
     hfRepo:           'SG161222/RealVisXL_V5.0_Lightning',
@@ -1878,7 +1878,7 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     label:            'Juggernaut XL V9 Lightning FP16',
     displayName:      'Juggernaut XL Lightning',
     runnerProfile:    'sdxl',
-    category:         'nsfw-realistic',
+    category:         'realistic',
     variant:          'sdxl',
     quantization:     'f16',
     hfRepo:           'AiWise/Juggernaut-XL-V9-GE-RDPhoto2-Lightning_4S',
@@ -1935,7 +1935,7 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     label:            'RealVisXL V5.0 FP16',
     displayName:      'RealVisXL V5',
     runnerProfile:    'sdxl',
-    category:         'nsfw-realistic',
+    category:         'realistic',
     variant:          'sdxl',
     quantization:     'f16',
     hfRepo:           'SG161222/RealVisXL_V5.0',
@@ -1964,7 +1964,7 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     label:            'Juggernaut XL V9 RunDiffusion FP16',
     displayName:      'Juggernaut XL V9',
     runnerProfile:    'sdxl',
-    category:         'nsfw-realistic',
+    category:         'realistic',
     variant:          'sdxl',
     quantization:     'f16',
     hfRepo:           'RunDiffusion/Juggernaut-XL-v9',
@@ -1993,7 +1993,7 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     label:            'DreamShaper XL Lightning FP16',
     displayName:      'DreamShaper XL Lightning',
     runnerProfile:    'sdxl',
-    category:         'nsfw-realistic',
+    category:         'realistic',
     variant:          'sdxl',
     quantization:     'f16',
     hfRepo:           'Lykon/dreamshaper-xl-v2-turbo',

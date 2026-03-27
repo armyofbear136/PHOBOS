@@ -326,15 +326,121 @@ async function detectLinuxNonNvidiaGpus(): Promise<GpuDevice[]> {
     const { stdout } = await execFileAsync('lspci', ['-nn']);
     const gpus: GpuDevice[] = [];
     let idx = 100;
+    let amdSysfsIdx = 0;
     for (const line of stdout.split('\n')) {
       if (!/VGA|3D|Display/.test(line)) continue;
       if (/NVIDIA/i.test(line)) continue;
       const isAmd   = /AMD|ATI|Radeon/i.test(line);
       const isIntel = /Intel/i.test(line);
       if (!isAmd && !isIntel) continue;
-      const nameMatch = line.match(/:\s+(.+?)(?:\s+\[|$)/);
-      const name = nameMatch ? nameMatch[1].trim() : (isAmd ? 'AMD GPU' : 'Intel GPU');
-      gpus.push({ index: idx++, name, vramGb: 0, backend: 'vulkan' });
+
+      // Extract GPU name — prefer the marketing name in brackets like [Radeon RX 9060 XT]
+      // lspci -nn: "... Advanced Micro Devices, Inc. [AMD/ATI] Navi 48 [Radeon RX 9060 XT] [1002:7590]"
+      let name = isAmd ? 'AMD GPU' : 'Intel GPU';
+      const marketingMatch = line.match(/\[(Radeon[^\]]+)\]/i)
+        || line.match(/\[(Intel[^\]]+)\]/i)
+        || line.match(/\[(Arc[^\]]+)\]/i);
+      if (marketingMatch) {
+        name = marketingMatch[1].trim();
+      } else {
+        const nameMatch = line.match(/:\s+(.+?)(?:\s+\[|$)/);
+        if (nameMatch) name = nameMatch[1].trim();
+      }
+
+      // Read VRAM from sysfs for AMD discrete GPUs
+      let vramGb = 0;
+      if (isAmd) {
+        try {
+          const drmBase = '/sys/class/drm';
+          const cards = fs.readdirSync(drmBase)
+            .filter(d => /^card\d+$/.test(d))
+            .sort((a, b) => parseInt(a.slice(4)) - parseInt(b.slice(4)));
+          let sysIdx = 0;
+          for (const card of cards) {
+            const vendorPath = path.join(drmBase, card, 'device', 'vendor');
+            if (!fs.existsSync(vendorPath)) continue;
+            if (fs.readFileSync(vendorPath, 'utf-8').trim() !== '0x1002') continue;
+            if (sysIdx === amdSysfsIdx) {
+              const totalPath = path.join(drmBase, card, 'device', 'mem_info_vram_total');
+              if (fs.existsSync(totalPath)) {
+                const totalBytes = parseInt(fs.readFileSync(totalPath, 'utf-8').trim(), 10);
+                if (!isNaN(totalBytes) && totalBytes > 0) {
+                  vramGb = Math.round(totalBytes / (1024 ** 3));
+                  console.log(`[HW] ${name}: sysfs VRAM ${vramGb} GB (${card})`);
+                }
+              }
+              break;
+            }
+            sysIdx++;
+          }
+        } catch { /* sysfs read failed — leave vramGb=0 */ }
+        amdSysfsIdx++;
+      }
+
+      gpus.push({ index: idx++, name, vramGb, backend: 'vulkan' });
+    }
+    return gpus;
+  } catch {
+    // lspci not installed (common on minimal Arch installs) — fall back to pure sysfs enumeration.
+    // This still finds AMD discrete GPUs and reads their VRAM + marketing name.
+    return detectLinuxGpusSysfsOnly();
+  }
+}
+
+/** Pure sysfs fallback — no lspci needed. Enumerates /sys/class/drm/card* for AMD discrete GPUs. */
+function detectLinuxGpusSysfsOnly(): GpuDevice[] {
+  try {
+    const drmBase = '/sys/class/drm';
+    if (!fs.existsSync(drmBase)) return [];
+    const cards = fs.readdirSync(drmBase)
+      .filter(d => /^card\d+$/.test(d))
+      .sort((a, b) => parseInt(a.slice(4)) - parseInt(b.slice(4)));
+
+    const gpus: GpuDevice[] = [];
+    let idx = 100;
+    for (const card of cards) {
+      const vendorPath = path.join(drmBase, card, 'device', 'vendor');
+      if (!fs.existsSync(vendorPath)) continue;
+      const vendor = fs.readFileSync(vendorPath, 'utf-8').trim();
+      // Skip NVIDIA (handled by detectNvidiaGpus) and unknown vendors
+      if (vendor === '0x10de') continue; // NVIDIA
+      const isAmd   = vendor === '0x1002';
+      const isIntel = vendor === '0x8086';
+      if (!isAmd && !isIntel) continue;
+
+      // Read device marketing name from sysfs product_name or uevent
+      let name = isAmd ? 'AMD GPU' : 'Intel GPU';
+      try {
+        const productPath = path.join(drmBase, card, 'device', 'product_name');
+        if (fs.existsSync(productPath)) {
+          name = fs.readFileSync(productPath, 'utf-8').trim();
+        } else {
+          // Fall back to uevent PCI_SLOT_NAME for identification
+          const ueventPath = path.join(drmBase, card, 'device', 'uevent');
+          if (fs.existsSync(ueventPath)) {
+            const uevent = fs.readFileSync(ueventPath, 'utf-8');
+            const devMatch = uevent.match(/PCI_ID=([0-9A-Fa-f]+):([0-9A-Fa-f]+)/);
+            if (devMatch) name = isAmd ? `AMD GPU (${devMatch[1]}:${devMatch[2]})` : `Intel GPU (${devMatch[1]}:${devMatch[2]})`;
+          }
+        }
+      } catch { /* keep default name */ }
+
+      // Read VRAM from sysfs
+      let vramGb = 0;
+      if (isAmd) {
+        try {
+          const totalPath = path.join(drmBase, card, 'device', 'mem_info_vram_total');
+          if (fs.existsSync(totalPath)) {
+            const totalBytes = parseInt(fs.readFileSync(totalPath, 'utf-8').trim(), 10);
+            if (!isNaN(totalBytes) && totalBytes > 0) {
+              vramGb = Math.round(totalBytes / (1024 ** 3));
+              console.log(`[HW] ${name}: sysfs VRAM ${vramGb} GB (${card}, fallback)`);
+            }
+          }
+        } catch { /* leave vramGb=0 */ }
+      }
+
+      gpus.push({ index: idx++, name, vramGb, backend: 'vulkan' });
     }
     return gpus;
   } catch {

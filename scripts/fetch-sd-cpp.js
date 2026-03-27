@@ -472,6 +472,20 @@ export async function fetchSdBinaries({ all = false } = {}) {
         async (archive) => {
           const filter = n => !n.includes('.') || /\.so(\.\d+)*$/.test(n);
           const files = await extractAllFromZip(archive, SD_ROCM_DIR_LINUX, filter);
+          // Fix symlinks: zip extraction flattens Unix symlinks into tiny text files
+          // containing the target filename. Detect and recreate as proper symlinks.
+          for (const e of fs.readdirSync(SD_ROCM_DIR_LINUX)) {
+            const ep = path.join(SD_ROCM_DIR_LINUX, e);
+            const stat = fs.statSync(ep);
+            if (stat.isFile() && stat.size < 100 && /\.so(\.\d+)*$/.test(e)) {
+              const target = fs.readFileSync(ep, 'utf-8').trim();
+              if (/\.so(\.\d+)*$/.test(target) && fs.existsSync(path.join(SD_ROCM_DIR_LINUX, target))) {
+                fs.unlinkSync(ep);
+                fs.symlinkSync(target, ep);
+                console.log(`  [symlink] ${e} → ${target}`);
+              }
+            }
+          }
           for (const e of fs.readdirSync(SD_ROCM_DIR_LINUX)) {
             const ep = path.join(SD_ROCM_DIR_LINUX, e);
             if (fs.statSync(ep).isFile()) fs.chmodSync(ep, 0o755);

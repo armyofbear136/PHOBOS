@@ -576,6 +576,18 @@ function buildEnv(cfg: SdServerConfig): NodeJS.ProcessEnv {
       env.HSA_OVERRIDE_GFX_VERSION = '10.3.0';
     }
 
+    // Tensile kernel libraries for rocBLAS and hipBLASLt.
+    // The bundled sd-rocm binary looks for TensileLibrary_lazy_gfxNNNN.dat in
+    // a rocblas/library/ subdirectory relative to the binary. On Linux, these
+    // ship with the system ROCm install and aren't bundled — point the runtime
+    // at the system paths. Harmless if the paths don't exist (rocBLAS falls back
+    // to its own search). Windows ROCm bundles these alongside the DLLs.
+    if (process.platform === 'linux') {
+      const rocmBase = '/opt/rocm/lib';
+      env.ROCBLAS_TENSILE_LIBPATH   = `${rocmBase}/rocblas/library`;
+      env.HIPBLASLT_TENSILE_LIBPATH = `${rocmBase}/hipblaslt/library`;
+    }
+
     return env;
   }
 
@@ -734,6 +746,9 @@ export async function generateImage(
   const binDir = path.dirname(bin);
   if (process.platform === 'darwin') {
     env.DYLD_LIBRARY_PATH = binDir + (env.DYLD_LIBRARY_PATH ? `:${env.DYLD_LIBRARY_PATH}` : '');
+  }
+  if (process.platform === 'linux') {
+    env.LD_LIBRARY_PATH = binDir + (env.LD_LIBRARY_PATH ? `:${env.LD_LIBRARY_PATH}` : '');
   }
 
   console.log(`[ImageServerManager] Spawning sd-cli — ${spec.label} (${cfg.modelType})`);

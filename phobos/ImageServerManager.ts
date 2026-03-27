@@ -4,6 +4,7 @@ import * as path from 'path';
 import {
   resolveSdServerBin,
   fluxModelPath,
+  highNoiseModelPath,
   fluxAuxPath,
   getImageModelSpec,
   isImageModelDownloaded,
@@ -43,6 +44,8 @@ export interface SdServerConfig {
   sdBinary?:    'cuda' | 'vulkan' | 'rocm' | 'cpu';
   /** Pass --offload-to-cpu to sd-cli. Free on unified memory (AMD iGPU, Apple Silicon). */
   offloadToCpu?: boolean;
+  /** Absolute path to the HighNoise expert GGUF (Wan 2.2 MoE). Passed as --high-noise-diffusion-model. */
+  highNoiseDiffusionModel?: string;
   steps?:       number;
   cfgScale?:    number;
   width?:       number;
@@ -73,6 +76,11 @@ export interface GenerateImageOptions {
   // Video generation (Wan)
   videoFrames?:     number;   // --video-frames (total frames to generate)
   fps?:             number;   // --fps (frames per second, default 12)
+  // Wan 2.2 MoE dual-expert
+  highNoiseCfgScale?:      number;   // --high-noise-cfg-scale (default: same as cfgScale)
+  highNoiseSamplingMethod?: string;  // --high-noise-sampling-method (default: same as sampler)
+  highNoiseSteps?:          number;  // --high-noise-steps (default: ~80% of steps)
+  flowShiftWan?:            number;  // --flow-shift for Wan 2.2 (default 3.0)
 }
 
 export interface GenerateImageResult {
@@ -398,7 +406,7 @@ function buildWanArgs(
   outPath: string,
 ): string[] {
   const spec        = cfg.fluxSpec;
-  const steps       = opts.steps       ?? cfg.steps  ?? 20;
+  const steps       = opts.steps       ?? cfg.steps  ?? (spec.highNoiseHfFile ? 10 : 20);
   const seed        = opts.seed        ?? 42;
   const fps         = opts.fps         ?? 12;
   // Safe defaults by model size: 1.3B → 49 frames (4s), 14B → 49 frames (4s at 12fps).
@@ -408,6 +416,7 @@ function buildWanArgs(
   // Default to landscape 480P — fits all VRAM budgets.
   const width  = opts.width  ?? cfg.width  ?? 832;
   const height = opts.height ?? cfg.height ?? 480;
+  const cfgScale = spec.profile?.defaultCfgScale ?? 5;
 
   // sd-cli vid_gen mode appends .avi to the output path automatically.
   // Pass the stem (no extension) so the result is output.avi not output.avi.avi.
@@ -425,7 +434,7 @@ function buildWanArgs(
     '--seed',            String(seed),
     '--sampling-method', opts.sampler ?? 'euler',
     '--scheduler',       'simple',
-    '--cfg-scale',       '5',
+    '--cfg-scale',       String(cfgScale),
     '--fps',             String(fps),
     '--video-frames',    String(videoFrames),
     // --diffusion-fa required for Wan — black images without it (confirmed sd.cpp issue tracker)
@@ -434,6 +443,24 @@ function buildWanArgs(
     '--clip-on-cpu',
     '-o',                outStem,
   ];
+
+  // ── Wan 2.2 MoE dual-expert flags ──────────────────────────────────────────
+  // --diffusion-model is the LowNoise expert (primary).
+  // --high-noise-diffusion-model is the HighNoise expert (early denoising).
+  // sd-cli switches between experts based on SNR threshold internally.
+  if (cfg.highNoiseDiffusionModel) {
+    args.push('--high-noise-diffusion-model', cfg.highNoiseDiffusionModel);
+    // Per sd-cli docs: HighNoise expert can have independent sampling params.
+    // Default HighNoise steps to ~80% of total (good balance per sd.cpp examples).
+    const hnSteps  = opts.highNoiseSteps ?? Math.max(1, Math.round(steps * 0.8));
+    const hnCfg    = opts.highNoiseCfgScale ?? cfgScale;
+    const hnSampler = opts.highNoiseSamplingMethod ?? opts.sampler ?? 'euler';
+    args.push('--high-noise-steps', String(hnSteps));
+    args.push('--high-noise-cfg-scale', String(hnCfg));
+    args.push('--high-noise-sampling-method', hnSampler);
+    // --flow-shift recommended at 3.0 for Wan 2.2 (per sd.cpp wan.md docs)
+    args.push('--flow-shift', String(opts.flowShiftWan ?? 3.0));
+  }
 
   if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
   // I2V: pass the input image as --init-img (same field reused from img2img)
@@ -596,6 +623,10 @@ export async function generateImage(
   // Verify all files exist before spawning
   const missing: string[] = [];
   if (!fs.existsSync(fluxModelPath(spec))) missing.push(`model: ${spec.hfFile}`);
+  // MoE dual-model: verify HighNoise expert GGUF
+  if (cfg.highNoiseDiffusionModel && !fs.existsSync(cfg.highNoiseDiffusionModel)) {
+    missing.push(`high-noise model: ${spec.highNoiseHfFile ?? cfg.highNoiseDiffusionModel}`);
+  }
   for (const aux of cfg.auxFiles) {
     if (!fs.existsSync(fluxAuxPath(aux))) missing.push(`aux: ${aux.hfFile}`);
   }
@@ -892,6 +923,7 @@ export async function buildSdConfig(
       sdBinary: 'cpu',
       freeVramGb: 0,
       gpuName: 'CPU',
+      highNoiseDiffusionModel: highNoiseModelPath(spec) ?? undefined,
     };
   }
 
@@ -1117,6 +1149,8 @@ export async function buildSdConfig(
     gpuName,
     offloadToCpu,
     sdBinary: sdBinaryChoice,
+    // MoE dual-model: resolve HighNoise expert path if spec defines one
+    highNoiseDiffusionModel: highNoiseModelPath(spec) ?? undefined,
     ...overrides,
   };
 }

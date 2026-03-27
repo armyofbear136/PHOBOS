@@ -26,6 +26,7 @@ import {
   ZIMAGE_AUX_REQUIRED,
   QWEN_IMAGE_AUX_REQUIRED,
   WAN_AUX_REQUIRED,
+  WAN_I2V_AUX_REQUIRED,
   IMAGE_MODEL_CATALOGUE,
   CHROMA_CATALOGUE,
   getImageModelSpec,
@@ -47,6 +48,8 @@ import {
   type EsrganSpec,
   type GGUFSpec,
   type ImageModelSpec,
+  getCivitaiToken,
+  setCivitaiToken,
 } from '../phobos/PhobosLocalManager.js';
 import {
   prefetchVisionModels,
@@ -445,7 +448,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       } else if (spec.runnerProfile === 'qwen-image') {
         auxFiles = [...QWEN_IMAGE_AUX_REQUIRED];
       } else if (spec.runnerProfile === 'wan') {
-        auxFiles = [...WAN_AUX_REQUIRED];
+        auxFiles = spec.modelId.includes('i2v') ? [...WAN_I2V_AUX_REQUIRED] : [...WAN_AUX_REQUIRED];
       } else if (spec.runnerProfile === 'sdxl') {
         auxFiles = [...SDXL_AUX_REQUIRED];
       } else {
@@ -480,7 +483,12 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         forGpus:    t5GpuMap.get(a.id) ?? undefined,
       }));
       const allDownloaded = mainDownloaded && auxStatus.every(a => a.downloaded);
+      // MoE dual-model: include HighNoise GGUF in download total.
+      // mainDownloaded already checks both files via isImageModelDownloaded().
+      const highNoisePending = spec.highNoiseHfFile && !mainDownloaded
+        ? (spec.highNoiseSizeBytes ?? 0) : 0;
       const totalDownloadBytes = (mainDownloaded ? 0 : spec.sizeBytes)
+        + highNoisePending
         + auxStatus.reduce((s, a) => s + (a.downloaded ? 0 : a.sizeBytes), 0);
 
       // ── Node prerequisite files: ESRGAN upscale models ──────────────────────
@@ -606,10 +614,35 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         totalDownloadBytes: totalDownloadBytes + prereqDownloadBytes,
         profile:            spec.profile ?? null,
         gpuCompat,
+        // CivitAI-only models: frontend shows "requires CivitAI token" when no token is set
+        ...(spec.civitaiVersionId ? { civitaiVersionId: spec.civitaiVersionId } : {}),
       };
     });
 
     return reply.send({ models, hardware });
+  });
+
+  // ── CivitAI API token management ─────────────────────────────────────────
+  // Token stored at ~/.phobos/civitai-token.txt — never sent to the frontend.
+
+  fastify.get('/api/phobos/civitai-token', async (_req, reply) => {
+    return reply.send({ hasToken: getCivitaiToken().length > 0 });
+  });
+
+  fastify.put<{ Body: { token: string } }>('/api/phobos/civitai-token', async (req, reply) => {
+    const { token } = req.body ?? {};
+    if (!token || typeof token !== 'string') {
+      return reply.status(400).send({ error: 'Missing token' });
+    }
+    setCivitaiToken(token);
+    console.log('[phobosLocal] CivitAI API token saved');
+    return reply.send({ ok: true });
+  });
+
+  fastify.delete('/api/phobos/civitai-token', async (_req, reply) => {
+    setCivitaiToken('');
+    console.log('[phobosLocal] CivitAI API token cleared');
+    return reply.send({ ok: true });
   });
 
   // GET /api/phobos/image/download?modelId=<id>
@@ -621,6 +654,11 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       const spec = getImageModelSpec(modelId);
       if (!spec) {
         return reply.status(400).send({ error: `Unknown image model: ${modelId}` });
+      }
+
+      // CivitAI models require a token
+      if (spec.civitaiVersionId && !getCivitaiToken()) {
+        return reply.status(400).send({ error: 'CivitAI API token required. Set it in the Optional Models panel.' });
       }
 
       reply.hijack();
@@ -651,7 +689,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         } else if (spec.runnerProfile === 'qwen-image') {
           auxFiles = [...QWEN_IMAGE_AUX_REQUIRED];
         } else if (spec.runnerProfile === 'wan') {
-          auxFiles = [...WAN_AUX_REQUIRED];
+          auxFiles = spec.modelId.includes('i2v') ? [...WAN_I2V_AUX_REQUIRED] : [...WAN_AUX_REQUIRED];
         } else if (spec.runnerProfile === 'sdxl') {
           auxFiles = [...SDXL_AUX_REQUIRED];
         } else {

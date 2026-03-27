@@ -37,6 +37,22 @@ export const IMAGE_LLM_DIR    = path.join(os.homedir(), '.phobos', 'models', 'im
 export const FLUX_MODELS_DIR  = IMAGE_FLUX_DIR;
 export const UPSCALE_MODELS_DIR = path.join(os.homedir(), '.phobos', 'models', 'upscale');
 
+// ── CivitAI integration ──────────────────────────────────────────────────────
+const CIVITAI_TOKEN_PATH = path.join(os.homedir(), '.phobos', 'civitai-token.txt');
+
+/** Read the stored CivitAI API token. Returns empty string if not set. */
+export function getCivitaiToken(): string {
+  try { return fs.existsSync(CIVITAI_TOKEN_PATH) ? fs.readFileSync(CIVITAI_TOKEN_PATH, 'utf-8').trim() : ''; }
+  catch { return ''; }
+}
+
+/** Persist a CivitAI API token. Pass empty string to clear. */
+export function setCivitaiToken(token: string): void {
+  fs.mkdirSync(path.dirname(CIVITAI_TOKEN_PATH), { recursive: true });
+  if (token) fs.writeFileSync(CIVITAI_TOKEN_PATH, token.trim(), 'utf-8');
+  else { try { fs.unlinkSync(CIVITAI_TOKEN_PATH); } catch { /* ignore */ } }
+}
+
 // ── Hardware detection ────────────────────────────────────────────────────────
 
 /**
@@ -1206,7 +1222,7 @@ export type ImageRunnerProfile =
  * a content warning in the UI but use the same download infrastructure.
  * legacy = superseded models (FLUX schnell) — collapsed behind a toggle.
  */
-export type ImageModelCategory = 'realistic' | 'anime' | 'nsfw-realistic' | 'nsfw-anime' | 'legacy' | 'video' | 'kontext';
+export type ImageModelCategory = 'realistic' | 'artistic' | 'anime' | 'nsfw-realistic' | 'nsfw-anime' | 'civitai' | 'legacy' | 'video' | 'kontext';
 
 export interface ImageModelSpec {
   modelId: string;
@@ -1220,6 +1236,12 @@ export interface ImageModelSpec {
   hfRepo: string;
   hfFile: string;
   sizeBytes: number;
+  /** MoE dual-model: second diffusion GGUF path within hfRepo (e.g. Wan 2.2 HighNoise expert).
+   *  When present, hfFile is the LowNoise/primary expert and this is the HighNoise expert.
+   *  sd-cli: --diffusion-model <hfFile> --high-noise-diffusion-model <highNoiseHfFile> */
+  highNoiseHfFile?: string;
+  /** Byte size of the highNoise GGUF — used for download progress and disk checks. */
+  highNoiseSizeBytes?: number;
   /** Minimum VRAM in GB — kept for backward compat / sorting. Use diffusionMb+encoderMb+vaeMb for precise checks. */
   vramRequiredGb: number;
   /** Diffusion model weights in VRAM (MB). From sd-cli "diffusion_model" log. */
@@ -1242,6 +1264,12 @@ export interface ImageModelSpec {
   /** If true, model is hidden from download/selection UI. Used for models that require
    *  pipeline features not yet implemented (e.g. Wan 2.2 dual HighNoise/LowNoise GGUF). */
   blocked?: boolean;
+  /** CivitAI model version ID for download. When present, hfRepo/hfFile are ignored and
+   *  the model is downloaded from https://civitai.com/api/download/models/{civitaiVersionId}.
+   *  Requires a CivitAI API token stored at ~/.phobos/civitai-token.txt. */
+  civitaiVersionId?: number;
+  /** Local filename for CivitAI downloads (since the URL doesn't contain the filename). */
+  civitaiFilename?: string;
 }
 
 /**
@@ -1620,7 +1648,7 @@ export const CHROMA_CATALOGUE: ImageModelSpec[] = [
     label:            'Chroma1-HD Q4',
     displayName:      'Chroma1-HD',
     runnerProfile:    'flux',
-    category:         'realistic',
+    category:         'artistic',
     variant:          'chroma',
     quantization:     'Q4_0',
     hfRepo:           'silveroxides/Chroma1-HD-GGUF',
@@ -1688,7 +1716,7 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     label:            'DreamShaper XL Turbo V2.1',
     displayName:      'DreamShaper XL Turbo',
     runnerProfile:    'sdxl',
-    category:         'realistic',
+    category:         'nsfw-realistic',
     variant:          'sdxl',
     quantization:     'f16',
     hfRepo:           'Lykon/dreamshaper-xl-v2-turbo',
@@ -1716,7 +1744,7 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     label:            'RealVisXL V5.0 Lightning FP16',
     displayName:      'RealVisXL V5 Lightning',
     runnerProfile:    'sdxl',
-    category:         'realistic',
+    category:         'nsfw-realistic',
     variant:          'sdxl',
     quantization:     'f16',
     hfRepo:           'SG161222/RealVisXL_V5.0_Lightning',
@@ -1744,7 +1772,7 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     label:            'Juggernaut XL V9 Lightning FP16',
     displayName:      'Juggernaut XL Lightning',
     runnerProfile:    'sdxl',
-    category:         'realistic',
+    category:         'nsfw-realistic',
     variant:          'sdxl',
     quantization:     'f16',
     hfRepo:           'AiWise/Juggernaut-XL-V9-GE-RDPhoto2-Lightning_4S',
@@ -1801,7 +1829,7 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     label:            'RealVisXL V5.0 FP16',
     displayName:      'RealVisXL V5',
     runnerProfile:    'sdxl',
-    category:         'realistic',
+    category:         'nsfw-realistic',
     variant:          'sdxl',
     quantization:     'f16',
     hfRepo:           'SG161222/RealVisXL_V5.0',
@@ -1830,7 +1858,7 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     label:            'Juggernaut XL V9 RunDiffusion FP16',
     displayName:      'Juggernaut XL V9',
     runnerProfile:    'sdxl',
-    category:         'realistic',
+    category:         'nsfw-realistic',
     variant:          'sdxl',
     quantization:     'f16',
     hfRepo:           'RunDiffusion/Juggernaut-XL-v9',
@@ -1859,7 +1887,7 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
     label:            'DreamShaper XL Lightning FP16',
     displayName:      'DreamShaper XL Lightning',
     runnerProfile:    'sdxl',
-    category:         'realistic',
+    category:         'nsfw-realistic',
     variant:          'sdxl',
     quantization:     'f16',
     hfRepo:           'Lykon/dreamshaper-xl-v2-turbo',
@@ -1940,6 +1968,68 @@ export const SDXL_CATALOGUE: ImageModelSpec[] = [
       defaultNegative: 'score_4, score_3, score_2, score_1, blurry, low quality, watermark, text, 3d, cartoon, anime',
       promptStyle: 'booru',
       sayonBrief: 'Pony Realism V2.1 is a photorealistic model built on the Pony Diffusion V6 XL base. Uses booru-style tags. Start with quality tags: "score_9, score_8_up, score_7_up". Add subject description, lighting, and camera tags. Use DPM++ 2M Karras sampler at cfg-scale 7 for best results. Excellent skin detail, lighting, and anatomical accuracy. Negative prompts should include low score tags plus "3d, cartoon, anime" for photorealism.',
+      supportsNegative: true, supportsLoRA: true, maxDimension: 2048, nativeDimension: 1024,
+    },
+  },
+  // ── CivitAI NSFW Realistic (requires CivitAI API token) ────────────────
+  {
+    modelId:          'lustify-v6-olt',
+    label:            'Lustify V6 OLT (Fixed Textures)',
+    displayName:      'Lustify V6 OLT',
+    runnerProfile:    'sdxl',
+    category:         'civitai',
+    variant:          'sdxl',
+    quantization:     'f16',
+    hfRepo:           '',
+    hfFile:           '',
+    sizeBytes:        6_460_000_000,
+    civitaiVersionId: 1569593,
+    civitaiFilename:  'lustifySDXLNSFW_oltFIXEDTEXTURES.safetensors',
+    vramRequiredGb:   8,
+    diffusionMb:      3400,
+    encoderMb:        0,
+    vaeMb:            0,
+    estSecondsCuda:   15,
+    estSecondsVulkan: 60,
+    estSecondsCpu:    600,
+    license:          'CDLA-Permissive-2.0',
+    licenseUrl:       'https://civitai.com/models/573152?modelVersionId=1569593',
+    profile: {
+      defaultSteps: 25, defaultCfgScale: 7, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'dpm++2m', defaultScheduler: 'karras',
+      defaultNegative: 'low quality, blurry, bad anatomy, extra fingers, ugly, deformed, watermark, text, 3d, cartoon',
+      promptStyle: 'natural',
+      sayonBrief: 'Lustify V6 OLT is a top-tier photorealistic NSFW SDXL checkpoint. Supports both natural language and booru tags. Camera type tags have strong impact: "shot on Canon EOS 5D", "shot on Polaroid SX-70". Lighting tags: "cinematic lighting", "warm golden hour lighting". Style tags: "glamour photography", "amateur photo". Use DPM++ 2M Karras at cfg-scale 7. This model has a strong NSFW bias — use "amateur photo" or remove it for SFW.',
+      supportsNegative: true, supportsLoRA: true, maxDimension: 2048, nativeDimension: 1024,
+    },
+  },
+  {
+    modelId:          'bigasp-v2',
+    label:            'BigASP V2 FP16',
+    displayName:      'BigASP V2',
+    runnerProfile:    'sdxl',
+    category:         'civitai',
+    variant:          'sdxl',
+    quantization:     'f16',
+    hfRepo:           '',
+    hfFile:           '',
+    sizeBytes:        6_940_000_000,
+    civitaiVersionId: 991916,
+    civitaiFilename:  'bigASP_v2.safetensors',
+    vramRequiredGb:   8,
+    diffusionMb:      3400,
+    encoderMb:        0,
+    vaeMb:            0,
+    estSecondsCuda:   15,
+    estSecondsVulkan: 60,
+    estSecondsCpu:    600,
+    license:          'Apache-2.0',
+    licenseUrl:       'https://civitai.com/models/502468?modelVersionId=991916',
+    profile: {
+      defaultSteps: 25, defaultCfgScale: 7, defaultWidth: 1024, defaultHeight: 1024,
+      defaultSampler: 'euler_a', defaultNegative: 'low quality, worst quality, blurry, bad anatomy, watermark, text',
+      promptStyle: 'natural',
+      sayonBrief: 'BigASP V2 is a photorealistic SDXL model trained on 6+ million high-quality captioned photos. Understands both short and detailed natural language prompts. Excellent broad concept coverage. Strong anatomy and lighting. Use Euler A or DPM++ 2M at cfg-scale 7. Very flexible — works well with both simple and detailed prompts.',
       supportsNegative: true, supportsLoRA: true, maxDimension: 2048, nativeDimension: 1024,
     },
   },
@@ -2245,8 +2335,10 @@ export const WAN_CATALOGUE: ImageModelSpec[] = [
     variant:          'wan',
     quantization:     'Q4_K_M',
     hfRepo:           'QuantStack/Wan2.2-T2V-A14B-GGUF',
-    hfFile:           'HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf',
-    sizeBytes:        10_100_000_000,
+    hfFile:           'LowNoise/Wan2.2-T2V-A14B-LowNoise-Q4_K_M.gguf',
+    sizeBytes:        9_650_000_000,
+    highNoiseHfFile:  'HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf',
+    highNoiseSizeBytes: 9_650_000_000,
     vramRequiredGb:   16,
     diffusionMb:      9600,
     encoderMb:        0,
@@ -2256,17 +2348,45 @@ export const WAN_CATALOGUE: ImageModelSpec[] = [
     estSecondsCpu:    3600,
     license:          'Apache-2.0',
     licenseUrl:       'https://huggingface.co/QuantStack/Wan2.2-T2V-A14B-GGUF',
-    // Blocked: Wan 2.2 MoE architecture requires TWO diffusion model files
-    // (HighNoise + LowNoise) and --high-noise-diffusion-model flag.
-    // Current single-file pipeline cannot handle this. Unblock when dual-model
-    // arg builder and download logic are implemented.
-    blocked:          true,
     profile: {
-      defaultSteps: 20, defaultCfgScale: 5, defaultWidth: 832, defaultHeight: 480,
+      defaultSteps: 10, defaultCfgScale: 3.5, defaultWidth: 832, defaultHeight: 480,
       defaultSampler: 'euler', defaultScheduler: 'simple', defaultNegative: '',
       promptStyle: 'natural',
       sayonBrief: 'Wan 2.2 T2V 14B is the latest text-to-video model with improved motion quality and prompt adherence over Wan 2.1. Write detailed natural prose describing scene dynamics and camera work. This version handles complex multi-subject motion better. Same VRAM requirements and resolution as 2.1 (832×480, 49 frames). Prefer this over 2.1 when available.',
-      supportsNegative: false, supportsLoRA: false, maxDimension: 1280, nativeDimension: 480,
+      supportsNegative: true, supportsLoRA: false, maxDimension: 1280, nativeDimension: 480,
+    },
+  },
+  // ── Wan 2.2 I2V (image-to-video) ───────────────────────────────────────
+  // Same MoE architecture as T2V. Extra aux file: CLIP Vision encoder for I2V.
+  // Input image via --init-img, prompt describes desired motion only.
+  {
+    modelId:          'wan22-i2v-14b-q4',
+    label:            'Wan 2.2 I2V 14B Q4',
+    displayName:      'Wan 2.2 I2V 14B',
+    runnerProfile:    'wan',
+    category:         'video',
+    variant:          'wan',
+    quantization:     'Q4_K_M',
+    hfRepo:           'QuantStack/Wan2.2-I2V-A14B-GGUF',
+    hfFile:           'LowNoise/Wan2.2-I2V-A14B-LowNoise-Q4_K_M.gguf',
+    sizeBytes:        9_650_000_000,
+    highNoiseHfFile:  'HighNoise/Wan2.2-I2V-A14B-HighNoise-Q4_K_M.gguf',
+    highNoiseSizeBytes: 9_650_000_000,
+    vramRequiredGb:   16,
+    diffusionMb:      9600,
+    encoderMb:        0,
+    vaeMb:            160,
+    estSecondsCuda:   180,
+    estSecondsVulkan: 720,
+    estSecondsCpu:    3600,
+    license:          'Apache-2.0',
+    licenseUrl:       'https://huggingface.co/QuantStack/Wan2.2-I2V-A14B-GGUF',
+    profile: {
+      defaultSteps: 10, defaultCfgScale: 3.5, defaultWidth: 832, defaultHeight: 480,
+      defaultSampler: 'euler', defaultScheduler: 'simple', defaultNegative: '',
+      promptStyle: 'natural',
+      sayonBrief: 'Wan 2.2 I2V (image-to-video) animates a still image into video using MoE architecture. Write a prompt describing the desired motion only — the input image provides visual content. Examples: "the woman turns her head and smiles", "the waterfall begins to flow, camera slowly zooms in". Keep prompts focused on action and movement, not appearance. Same resolution (832×480) and frame count (49 frames) as T2V.',
+      supportsNegative: true, supportsLoRA: false, maxDimension: 1280, nativeDimension: 480,
     },
   },
 ];
@@ -2290,7 +2410,14 @@ export function getImageModelSpec(modelId: string): ImageModelSpec | undefined {
 export function isImageModelDownloaded(spec: ImageModelSpec): boolean {
   const p = fluxModelPath(spec);
   if (!fs.existsSync(p)) return false;
-  return fs.statSync(p).size >= spec.sizeBytes * 0.9;
+  if (fs.statSync(p).size < spec.sizeBytes * 0.9) return false;
+  // MoE dual-model: both GGUFs must be present
+  if (spec.highNoiseHfFile) {
+    const hp = highNoiseModelPath(spec);
+    if (!hp || !fs.existsSync(hp)) return false;
+    if (fs.statSync(hp).size < (spec.highNoiseSizeBytes ?? spec.sizeBytes) * 0.9) return false;
+  }
+  return true;
 }
 
 export function getAuxFilesForModel(spec: ImageModelSpec): FluxAuxFile[] {
@@ -2325,9 +2452,18 @@ export function getFluxSpec(modelId: string): FluxSpec | undefined {
 //          LLM GGUF encoders (--llm flag)         → IMAGE_LLM_DIR
 
 export function fluxModelPath(spec: FluxSpec): string {
+  // CivitAI models use civitaiFilename in SDXL dir (all CivitAI models are SDXL safetensors)
+  if (spec.civitaiVersionId && spec.civitaiFilename) return path.join(IMAGE_SDXL_DIR, spec.civitaiFilename);
   if (spec.runnerProfile === 'sdxl') return path.join(IMAGE_SDXL_DIR, spec.hfFile);
   if (spec.runnerProfile === 'wan')  return path.join(IMAGE_WAN_DIR,  spec.hfFile);
   return path.join(IMAGE_FLUX_DIR, spec.hfFile);
+}
+
+/** Resolve the HighNoise expert GGUF path for MoE models. Returns null for non-MoE specs. */
+export function highNoiseModelPath(spec: FluxSpec): string | null {
+  if (!spec.highNoiseHfFile) return null;
+  if (spec.runnerProfile === 'wan') return path.join(IMAGE_WAN_DIR, spec.highNoiseHfFile);
+  return path.join(IMAGE_FLUX_DIR, spec.highNoiseHfFile);
 }
 
 export function fluxAuxPath(aux: FluxAuxFile): string {
@@ -2527,6 +2663,9 @@ export function deleteFluxModel(modelId: string): boolean {
   const p = fluxModelPath(spec);
   if (!fs.existsSync(p)) return false;
   fs.unlinkSync(p);
+  // MoE dual-model: also delete the HighNoise expert
+  const hn = highNoiseModelPath(spec);
+  if (hn && fs.existsSync(hn)) { try { fs.unlinkSync(hn); } catch { /* ignore */ } }
   return true;
 }
 
@@ -2538,6 +2677,9 @@ export function deleteFluxModel(modelId: string): boolean {
 export function cancelImageDownload(spec: ImageModelSpec, auxFiles: FluxAuxFile[]): void {
   const mainTmp = fluxModelPath(spec) + '.download';
   try { if (fs.existsSync(mainTmp)) fs.unlinkSync(mainTmp); } catch { /* ignore */ }
+  // MoE HighNoise temp file
+  const hn = highNoiseModelPath(spec);
+  if (hn) { const hnTmp = hn + '.download'; try { if (fs.existsSync(hnTmp)) fs.unlinkSync(hnTmp); } catch { /* ignore */ } }
   for (const aux of auxFiles) {
     const auxTmp = fluxAuxPath(aux) + '.download';
     try { if (fs.existsSync(auxTmp)) fs.unlinkSync(auxTmp); } catch { /* ignore */ }
@@ -3074,6 +3216,7 @@ async function* downloadFluxFileGen(
   fileId: string,
   label: string,
   phase: FluxDownloadPhase,
+  overrideUrl?: string,
 ): AsyncGenerator<FluxDownloadProgress> {
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
 
@@ -3082,7 +3225,7 @@ async function* downloadFluxFileGen(
   const reqHeaders: Record<string, string> = {};
   if (existingBytes > 0) reqHeaders['Range'] = `bytes=${existingBytes}-`;
 
-  const url           = hfFluxUrl(hfRepo, hfFile);
+  const url           = overrideUrl ?? hfFluxUrl(hfRepo, hfFile);
   let bytesReceived   = existingBytes;
   let bytesTotal      = sizeBytes;
 
@@ -3223,15 +3366,37 @@ export async function* downloadFluxModel(
     }
   }
 
-  // 1. Main model
+  // 1. Main model (LowNoise expert for MoE, or single model for non-MoE)
   if (!isFluxDownloaded(spec)) {
+    // CivitAI models: download via CivitAI API URL instead of HuggingFace
+    const civitaiUrl = spec.civitaiVersionId
+      ? `https://civitai.com/api/download/models/${spec.civitaiVersionId}?token=${getCivitaiToken()}`
+      : undefined;
     yield* safeDownloadFile(
-      downloadFluxFileGen(spec.hfRepo, spec.hfFile, fluxModelPath(spec), spec.sizeBytes, spec.modelId, spec.label, 'flux-main'),
+      downloadFluxFileGen(spec.hfRepo, spec.hfFile, fluxModelPath(spec), spec.sizeBytes, spec.modelId, spec.label, 'flux-main', civitaiUrl),
       spec.modelId, spec.label, 'flux-main', spec.sizeBytes,
     );
   } else {
     yield { fileId: spec.modelId, phase: 'flux-main', label: spec.label,
             bytesReceived: spec.sizeBytes, bytesTotal: spec.sizeBytes, done: true };
+  }
+
+  // 1b. MoE HighNoise expert (Wan 2.2 dual-model)
+  if (spec.highNoiseHfFile) {
+    const hnPath = highNoiseModelPath(spec)!;
+    const hnSize = spec.highNoiseSizeBytes ?? spec.sizeBytes;
+    const hnId   = `${spec.modelId}-high-noise`;
+    const hnLabel = `${spec.label} (HighNoise)`;
+    const hnExists = fs.existsSync(hnPath) && fs.statSync(hnPath).size >= hnSize * 0.9;
+    if (!hnExists) {
+      yield* safeDownloadFile(
+        downloadFluxFileGen(spec.hfRepo, spec.highNoiseHfFile, hnPath, hnSize, hnId, hnLabel, 'flux-main'),
+        hnId, hnLabel, 'flux-main', hnSize,
+      );
+    } else {
+      yield { fileId: hnId, phase: 'flux-main' as FluxDownloadPhase, label: hnLabel,
+              bytesReceived: hnSize, bytesTotal: hnSize, done: true };
+    }
   }
 
   // 2. Aux files

@@ -149,10 +149,9 @@ jobs:
         if: matrix.pack == 'tar'
         run: tar -czf ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.tar.gz -C dist .
 
-      - name: Package phobos-core (zip)
+      - name: Package phobos-core (7z)
         if: matrix.pack == 'zip'
-        shell: pwsh
-        run: Compress-Archive -Path dist\* -DestinationPath ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.zip
+        run: 7z a -mx=9 ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.7z ./dist/*
 
       - name: Upload phobos-core artifact (tar)
         if: matrix.pack == 'tar'
@@ -162,12 +161,12 @@ jobs:
           path: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.tar.gz
           retention-days: 7
 
-      - name: Upload phobos-core artifact (zip)
+      - name: Upload phobos-core artifact (7z)
         if: matrix.pack == 'zip'
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}
-          path: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.zip
+          path: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.7z
           retention-days: 7
 
       - name: Upload phobos-lite artifact
@@ -204,5 +203,5 @@ jobs:
           draft:                  false
           prerelease:             false
           generate_release_notes: true
-          files:                  release-artifacts/**/*.{tar.gz,zip}
+          files:                  release-artifacts/**/*.{tar.gz,7z,zip}
           fail_on_unmatched_files: false

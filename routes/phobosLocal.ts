@@ -1061,18 +1061,24 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
           ]);
           selectedPath = stdout.trim();
         } else {
-          // Linux — try zenity first, fall back to kdialog
-          const extFilter = filter !== 'any' ? `--file-filter=*.${filter}` : '';
-          try {
-            const args = ['--file-selection', '--title=Select model file'];
-            if (extFilter) args.push(extFilter);
-            const { stdout } = await execFileP('zenity', args);
-            selectedPath = stdout.trim();
-          } catch {
-            const args = ['--getopenfilename', os.homedir(), filter !== 'any' ? `*.${filter}` : '*'];
-            const { stdout } = await execFileP('kdialog', args);
-            selectedPath = stdout.trim();
-          }
+          // Linux — try dialog tools in order: zenity, kdialog, yad
+          const extFilter = filter !== 'any' ? `*.${filter}` : '';
+          const tryExec = async (cmd: string, args: string[]): Promise<string | null> => {
+            try {
+              const { stdout } = await execFileP(cmd, args);
+              return stdout.trim() || null;
+            } catch { return null; }
+          };
+          const zenArgs = ['--file-selection', '--title=Select model file'];
+          if (extFilter) zenArgs.push(`--file-filter=${extFilter}`);
+          const kdArgs = ['--getopenfilename', os.homedir(), extFilter || '*'];
+          const yadArgs = ['--file', '--title=Select model file'];
+          if (extFilter) yadArgs.push(`--file-filter=${extFilter}`);
+          selectedPath =
+            await tryExec('zenity', zenArgs)
+            ?? await tryExec('kdialog', kdArgs)
+            ?? await tryExec('yad', yadArgs)
+            ?? '';
         }
 
         if (!selectedPath) return reply.send({ path: null });
@@ -1211,14 +1217,21 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         ]);
         selectedPath = stdout.trim().replace(/\/$/, '');
       } else {
+        // Linux — try dialog tools in order of availability.
+        // zenity (GNOME), kdialog (KDE), yad (XFCE/GTK fork of zenity),
+        // then xdg-desktop-portal via gdbus (works on any modern DE).
         const filenameArg = initialPath || os.homedir();
-        try {
-          const { stdout } = await execFileP('zenity', ['--file-selection', '--directory', '--title=Select models folder', `--filename=${filenameArg}/`]);
-          selectedPath = stdout.trim();
-        } catch {
-          const { stdout } = await execFileP('kdialog', ['--getexistingdirectory', filenameArg]);
-          selectedPath = stdout.trim();
-        }
+        const tryExec = async (cmd: string, args: string[]): Promise<string | null> => {
+          try {
+            const { stdout } = await execFileP(cmd, args);
+            return stdout.trim() || null;
+          } catch { return null; }
+        };
+        selectedPath =
+          await tryExec('zenity', ['--file-selection', '--directory', '--title=Select models folder', `--filename=${filenameArg}/`])
+          ?? await tryExec('kdialog', ['--getexistingdirectory', filenameArg])
+          ?? await tryExec('yad', ['--file', '--directory', '--title=Select models folder', `--filename=${filenameArg}/`])
+          ?? '';
       }
 
       if (!selectedPath) return reply.send({ path: null });

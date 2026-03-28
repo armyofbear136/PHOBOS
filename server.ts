@@ -15,6 +15,7 @@ import { workflowsRoute } from './routes/workflows.js';
 import { registerCopilotRoutes } from './routes/copilot.js';
 import { stopAllServers } from './phobos/LlamaServerManager.js';
 import { reconfigureClients, COORDINATOR_MODEL, ENGINE_MODEL } from './ai/clients.js';
+import * as ModelPathStore from './db/ModelPathStore.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -113,6 +114,9 @@ async function main() {
   console.log('⚙️  Initializing Phobos Core Systems...');
   const db = DatabaseManager.getInstance(DB_PATH);
   await db.initialize();
+  // Load model path config (base path + overrides) into the synchronous cache
+  // before any route or PhobosLocalManager call resolves model paths.
+  await ModelPathStore.loadAsync(db);
   await reconfigureClients();
 
   const fastify = await buildServer();

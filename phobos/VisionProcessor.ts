@@ -21,10 +21,15 @@ function getOrt(): typeof import('onnxruntime-node') {
   return _ort;
 }
 
-// ── Cache directory ───────────────────────────────────────────────────────────
-// Vision models land in ~/.phobos/models/vision/ alongside the image models.
+import * as ModelPathStore from '../db/ModelPathStore.js';
 
-export const VISION_MODELS_DIR = path.join(os.homedir(), '.phobos', 'models', 'vision');
+// ── Cache directory ───────────────────────────────────────────────────────────
+// Vision models land alongside the image model tree, under the user-configured
+// base path. Lazy getter — same fix as the image model dirs in PhobosLocalManager.
+
+export function VISION_MODELS_DIR(): string {
+  return path.join(ModelPathStore.getBasePath(), 'vision');
+}
 
 // ── Model IDs ─────────────────────────────────────────────────────────────────
 // All models are downloaded once on first use via onnxruntime-node.
@@ -72,7 +77,7 @@ export interface BgRemovalResult {
 let _depthSession: any | null = null;
 
 function depthModelPath(): string {
-  return path.join(VISION_MODELS_DIR, 'depth-anything-small', DEPTH_MODEL_FILE);
+  return path.join(VISION_MODELS_DIR(), 'depth-anything-small', DEPTH_MODEL_FILE);
 }
 
 async function ensureDepthModel(): Promise<string> {

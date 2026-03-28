@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { checkBackendHealth, reconfigureClients, COORDINATOR_MODEL, ENGINE_MODEL, COORDINATOR_PROVIDER, ENGINE_PROVIDER, isThinkingModel } from '../ai/clients.js';
 import { CORE_VERSION } from '../version';
 import { isImageGenerating } from './workflows.js';
+import { isRelocating } from './phobosLocal.js';
 import { getServerStatus } from '../phobos/LlamaServerManager.js';
 import { DispatchLogStore } from '../db/DispatchLogStore.js';
 import { DatabaseManager } from '../db/DatabaseManager.js';
@@ -65,6 +66,7 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
       coordinatorHasThinking: isThinkingModel(COORDINATOR_MODEL),
       engineHasThinking: isThinkingModel(ENGINE_MODEL),
       isGenerating: isImageGenerating(),
+      isRelocating: isRelocating(),
       // Server lifecycle — lets the frontend block input during model switches
       coordinatorStarting: phobos.sayon.state === 'starting',
       engineStarting:      phobos.seren.state === 'starting',

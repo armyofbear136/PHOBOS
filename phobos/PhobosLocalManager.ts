@@ -7,6 +7,7 @@ import * as path from 'path';
 import * as https from 'https';
 import * as http  from 'http';
 import { fileURLToPath } from 'url';
+import * as ModelPathStore from '../db/ModelPathStore.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -18,39 +19,51 @@ const _dirname: string = (() => {
   return typeof __dirname === 'string' ? __dirname : process.cwd();
 })();
 
-// ── Constants ─────────────────────────────────────────────────────────────────
+// ── Model directory accessors — lazy, read ModelPathStore at call time ────────
+// These are functions, not frozen constants. This fixes the macOS SEA bug where
+// os.homedir() returns '' when module constants are evaluated before the process
+// home directory is established (reproducible with double-click launch from Finder).
+// All internal callers use these functions; external callers in routes/ do too.
 
-export const MODELS_DIR       = path.join(os.homedir(), '.phobos', 'models');
-/** Shared encoder/aux files — used by multiple runner profiles (VAE, CLIP-L, T5, CLIP-G) */
-export const IMAGE_SHARED_DIR = path.join(os.homedir(), '.phobos', 'models', 'image');
-/** FLUX and Chroma model GGUFs */
-export const IMAGE_FLUX_DIR   = path.join(os.homedir(), '.phobos', 'models', 'image', 'flux');
-/** SDXL model GGUFs */
-export const IMAGE_SDXL_DIR   = path.join(os.homedir(), '.phobos', 'models', 'image', 'sdxl');
-/** FLUX Kontext, FLUX.2, Z-Image, Qwen-Image diffusion model GGUFs */
-export const IMAGE_NEW_DIR    = path.join(os.homedir(), '.phobos', 'models', 'image', 'new');
-/** Wan video diffusion model GGUFs */
-export const IMAGE_WAN_DIR    = path.join(os.homedir(), '.phobos', 'models', 'image', 'wan');
-/** LLM-as-text-encoder GGUFs (Qwen3-4B, Qwen3-8B, Qwen2.5-VL-7B) — separate from LLM server models */
-export const IMAGE_LLM_DIR    = path.join(os.homedir(), '.phobos', 'models', 'image', 'llm');
-/** @deprecated use IMAGE_FLUX_DIR — kept so any external references survive */
-export const FLUX_MODELS_DIR  = IMAGE_FLUX_DIR;
-export const UPSCALE_MODELS_DIR = path.join(os.homedir(), '.phobos', 'models', 'upscale');
+/** Root LLM model directory. Derives from user-configured base path. */
+export function MODELS_DIR(): string       { return ModelPathStore.getBasePath(); }
+/** Shared encoder/aux files (VAE, CLIP-L, T5, CLIP-G). */
+export function IMAGE_SHARED_DIR(): string { return path.join(ModelPathStore.getBasePath(), 'image'); }
+/** FLUX and Chroma model GGUFs. */
+export function IMAGE_FLUX_DIR(): string   { return path.join(ModelPathStore.getBasePath(), 'image', 'flux'); }
+/** SDXL model GGUFs. */
+export function IMAGE_SDXL_DIR(): string   { return path.join(ModelPathStore.getBasePath(), 'image', 'sdxl'); }
+/** FLUX Kontext, FLUX.2, Z-Image, Qwen-Image diffusion model GGUFs. */
+export function IMAGE_NEW_DIR(): string    { return path.join(ModelPathStore.getBasePath(), 'image', 'new'); }
+/** Wan video diffusion model GGUFs. */
+export function IMAGE_WAN_DIR(): string    { return path.join(ModelPathStore.getBasePath(), 'image', 'wan'); }
+/** LLM-as-text-encoder GGUFs (Qwen3-4B, Qwen3-8B, Qwen2.5-VL-7B). */
+export function IMAGE_LLM_DIR(): string    { return path.join(ModelPathStore.getBasePath(), 'image', 'llm'); }
+/** @deprecated use IMAGE_FLUX_DIR() */
+export function FLUX_MODELS_DIR(): string  { return IMAGE_FLUX_DIR(); }
+/** ESRGAN upscale model .pth files. */
+export function UPSCALE_MODELS_DIR(): string { return path.join(ModelPathStore.getBasePath(), 'upscale'); }
 
 // ── CivitAI integration ──────────────────────────────────────────────────────
-const CIVITAI_TOKEN_PATH = path.join(os.homedir(), '.phobos', 'civitai-token.txt');
+// Token path stays under ~/.phobos — it is auth config, not a model file,
+// so it does NOT move when the user relocates their models base path.
+function civitaiTokenPath(): string {
+  return path.join(os.homedir(), '.phobos', 'civitai-token.txt');
+}
 
 /** Read the stored CivitAI API token. Returns empty string if not set. */
 export function getCivitaiToken(): string {
-  try { return fs.existsSync(CIVITAI_TOKEN_PATH) ? fs.readFileSync(CIVITAI_TOKEN_PATH, 'utf-8').trim() : ''; }
+  const p = civitaiTokenPath();
+  try { return fs.existsSync(p) ? fs.readFileSync(p, 'utf-8').trim() : ''; }
   catch { return ''; }
 }
 
 /** Persist a CivitAI API token. Pass empty string to clear. */
 export function setCivitaiToken(token: string): void {
-  fs.mkdirSync(path.dirname(CIVITAI_TOKEN_PATH), { recursive: true });
-  if (token) fs.writeFileSync(CIVITAI_TOKEN_PATH, token.trim(), 'utf-8');
-  else { try { fs.unlinkSync(CIVITAI_TOKEN_PATH); } catch { /* ignore */ } }
+  const p = civitaiTokenPath();
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  if (token) fs.writeFileSync(p, token.trim(), 'utf-8');
+  else { try { fs.unlinkSync(p); } catch { /* ignore */ } }
 }
 
 // ── Hardware detection ────────────────────────────────────────────────────────
@@ -1281,7 +1294,9 @@ export function getSpec(modelId: string): GGUFSpec | undefined {
 }
 
 export function modelPath(spec: GGUFSpec): string {
-  return path.join(MODELS_DIR, spec.hfFile);
+  const override = ModelPathStore.getOverride('llm', spec.modelId);
+  if (override) return override;
+  return path.join(MODELS_DIR(), spec.hfFile);
 }
 
 export function isDownloaded(spec: GGUFSpec): boolean {
@@ -2558,29 +2573,26 @@ export function getFluxSpec(modelId: string): FluxSpec | undefined {
 //          LLM GGUF encoders (--llm flag)         → IMAGE_LLM_DIR
 
 export function fluxModelPath(spec: FluxSpec): string {
-  // CivitAI models use civitaiFilename in SDXL dir (all CivitAI models are SDXL safetensors)
-  if (spec.civitaiVersionId && spec.civitaiFilename) return path.join(IMAGE_SDXL_DIR, spec.civitaiFilename);
-  if (spec.runnerProfile === 'sdxl') return path.join(IMAGE_SDXL_DIR, spec.hfFile);
-  if (spec.runnerProfile === 'wan')  return path.join(IMAGE_WAN_DIR,  spec.hfFile);
-  return path.join(IMAGE_FLUX_DIR, spec.hfFile);
+  const override = ModelPathStore.getOverride('img', spec.modelId);
+  if (override) return override;
+  if (spec.civitaiVersionId && spec.civitaiFilename) return path.join(IMAGE_SDXL_DIR(), spec.civitaiFilename);
+  if (spec.runnerProfile === 'sdxl') return path.join(IMAGE_SDXL_DIR(), spec.hfFile);
+  if (spec.runnerProfile === 'wan')  return path.join(IMAGE_WAN_DIR(),  spec.hfFile);
+  return path.join(IMAGE_FLUX_DIR(), spec.hfFile);
 }
 
 /** Resolve the HighNoise expert GGUF path for MoE models. Returns null for non-MoE specs. */
 export function highNoiseModelPath(spec: FluxSpec): string | null {
   if (!spec.highNoiseHfFile) return null;
-  if (spec.runnerProfile === 'wan') return path.join(IMAGE_WAN_DIR, spec.highNoiseHfFile);
-  return path.join(IMAGE_FLUX_DIR, spec.highNoiseHfFile);
+  if (spec.runnerProfile === 'wan') return path.join(IMAGE_WAN_DIR(), spec.highNoiseHfFile);
+  return path.join(IMAGE_FLUX_DIR(), spec.highNoiseHfFile);
 }
 
 export function fluxAuxPath(aux: FluxAuxFile): string {
-  // LLM text encoders go in their own dir.
-  // Wan T5 (umt5-xxl) and CLIP Vision go in IMAGE_WAN_DIR — same filename as FLUX T5
-  // (umt5-xxl-encoder-Q5_K_M.gguf vs t5-v1_1-xxl-encoder-Q5_K_M.gguf actually differ,
-  // but keeping them separate avoids any future collision risk).
   const dir =
-    aux.cliFlag === '--llm'          ? IMAGE_LLM_DIR  :
-    aux.id.startsWith('wan-')        ? IMAGE_WAN_DIR  :
-    IMAGE_SHARED_DIR;
+    aux.cliFlag === '--llm'          ? IMAGE_LLM_DIR()  :
+    aux.id.startsWith('wan-')        ? IMAGE_WAN_DIR()  :
+    IMAGE_SHARED_DIR();
   const filename = aux.localFile ?? path.basename(aux.hfFile);
   return path.join(dir, filename);
 }
@@ -3177,7 +3189,7 @@ export async function* downloadModel(
   spec: GGUFSpec,
   phase: 'sayon' | 'seren',
 ): AsyncGenerator<DownloadProgress> {
-  fs.mkdirSync(MODELS_DIR, { recursive: true });
+  fs.mkdirSync(MODELS_DIR(), { recursive: true });
 
   const dest = modelPath(spec);
 
@@ -3679,7 +3691,7 @@ export const ESRGAN_MODELS: EsrganSpec[] = [
 ];
 
 export function esrganModelPath(spec: EsrganSpec): string {
-  return path.join(UPSCALE_MODELS_DIR, spec.filename);
+  return path.join(UPSCALE_MODELS_DIR(), spec.filename);
 }
 
 export function isEsrganDownloaded(spec: EsrganSpec): boolean {
@@ -3701,7 +3713,7 @@ export interface EsrganDownloadProgress {
 export async function* downloadEsrgan(
   spec: EsrganSpec,
 ): AsyncGenerator<EsrganDownloadProgress> {
-  fs.mkdirSync(UPSCALE_MODELS_DIR, { recursive: true });
+  fs.mkdirSync(UPSCALE_MODELS_DIR(), { recursive: true });
 
   const dest = esrganModelPath(spec);
   const tmp  = dest + '.download';
@@ -3787,6 +3799,78 @@ export async function* downloadEsrgan(
   try { await downloadPromise; } catch { /* already yielded error */ }
   fs.renameSync(tmp, dest);
   yield { id: spec.id, bytesReceived: bytesTotal, bytesTotal, done: true };
+}
+
+// ── Folder scan — find known models in an arbitrary directory ─────────────────
+
+export interface ScannedMatch {
+  ns:        ModelPathStore.ModelNamespace;
+  modelId:   string;
+  label:     string;
+  absPath:   string;
+  sizeBytes: number;
+}
+
+/**
+ * Walks `folderPath` recursively, builds a filename→absolutePath map, then
+ * checks every known spec against it by filename. Returns all matches.
+ * Used by the "Change Folder" dialog preview and the resync endpoint.
+ * Safe to call on any path — returns [] if the folder doesn't exist.
+ */
+export function scanFolderForModels(folderPath: string): ScannedMatch[] {
+  const fileMap = new Map<string, string>(); // filename → absolute path
+
+  const walk = (dir: string) => {
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+    catch { return; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.isFile()) {
+        // Last-write wins for duplicate filenames across subdirs — deepest path loses.
+        // This is acceptable: users shouldn't have the same filename in multiple dirs.
+        fileMap.set(entry.name, full);
+      }
+    }
+  };
+
+  walk(folderPath);
+
+  const results: ScannedMatch[] = [];
+
+  // ── LLM GGUFs ──
+  for (const spec of GGUF_CATALOGUE) {
+    const filename = path.basename(spec.hfFile);
+    const found    = fileMap.get(filename);
+    if (!found) continue;
+    try {
+      const stat = fs.statSync(found);
+      if (stat.size >= spec.sizeBytes * 0.9) {
+        results.push({ ns: 'llm', modelId: spec.modelId, label: spec.label, absPath: found, sizeBytes: stat.size });
+      }
+    } catch { /* file disappeared between walk and stat — skip */ }
+  }
+
+  // ── Image / video model GGUFs and safetensors ──
+  for (const spec of IMAGE_MODEL_CATALOGUE) {
+    const filename = spec.civitaiFilename ?? path.basename(spec.hfFile);
+    const found    = fileMap.get(filename);
+    if (!found) continue;
+    try {
+      const stat = fs.statSync(found);
+      if (stat.size >= spec.sizeBytes * 0.9) {
+        results.push({ ns: 'img', modelId: spec.modelId, label: spec.label, absPath: found, sizeBytes: stat.size });
+      }
+    } catch { /* skip */ }
+  }
+
+  // ── Aux files are shared and not individually overrideable — skip them ──
+  // Aux (VAE, CLIP, T5) are always co-located in the base tree. The scan
+  // updates the base path; aux files are found relative to it automatically.
+
+  return results;
 }
 
 // ── Model deletion ────────────────────────────────────────────────────────────

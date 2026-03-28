@@ -21,6 +21,7 @@ import {
 import {
   getImageModelSpec,
   isImageModelDownloaded,
+  UPSCALE_MODELS_DIR,
 } from './PhobosLocalManager.js';
 
 // ── Workspace root (mirrors convention across codebase) ───────────────────────
@@ -785,13 +786,12 @@ async function* executeUpscale(
   onAbortRegister?: (killFn: () => void) => void,
 ): AsyncGenerator<WorkflowEvent> {
   const p = node.params as UpscaleParams;
-  // Resolve ESRGAN model path — lives in ~/.phobos/models/upscale/
-  const upscaleModelsDir = path.join(os.homedir(), '.phobos', 'models', 'upscale');
+  // Resolve ESRGAN model path via the user-configured base path.
   const modelFile = p.upscaleModel ?? 'RealESRGAN_x4plus.pth';
-  const modelPath = path.join(upscaleModelsDir, modelFile);
+  const modelPath = path.join(UPSCALE_MODELS_DIR(), modelFile);
   if (!fs.existsSync(modelPath)) {
     yield { phase: 'error', nodeIndex: node.index,
-      message: `ESRGAN model not found: ${modelPath}. Download RealESRGAN_x4plus.pth to ~/.phobos/models/upscale/`,
+      message: `ESRGAN model not found: ${modelPath}. Download RealESRGAN_x4plus.pth to the upscale/ folder in your models directory.`,
       fatal: false };
     return;
   }

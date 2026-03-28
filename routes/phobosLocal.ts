@@ -1,6 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 import * as path from 'path';
+import * as os from 'os';
+import * as ModelPathStore from '../db/ModelPathStore.js';
+import { DatabaseManager } from '../db/DatabaseManager.js';
 import {
   detectHardware,
   buildRecommendation,
@@ -45,6 +49,7 @@ import {
   downloadEsrgan,
   isEsrganDownloaded,
   esrganModelPath,
+  scanFolderForModels,
   type EsrganSpec,
   type GGUFSpec,
   type ImageModelSpec,
@@ -68,6 +73,12 @@ import {
 // Set true when the image download SSE stream starts, cleared in its finally block.
 let _imageDownloadActive = false;
 export function isImageDownloadActive(): boolean { return _imageDownloadActive; }
+
+// ── Relocate lock ───────────────────────────────────────────────────────────
+// Prevents the frontend from showing the disconnect screen while models are
+// being moved and LLM servers are intentionally stopped.
+let _relocating = false;
+export function isRelocating(): boolean { return _relocating; }
 
 export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> {
 
@@ -288,9 +299,9 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
   });
 
   // GET /api/phobos/models/info
-  // Returns the models folder path and total disk usage for the UI.
+  // Returns the models folder path, total disk usage, and active path overrides.
   fastify.get('/api/phobos/models/info', async (_req, reply) => {
-    const modelsDir = MODELS_DIR;
+    const modelsDir = MODELS_DIR();
     let totalBytes = 0;
     const countFiles = (dir: string) => {
       try {
@@ -302,7 +313,11 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       } catch { /* dir doesn't exist yet */ }
     };
     countFiles(modelsDir);
-    return reply.send({ path: modelsDir, totalBytes });
+
+    const overrides: Record<string, string> = {};
+    for (const [k, v] of ModelPathStore.getAllOverrides()) overrides[k] = v;
+
+    return reply.send({ path: modelsDir, totalBytes, overrides });
   });
 
   // GET /api/phobos/open-folder?path=...
@@ -508,7 +523,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       // Depth model: Depth Anything V2 ViT-S ~97 MB ONNX
       // Downloaded directly via onnxruntime-node (no @xenova/transformers dependency).
       // Cached at VISION_MODELS_DIR/depth-anything-small/model_quantized.onnx
-      const depthModelFile = require('path').join(VISION_MODELS_DIR, 'depth-anything-small', 'model_quantized.onnx');
+      const depthModelFile = require('path').join(VISION_MODELS_DIR(), 'depth-anything-small', 'model_quantized.onnx');
       const depthDownloaded = require('fs').existsSync(depthModelFile);
       const depthStatus = [{
         id:         'depth-model',
@@ -864,4 +879,559 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       return reply.send({ ok: true });
     }
   );
+
+  // ── Model path management ─────────────────────────────────────────────────
+
+  // POST /api/phobos/models/scan-folder
+  // Scans a folder for known model files. Returns matches for the dialog preview.
+  // Does NOT write anything — read-only probe.
+  fastify.post<{ Body: { folderPath: string } }>(
+    '/api/phobos/models/scan-folder',
+    async (req, reply) => {
+      const { folderPath } = req.body;
+      if (!folderPath || typeof folderPath !== 'string') {
+        return reply.status(400).send({ error: 'folderPath required' });
+      }
+      if (!fs.existsSync(folderPath)) {
+        return reply.send({ matches: [], totalKnown: GGUF_CATALOGUE.length + IMAGE_MODEL_CATALOGUE.length });
+      }
+      const matches = scanFolderForModels(folderPath);
+      return reply.send({
+        matches,
+        totalKnown: GGUF_CATALOGUE.length + IMAGE_MODEL_CATALOGUE.length,
+      });
+    }
+  );
+
+  // PUT /api/phobos/models/base-path
+  // Sets the models base path. Optionally scans the new folder and writes
+  // override entries for any models found there (so they don't need re-download).
+  fastify.put<{ Body: { folderPath: string; applyOverridesFromScan?: boolean } }>(
+    '/api/phobos/models/base-path',
+    async (req, reply) => {
+      const { folderPath, applyOverridesFromScan = true } = req.body;
+      if (!folderPath || typeof folderPath !== 'string') {
+        return reply.status(400).send({ error: 'folderPath required' });
+      }
+
+      const db = DatabaseManager.getInstance();
+      await ModelPathStore.setBasePath(db, folderPath);
+
+      let matchCount = 0;
+      if (applyOverridesFromScan) {
+        const matches = scanFolderForModels(folderPath);
+        for (const m of matches) {
+          await ModelPathStore.setOverride(db, m.ns, m.modelId, m.absPath);
+        }
+        matchCount = matches.length;
+      }
+
+      return reply.send({ ok: true, basePath: folderPath, matchCount });
+    }
+  );
+
+  // POST /api/phobos/models/resync
+  // Clears all path overrides then re-scans the current base path to rebuild them.
+  // Use after manually moving files into the base folder.
+  fastify.post('/api/phobos/models/resync', async (_req, reply) => {
+    const db = DatabaseManager.getInstance();
+    await ModelPathStore.clearAllOverrides(db);
+    const basePath = ModelPathStore.getBasePath();
+    const matches  = scanFolderForModels(basePath);
+    for (const m of matches) {
+      await ModelPathStore.setOverride(db, m.ns, m.modelId, m.absPath);
+    }
+    return reply.send({ ok: true, basePath, matchCount: matches.length });
+  });
+
+  // PUT /api/phobos/models/:ns/:modelId/override
+  // Manually maps a single model to an absolute file path.
+  // Validates the file exists and is at least 90% of the expected size.
+  fastify.put<{ Params: { ns: string; modelId: string }; Body: { filePath: string } }>(
+    '/api/phobos/models/:ns/:modelId/override',
+    async (req, reply) => {
+      const { ns, modelId } = req.params;
+      const { filePath }    = req.body;
+
+      if (ns !== 'llm' && ns !== 'img') {
+        return reply.status(400).send({ error: 'ns must be llm or img' });
+      }
+      if (!filePath || typeof filePath !== 'string') {
+        return reply.status(400).send({ error: 'filePath required' });
+      }
+      if (!fs.existsSync(filePath)) {
+        return reply.status(400).send({ error: `File not found: ${filePath}` });
+      }
+
+      // Size validation — find the spec and check against expected sizeBytes
+      let expectedBytes = 0;
+      if (ns === 'llm') {
+        const spec = getSpec(modelId);
+        if (!spec) return reply.status(404).send({ error: `Unknown LLM model: ${modelId}` });
+        expectedBytes = spec.sizeBytes;
+      } else {
+        const spec = getImageModelSpec(modelId);
+        if (!spec) return reply.status(404).send({ error: `Unknown image model: ${modelId}` });
+        expectedBytes = spec.sizeBytes;
+      }
+
+      const actualBytes = fs.statSync(filePath).size;
+      if (actualBytes < expectedBytes * 0.9) {
+        return reply.status(400).send({
+          error: `File appears incomplete: ${actualBytes} bytes, expected ~${expectedBytes} bytes`,
+        });
+      }
+
+      const db = DatabaseManager.getInstance();
+      await ModelPathStore.setOverride(db, ns as ModelPathStore.ModelNamespace, modelId, filePath);
+      return reply.send({ ok: true, modelId, filePath });
+    }
+  );
+
+  // DELETE /api/phobos/models/:ns/:modelId/override
+  // Removes a manual path override — model reverts to base-path-derived location.
+  fastify.delete<{ Params: { ns: string; modelId: string } }>(
+    '/api/phobos/models/:ns/:modelId/override',
+    async (req, reply) => {
+      const { ns, modelId } = req.params;
+      if (ns !== 'llm' && ns !== 'img') {
+        return reply.status(400).send({ error: 'ns must be llm or img' });
+      }
+      const db = DatabaseManager.getInstance();
+      await ModelPathStore.clearOverride(db, ns as ModelPathStore.ModelNamespace, modelId);
+      return reply.send({ ok: true, modelId });
+    }
+  );
+
+  // POST /api/phobos/models/open-file-dialog
+  // Opens a native OS file picker and returns the selected path.
+  // filter: 'gguf' | 'safetensors' | 'pth' | 'any'
+  fastify.post<{ Body: { filter?: string } }>(
+    '/api/phobos/models/open-file-dialog',
+    async (req, reply) => {
+      const filter = req.body?.filter ?? 'any';
+      try {
+        const { execFile: execFileCb } = await import('child_process');
+        const { promisify } = await import('util');
+        const execFileP = promisify(execFileCb);
+
+        let selectedPath = '';
+
+        if (process.platform === 'win32') {
+          // WinForms OpenFileDialog requires EnableVisualStyles + explicit message pump.
+          // Write a temp .ps1 and invoke it with -STA so the COM apartment is correct.
+          const extensions = filter === 'gguf' ? '*.gguf'
+            : filter === 'safetensors' ? '*.safetensors'
+            : filter === 'pth' ? '*.pth'
+            : '*.*';
+          const tmpPs1 = path.join(os.tmpdir(), `phobos-file-${Date.now()}.ps1`);
+          const ps1Script = [
+            'Add-Type -AssemblyName System.Windows.Forms',
+            '[System.Windows.Forms.Application]::EnableVisualStyles()',
+            '$f = New-Object System.Windows.Forms.Form',
+            '$f.TopMost = $true',
+            '$f.ShowInTaskbar = $false',
+            '$f.WindowState = [System.Windows.Forms.FormWindowState]::Minimized',
+            '$f.Show()',
+            '$f.Hide()',
+            '$d = New-Object System.Windows.Forms.OpenFileDialog',
+            `$d.Filter = "Model files (${extensions})|${extensions}|All files (*.*)|*.*"`,
+            '$d.Title = "Select model file"',
+            '$d.Multiselect = $false',
+            'if ($d.ShowDialog($f) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.FileName }',
+            '$f.Dispose()',
+          ].join("\r\n");
+          try {
+            fs.writeFileSync(tmpPs1, ps1Script, 'utf-8');
+            const { stdout } = await execFileP('powershell', [
+              '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', tmpPs1,
+            ]);
+            selectedPath = stdout.trim();
+          } finally {
+            try { fs.unlinkSync(tmpPs1); } catch { /* ignore */ }
+          }
+        } else if (process.platform === 'darwin') {
+          const ext = filter === 'gguf' ? 'gguf'
+            : filter === 'safetensors' ? 'safetensors'
+            : filter === 'pth' ? 'pth'
+            : '';
+          const typeClause = ext ? `of type {"${ext}"}` : '';
+          const { stdout } = await execFileP('osascript', [
+            '-e', `POSIX path of (choose file ${typeClause} with prompt "Select model file")`,
+          ]);
+          selectedPath = stdout.trim();
+        } else {
+          // Linux — try zenity first, fall back to kdialog
+          const extFilter = filter !== 'any' ? `--file-filter=*.${filter}` : '';
+          try {
+            const args = ['--file-selection', '--title=Select model file'];
+            if (extFilter) args.push(extFilter);
+            const { stdout } = await execFileP('zenity', args);
+            selectedPath = stdout.trim();
+          } catch {
+            const args = ['--getopenfilename', os.homedir(), filter !== 'any' ? `*.${filter}` : '*'];
+            const { stdout } = await execFileP('kdialog', args);
+            selectedPath = stdout.trim();
+          }
+        }
+
+        if (!selectedPath) return reply.send({ path: null });
+        return reply.send({ path: selectedPath });
+      } catch (err) {
+        // User cancelled (osascript exits non-zero on cancel) — not an error
+        return reply.send({ path: null });
+      }
+    }
+  );
+
+  // POST /api/phobos/models/open-folder-dialog
+  // Opens a native OS folder picker and returns the selected path.
+  // Body: { initialPath?: string } — opens the dialog at this location if provided.
+  fastify.post<{ Body: { initialPath?: string } }>('/api/phobos/models/open-folder-dialog', async (req, reply) => {
+    const initialPath = req.body?.initialPath ?? '';
+    try {
+      const { execFile: execFileCb } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileP = promisify(execFileCb);
+
+      let selectedPath = '';
+
+      if (process.platform === 'win32') {
+        // Modern Vista+ folder picker via IFileOpenDialog COM interop.
+        // This replaces the ancient FolderBrowserDialog tree view with the
+        // full Explorer-style dialog that supports navigation, breadcrumbs,
+        // search, and respects the initial path reliably.
+        const tmpPs1 = path.join(os.tmpdir(), `phobos-folder-${Date.now()}.ps1`);
+        const escapedInitial = initialPath.replace(/'/g, "''");
+        const ps1Script = [
+          'Add-Type -AssemblyName System.Windows.Forms',
+          '[System.Windows.Forms.Application]::EnableVisualStyles()',
+          '',
+          '# Inline C# to access IFileOpenDialog COM with FOS_PICKFOLDERS',
+          '$src = @"',
+          'using System;',
+          'using System.Runtime.InteropServices;',
+          'using System.Windows.Forms;',
+          '',
+          '[ComImport, Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")]',
+          'class FileOpenDialogCOM {}',
+          '',
+          'public class FolderPicker {',
+          '  public static string Show(string title, string initial, IntPtr hwnd) {',
+          '    var dlg = (IFileOpenDialog)new FileOpenDialogCOM();',
+          '    try {',
+          '      dlg.SetOptions(0x00000020 | 0x00000800 | 0x00040000);',  // FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_OKBUTTONNEEDSINTERACTION removed, just pick+fs+nochange
+          '      dlg.SetTitle(title);',
+          '      if (!string.IsNullOrEmpty(initial) && System.IO.Directory.Exists(initial)) {',
+          '        IShellItem folder;',
+          '        SHCreateItemFromParsingName(initial, IntPtr.Zero, typeof(IShellItem).GUID, out folder);',
+          '        if (folder != null) dlg.SetFolder(folder);',
+          '      }',
+          '      var hr = dlg.Show(hwnd);',
+          '      if (hr != 0) return "";',
+          '      IShellItem item;',
+          '      dlg.GetResult(out item);',
+          '      string path;',
+          '      item.GetDisplayName(0x80058000, out path);',
+          '      return path ?? "";',
+          '    } catch { return ""; }',
+          '  }',
+          '',
+          '  [DllImport("shell32.dll", CharSet=CharSet.Unicode, PreserveSig=false)]',
+          '  static extern void SHCreateItemFromParsingName(string pszPath, IntPtr pbc, [In] Guid riid, out IShellItem ppv);',
+          '',
+          '  [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]',
+          '  interface IShellItem {',
+          '    void BindToHandler(IntPtr pbc, Guid bhid, Guid riid, out IntPtr ppv);',
+          '    void GetParent(out IShellItem ppsi);',
+          '    void GetDisplayName(uint sigdnName, [MarshalAs(UnmanagedType.LPWStr)] out string ppszName);',
+          '    void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);',
+          '    void Compare(IShellItem psi, uint hint, out int piOrder);',
+          '  }',
+          '',
+          '  [ComImport, Guid("D57C7288-D4AD-4768-BE02-9D969532D960"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]',
+          '  interface IFileOpenDialog {',
+          '    [PreserveSig] int Show(IntPtr hwndOwner);',
+          '    void SetFileTypes();',
+          '    void SetFileTypeIndex();',
+          '    void GetFileTypeIndex();',
+          '    void Advise();',
+          '    void Unadvise();',
+          '    void SetOptions(uint fos);',
+          '    void GetOptions(out uint pfos);',
+          '    void SetDefaultFolder(IShellItem psi);',
+          '    void SetFolder(IShellItem psi);',
+          '    void GetFolder(out IShellItem ppsi);',
+          '    void GetCurrentSelection(out IShellItem ppsi);',
+          '    void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);',
+          '    void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);',
+          '    void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);',
+          '    void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);',
+          '    void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);',
+          '    void GetResult(out IShellItem ppsi);',
+          '    void AddPlace(IShellItem psi, int fdap);',
+          '    void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);',
+          '    void Close(int hr);',
+          '    void SetClientGuid(Guid guid);',
+          '    void ClearClientData();',
+          '    void SetFilter(IntPtr pFilter);',
+          '    void GetResults();',
+          '    void GetSelectedItems();',
+          '  }',
+          '}',
+          '"@',
+          '',
+          'Add-Type -TypeDefinition $src -ReferencedAssemblies System.Windows.Forms -Language CSharp',
+          '',
+          '# Create a TopMost form to get a foreground HWND',
+          '$f = New-Object System.Windows.Forms.Form',
+          '$f.TopMost = $true',
+          '$f.ShowInTaskbar = $false',
+          '$f.WindowState = "Minimized"',
+          '$f.Show()',
+          '$f.Hide()',
+          '',
+          `$result = [FolderPicker]::Show("Select models folder", '${escapedInitial}', $f.Handle)`,
+          '$f.Dispose()',
+          'if ($result) { Write-Output $result }',
+        ].join("\r\n");
+        try {
+          fs.writeFileSync(tmpPs1, ps1Script, 'utf-8');
+          const { stdout } = await execFileP('powershell', [
+            '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', tmpPs1,
+          ]);
+          selectedPath = stdout.trim();
+        } finally {
+          try { fs.unlinkSync(tmpPs1); } catch { /* ignore */ }
+        }
+      } else if (process.platform === 'darwin') {
+        const defaultClause = initialPath ? `default location POSIX file "${initialPath}"` : '';
+        const { stdout } = await execFileP('osascript', [
+          '-e', `POSIX path of (choose folder with prompt "Select models folder" ${defaultClause})`,
+        ]);
+        selectedPath = stdout.trim().replace(/\/$/, '');
+      } else {
+        const filenameArg = initialPath || os.homedir();
+        try {
+          const { stdout } = await execFileP('zenity', ['--file-selection', '--directory', '--title=Select models folder', `--filename=${filenameArg}/`]);
+          selectedPath = stdout.trim();
+        } catch {
+          const { stdout } = await execFileP('kdialog', ['--getexistingdirectory', filenameArg]);
+          selectedPath = stdout.trim();
+        }
+      }
+
+      if (!selectedPath) return reply.send({ path: null });
+      return reply.send({ path: selectedPath });
+    } catch {
+      return reply.send({ path: null });
+    }
+  });
+
+  // POST /api/phobos/models/relocate
+  // SSE stream. Stops servers, copies all model files to a new base path with
+  // per-file progress events, verifies, updates base path, resyncs, deletes originals.
+  // Cross-filesystem safe: always copy+delete, never rename.
+  fastify.post<{ Body: { targetPath: string } }>(
+    '/api/phobos/models/relocate',
+    async (req, reply) => {
+      const { targetPath } = req.body;
+      if (!targetPath || typeof targetPath !== 'string') {
+        return reply.status(400).send({ error: 'targetPath required' });
+      }
+
+      const sourcePath = MODELS_DIR();
+      if (path.resolve(targetPath) === path.resolve(sourcePath)) {
+        return reply.status(400).send({ error: 'Target is the same as current folder' });
+      }
+
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        'Content-Type':                'text/event-stream',
+        'Cache-Control':               'no-cache',
+        'Connection':                  'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+      });
+
+      const send = (data: Record<string, unknown>) => {
+        reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+
+      let aborted = false;
+      (global as Record<string, unknown>).__phobosRelocateAbort = () => { aborted = true; };
+
+      // Detect same drive/filesystem.
+      // Windows: compare drive letter prefix (C:\ vs D:\).
+      // POSIX: attempt a probe rename across the boundary — EXDEV means cross-device.
+      const isSameDrive = (): boolean => {
+        if (process.platform === 'win32') {
+          const srcDrive = path.resolve(sourcePath).slice(0, 3).toLowerCase();
+          const dstDrive = path.resolve(targetPath).slice(0, 3).toLowerCase();
+          return srcDrive === dstDrive;
+        }
+        const probe    = path.join(sourcePath, '.phobos-probe');
+        const probeDst = path.join(targetPath, '.phobos-probe');
+        try {
+          fs.mkdirSync(targetPath, { recursive: true });
+          fs.writeFileSync(probe, '');
+          fs.renameSync(probe, probeDst);
+          fs.unlinkSync(probeDst);
+          return true;
+        } catch (e: unknown) {
+          try { fs.unlinkSync(probe); }    catch { /* ignore */ }
+          try { fs.unlinkSync(probeDst); } catch { /* ignore */ }
+          return (e as NodeJS.ErrnoException).code !== 'EXDEV';
+        }
+      };
+
+      try {
+        _relocating = true;
+
+        // 1. Snapshot running server configs BEFORE stopping (stop clears modelId)
+        const preStopStatus = getServerStatus();
+        const serverSnaps: Array<{ role: 'sayon' | 'seren'; modelId: string; port: number; gpuLayers: number; deviceIndex?: number; gpuBackend?: string }> = [];
+        for (const role of ['sayon', 'seren'] as const) {
+          const s = preStopStatus[role];
+          if (s.state === 'running' && s.modelId) {
+            serverSnaps.push({
+              role,
+              modelId:     s.modelId,
+              port:        s.port,
+              gpuLayers:   s.gpuLayers,
+              deviceIndex: s.deviceIndex as number | undefined,
+              gpuBackend:  s.gpuBackend as string | undefined,
+            });
+          }
+        }
+
+        send({ phase: 'stopping-servers' });
+        const { stopServer: stopSrv } = await import('../phobos/LlamaServerManager.js');
+        await Promise.all([stopSrv('sayon'), stopSrv('seren')]);
+
+        // 2. Collect all files
+        const filePairs: Array<{ src: string; dst: string; sizeBytes: number }> = [];
+        const collectFiles = (srcDir: string) => {
+          let entries: fs.Dirent[];
+          try { entries = fs.readdirSync(srcDir, { withFileTypes: true }); }
+          catch { return; }
+          for (const entry of entries) {
+            const srcFull = path.join(srcDir, entry.name);
+            const relPath = path.relative(sourcePath, srcFull);
+            const dstFull = path.join(targetPath, relPath);
+            if (entry.isDirectory()) {
+              collectFiles(srcFull);
+            } else if (entry.isFile() && !entry.name.endsWith('.download')) {
+              try {
+                filePairs.push({ src: srcFull, dst: dstFull, sizeBytes: fs.statSync(srcFull).size });
+              } catch { /* skip unreadable */ }
+            }
+          }
+        };
+        collectFiles(sourcePath);
+
+        const sameDrive = isSameDrive();
+        const opPhase   = sameDrive ? 'moving' : 'copying';
+        send({ phase: opPhase, fileCount: filePairs.length, fileIndex: 0 });
+
+        // 3. Move each file — rename on same drive (instant, zero extra space),
+        //    or copy → verify size → delete source sequentially on cross-drive.
+        //    Never hold two copies of the same file at the same time.
+        for (let i = 0; i < filePairs.length; i++) {
+          if (aborted) { send({ phase: 'aborted' }); reply.raw.end(); return; }
+
+          const { src, dst, sizeBytes } = filePairs[i];
+          fs.mkdirSync(path.dirname(dst), { recursive: true });
+
+          // Resume check
+          let dstSize = 0;
+          try { dstSize = fs.statSync(dst).size; } catch { /* not there yet */ }
+          if (dstSize === sizeBytes) {
+            // Destination already valid. On cross-drive a previous run may have
+            // copied but not yet deleted the source — finish that now.
+            if (!sameDrive) { try { fs.unlinkSync(src); } catch { /* ignore */ } }
+            send({ phase: opPhase, fileIndex: i + 1, fileCount: filePairs.length, file: path.basename(src), skipped: true });
+            continue;
+          }
+
+          if (sameDrive) {
+            // Atomic rename — instant, zero extra disk space used
+            fs.renameSync(src, dst);
+          } else {
+            // Cross-drive: copy → verify → delete source before moving to next file
+            await fsPromises.copyFile(src, dst);
+            const written = fs.statSync(dst).size;
+            if (written !== sizeBytes) {
+              try { fs.unlinkSync(dst); } catch { /* ignore */ }
+              throw new Error(`Verification failed: ${path.basename(src)} (expected ${sizeBytes} bytes, got ${written})`);
+            }
+            fs.unlinkSync(src);
+          }
+
+          send({ phase: opPhase, fileIndex: i + 1, fileCount: filePairs.length, file: path.basename(src) });
+        }
+
+        // 4. Update base path + resync overrides
+        send({ phase: 'updating-config' });
+        const db = DatabaseManager.getInstance();
+        await ModelPathStore.clearAllOverrides(db);
+        await ModelPathStore.setBasePath(db, targetPath);
+        const matches = scanFolderForModels(targetPath);
+        for (const m of matches) {
+          await ModelPathStore.setOverride(db, m.ns, m.modelId, m.absPath);
+        }
+
+        // 5. Clean up now-empty source directories.
+        // Same-drive rename moves files but leaves empty dir shells.
+        // Cross-drive copy+delete also leaves empty dirs.
+        // Walk deepest-first so children are removed before parents.
+        const tryRmdir = (dir: string) => {
+          try { if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir); } catch { /* ignore */ }
+        };
+        const collectDirs = (dir: string): string[] => {
+          const result: string[] = [];
+          try {
+            for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+              if (e.isDirectory()) result.push(...collectDirs(path.join(dir, e.name)), path.join(dir, e.name));
+            }
+          } catch { /* ignore */ }
+          return result;
+        };
+        for (const d of collectDirs(sourcePath)) tryRmdir(d);
+        tryRmdir(sourcePath);
+
+        send({ phase: 'done', targetPath, matchCount: matches.length });
+
+        // 6. Restart LLM servers that were running before the move
+        if (serverSnaps.length > 0) {
+          send({ phase: 'restarting-servers' });
+          for (const snap of serverSnaps) {
+            try {
+              await startServer(snap.role, {
+                modelId:     snap.modelId,
+                port:        snap.port,
+                gpuLayers:   snap.gpuLayers,
+                contextSize: 32768,
+                threads:     0,
+                deviceIndex: snap.deviceIndex,
+                gpuBackend:  snap.gpuBackend as 'cuda' | 'vulkan' | 'metal' | undefined,
+              });
+            } catch { /* non-fatal — servers may fail to restart if model paths shifted */ }
+          }
+        }
+      } catch (err) {
+        send({ phase: 'error', message: err instanceof Error ? err.message : String(err) });
+      } finally {
+        _relocating = false;
+        delete (global as Record<string, unknown>).__phobosRelocateAbort;
+        reply.raw.end();
+      }
+    }
+  );
+
+  // POST /api/phobos/models/relocate/abort
+  fastify.post('/api/phobos/models/relocate/abort', async (_req, reply) => {
+    const abort = (global as Record<string, unknown>).__phobosRelocateAbort as (() => void) | undefined;
+    if (abort) abort();
+    return reply.send({ ok: true });
+  });
 }

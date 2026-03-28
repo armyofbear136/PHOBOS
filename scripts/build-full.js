@@ -180,6 +180,7 @@ const report = {
   newSd:            false,
   missingFromMaster:[],
   buildOk:          false,
+  liteOk:           null,    // true = built, false = failed, null = skipped
 };
 
 console.log(`\n🚀 PHOBOS build:full — target: ${target}${forceClean ? ' (--force)' : ''}`);
@@ -275,9 +276,27 @@ if (!usedMaster) {
 
 // ── Build ─────────────────────────────────────────────────────────────────────
 if (!fetchOnly) {
-  console.log('\n🔨 [3/3] Building...');
+  console.log('\n🔨 [3/3] Building phobos-core...');
   run('node build.js');
   report.buildOk = true;
+
+  // ── PHOBOS-Lite — always built alongside core ──────────────────────────
+  // Produces dist-lite/<target>/phobos-lite[.exe] + llama-server + shared libs
+  // zipped into dist-lite/phobos-lite-<target>-v<version>.zip
+  const skipLite = flags.includes('--no-lite');
+  if (!skipLite) {
+    console.log('\n🔨 Building phobos-lite...');
+    try {
+      run(`node scripts/build-lite.js ${target}`);
+      report.liteOk = true;
+    } catch (err) {
+      console.warn(`⚠️  PHOBOS-Lite build failed (non-fatal): ${err.message}`);
+      report.liteOk = false;
+    }
+  } else {
+    console.log('\n⏭️  PHOBOS-Lite skipped (--no-lite)');
+    report.liteOk = null;
+  }
 }
 
 // ── Upstream version check ────────────────────────────────────────────────────
@@ -325,6 +344,15 @@ const buildLine = report.buildOk      ? `✅ Build complete → dist/phobos-core
                 :                       `⚠️  Build did not run`;
 console.log(`║  ${pad(buildLine, W-2)}║`);
 console.log(`║  ${pad(`Source: ${report.masterUsed ? `bin-master/${target}/ (verified)` : 'fetched from upstream'}`, W-2)}║`);
+
+// Lite build status
+if (report.liteOk === true) {
+  console.log(`║  ${pad('✅ PHOBOS-Lite built → dist-lite/', W-2)}║`);
+} else if (report.liteOk === false) {
+  console.log(`║  ${pad('⚠️  PHOBOS-Lite build failed (non-fatal)', W-2)}║`);
+} else if (report.liteOk === null) {
+  console.log(`║  ${pad('⏭️  PHOBOS-Lite skipped (--no-lite)', W-2)}║`);
+}
 
 // Fallback files
 if (report.masterFallback.length) {

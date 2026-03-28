@@ -18,6 +18,12 @@
     "master:update": "node scripts/master-sync.js --update",
     "master:check": "node scripts/master-sync.js --check",
     "build:all": "node build.all.js",
+    "build:lite": "node scripts/build-lite.js",
+    "build:lite:win": "node scripts/build-lite.js win32-x64",
+    "build:lite:mac": "node scripts/build-lite.js darwin-arm64",
+    "build:lite:mac-intel": "node scripts/build-lite.js darwin-x64",
+    "build:lite:linux": "node scripts/build-lite.js linux-x64",
+    "build:lite:linux-arm": "node scripts/build-lite.js linux-arm64",
     "start": "node dist/server.js",
     "db:setup": "node scripts/setup-db.js"
   },

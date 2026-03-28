@@ -4,6 +4,7 @@ bin/
 # Build output
 dist/
 dist-all/
+dist-lite/
 
 # Native addons (large binaries)
 node_modules/

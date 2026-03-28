@@ -456,10 +456,24 @@ async function ensureModel(model) {
   log(`  from: ${url}`);
   log(`  to:   ${dest}`);
 
-  await downloadFile(url, dest + '.tmp', (pct) => { process.stdout.write(`\r  Progress: ${pct}%   `); });
+  downloadState.phase    = 'downloading';
+  downloadState.modelName = model.id;
+  downloadState.progress = 0;
+
+  await downloadFile(url, dest + '.tmp', (pct, receivedBytes, totalBytes, speedBps) => {
+    downloadState.progress = pct;
+    downloadState.totalMB  = totalBytes  ? +(totalBytes  / 1024 / 1024).toFixed(1) : 0;
+    downloadState.speedMBs = speedBps    ? +(speedBps    / 1024 / 1024).toFixed(2) : 0;
+    downloadState.etaSecs  = (speedBps > 0 && totalBytes > 0)
+      ? Math.round((totalBytes - receivedBytes) / speedBps)
+      : 0;
+    process.stdout.write(`\r  ${pct}%  ${downloadState.speedMBs} MB/s  ETA ${downloadState.etaSecs}s   `);
+  });
+
   fs.renameSync(dest + '.tmp', dest);
   process.stdout.write('\n');
   log(`Model download complete: ${model.filename}`);
+  downloadState.progress = 100;
   return dest;
 }
 
@@ -561,11 +575,34 @@ function stopLlama() {
 // ─── Proxy server ─────────────────────────────────────────────────────────────
 let activeModel = null, llamaPort = null, isReady = false, activeDevice = null;
 
+// Download progress — updated by ensureModel, read by /health
+let downloadState = {
+  phase:     'idle',       // 'idle' | 'detecting' | 'downloading' | 'loading' | 'ready'
+  progress:  0,            // 0-100
+  totalMB:   0,
+  speedMBs:  0,
+  etaSecs:   0,
+  modelName: null,
+};
+
 function startProxyServer() {
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
+      const status = isReady ? 'ok'
+        : downloadState.phase === 'downloading' ? 'downloading'
+        : 'starting';
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: isReady ? 'ok' : 'starting', model: activeModel?.id || null, device: activeDevice?.name || null }));
+      res.end(JSON.stringify({
+        status,
+        phase:     downloadState.phase,
+        progress:  downloadState.progress,
+        totalMB:   downloadState.totalMB,
+        speedMBs:  downloadState.speedMBs,
+        etaSecs:   downloadState.etaSecs,
+        modelName: downloadState.modelName,
+        model:     activeModel?.id   || downloadState.modelName || null,
+        device:    activeDevice?.name || null,
+      }));
       return;
     }
     if (!isReady) { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'AI engine is still starting' })); return; }
@@ -589,19 +626,24 @@ async function boot() {
   log(`llama-server: ${LLAMA_SERVER}`);
   startProxyServer();
 
+  downloadState.phase = 'detecting';
   const devices   = await detectDevices();
   const selection = selectDeviceAndModel(devices);
-  if (!selection) { log('ERROR: No viable device/model combination found.'); return; }
+  if (!selection) { log('ERROR: No viable device/model combination found.'); downloadState.phase = 'idle'; return; }
 
   const { device, model } = selection;
   activeDevice = device;
   activeModel  = model;
+  downloadState.modelName = model.id;
   log(`Selected device: ${device.name} (${device.backend}, ${device.vramMB} MB)`);
   log(`Selected model:  ${model.displayName}`);
 
   const modelPath = await ensureModel(model);
+
+  downloadState.phase = 'loading';
   llamaPort = await startLlama(device, model, modelPath);
   isReady = true;
+  downloadState.phase = 'ready';
   log(`PHOBOS-Lite ready — model=${model.id}, device=${device.name}`);
 }
 
@@ -641,10 +683,26 @@ function downloadFile(url, dest, onProgress) {
       mod.get(u, (res) => {
         if (res.statusCode === 301 || res.statusCode === 302) return doGet(res.headers.location);
         if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
-        const total = parseInt(res.headers['content-length'] || '0', 10);
-        let received = 0;
-        const out = fs.createWriteStream(dest);
-        res.on('data', (chunk) => { received += chunk.length; if (total > 0 && onProgress) onProgress(Math.round(received / total * 100)); });
+
+        const total    = parseInt(res.headers['content-length'] || '0', 10);
+        let received   = 0;
+        let lastBytes  = 0;
+        let lastTime   = Date.now();
+        const out      = fs.createWriteStream(dest);
+
+        res.on('data', (chunk) => {
+          received += chunk.length;
+          const now     = Date.now();
+          const elapsed = (now - lastTime) / 1000;
+          if (elapsed >= 0.75 || received === total) {
+            const speed = elapsed > 0 ? (received - lastBytes) / elapsed : 0;
+            lastBytes   = received;
+            lastTime    = now;
+            const pct   = total > 0 ? Math.round(received / total * 100) : 0;
+            if (onProgress) onProgress(pct, received, total, speed);
+          }
+        });
+
         res.pipe(out);
         out.on('finish', resolve);
         out.on('error', reject);

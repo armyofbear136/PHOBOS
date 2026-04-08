@@ -1,0 +1,10 @@
+﻿{
+  "id": "product-vision",
+  "name": "product vision",
+  "description": "- **Name**: product-vision - **Description**: Brainstorm an inspiring, achievable, and emotional product vision. Use when defining or refining product vision, aligning teams around a north star, or...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "sglang",
+  "name": "sglang",
+  "description": "High-performance serving framework for LLMs and VLMs with RadixAttention for automatic prefix caching.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use SGLang when:** - Need structured outputs (JSON, regex, grammar)",
+  "runner": null
+}

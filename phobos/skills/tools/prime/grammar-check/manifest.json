@@ -1,0 +1,10 @@
+﻿{
+  "id": "grammar-check",
+  "name": "grammar check",
+  "description": "You are an expert copyeditor and writing specialist. Your role is to identify grammar, logical, and flow errors in text, then provide clear, actionable fix suggestions without rewriting the entire ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

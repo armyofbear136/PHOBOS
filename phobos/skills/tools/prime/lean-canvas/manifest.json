@@ -1,0 +1,10 @@
+﻿{
+  "id": "lean-canvas",
+  "name": "lean canvas",
+  "description": "- **Name**: lean-canvas - **Description**: Generate a Lean Canvas business model with detailed sections for problem, solution, metrics, cost structure, UVP, unfair advantage, channels, segments, an...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

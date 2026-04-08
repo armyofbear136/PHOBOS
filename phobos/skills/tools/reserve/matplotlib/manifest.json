@@ -1,0 +1,10 @@
+﻿{
+  "id": "matplotlib",
+  "name": "matplotlib",
+  "description": "Matplotlib is Python's foundational visualization library for creating static, animated, and interactive plots. This skill provides guidance on using matplotlib effectively, covering both the pyplo...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Creating any type of plot or chart (line, scatter, bar, histogram, heatmap, contour, etc.)",
+  "runner": null
+}

@@ -22,11 +22,18 @@ import {
   WAN_AUX_REQUIRED,
   WAN_I2V_AUX_REQUIRED,
   detectHardware,
+  getCachedHardware,
   queryGpuFreeVram,
   type GpuDevice,
   type ImageModelSpec,
   type FluxAuxFile,
 } from './PhobosLocalManager.js';
+import { fileURLToPath } from 'url';
+import {
+  gpuToVendor,
+  isReadyForGpu,
+  getPythonPathForGpu,
+} from './PythonEnvManager.js';
 
 export type SdModelType = 'flux' | 'chroma' | 'sdxl' | 'kontext' | 'flux2' | 'z-image' | 'qwen-image' | 'wan';
 
@@ -46,11 +53,15 @@ export interface SdServerConfig {
   offloadToCpu?: boolean;
   /** Absolute path to the HighNoise expert GGUF (Wan 2.2 MoE). Passed as --high-noise-diffusion-model. */
   highNoiseDiffusionModel?: string;
+  /** Image generation backend preference. 'auto' = PyTorch when available, sd-cli fallback. */
+  imageBackend?: 'auto' | 'pytorch' | 'sdcli';
   steps?:       number;
   cfgScale?:    number;
   width?:       number;
   height?:      number;
 }
+
+import { type PluginBinding } from './PluginTypes.js';
 
 export interface GenerateImageOptions {
   prompt:          string;
@@ -81,6 +92,11 @@ export interface GenerateImageOptions {
   highNoiseSamplingMethod?: string;  // --high-noise-sampling-method (default: same as sampler)
   highNoiseSteps?:          number;  // --high-noise-steps (default: ~80% of steps)
   flowShiftWan?:            number;  // --flow-shift for Wan 2.2 (default 3.0)
+  // Live preview (PyTorch path — sd-cli constructs preview path internally)
+  previewPath?:     string;   // Path to write per-step preview PNG
+  previewInterval?: number;   // Steps between preview writes (default 1)
+  // Artist Plugin System — per-node plugin bindings (PyTorch path only)
+  plugins?: PluginBinding[];
 }
 
 export interface GenerateImageResult {
@@ -323,6 +339,7 @@ function buildFlux2Args(
   if (opts.refImage)       args.push('-r', opts.refImage);
   if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
   args.push('--vae-tiling');
+  appendWorkflowFlags(args, opts);
   return args;
 }
 
@@ -361,6 +378,7 @@ function buildZImageArgs(
   if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
   // Always tile VAE — safe at all VRAM levels, prevents OOM on decode.
   args.push('--vae-tiling');
+  appendWorkflowFlags(args, opts);
   return args;
 }
 
@@ -397,6 +415,7 @@ function buildQwenImageArgs(
   if (opts.refImage)       args.push('--ref-images', opts.refImage);
   if (cfg.offloadToCpu)    args.push('--offload-to-cpu');
   args.push('--vae-tiling');
+  appendWorkflowFlags(args, opts);
   return args;
 }
 
@@ -597,20 +616,461 @@ function buildEnv(cfg: SdServerConfig): NodeJS.ProcessEnv {
   // On multi-GPU systems, point sd-cli's Vulkan backend at the correct device.
   // Use the resolved vulkanIndex from the GPU runner profile (accounts for
   // NVIDIA GPUs occupying Vulkan slots ahead of AMD/Intel GPUs).
-  // Fall back to deviceIndex - 100 only as a last resort.
+  // NEVER compute deviceIndex - 100 — on mixed NVIDIA+AMD systems this gives
+  // index 0 which selects the NVIDIA card, not the AMD iGPU.
+  // See PHOBOS-Hardware-Reference.md Section 4.3.
   if (cfg.vulkanIndex !== undefined) {
     env.GGML_VK_VISIBLE_DEVICES = String(cfg.vulkanIndex);
   } else if (cfg.deviceIndex !== undefined && cfg.deviceIndex >= 100) {
-    env.GGML_VK_VISIBLE_DEVICES = String(cfg.deviceIndex - 100);
+    // Fallback: read from hardware cache (same approach as LlamaServerManager)
+    const hwNow = getCachedHardware();
+    const gpuRunner = hwNow?.gpus.find(g => g.index === cfg.deviceIndex)?.runner;
+    const vkIdx = gpuRunner?.vulkanIndex ?? (cfg.deviceIndex - 100);
+    env.GGML_VK_VISIBLE_DEVICES = String(vkIdx);
+    if (gpuRunner?.vulkanIndex !== undefined) {
+      console.log(`[ImageServerManager] Vulkan device: runner.vulkanIndex=${vkIdx} (deviceIndex=${cfg.deviceIndex})`);
+    } else {
+      console.warn(`[ImageServerManager] Vulkan device: positional fallback ${vkIdx} (deviceIndex=${cfg.deviceIndex}) — runner profile missing`);
+    }
   }
   return env;
+}
+
+// ── PyTorch backend ─────────────────────────────────────────────────────────
+// selectBackend → buildPyTorchArgs → buildPyTorchEnv → generateImagePyTorch
+// Mirrors the sd-cli path (buildArgs → buildEnv → generateImage) but spawns
+// phobos-diffusers.py from the vendor-specific Python venv instead.
+
+// ESM (tsx dev) → import.meta.url is defined; CJS (SEA bundle) → use __dirname global
+const _ismDir: string = (() => {
+  try {
+    if (typeof import.meta?.url === 'string') return path.dirname(fileURLToPath(import.meta.url));
+  } catch { /* CJS bundle — import.meta.url is undefined */ }
+  return typeof __dirname === 'string' ? __dirname : process.cwd();
+})();
+
+/**
+ * Resolves the path to phobos-diffusers.py.
+ * Search order: SEA dir (production) → dist/ (dev after build) → phobos/ (dev source).
+ */
+function resolvePhobosScript(): string {
+  const seaDir = path.dirname(process.execPath);
+  const candidates = [
+    path.join(seaDir, 'phobos-diffusers.py'),           // SEA production
+    path.join(_ismDir, 'phobos-diffusers.py'),           // same dir as this file (dist/ or phobos/)
+    path.join(_ismDir, '..', 'phobos', 'phobos-diffusers.py'),  // dist/ → ../phobos/
+    path.join(process.cwd(), 'phobos', 'phobos-diffusers.py'),  // repo root fallback
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  throw new Error(
+    'phobos-diffusers.py not found. Searched:\n  ' + candidates.join('\n  ')
+  );
+}
+
+/**
+ * Decides whether to use PyTorch (phobos-diffusers.py) or sd-cli for a given model + GPU.
+ *
+ * Priority: user choice → model compatibility → venv availability → sd-cli fallback.
+ * Validated models per backend (Session 17 test results):
+ *   PyTorch: chroma, sdxl, flux-dev, flux-schnell, wan21-1.3b, qwen-image (890M only)
+ *   sd-cli:  all of the above + z-image, flux2-klein, kontext, wan22
+ *   Blocked on PyTorch: z-image (GGUF loader bug), flux2-klein (shape bug)
+ */
+export function selectBackend(
+  cfg: SdServerConfig,
+  gpu?: GpuDevice,
+): 'pytorch' | 'sdcli' {
+  const userChoice = cfg.imageBackend;
+
+  // Explicit user override — respect it unless impossible
+  if (userChoice === 'sdcli') return 'sdcli';
+  if (userChoice === 'pytorch') {
+    // Check if the venv is actually ready
+    if (gpu && !isReadyForGpu(gpu)) {
+      console.log('[ImageServerManager] PyTorch requested but venv not installed — falling back to sd-cli');
+      return 'sdcli';
+    }
+    return 'pytorch';
+  }
+
+  // Auto mode — decide based on model + GPU compatibility
+
+  // Plugins are handled before selectBackend() is called — see generateImage().
+  // This legacy stub is kept only for any direct callers still on the old path.
+  if ((cfg.fluxSpec as any).loraPath) {
+    if (gpu && isReadyForGpu(gpu)) return 'pytorch';
+    console.warn('[ImageServerManager] LoRA requires PyTorch but venv not installed — falling back to sd-cli (LoRA ignored)');
+    return 'sdcli';
+  }
+
+  // Intel Arc has no sd-cli backend — PyTorch XPU is the only path
+  // intel-discrete runner kind is planned but not yet in GpuRunnerKind.
+  // Detect by GPU name until the kind is added.
+  if (gpu && /Intel.*Arc/i.test(gpu.name)) {
+    if (isReadyForGpu(gpu)) return 'pytorch';
+    console.warn('[ImageServerManager] Intel Arc requires PyTorch but XPU venv not installed');
+    return 'sdcli'; // will fail, but let the error surface naturally
+  }
+
+  // Models blocked on PyTorch — always sd-cli
+  const profile = cfg.fluxSpec.runnerProfile;
+  if (profile === 'flux2')   return 'sdcli'; // Diffusers shape bug #13001
+  if (profile === 'z-image') return 'sdcli'; // Diffusers GGUF loader bug
+
+  // Qwen-Image on CUDA has GGUF dequant KeyError — only works on ROCm/non-CUDA PyTorch
+  if (profile === 'qwen-image' && gpu) {
+    const vendor = gpuToVendor(gpu);
+    if (vendor === 'cuda') return 'sdcli'; // CUDA GGUF dequant broken
+    if (isReadyForGpu(gpu)) return 'pytorch';
+    return 'sdcli';
+  }
+
+  // Default: prefer PyTorch when venv is available
+  if (gpu && isReadyForGpu(gpu)) return 'pytorch';
+  return 'sdcli';
+}
+
+/**
+ * Maps SdServerConfig + GenerateImageOptions → CLI args for phobos-diffusers.py.
+ * Mirrors the per-runner buildXxxArgs functions but targeting the Python script.
+ */
+function buildPyTorchArgs(
+  cfg:     SdServerConfig,
+  opts:    GenerateImageOptions,
+  outPath: string,
+  device:  string,
+  offload: boolean,
+): string[] {
+  const spec     = cfg.fluxSpec;
+  const modelPath = fluxModelPath(spec);
+  const isWan    = cfg.modelType === 'wan';
+
+  // Map SdModelType to phobos-diffusers.py --model-type
+  const modelTypeArg = cfg.modelType === 'kontext' ? 'kontext'
+    : cfg.modelType === 'flux2' ? 'flux2'
+    : cfg.modelType === 'z-image' ? 'z-image'
+    : cfg.modelType === 'qwen-image' ? 'qwen-image'
+    : cfg.modelType === 'wan' ? 'wan'
+    : cfg.modelType === 'sdxl' ? 'sdxl'
+    : cfg.modelType === 'chroma' ? 'chroma'
+    : 'flux';
+
+  const steps  = opts.steps  ?? cfg.steps  ?? spec.profile?.defaultSteps ?? 20;
+  const width  = opts.width  ?? cfg.width  ?? spec.profile?.defaultWidth ?? (isWan ? 832 : 1024);
+  const height = opts.height ?? cfg.height ?? spec.profile?.defaultHeight ?? (isWan ? 480 : 1024);
+  const seed   = opts.seed   ?? 42;
+  const cfgScale = cfg.cfgScale ?? spec.profile?.defaultCfgScale ?? 3.5;
+
+  const args: string[] = [
+    resolvePhobosScript(),
+    '--model-path',  modelPath,
+    '--model-type',  modelTypeArg,
+    '--prompt',      opts.prompt,
+    '--steps',       String(steps),
+    '--width',       String(width),
+    '--height',      String(height),
+    '--seed',        String(seed),
+    '--cfg-scale',   String(cfgScale),
+    '--device',      device,
+    '--dtype',       'bfloat16',
+    '--output',      outPath,
+  ];
+
+  if (opts.sampler) args.push('--sampler', opts.sampler);
+  if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
+  if (offload) args.push('--offload-cpu');
+
+  // Preview — phobos-diffusers.py writes decoded latent previews to disk
+  // same as sd-cli. The file watcher in generateImagePyTorch picks them up.
+  if (opts.previewPath) {
+    args.push('--preview-path', opts.previewPath);
+    args.push('--preview-interval', String(opts.previewInterval ?? 1));
+  }
+
+  // ── Aux files ──
+  // FLUX/Chroma/Kontext: VAE + T5 + optional CLIP-L from cfg.auxFiles
+  if (['flux', 'chroma', 'kontext'].includes(modelTypeArg)) {
+    const vaeAux = cfg.auxFiles.find(a => a.cliFlag === '--vae');
+    if (vaeAux) args.push('--vae-path', fluxAuxPath(vaeAux));
+
+    const t5Aux = cfg.auxFiles.find(a => a.cliFlag === '--t5xxl');
+    if (t5Aux) args.push('--t5-path', fluxAuxPath(t5Aux));
+
+    const clipAux = cfg.auxFiles.find(a => a.cliFlag === '--clip_l');
+    if (clipAux) args.push('--clip-path', fluxAuxPath(clipAux));
+  }
+
+  // Z-Image / Qwen-Image: LLM encoder + VAE
+  if (['z-image', 'qwen-image'].includes(modelTypeArg)) {
+    const llmAux = cfg.auxFiles.find(a => a.cliFlag === '--llm');
+    if (llmAux) args.push('--llm-path', fluxAuxPath(llmAux));
+
+    const vaeAux = cfg.auxFiles.find(a => a.cliFlag === '--vae');
+    if (vaeAux) args.push('--vae-path', fluxAuxPath(vaeAux));
+  }
+
+  // Wan: video-specific args
+  if (isWan) {
+    args.push('--num-frames', String(opts.videoFrames ?? 49));
+    args.push('--fps', String(opts.fps ?? 12));
+    args.push('--flow-shift', String(opts.flowShiftWan ?? 3.0));
+  }
+
+  // ── Workflow node flags (img2img, inpaint, controlnet, kontext ref) ──
+  // phobos-diffusers.py uses the same flag names but with dashes instead of camelCase
+  if (opts.initImg)                   args.push('--init-image', opts.initImg);
+  if (opts.strength !== undefined)    args.push('--strength', String(opts.strength));
+  if (opts.maskPath)                  args.push('--mask-image', opts.maskPath);
+  if (opts.controlImage)              args.push('--control-image', opts.controlImage);
+  if (opts.controlScale !== undefined) args.push('--control-scale', String(opts.controlScale));
+  if (opts.refImage)                  args.push('--ref-image', opts.refImage);
+
+  // Artist Plugin System — multi-adapter LoRA loading
+  // Colon-delimited lists: --lora-paths p1:p2 --lora-weights 0.8:0.6 --lora-names plugin_0:plugin_1
+  // Python side reads lora.safetensors directly from .phobos zip (kind=plugin) or flat path (kind=raw_lora).
+  if (opts.plugins && opts.plugins.length > 0) {
+    const paths   = opts.plugins.map(p => p.archivePath).join(':');
+    const weights = opts.plugins.map(p => String(p.weight)).join(':');
+    const names   = opts.plugins.map((_, i) => `plugin_${i}`).join(':');
+    const kinds   = opts.plugins.map(p => p.kind).join(':');
+    args.push('--lora-paths',   paths);
+    args.push('--lora-weights', weights);
+    args.push('--lora-names',   names);
+    args.push('--lora-kinds',   kinds);
+  }
+
+  return args;
+}
+
+/**
+ * Builds the process environment for phobos-diffusers.py.
+ * GPU targeting via env vars (same as sd-cli), plus PyTorch-specific settings.
+ * Returns { env, device } where device is the --device arg string.
+ */
+function buildPyTorchEnv(
+  cfg: SdServerConfig,
+  gpu: GpuDevice,
+): { env: NodeJS.ProcessEnv; device: string; offload: boolean } {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  const vendor = gpuToVendor(gpu);
+
+  let device: string;
+  let offload = cfg.offloadToCpu ?? false;
+
+  switch (vendor) {
+    case 'cuda':
+      device = `cuda:${cfg.deviceIndex ?? 0}`;
+      env.CUDA_VISIBLE_DEVICES = String(cfg.deviceIndex ?? 0);
+      // ≤12 GB discrete CUDA: always offload (PyTorch overhead exceeds physical VRAM)
+      if (!gpu.unifiedMemory && gpu.vramGb <= 12) offload = true;
+      // Blackwell PTX JIT — same rule as sd-cli
+      if (cfg.needsPtxJit) env.CUDA_FORCE_PTX_JIT = '1';
+      break;
+    case 'rocm':
+      device = 'cuda:0'; // HIP masquerades as CUDA in PyTorch ROCm
+      delete env.CUDA_VISIBLE_DEVICES;
+      {
+        const hipIdx = gpu.index >= 100 ? gpu.index - 100 : gpu.index;
+        env.HIP_VISIBLE_DEVICES = String(hipIdx);
+      }
+      if (/RX\s*6[0-9]{3}/i.test(gpu.name ?? '')) {
+        env.HSA_OVERRIDE_GFX_VERSION = '10.3.0';
+      }
+      // AMD UMA (890M, 780M): no offload — genuine 48 GB dedicated partition.
+      // See PHOBOS-Hardware-Reference.md Section 2.4
+      if (gpu.unifiedMemory && gpu.vramGb >= 4) {
+        offload = false;
+      } else if (!gpu.unifiedMemory && gpu.vramGb <= 16) {
+        // Discrete ROCm ≤16 GB: enable offload. PyTorch ROCm runtime overhead
+        // (HIP context + allocator + attention intermediates) adds 3-5 GB on top
+        // of static weight allocation. Without offload, a 10 GB model on a 16 GB
+        // card will spill into shared system RAM via PCIe, causing ~186s/step
+        // instead of the expected ~3-5s/step.
+        offload = true;
+      }
+      break;
+    case 'xpu':
+      device = 'xpu:0';
+      // Intel Arc ≤8 GB: enable CPU offload. PyTorch XPU overhead + model weights
+      // easily exceed 8 GB VRAM, causing shared memory spill via PCIe.
+      if (!gpu.unifiedMemory && gpu.vramGb <= 8) offload = true;
+      break;
+    case 'apple':
+      device = 'mps';
+      // Apple Silicon: offload is free (genuinely shared memory, zero-copy)
+      offload = true;
+      break;
+    default:
+      device = 'cpu';
+      offload = false;
+      break;
+  }
+
+  // PyTorch-specific env vars
+  env.PYTORCH_CUDA_ALLOC_CONF = 'expandable_segments:True';
+
+  // SageAttention — DO NOT set DIFFUSERS_ATTN_BACKEND speculatively.
+  // Diffusers 0.37.1 validates the env var at import time and crashes hard with
+  // "ValueError: 'sage_attn' is not a valid AttentionBackendName" if the package
+  // is missing or < 2.1.1. SageAttention must be explicitly enabled per-session
+  // after confirming it's installed at the right version. For now, leave unset
+  // (Diffusers defaults to native SDPA which works on all backends).
+
+  return { env, device, offload };
+}
+
+/**
+ * Spawns phobos-diffusers.py from the vendor-specific Python venv.
+ * Same progress output format as sd-cli — parseProgressLine() in WorkflowEngine
+ * works unchanged for both backends.
+ */
+async function generateImagePyTorch(
+  outputPath: string,
+  cfg:        SdServerConfig,
+  opts:       GenerateImageOptions,
+  gpu:        GpuDevice,
+  onProgress?: (line: string) => void,
+  onAbortRegister?: (killFn: () => void) => void,
+): Promise<GenerateImageResult> {
+  let aborted = false;
+  let killProc: (() => void) | null = null;
+  if (onAbortRegister) {
+    onAbortRegister(() => {
+      aborted = true;
+      killProc?.();
+    });
+  }
+
+  const spec = cfg.fluxSpec;
+  const pyPath = getPythonPathForGpu(gpu);
+  if (!pyPath) {
+    throw new Error(`PyTorch venv not installed for ${gpu.name} (${gpuToVendor(gpu)}). Use the PHOBOS Command Center to install it.`);
+  }
+
+  // Verify model file exists
+  if (!fs.existsSync(fluxModelPath(spec))) {
+    throw new Error(`Model file not found: ${spec.hfFile}`);
+  }
+
+  outputPath = path.resolve(outputPath);
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+
+  if (aborted) return { outputPath, seed: -1, elapsedMs: 0 };
+
+  // ── Live preview setup ──────────────────────────────────────────────────────
+  // phobos-diffusers.py decodes latents at each step and writes a preview PNG.
+  // We watch the file and push __PREVIEW__ lines through onProgress — same
+  // contract as the sd-cli path so WorkflowEngine.ts works unchanged.
+  //
+  // outputPath structure: workspacesRoot/threadId/workflows/workflowId/node-NN-type/output.png
+  // scratchDir in WorkflowEngine: workspacesRoot/threadId/vision-scratch
+  // So we need to go up 3 levels from dirname(outputPath) to reach threadId/:
+  //   dirname = .../node-NN-type
+  //   ..      = .../workflowId
+  //   ../..   = .../workflows
+  //   ../../..= .../threadId   ← correct
+  const previewDir = path.join(path.dirname(outputPath), '../../..', 'vision-scratch');
+  fs.mkdirSync(previewDir, { recursive: true });
+  const previewPath = path.join(previewDir, 'preview.png');
+  try { if (fs.existsSync(previewPath)) fs.unlinkSync(previewPath); } catch { /* ignore */ }
+
+  const { env, device, offload } = buildPyTorchEnv(cfg, gpu);
+  const seed = opts.seed ?? 42;
+  const args = buildPyTorchArgs(cfg, { ...opts, seed, previewPath }, outputPath, device, offload);
+
+  console.log(`[ImageServerManager] Spawning PyTorch — ${spec.label} (${cfg.modelType})`);
+  console.log(`[ImageServerManager] ${pyPath} ${args.join(' ')}`);
+
+  const startMs = Date.now();
+  let previewWatcher: ReturnType<typeof setInterval> | null = null;
+  let lastPreviewMtime = 0;
+
+  await new Promise<void>((resolve, reject) => {
+    const proc = spawn(pyPath, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env,
+    });
+    killProc = () => { try { proc.kill('SIGTERM'); } catch { /* already gone */ } };
+    if (aborted) { killProc(); }
+
+    // ── Preview file watcher ─────────────────────────────────────────────────
+    // Same pattern as sd-cli: poll every 500ms, push __PREVIEW__ base64 lines
+    // through onProgress so WorkflowEngine forwards them to the frontend.
+    previewWatcher = setInterval(() => {
+      try {
+        if (!fs.existsSync(previewPath)) return;
+        const stat = fs.statSync(previewPath);
+        if (stat.mtimeMs <= lastPreviewMtime) return;
+        lastPreviewMtime = stat.mtimeMs;
+        const data = fs.readFileSync(previewPath);
+        const b64 = data.toString('base64');
+        onProgress?.(`__PREVIEW__${b64}`);
+      } catch { /* preview read failure is never fatal */ }
+    }, 500);
+
+    proc.stdout?.on('data', (d: Buffer) => {
+      const lines = d.toString().split('\n');
+      for (const line of lines) {
+        const t = line.trim();
+        if (t) {
+          console.log(`[pytorch] ${t}`);
+          onProgress?.(t);
+        }
+      }
+    });
+
+    proc.stderr?.on('data', (d: Buffer) => {
+      const lines = d.toString().split('\n');
+      for (const line of lines) {
+        const t = line.trim();
+        // Filter noise — warnings and deprecation notices are not actionable
+        if (t && !t.includes('UserWarning') && !t.includes('FutureWarning') && !t.includes('deprecat')) {
+          console.log(`[pytorch] ${t}`);
+        }
+      }
+    });
+
+    proc.on('exit', (code, signal) => {
+      if (previewWatcher) { clearInterval(previewWatcher); previewWatcher = null; }
+      if (code === 0 || signal === 'SIGTERM' || signal === 'SIGKILL') resolve();
+      else reject(new Error(`phobos-diffusers.py exited with code ${code} (signal: ${signal})`));
+    });
+
+    proc.on('error', (err) => {
+      if (previewWatcher) { clearInterval(previewWatcher); previewWatcher = null; }
+      reject(err);
+    });
+  });
+
+  const elapsedMs = Date.now() - startMs;
+
+  // Verify output — check original path + .mp4 variant for wan video
+  let finalPath = outputPath;
+  if (!fs.existsSync(finalPath) && cfg.modelType === 'wan') {
+    const mp4 = outputPath.replace(/\.[^.]+$/, '.mp4');
+    if (fs.existsSync(mp4)) finalPath = mp4;
+    // PNG frame fallback
+    const framePath = outputPath.replace(/\.[^.]+$/, '-frame0000.png');
+    if (!fs.existsSync(finalPath) && fs.existsSync(framePath)) finalPath = framePath;
+  }
+
+  if (!fs.existsSync(finalPath)) {
+    throw new Error(`phobos-diffusers.py exited successfully but output file not found: ${outputPath}`);
+  }
+
+  console.log(`[ImageServerManager] Done (PyTorch) — ${path.basename(finalPath)} in ${(elapsedMs / 1000).toFixed(1)}s`);
+
+  return { outputPath: finalPath, seed, elapsedMs };
 }
 
 // ── Generate ──────────────────────────────────────────────────────────────────
 
 /**
- * Spawns sd-cli, waits for it to complete, returns the output file path.
- * sd-cli is a one-shot CLI tool — no persistent process, no HTTP.
+ * Unified generation entry point. Routes to PyTorch or sd-cli based on
+ * selectBackend(). Both backends produce the same output format and
+ * progress line format — WorkflowEngine doesn't need to know which ran.
  */
 export async function generateImage(
   outputPath: string,
@@ -619,6 +1079,39 @@ export async function generateImage(
   onProgress?: (line: string) => void,
   onAbortRegister?: (killFn: () => void) => void,
 ): Promise<GenerateImageResult> {
+  // ── Backend selection ──────────────────────────────────────────────────────
+  // Resolve the target GPU once — used for both backend selection and PyTorch env
+  let targetGpu: GpuDevice | undefined;
+  if (cfg.deviceIndex !== undefined) {
+    const hw = await detectHardware();
+    targetGpu = hw.gpus.find(g => g.index === cfg.deviceIndex);
+  }
+
+  // Plugins require PyTorch — force it regardless of user backend setting
+  if (opts.plugins && opts.plugins.length > 0) {
+    if (targetGpu && !isReadyForGpu(targetGpu)) {
+      throw new Error('Plugins require the PyTorch venv. Install it from the PHOBOS Command Center.');
+    }
+    if (targetGpu) {
+      console.log(`[ImageServerManager] Backend: PyTorch (plugins, ${gpuToVendor(targetGpu)})`);
+      return generateImagePyTorch(outputPath, cfg, opts, targetGpu, onProgress, onAbortRegister);
+    }
+  }
+
+  const backend = selectBackend(cfg, targetGpu);
+
+  if (backend === 'pytorch' && targetGpu) {
+    console.log(`[ImageServerManager] Backend: PyTorch (${gpuToVendor(targetGpu)})`);
+    return generateImagePyTorch(outputPath, cfg, opts, targetGpu, onProgress, onAbortRegister);
+  }
+
+  if (backend === 'pytorch' && !targetGpu) {
+    console.warn('[ImageServerManager] PyTorch selected but no GPU resolved — falling back to sd-cli');
+  }
+
+  // ── sd-cli path (existing code below) ──────────────────────────────────────
+  console.log(`[ImageServerManager] Backend: sd-cli`);
+
   // Register an abort function immediately so the caller can cancel us even
   // before sd-cli spawns (e.g. during the VRAM settle poll loop).
   let aborted = false;
@@ -981,7 +1474,11 @@ export async function buildSdConfig(
       // consumes VRAM and causes OOM on tight cards like the RTX 3080.
       needsPtxJit = bestGpu.backend === 'cuda' &&
         /\b50[6789]0\b|\bblackwell\b/i.test(bestGpu.name ?? '');
-      offloadToCpu = isUnifiedMemory; // unified = RAM is VRAM, offload is free
+      // Apple Silicon: offload is genuinely free (same pointer, no copy).
+      // AMD UMA (890M): BIOS-partitioned — offload is a real LPDDR5 copy between
+      // GPU and CPU address spaces. Only offload if model exceeds the partition.
+      // See PHOBOS-Hardware-Reference.md Section 2.4.
+      offloadToCpu = isUnifiedMemory && gpuBackend === 'metal';
 
       console.log(
         `[ImageServerManager] VRAM budget: ${freeVramGb.toFixed(1)} GB free` +
@@ -1032,11 +1529,19 @@ export async function buildSdConfig(
     // for image gen on Metal or when reported VRAM is ≥4 GB.
     const viableUnified = isUnifiedMemory && (gpuBackend === 'metal' || totalVramGb >= 4);
     if (viableUnified) {
-      // Unified memory: use full system RAM pool (--offload-to-cpu, no PCIe cost)
-      const os = await import('os');
-      const ramGb = Math.floor(os.default.totalmem() / (1024 ** 3));
-      spec = recommendImageModel(ramGb, true, sdBinaryChoice);
-      if (spec) console.log(`[ImageServerManager] Unified memory system — using RAM pool (${ramGb} GB) for model selection`);
+      // Apple Silicon: genuinely shared pool, budget from total system RAM.
+      // AMD UMA (890M): BIOS-partitioned, budget from gpu.vramGb (the partition size).
+      // See PHOBOS-Hardware-Reference.md Section 2.5.
+      let budgetGb: number;
+      if (gpuBackend === 'metal') {
+        const os = await import('os');
+        budgetGb = Math.floor(os.default.totalmem() / (1024 ** 3));
+        console.log(`[ImageServerManager] Apple Silicon unified memory — using RAM pool (${budgetGb} GB) for model selection`);
+      } else {
+        budgetGb = totalVramGb;
+        console.log(`[ImageServerManager] AMD UMA — using GPU partition (${budgetGb} GB) for model selection`);
+      }
+      spec = recommendImageModel(budgetGb, true, sdBinaryChoice);
     } else {
       spec = recommendImageModel(totalVramGb, false, sdBinaryChoice);
     }

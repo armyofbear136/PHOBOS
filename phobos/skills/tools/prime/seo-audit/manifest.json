@@ -1,0 +1,10 @@
+﻿{
+  "id": "seo-audit",
+  "name": "seo audit",
+  "description": "You are an expert in search engine optimization. Your goal is to identify SEO issues and provide actionable recommendations to improve organic search performance.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -67,6 +67,20 @@ import {
   SAYON_PORT,
   SEREN_PORT,
 } from '../phobos/LlamaServerManager.js';
+import {
+  getVendorReadiness,
+  detectPython,
+  install as installPythonEnv,
+  isVendorReady,
+  isInstallingVendor,
+  getPythonPath,
+  gpuToVendor,
+  downloadAndInstallPython,
+  invalidatePythonCache,
+  isPython312,
+  type GpuVendor,
+  type InstallProgress,
+} from '../phobos/PythonEnvManager.js';
 
 // ── Image download lock ─────────────────────────────────────────────────────
 // Prevents model deletion while a download is in progress.
@@ -1446,5 +1460,126 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
     const abort = (global as Record<string, unknown>).__phobosRelocateAbort as (() => void) | undefined;
     if (abort) abort();
     return reply.send({ ok: true });
+  });
+
+  // ── PyTorch environment management ────────────────────────────────────────
+
+  // GET /api/phobos/python-env/status
+  // Returns Python detection + per-vendor PyTorch venv readiness.
+  // Used by the hardware cards in PhobosLLMPanel to show setup status.
+  fastify.get('/api/phobos/python-env/status', async (_req, reply) => {
+    const python = await detectPython();
+    const vendors = await getVendorReadiness();
+    // Augment each vendor with whether a background install is currently running.
+    // This lets the frontend show a spinner on reconnect if pip is still in progress.
+    const vendorsWithStatus = vendors.map(v => ({
+      ...v,
+      installing: isInstallingVendor(v.vendor),
+    }));
+    return reply.send({ python, vendors: vendorsWithStatus });
+  });
+
+  // POST /api/phobos/python-env/install
+  // SSE stream — creates venv and installs PyTorch + Diffusers for a vendor.
+  // Body: { vendor: 'cuda' | 'rocm' | 'xpu' | 'apple' }
+  fastify.post<{
+    Body: { vendor: string };
+  }>('/api/phobos/python-env/install', async (req, reply) => {
+    const vendor = req.body?.vendor as GpuVendor;
+    if (!vendor || !['cuda', 'rocm', 'xpu', 'apple'].includes(vendor)) {
+      return reply.status(400).send({ error: `Invalid vendor: ${vendor}` });
+    }
+
+    reply.raw.writeHead(200, {
+      'Content-Type':                'text/event-stream',
+      'Cache-Control':               'no-cache',
+      'Connection':                  'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+    });
+
+    const emit = (data: Record<string, unknown>) => {
+      try { reply.raw.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* socket closed */ }
+    };
+
+    try {
+      for await (const progress of installPythonEnv(vendor)) {
+        emit(progress as unknown as Record<string, unknown>);
+      }
+    } catch (err) {
+      emit({ phase: 'error', vendor, label: err instanceof Error ? err.message : String(err), progress: -1, done: true, error: String(err) });
+    }
+
+    reply.raw.end();
+  });
+
+  // GET /api/phobos/python-env/sage-check
+  // Checks if SageAttention is installed at the correct version (≥2.1.1) in any venv.
+  // Returns { installed: boolean, version: string | null, vendor: string | null }
+  fastify.get('/api/phobos/python-env/sage-check', async (_req, reply) => {
+    // Check CUDA venv first, then ROCm
+    for (const vendor of ['cuda', 'rocm', 'xpu'] as GpuVendor[]) {
+      if (!isVendorReady(vendor)) continue;
+      const pyPath = getPythonPath(vendor);
+      if (!pyPath) continue;
+      try {
+        const { execFile: execFileCb } = await import('child_process');
+        const { promisify: prom } = await import('util');
+        const exec = prom(execFileCb);
+        const { stdout } = await exec(pyPath, ['-c', 'import sageattention; print(sageattention.__version__)'], { timeout: 15_000 });
+        const version = stdout.trim();
+        if (version) {
+          // Check if version >= 2.1.1
+          const parts = version.split('.').map(Number);
+          const ok = parts[0] > 2 || (parts[0] === 2 && parts[1] > 1) || (parts[0] === 2 && parts[1] === 1 && parts[2] >= 1);
+          return reply.send({ installed: ok, version, vendor });
+        }
+      } catch {
+        // Not installed in this venv — try next
+      }
+    }
+    return reply.send({ installed: false, version: null, vendor: null });
+  });
+
+  // POST /api/phobos/python-env/install-python
+  // SSE stream — downloads Python 3.12.10 installer and runs it silently.
+  // Windows only. No body required.
+  // On failure the error event contains manual install instructions.
+  fastify.post('/api/phobos/python-env/install-python', async (_req, reply) => {
+    reply.raw.writeHead(200, {
+      'Content-Type':                'text/event-stream',
+      'Cache-Control':               'no-cache',
+      'Connection':                  'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+    });
+
+    const emit = (data: Record<string, unknown>) => {
+      try { reply.raw.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* socket closed */ }
+    };
+
+    try {
+      for await (const progress of downloadAndInstallPython()) {
+        emit(progress as unknown as Record<string, unknown>);
+        if (progress.done) break;
+      }
+    } catch (err) {
+      emit({
+        phase: 'error',
+        label: err instanceof Error ? err.message : String(err),
+        done: true,
+        error: String(err),
+      });
+    }
+
+    reply.raw.end();
+  });
+
+  // POST /api/phobos/python-env/invalidate-cache
+  // Clears the in-process Python detection cache and re-runs detection.
+  // Call this after the user has installed Python manually in another window.
+  // Returns the fresh PythonDetection result plus isPython312 flag.
+  fastify.post('/api/phobos/python-env/invalidate-cache', async (_req, reply) => {
+    invalidatePythonCache();
+    const python = await detectPython();
+    return reply.send({ python, isPython312: isPython312(python) });
   });
 }

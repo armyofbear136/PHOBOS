@@ -1,0 +1,10 @@
+﻿{
+  "id": "saas-economics-efficiency-metrics",
+  "name": "saas economics efficiency metrics",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

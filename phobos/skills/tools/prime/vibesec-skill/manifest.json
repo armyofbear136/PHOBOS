@@ -1,0 +1,10 @@
+﻿{
+  "id": "vibesec-skill",
+  "name": "vibesec skill",
+  "description": "This guide provides comprehensive secure coding practices for web applications. As an AI assistant, your role is to approach code from a **bug hunter's perspective** and make applications **as secu...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

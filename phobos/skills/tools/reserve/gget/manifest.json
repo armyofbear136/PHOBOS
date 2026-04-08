@@ -1,0 +1,10 @@
+﻿{
+  "id": "gget",
+  "name": "gget",
+  "description": "gget is a command-line bioinformatics tool and Python package providing unified access to 20+ genomic databases and analysis methods. Query gene information, sequence analysis, protein structures, ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "gget ref -w gtf -d mouse ```",
+  "runner": null
+}

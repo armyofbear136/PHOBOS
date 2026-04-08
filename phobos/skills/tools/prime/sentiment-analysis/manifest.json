@@ -1,0 +1,10 @@
+﻿{
+  "id": "sentiment-analysis",
+  "name": "sentiment analysis",
+  "description": "Analyze large-scale user feedback data to identify market segments, measure satisfaction, and uncover product improvement opportunities. This skill synthesizes feedback into actionable insights org...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

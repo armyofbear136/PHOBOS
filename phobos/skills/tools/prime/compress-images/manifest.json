@@ -1,0 +1,10 @@
+﻿{
+  "id": "compress-images",
+  "name": "compress images",
+  "description": "Compress all images in `$ARGUMENTS` (or `app/assets/images/content/` if no path provided) to WebP format, optimized for SEO performance (target: under 100KB per image).",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

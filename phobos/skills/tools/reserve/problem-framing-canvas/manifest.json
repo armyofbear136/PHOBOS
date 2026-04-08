@@ -1,0 +1,10 @@
+﻿{
+  "id": "problem-framing-canvas",
+  "name": "problem framing canvas",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Starting discovery for a new initiative - Reframing an existing problem (suspect you're solving the wrong thing)",
+  "runner": null
+}

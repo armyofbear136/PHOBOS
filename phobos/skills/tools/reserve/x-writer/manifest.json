@@ -1,0 +1,10 @@
+﻿{
+  "id": "x-writer",
+  "name": "x writer",
+  "description": "Generate 3 viral X posts in different proven formats, matched to a creator voice, using battle-tested templates and patterns that drive engagement.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

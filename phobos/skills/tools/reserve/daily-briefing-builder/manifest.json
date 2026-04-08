@@ -1,0 +1,10 @@
+﻿{
+  "id": "daily-briefing-builder",
+  "name": "daily briefing builder",
+  "description": "Generates a morning brief from your Obsidian vault. Reads today's action file, scans for unposted content, and fetches weather — all inside a Claude Code session.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Open Claude Code in your vault directory and say:",
+  "runner": null
+}

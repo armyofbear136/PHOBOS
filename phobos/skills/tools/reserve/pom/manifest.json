@@ -1,0 +1,10 @@
+﻿{
+  "id": "pom",
+  "name": "pom",
+  "description": "> Structure your test code for maintainability — know when POM helps and when simpler patterns win.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

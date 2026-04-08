@@ -1,0 +1,10 @@
+﻿{
+  "id": "interview-script",
+  "name": "interview script",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

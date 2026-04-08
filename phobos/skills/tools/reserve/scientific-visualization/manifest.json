@@ -1,0 +1,10 @@
+﻿{
+  "id": "scientific-visualization",
+  "name": "scientific visualization",
+  "description": "Scientific visualization transforms data into clear, accurate figures for publication. Create journal-ready plots with multi-panel layouts, error bars, significance markers, and colorblind-safe pal...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Creating plots or visualizations for scientific manuscripts",
+  "runner": null
+}

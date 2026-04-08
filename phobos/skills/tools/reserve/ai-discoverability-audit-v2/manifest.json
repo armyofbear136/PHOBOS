@@ -1,0 +1,10 @@
+﻿{
+  "id": "ai-discoverability-audit-v2",
+  "name": "ai discoverability audit v2",
+  "description": "**Price:** $19 **Author:** Brian Wagner (@BrianRWagner)",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "user-story-mapping",
+  "name": "user story mapping",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Kicking off a new product or major feature - Aligning stakeholders on user workflow",
+  "runner": null
+}

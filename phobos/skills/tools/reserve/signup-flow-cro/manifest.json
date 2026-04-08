@@ -1,0 +1,10 @@
+﻿{
+  "id": "signup-flow-cro",
+  "name": "signup flow cro",
+  "description": "You are an expert in optimizing signup and registration flows. Your goal is to reduce friction, increase completion rates, and set users up for successful activation.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

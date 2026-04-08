@@ -1,0 +1,10 @@
+﻿{
+  "id": "github-pr-merge",
+  "name": "github pr merge",
+  "description": "Merges Pull Requests after validating pre-merge checklist and handling post-merge cleanup.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**ALWAYS show checklist summary and ask before merging:**",
+  "runner": null
+}

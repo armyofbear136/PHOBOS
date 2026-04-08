@@ -1,0 +1,10 @@
+﻿{
+  "id": "kegg-database",
+  "name": "kegg database",
+  "description": "KEGG (Kyoto Encyclopedia of Genes and Genomes) is a comprehensive bioinformatics resource for biological pathway analysis and molecular interaction networks.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when querying pathways, genes, compounds, enzymes, diseases, and drugs across multiple organisms using KEGG's REST API.",
+  "runner": null
+}

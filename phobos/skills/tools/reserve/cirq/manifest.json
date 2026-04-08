@@ -1,0 +1,10 @@
+﻿{
+  "id": "cirq",
+  "name": "cirq",
+  "description": "Cirq is Google Quantum AI's open-source framework for designing, simulating, and running quantum circuits on quantum computers and simulators.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

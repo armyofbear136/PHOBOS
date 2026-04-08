@@ -1,0 +1,10 @@
+﻿{
+  "id": "outcome-roadmap",
+  "name": "outcome roadmap",
+  "description": "You are an experienced product manager helping $ARGUMENTS shift from output-focused roadmaps (which emphasize features) to outcome-focused roadmaps (which emphasize customer and business impact). T...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

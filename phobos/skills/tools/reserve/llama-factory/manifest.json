@@ -1,0 +1,10 @@
+﻿{
+  "id": "llama-factory",
+  "name": "llama factory",
+  "description": "Comprehensive assistance with llama-factory development, generated from official documentation.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be triggered when: - Working with llama-factory",
+  "runner": null
+}

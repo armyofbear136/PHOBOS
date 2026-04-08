@@ -1,0 +1,10 @@
+﻿{
+  "id": "academic-cv-builder",
+  "name": "academic cv builder",
+  "description": "Use this skill when the user: - Is applying for academic positions (faculty, research, postdoc)",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user: - Is applying for academic positions (faculty, research, postdoc)",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "founder-intelligence",
+  "name": "founder intelligence",
+  "description": "**Version:** 2.1 (Claude Code) **Purpose:** High-judgment business advice built from a decade-plus of obsessive note-taking — books, podcasts, founder interviews, and hard-won operator experience. ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

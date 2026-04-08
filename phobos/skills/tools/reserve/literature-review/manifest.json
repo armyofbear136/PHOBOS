@@ -1,0 +1,10 @@
+﻿{
+  "id": "literature-review",
+  "name": "literature review",
+  "description": "Conduct systematic, comprehensive literature reviews following rigorous academic methodology. Search multiple literature databases, synthesize findings thematically, verify all citations for accura...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when: - Conducting a systematic literature review for research or publication",
+  "runner": null
+}

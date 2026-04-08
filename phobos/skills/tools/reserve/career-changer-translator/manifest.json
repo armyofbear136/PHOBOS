@@ -1,0 +1,10 @@
+﻿{
+  "id": "career-changer-translator",
+  "name": "career changer translator",
+  "description": "Use this skill when the user: - Is switching careers or industries",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user: - Is switching careers or industries",
+  "runner": null
+}

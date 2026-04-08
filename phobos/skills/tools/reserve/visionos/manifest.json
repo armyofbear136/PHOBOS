@@ -1,0 +1,10 @@
+﻿{
+  "id": "visionos",
+  "name": "visionos",
+  "description": "Comprehensive design rules for Apple Vision Pro based on Apple Human Interface Guidelines. These rules ensure spatial computing apps are comfortable, intuitive, and consistent with platform convent...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "clawsec-clawhub-checker",
+  "name": "clawsec clawhub checker",
+  "description": "Enhances the ClawSec suite's guarded skill installer with ClawHub reputation checks. Adds a second layer of security by checking VirusTotal Code Insight scores and other reputation signals before a...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

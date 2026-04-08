@@ -1,0 +1,10 @@
+﻿{
+  "id": "modal",
+  "name": "modal",
+  "description": "Modal is a serverless platform for running Python code in the cloud with minimal configuration. Execute functions on powerful GPUs, scale automatically to thousands of containers, and pay only for ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use Modal for: - Deploying and serving ML models (LLMs, image generation, embedding models)",
+  "runner": null
+}

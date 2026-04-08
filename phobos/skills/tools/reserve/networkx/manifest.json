@@ -1,0 +1,10 @@
+﻿{
+  "id": "networkx",
+  "name": "networkx",
+  "description": "NetworkX is a Python package for creating, manipulating, and analyzing complex networks and graphs. Use this skill when working with network or graph data structures, including social networks, bio...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke this skill when tasks involve:",
+  "runner": null
+}

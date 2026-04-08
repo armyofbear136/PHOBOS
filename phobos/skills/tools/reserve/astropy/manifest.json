@@ -1,0 +1,10 @@
+﻿{
+  "id": "astropy",
+  "name": "astropy",
+  "description": "Astropy is the core Python package for astronomy, providing essential functionality for astronomical research and data analysis. Use astropy for coordinate transformations, unit and quantity calcul...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use astropy when tasks involve: - Converting between celestial coordinate systems (ICRS, Galactic, FK5, AltAz, etc.)",
+  "runner": null
+}

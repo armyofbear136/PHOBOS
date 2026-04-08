@@ -1,0 +1,10 @@
+﻿{
+  "id": "oral-health-analyzer",
+  "name": "oral health analyzer",
+  "description": "本技能提供全面的口腔健康数据分析功能，包括趋势识别、风险评估、问题诊断和个性化建议生成。",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

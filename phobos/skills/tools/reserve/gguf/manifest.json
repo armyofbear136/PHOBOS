@@ -1,0 +1,10 @@
+﻿{
+  "id": "gguf",
+  "name": "gguf",
+  "description": "The GGUF (GPT-Generated Unified Format) is the standard file format for llama.cpp, enabling efficient inference on CPUs, Apple Silicon, and GPUs with flexible quantization options.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use GGUF when:** - Deploying on consumer hardware (laptops, desktops)",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "stable-baselines3",
+  "name": "stable baselines3",
+  "description": "Stable Baselines3 (SB3) is a PyTorch-based library providing reliable implementations of reinforcement learning algorithms. This skill provides comprehensive guidance for training RL agents, creati...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

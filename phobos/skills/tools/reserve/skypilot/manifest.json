@@ -1,0 +1,10 @@
+﻿{
+  "id": "skypilot",
+  "name": "skypilot",
+  "description": "Comprehensive guide to running ML workloads across clouds with automatic cost optimization using SkyPilot.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use SkyPilot when:** - Running ML workloads across multiple clouds (AWS, GCP, Azure, etc.)",
+  "runner": null
+}

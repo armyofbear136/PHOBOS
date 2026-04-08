@@ -1,0 +1,10 @@
+﻿{
+  "id": "clinvar-database",
+  "name": "clinvar database",
+  "description": "ClinVar is NCBI's freely accessible archive of reports on relationships between human genetic variants and phenotypes, with supporting evidence. The database aggregates information about genomic va...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when:",
+  "runner": null
+}

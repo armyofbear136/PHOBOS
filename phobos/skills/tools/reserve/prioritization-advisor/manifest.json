@@ -1,0 +1,10 @@
+﻿{
+  "id": "prioritization-advisor",
+  "name": "prioritization advisor",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Choosing a prioritization framework for the first time - Switching frameworks (current one isn't working)",
+  "runner": null
+}

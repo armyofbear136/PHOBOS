@@ -1,0 +1,10 @@
+﻿{
+  "id": "outreach-specialist",
+  "name": "outreach specialist",
+  "description": "Generate a personalized outreach sequence (default 3 messages) that sounds human, builds trust, and books calls — tailored to the prospect, platform, and offer.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

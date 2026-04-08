@@ -1,0 +1,10 @@
+﻿{
+  "id": "medusa",
+  "name": "medusa",
+  "description": "*Load with: base.md + typescript.md*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "```bash npx medusa user -e admin@example.com -p supersecret",
+  "runner": null
+}

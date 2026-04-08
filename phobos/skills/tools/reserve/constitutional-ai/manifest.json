@@ -1,0 +1,10 @@
+﻿{
+  "id": "constitutional-ai",
+  "name": "constitutional ai",
+  "description": "Constitutional AI (CAI) trains models to be harmless through self-critique and AI feedback, without requiring human labels for harmful outputs.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

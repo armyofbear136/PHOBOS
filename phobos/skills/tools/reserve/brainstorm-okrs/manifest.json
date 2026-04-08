@@ -1,0 +1,10 @@
+﻿{
+  "id": "brainstorm-okrs",
+  "name": "brainstorm okrs",
+  "description": "You are a veteran product leader responsible for defining Objectives and Key Results (OKRs) for the team working on $ARGUMENTS. Your OKRs must be ambitious, measurable, and clearly aligned with com...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -29,6 +29,18 @@ export const PYTHON_INSTALL_LINKS = {
   linux:   'sudo apt install python3 python3-venv python3-pip',
 } as const;
 
+const PYTHON_312_WIN_URL = 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe';
+
+/**
+ * Returns true only if the detected Python is exactly 3.12.x.
+ * AMD ROCm Windows wheels are cp312-only — 3.11 and 3.13 will not work.
+ */
+export function isPython312(det: PythonDetection): boolean {
+  if (!det.found || !det.version) return false;
+  const parts = det.version.split('.');
+  return parseInt(parts[1], 10) === 12;
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export type GpuVendor = 'cuda' | 'rocm' | 'xpu' | 'apple' | 'cpu';
@@ -192,18 +204,31 @@ export function gpuToVendor(gpu: GpuDevice): GpuVendor {
   const isAmd = /AMD|Radeon|ATI/i.test(gpu.name);
   const isIntelArc = /Intel.*Arc/i.test(gpu.name);
 
-  if (isAmd && !gpu.unifiedMemory) return 'rocm';
+  // AMD iGPUs (890M, 780M) on Windows use the same ROCm path as discrete cards.
+  // The AI drivers bundle installs ROCm 7.2 system-wide and the torch+rocmsdk
+  // wheels bundle their own DLLs — unified memory is not a blocker.
+  if (isAmd) return 'rocm';
   if (isIntelArc) return 'xpu';
 
-  // AMD iGPU, Intel iGPU, unknown — no PyTorch GPU path
+  // Intel iGPU, unknown
   return 'cpu';
 }
 
-/** Returns the PyTorch pip index URL for a vendor. */
+// AMD Windows ROCm 7.2 wheel base URL.
+// torch version: 2.9.1+rocmsdk20260116  (Python 3.12 only)
+// These are direct wheel downloads — no index URL, no pip --find-links needed.
+const AMD_ROCM_WIN_BASE = 'https://repo.radeon.com/rocm/windows/rocm-rel-7.2';
+
+/** Returns the PyTorch pip index URL for a vendor.
+ *  Windows ROCm is special: wheels come from AMD direct URLs, not a pip index.
+ *  That path is handled by installRocmWindowsTorch() — this function returns
+ *  the Linux index URL for ROCm (used on Linux only). */
 function vendorIndexUrl(vendor: GpuVendor): string {
   switch (vendor) {
     case 'cuda':  return 'https://download.pytorch.org/whl/cu121';
-    case 'rocm':  return 'https://download.pytorch.org/whl/rocm6.2';
+    case 'rocm':  return process.platform === 'win32'
+                    ? AMD_ROCM_WIN_BASE  // stored in manifest for reference only
+                    : 'https://download.pytorch.org/whl/rocm7.2';
     case 'xpu':   return 'https://download.pytorch.org/whl/xpu';
     case 'apple': return '';  // default PyPI — MPS built into standard wheel
     case 'cpu':   return '';  // default PyPI — CPU-only
@@ -273,8 +298,8 @@ async function runVenvCheck(vendor: GpuVendor, script: string, timeoutMs = 30_00
   }
 }
 
-async function checkTorchVersion(vendor: GpuVendor): Promise<string | null> {
-  return runVenvCheck(vendor, 'import torch; print(torch.__version__)');
+async function checkTorchVersion(vendor: GpuVendor, timeoutMs = 30_000): Promise<string | null> {
+  return runVenvCheck(vendor, 'import torch; print(torch.__version__)', timeoutMs);
 }
 
 async function checkGpuAvailable(vendor: GpuVendor): Promise<boolean> {
@@ -296,9 +321,9 @@ async function checkGpuAvailable(vendor: GpuVendor): Promise<boolean> {
   return (await runVenvCheck(vendor, script)) === 'True';
 }
 
-async function checkPackagesReady(vendor: GpuVendor): Promise<boolean> {
+async function checkPackagesReady(vendor: GpuVendor, timeoutMs = 30_000): Promise<boolean> {
   const script = 'import torch; import diffusers; import transformers; import accelerate; import safetensors; print("ok")';
-  return (await runVenvCheck(vendor, script)) === 'ok';
+  return (await runVenvCheck(vendor, script, timeoutMs)) === 'ok';
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -517,23 +542,29 @@ export async function* install(vendor: GpuVendor): AsyncGenerator<InstallProgres
     // ── Phase: verify ──────────────────────────────────────────────────────
     yield { phase: 'verify', vendor, label: 'Verifying…', progress: 0, done: false };
 
-    const torchVer = await checkTorchVersion(vendor);
+    // XPU first-run import initialises Intel OneAPI/SYCL device stack which can
+    // take 60-120s on a freshly-installed driver. Use a longer timeout.
+    const verifyTimeoutMs = vendor === 'xpu' ? 180_000 : 30_000;
+
+    const torchVer = await checkTorchVersion(vendor, verifyTimeoutMs);
     if (!torchVer) {
-      const msg = 'torch installed but fails to import';
+      const msg = 'torch installed but fails to import — check driver installation';
       yield { phase: 'error', vendor, label: msg, progress: -1, done: true, error: msg };
       return;
     }
 
-    const packagesOk = await checkPackagesReady(vendor);
+    const packagesOk = await checkPackagesReady(vendor, verifyTimeoutMs);
     if (!packagesOk) {
-      const msg = 'Some required packages fail to import';
+      const msg = 'Some required packages fail to import — check driver installation';
       yield { phase: 'error', vendor, label: msg, progress: -1, done: true, error: msg };
       return;
     }
 
     const gpuOk = vendor !== 'cpu' ? await checkGpuAvailable(vendor) : false;
     console.log(`[PythonEnvManager] Verified ${vendorLabel(vendor)}: torch=${torchVer}, gpu=${gpuOk ? 'yes' : 'no'}`);
-    yield { phase: 'verify', vendor, label: `torch ${torchVer} — GPU ${gpuOk ? 'available' : 'not detected'}`, progress: 1.0, done: false };
+    // gpuOk=false is non-fatal — packages are installed; GPU may need a reboot or
+    // BIOS setting (e.g. Resizable BAR for Intel Arc). Manifest is written regardless.
+    yield { phase: 'verify', vendor, label: `torch ${torchVer} — GPU ${gpuOk ? 'available' : 'not detected (reboot may be required)'}`, progress: 1.0, done: false };
 
     // ── Phase: configs ─────────────────────────────────────────────────────
     yield { phase: 'configs', vendor, label: 'Model configs…', progress: 0, done: false };
@@ -565,6 +596,15 @@ async function installTorchPackages(
   vendor: GpuVendor,
   indexUrl: string,
 ): Promise<{ ok: boolean; error?: string }> {
+  // Windows ROCm uses AMD's direct wheel URLs — completely different from the
+  // Linux pytorch.org/whl/rocmX.X index (which is Linux-only).
+  // AMD publishes torch 2.9.1+rocmsdk for Windows at repo.radeon.com.
+  // Step 1: install the four ROCm SDK wheels that set up HIP/rocBLAS inside the venv.
+  // Step 2: install torch/torchvision/torchaudio from the same channel.
+  if (vendor === 'rocm' && process.platform === 'win32') {
+    return installRocmWindowsTorch(pyBin);
+  }
+
   const args = ['-m', 'pip', 'install', 'torch', 'torchvision', 'torchaudio'];
   if (indexUrl) args.push('--index-url', indexUrl);
 
@@ -580,11 +620,40 @@ async function installTorchPackages(
   return { ok: true };
 }
 
+async function installRocmWindowsTorch(pyBin: string): Promise<{ ok: boolean; error?: string }> {
+  // Step 1 — ROCm SDK runtime wheels (bundles amdhip64, rocblas, MIOpen etc into the venv).
+  // These are architecture-independent (py3-none-win_amd64) so they work for all AMD GPUs.
+  console.log('[PythonEnvManager] Installing AMD ROCm 7.2 SDK wheels for Windows…');
+  const sdkResult = await runPip(pyBin, [
+    '-m', 'pip', 'install', '--no-cache-dir',
+    `${AMD_ROCM_WIN_BASE}/rocm_sdk_core-7.2.0.dev0-py3-none-win_amd64.whl`,
+    `${AMD_ROCM_WIN_BASE}/rocm_sdk_devel-7.2.0.dev0-py3-none-win_amd64.whl`,
+    `${AMD_ROCM_WIN_BASE}/rocm_sdk_libraries_custom-7.2.0.dev0-py3-none-win_amd64.whl`,
+    `${AMD_ROCM_WIN_BASE}/rocm-7.2.0.dev0.tar.gz`,
+  ]);
+  if (!sdkResult.ok) return { ok: false, error: `ROCm SDK install failed: ${sdkResult.error}` };
+
+  // Step 2 — torch/torchvision/torchaudio (cp312 only — AMD requires Python 3.12).
+  console.log('[PythonEnvManager] Installing torch 2.9.1+rocmsdk for Windows…');
+  const torchResult = await runPip(pyBin, [
+    '-m', 'pip', 'install', '--no-cache-dir',
+    `${AMD_ROCM_WIN_BASE}/torch-2.9.1%2Brocmsdk20260116-cp312-cp312-win_amd64.whl`,
+    `${AMD_ROCM_WIN_BASE}/torchaudio-2.9.1%2Brocmsdk20260116-cp312-cp312-win_amd64.whl`,
+    `${AMD_ROCM_WIN_BASE}/torchvision-0.24.1%2Brocmsdk20260116-cp312-cp312-win_amd64.whl`,
+  ]);
+  if (!torchResult.ok) return { ok: false, error: `torch install failed: ${torchResult.error}` };
+
+  return { ok: true };
+}
+
 async function installTriton(
   pyBin: string,
   vendor: GpuVendor,
   indexUrl: string,
 ): Promise<{ ok: boolean; error?: string }> {
+  // Windows ROCm: Triton is not separately required — skip silently.
+  if (vendor === 'rocm' && process.platform === 'win32') return { ok: true };
+
   switch (vendor) {
     case 'cuda':
       return { ok: true }; // ships with CUDA wheels
@@ -671,4 +740,142 @@ export async function getDiskUsage(vendor: GpuVendor): Promise<number> {
 /** Returns the venv root directory. */
 export function getEnvRoot(): string {
   return PYTHON_ENV_ROOT();
+}
+
+// ── Automated Python installer (Windows) ─────────────────────────────────────
+
+export interface PythonInstallProgress {
+  phase: 'download' | 'install' | 'complete' | 'error';
+  label: string;
+  /** 0.0–1.0, or -1 for indeterminate */
+  progress?: number;
+  done: boolean;
+  error?: string;
+}
+
+/**
+ * Downloads the Python 3.12.10 Windows installer to a temp file and launches
+ * it with /passive + PrependPath=1 + InstallAllUsers=0 (no UAC required).
+ * Invalidates the Python detection cache on completion.
+ *
+ * Windows only. Yields SSE-compatible progress events.
+ *
+ * If the automated installer fails for any reason (group policy, network
+ * failure, permissions) the error event includes manual install instructions.
+ */
+export async function* downloadAndInstallPython(): AsyncGenerator<PythonInstallProgress> {
+  if (process.platform !== 'win32') {
+    yield {
+      phase: 'error',
+      label: 'Automated Python install is only supported on Windows.',
+      done: true,
+      error: 'not-windows',
+    };
+    return;
+  }
+
+  const tmpDir       = os.tmpdir();
+  const installerPath = path.join(tmpDir, 'python-3.12.10-amd64.exe');
+
+  // ── Download ───────────────────────────────────────────────────────────────
+  yield { phase: 'download', label: 'Downloading Python 3.12.10 (~28 MB)…', progress: 0, done: false };
+
+  try {
+    const https = await import('https');
+    await new Promise<void>((resolve, reject) => {
+      const file = fs.createWriteStream(installerPath);
+
+      function handleResponse(res: import('http').IncomingMessage): void {
+        // Follow a single redirect — python.org uses one
+        if (
+          res.statusCode &&
+          res.statusCode >= 300 &&
+          res.statusCode < 400 &&
+          res.headers.location
+        ) {
+          https.get(res.headers.location, handleResponse).on('error', reject);
+          return;
+        }
+        res.pipe(file);
+        res.on('end', () => file.close(() => resolve()));
+        res.on('error', reject);
+        file.on('error', reject);
+      }
+
+      https.get(PYTHON_312_WIN_URL, handleResponse).on('error', reject);
+    });
+  } catch (err) {
+    try { fs.unlinkSync(installerPath); } catch { /* ignore */ }
+    yield {
+      phase: 'error',
+      label: `Download failed: ${(err as Error).message}. Please install Python 3.12 manually: ${PYTHON_INSTALL_LINKS.windows} — check "Add Python to PATH" during install.`,
+      done: true,
+      error: (err as Error).message,
+    };
+    return;
+  }
+
+  yield { phase: 'download', label: 'Python 3.12.10 downloaded', progress: 1.0, done: false };
+
+  // ── Install ────────────────────────────────────────────────────────────────
+  yield {
+    phase: 'install',
+    label: 'Installing Python 3.12.10 — this takes about 60 seconds…',
+    progress: -1,
+    done: false,
+  };
+
+  try {
+    // /passive        — minimal progress window, no user clicks required
+    // PrependPath=1   — equivalent of "Add Python to PATH" checkbox
+    // InstallAllUsers=0 — per-user install, no UAC elevation required
+    await execFileAsync(
+      installerPath,
+      ['/passive', 'PrependPath=1', 'InstallAllUsers=0'],
+      { timeout: 5 * 60 * 1000 },
+    );
+  } catch (err) {
+    yield {
+      phase: 'error',
+      label: [
+        `Automated install failed: ${(err as Error).message}.`,
+        "This can happen if your organisation's Group Policy blocks software installs,",
+        'or if an antivirus tool interrupted the process.',
+        `Please install Python 3.12 manually: ${PYTHON_INSTALL_LINKS.windows}`,
+        '— check "Add Python to PATH" during install, then restart PHOBOS and try again.',
+      ].join(' '),
+      done: true,
+      error: (err as Error).message,
+    };
+    return;
+  } finally {
+    try { await fsPromises.unlink(installerPath); } catch { /* ignore */ }
+  }
+
+  // Bust the cache so the next detectPython() re-scans PATH
+  _pythonCache = null;
+
+  // Confirm we can find it now
+  const det = await findSystemPython();
+  if (!det.found) {
+    yield {
+      phase: 'error',
+      label: [
+        'Installer completed but Python was not found on PATH.',
+        'This sometimes requires restarting PHOBOS after a new PATH entry is added.',
+        'Close and reopen PHOBOS, then click "Set up PyTorch" again.',
+        `If the problem persists, install manually: ${PYTHON_INSTALL_LINKS.windows}`,
+      ].join(' '),
+      done: true,
+      error: 'post-install-not-found',
+    };
+    return;
+  }
+
+  yield {
+    phase: 'complete',
+    label: `Python ${det.version} installed and detected`,
+    progress: 1.0,
+    done: true,
+  };
 }

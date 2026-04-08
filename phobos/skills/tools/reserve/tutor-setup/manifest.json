@@ -1,0 +1,10 @@
+﻿{
+  "id": "tutor-setup",
+  "name": "tutor setup",
+  "description": "> **NEVER access files outside the current working directory (CWD).** > All source scanning, reading, and vault output MUST stay within CWD and its subdirectories.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

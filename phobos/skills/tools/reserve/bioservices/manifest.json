@@ -1,0 +1,10 @@
+﻿{
+  "id": "bioservices",
+  "name": "bioservices",
+  "description": "BioServices is a Python package providing programmatic access to approximately 40 bioinformatics web services and databases. Retrieve biological data, perform cross-database queries, map identifier...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Retrieving protein sequences, annotations, or structures from UniProt, PDB, Pfam",
+  "runner": null
+}

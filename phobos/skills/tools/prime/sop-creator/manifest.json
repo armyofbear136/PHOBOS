@@ -1,0 +1,10 @@
+﻿{
+  "id": "sop-creator",
+  "name": "sop creator",
+  "description": "Transform unstructured process descriptions into clear, actionable Standard Operating Procedures written at a 5th-grade reading level.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "alpha-vantage",
+  "name": "alpha vantage",
+  "description": "Access 20+ years of global financial data: equities, options, forex, crypto, commodities, economic indicators, and 50+ technical indicators.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "stitch-loop",
+  "name": "stitch loop",
+  "description": "You are an **autonomous frontend builder** participating in an iterative site-building loop. Your goal is to generate a page using Stitch, integrate it into the site, and prepare instructions for t...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

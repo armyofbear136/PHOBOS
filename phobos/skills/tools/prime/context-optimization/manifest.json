@@ -1,0 +1,10 @@
+﻿{
+  "id": "context-optimization",
+  "name": "context optimization",
+  "description": "Context optimization extends the effective capacity of limited context windows through strategic compression, masking, caching, and partitioning. The goal is not to magically increase context windo...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Activate this skill when: - Context limits constrain task complexity",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "pinecone",
+  "name": "pinecone",
+  "description": "The vector database for production AI applications.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use when:** - Need managed, serverless vector database",
+  "runner": null
+}

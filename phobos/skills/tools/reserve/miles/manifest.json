@@ -1,0 +1,10 @@
+﻿{
+  "id": "miles",
+  "name": "miles",
+  "description": "miles is a high-performance, enterprise-ready RL framework optimized for large-scale model post-training. Built as a production fork of slime, it addresses critical challenges in MoE training stabi...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Choose miles when you need:** - Training 1TB+ MoE models (DeepSeek V3, Qwen3-MoE)",
+  "runner": null
+}

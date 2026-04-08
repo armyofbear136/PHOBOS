@@ -1,0 +1,10 @@
+﻿{
+  "id": "fda-database",
+  "name": "fda database",
+  "description": "Access comprehensive FDA regulatory data through openFDA, the FDA's initiative to provide open APIs for public datasets. Query information about drugs, medical devices, foods, animal/veterinary pro...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when working with: - **Drug research**: Safety profiles, adverse events, labeling, approvals, shortages",
+  "runner": null
+}

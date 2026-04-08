@@ -1,0 +1,10 @@
+﻿{
+  "id": "bdi-mental-states",
+  "name": "bdi mental states",
+  "description": "Transform external RDF context into agent mental states (beliefs, desires, intentions) using formal BDI ontology patterns. This skill enables agents to reason about context through cognitive archit...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Activate this skill when: - Processing external RDF context into agent beliefs about world states",
+  "runner": null
+}

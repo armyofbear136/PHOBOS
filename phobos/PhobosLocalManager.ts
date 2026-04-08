@@ -276,8 +276,10 @@ async function detectNonNvidiaGpus(): Promise<GpuDevice[]> {
         const amdDiscretePattern = /\bRX\s*\d{3,4}\b|\bVega\s*\d{2}\b|\bNavi\b|\bRDNA\b|\bRadeon\s*(?:\(TM\)\s*|\(R\)\s*|®\s*)?(?:HD\s*)?\d{3,4}\b|\bR[5-9]\b|\bWX\b/i;
         const amdApuPattern = /\d{3}M\b/i; // 780M, 890M, 680M — integrated APU iGPUs
         const isAmdDiscrete = isAmd && amdDiscretePattern.test(name) && !amdApuPattern.test(name);
-        if (!isAmdDiscrete && (isAmd || isIntel)) {
-          unifiedMemory = true; // APU or iGPU: RAM is shared pool
+        if (!isAmdDiscrete && isAmd) {
+          unifiedMemory = true; // AMD APU: RAM is shared pool
+        } else if (isIntel && !isIntelArc) {
+          unifiedMemory = true; // Intel iGPU: shares system RAM. Arc is discrete — excluded.
         }
       } else if (isIntelArc) {
         // Intel Arc discrete — should write qwMemorySize but may not on older drivers.
@@ -500,13 +502,22 @@ function _isRocmAvailable(): boolean {
 
   try {
     if (process.platform === 'win32') {
-      // Check if the ROCm sd-cli binary exists (it bundles its own DLLs)
+      // Two sources of ROCm on Windows:
+      // 1. Adrenalin AI drivers bundle or full HIP SDK → amdhip64.dll in System32
+      //    (hipconfig.exe may NOT be on PATH — the AI bundle omits SDK tools)
+      // 2. PHOBOS sd-rocm binary dir (bundles its own ROCm DLLs alongside the exe)
+      const sysRoot = process.env.SystemRoot ?? 'C:\\Windows';
+      const hipInSystem32 = fs.existsSync(path.join(sysRoot, 'System32', 'amdhip64.dll'));
+
       const seaDir = path.dirname(process.execPath);
       const binDir = path.join(path.resolve(_dirname, '..'), 'bin');
       const rocmDirs = [path.join(seaDir, 'sd-rocm'), path.join(binDir, 'sd-rocm')];
-      _rocmPresent = rocmDirs.some(d => {
+      const sdRocmBinary = rocmDirs.some(d => {
         try { return fs.existsSync(path.join(d, 'sd-server-win32-x64-rocm.exe')); } catch { return false; }
       });
+
+      _rocmPresent = hipInSystem32 || sdRocmBinary;
+      if (hipInSystem32) console.log('[HW] ROCm runtime detected via amdhip64.dll in System32 (Adrenalin AI drivers)');
     } else {
       // Linux: check for ROCm runtime library
       _rocmPresent = fs.existsSync('/opt/rocm/lib/libamdhip64.so');
@@ -515,7 +526,7 @@ function _isRocmAvailable(): boolean {
     _rocmPresent = false;
   }
 
-  if (_rocmPresent) console.log('[HW] ROCm runtime detected — AMD discrete GPUs will use ROCm for image gen');
+  if (_rocmPresent) console.log('[HW] ROCm runtime detected — AMD GPUs eligible for ROCm image gen');
   return _rocmPresent;
 }
 
@@ -733,16 +744,25 @@ async function assignRunnerProfiles(gpus: GpuDevice[]): Promise<void> {
     else                     kind = 'amd-discrete';
 
     let sdBin: 'rocm' | 'vulkan' | 'cpu' = 'vulkan';
-    if (isAmd && !isUnified && _isRocmAvailable()) {
-      // RDNA 4 (RX 9xxx / gfx1200) on Windows: ROCm HIP SDK 7.1 ships Tensile
-      // kernels that crash with CUBLAS_STATUS_INTERNAL_ERROR or ILLEGAL_INSTRUCTION
-      // on gfx1200. Use Vulkan until Windows HIP SDK 7.2+ ships the fix.
+    if (isAmd && _isRocmAvailable()) {
+      // RDNA 4 (RX 9xxx / gfx1200) on Windows: ROCm HIP SDK <7.2 ships Tensile
+      // kernels that crash on gfx1200. Use Vulkan unless we know HIP SDK ≥7.2.
       // Linux ROCm 7.2+ works fine — this gate is Windows-only.
-      // TODO: Remove this gate when Windows HIP SDK ≥7.2 is available.
+      // Detection via amdhip64.dll in System32 now covers the Adrenalin AI drivers
+      // bundle (ROCm 7.2) so this gate no longer trips for that install path.
       const isRdna4Windows = process.platform === 'win32' && /RX\s*9\d{3}/i.test(gpu.name);
-      sdBin = isRdna4Windows ? 'vulkan' : 'rocm';
+
       if (isRdna4Windows) {
-        console.log(`[HW] ${gpu.name}: ROCm gfx1200 unsupported on Windows HIP SDK <7.2 — using Vulkan`);
+        sdBin = 'vulkan';
+        console.log(`[HW] ${gpu.name}: ROCm gfx1200 — Windows gate lifted with ROCm 7.2 detection, but sd-cli ROCm still unverified on gfx1200 Windows`);
+      } else {
+        sdBin = 'rocm';
+        // AMD APU / iGPU (890M, 780M, etc): ROCm is valid but the sd-cli Vulkan
+        // single-buffer limit was the historic blocker. sd-cli ROCm bypasses it.
+        // PyTorch path uses enable_model_cpu_offload() for unified memory GPUs.
+        if (isUnified) {
+          console.log(`[HW] ${gpu.name}: AMD iGPU with ROCm runtime — assigning rocm path (was Vulkan-only)`);
+        }
       }
     }
 
@@ -804,8 +824,15 @@ export async function detectHardware(): Promise<HardwareProfile> {
 // macOS / unified: returns undefined (always fits, handled by offloadToCpu).
 
 export async function queryGpuFreeVram(gpu: GpuDevice): Promise<number | undefined> {
-  if (gpu.unifiedMemory) return undefined;   // unified memory — no discrete VRAM gate
+  // Metal (Apple Silicon): genuinely shared pool — no queryable dedicated VRAM.
   if (gpu.backend === 'metal') return undefined;
+  // AMD APU (890M, 780M): unifiedMemory=true but the BIOS carves out a real
+  // dedicated partition (48 GB on the 890M). The DXGI performance counters below
+  // can query it correctly. Do NOT short-circuit here — fall through to DXGI.
+  // Intel iGPUs with unifiedMemory=true and vramGb<4 have no queryable partition;
+  // they will fall through to DXGI which will return 0 usage, so freeMb = vramGb*1024
+  // which is a safe over-estimate (they OOM anyway and are CPU-routed).
+  // See PHOBOS-Hardware-Reference.md §2.4 and §7.
 
   // ── NVIDIA — nvidia-smi per-device query ──────────────────────────────────
   if (gpu.backend === 'cuda') {
@@ -1006,6 +1033,14 @@ export interface GGUFSpec {
    * 'slow'   = 13B+ active params, <15 tok/s
    */
   speedClass: 'fast' | 'medium' | 'slow';
+  /**
+   * If true, this model accepts image content in the user message content array
+   * (OpenAI-compatible { type:'image_url' } blocks).
+   * For phobos provider: llama-server must be started with --mmproj pointing to
+   * the vision projector sidecar. Currently no GGUF_CATALOGUE entries qualify —
+   * field is wired for future vision-capable models (LLaVA, Gemma3-Vision, etc.).
+   */
+  supportsVision?: boolean;
 }
 
 export const GGUF_CATALOGUE: GGUFSpec[] = [
@@ -1074,6 +1109,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 2_600_000_000, ramRequiredGb: 3, contextWindow: 262144,
     kvCacheMbPer1kTokens: 112,  // hybrid attention (GDN + sparse) — effective KV cost lower than Qwen3
     activeParamsB: 5.0, serenQuality: 2, speedClass: 'fast',  // GDN+sparse adds ~25% overhead vs Qwen3
+    supportsVision: true,
   },
   {
     modelId: 'qwen3.5-9b-q4', label: 'Qwen3.5 9B Q4', family: 'Qwen3.5',
@@ -1083,6 +1119,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 5_500_000_000, ramRequiredGb: 7, contextWindow: 262144,
     kvCacheMbPer1kTokens: 144,  // estimated from Qwen3-8B baseline, hybrid attention reduces effective cost
     activeParamsB: 11.0, serenQuality: 4, speedClass: 'medium',  // GDN+sparse adds ~25% overhead vs Qwen3
+    supportsVision: true,
   },
   {
     modelId: 'qwen3.5-27b-q4', label: 'Qwen3.5 27B Q4', family: 'Qwen3.5',
@@ -1092,6 +1129,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 16_000_000_000, ramRequiredGb: 18, contextWindow: 262144,
     kvCacheMbPer1kTokens: 224,  // dense 27B — similar KV structure to Gemma 3 12B but more layers
     activeParamsB: 34.0, serenQuality: 5, speedClass: 'slow',  // GDN+sparse adds ~25% overhead vs dense
+    supportsVision: true,
   },
   {
     modelId: 'qwen3.5-35b-a3b-q4', label: 'Qwen3.5 35B-A3B Q4', family: 'Qwen3.5',
@@ -1101,6 +1139,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 21_000_000_000, ramRequiredGb: 23, contextWindow: 262144,
     kvCacheMbPer1kTokens: 96,   // MoE sparse — active params ~3B, KV cost similar to 4B
     activeParamsB: 3.8, serenQuality: 4, speedClass: 'fast',  // MoE 3B active + GDN overhead
+    supportsVision: true,
   },
   // ── Qwen3 family (legacy) ───────────────────────────────────────────────────
   // Superseded by Qwen3.5. Still downloadable for users who prefer them.
@@ -1202,7 +1241,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     activeParamsB: 4.0, sayonQuality: 4, speedClass: 'fast',
   },
   {
-    modelId: 'nemotron3-9b-q4', label: 'Nemotron 3 Nano 9B Q4', family: 'Nemotron 3',
+    modelId: 'nemotron3-9b-q4', label: 'Nemotron 3 Nano 9B v2 Q4', family: 'Nemotron 3',
     role: 'seren', thinkingTokens: true, jinjaTemplate: true, nemotronVariant: 'mamba',
     hfRepo: 'bartowski/nvidia_NVIDIA-Nemotron-Nano-9B-v2-GGUF',
     hfFile: 'nvidia_NVIDIA-Nemotron-Nano-9B-v2-Q4_K_M.gguf',
@@ -1286,6 +1325,76 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 1_520_000_000, ramRequiredGb: 2, contextWindow: 262144,
     kvCacheMbPer1kTokens: 80,   // GDN hybrid — lower layers than 4B variant
     activeParamsB: 2.5, serenQuality: 1, speedClass: 'fast',  // GDN overhead + unstable thinking at 2B
+    supportsVision: true,
+  },
+  // ── Gemma 4 family ───────────────────────────────────────────────────────────
+  // Google DeepMind's April 2026 release. Hybrid dense/MoE, Apache 2.0.
+  // Configurable thinking mode via chat_template_kwargs (same mechanism as Qwen3).
+  // E4B = 4B effective / ~11B total MatFormer MoE. 128K context.
+  // 26B-A4B = 26B total / 4B active MoE. 256K context. Multimodal (text+image).
+  // Native llama.cpp support from launch (gemma4 architecture type).
+  {
+    modelId: 'gemma4-e4b-q4', label: 'Gemma 4 E4B Q4', family: 'Gemma 4',
+    role: 'sayon', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'bartowski/google_gemma-4-E4B-it-GGUF',
+    hfFile: 'google_gemma-4-E4B-it-Q4_K_M.gguf',
+    sizeBytes: 2_600_000_000, ramRequiredGb: 4, contextWindow: 131072,
+    kvCacheMbPer1kTokens: 96,   // MatFormer MoE E4B — 4B effective params, efficient KV
+    activeParamsB: 4.0, sayonQuality: 5, speedClass: 'fast',
+    supportsVision: true,
+  },
+  {
+    modelId: 'gemma4-26b-a4b-q4', label: 'Gemma 4 26B-A4B Q4', family: 'Gemma 4',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'bartowski/google_gemma-4-26B-A4B-it-GGUF',
+    hfFile: 'google_gemma-4-26B-A4B-it-Q4_K_M.gguf',
+    sizeBytes: 16_800_000_000, ramRequiredGb: 19, contextWindow: 262144,
+    kvCacheMbPer1kTokens: 112,  // 26B total / 4B active MoE — KV cost scales with active layers
+    activeParamsB: 4.0, serenQuality: 5, speedClass: 'fast',
+    supportsVision: true,
+  },
+  // ── Qwen3.5 Claude Opus reasoning distill family ─────────────────────────────
+  // Fine-tunes of Qwen3.5-27B by Jackrong trained on Claude 4.6 Opus CoT data.
+  // Optimised for concise structured reasoning and agentic tool-calling.
+  // Apache 2.0. Qwen3.5 chat template, thinking via enable_thinking flag.
+  // v1 (TeichAI quant — standard naming): original distill, widely validated.
+  // v2 (Jackrong): trained on 14K samples, more efficient thinking patterns.
+  // Jackrong repos use shortened filenames: Qwen3.5-27B.Q4_K_M.gguf (no model prefix).
+  {
+    modelId: 'qwen3.5-27b-opus-distill-q4', label: 'Qwen3.5 27B Opus Distill Q4', family: 'Qwen3.5',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-GGUF',
+    hfFile: 'Qwen3.5-27B.Q4_K_M.gguf',
+    sizeBytes: 16_500_000_000, ramRequiredGb: 18, contextWindow: 262144,
+    kvCacheMbPer1kTokens: 224,  // 27B dense Qwen3.5 — standard GQA KV cost
+    activeParamsB: 27.0, serenQuality: 5, speedClass: 'medium',
+  },
+  {
+    modelId: 'qwen3.5-27b-opus-distill-v2-q4', label: 'Qwen3.5 27B Opus Distill v2 Q4', family: 'Qwen3.5',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-GGUF',
+    hfFile: 'Qwen3.5-27B.Q4_K_M.gguf',
+    sizeBytes: 16_500_000_000, ramRequiredGb: 18, contextWindow: 262144,
+    kvCacheMbPer1kTokens: 224,  // same base architecture as v1
+    activeParamsB: 27.0, serenQuality: 5, speedClass: 'medium',
+  },
+  {
+    modelId: 'qwen3.5-9b-opus-distill-q4', label: 'Qwen3.5 9B Opus Distill Q4', family: 'Qwen3.5',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'Jackrong/Qwen3.5-9B-Claude-4.6-Opus-Reasoning-Distilled-GGUF',
+    hfFile: 'Qwen3.5-9B.Q4_K_M.gguf',
+    sizeBytes: 5_800_000_000, ramRequiredGb: 7, contextWindow: 262144,
+    kvCacheMbPer1kTokens: 144,  // 9B dense Qwen3.5 — GDN hybrid, moderate KV
+    activeParamsB: 9.0, serenQuality: 4, speedClass: 'medium',
+  },
+  {
+    modelId: 'qwen3.5-2b-opus-distill-q4', label: 'Qwen3.5 2B Opus Distill Q4', family: 'Qwen3.5',
+    role: 'sayon', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'Jackrong/Qwen3.5-2B-Claude-4.6-Opus-Reasoning-Distilled-GGUF',
+    hfFile: 'Qwen3.5-2B.Q4_K_M.gguf',
+    sizeBytes: 1_520_000_000, ramRequiredGb: 2, contextWindow: 262144,
+    kvCacheMbPer1kTokens: 80,   // 2B dense — low KV cost, good for coordinator role
+    activeParamsB: 2.0, sayonQuality: 3, speedClass: 'fast',
   },
 ];
 
@@ -3165,6 +3274,11 @@ export function recommendContextSize(
   // Clamp to model's declared max context
   const modelMaxK  = Math.floor(spec.contextWindow / 1024);
   const chosenK    = Math.min(tierK, modelMaxK);
+
+  // CPU inference is limited by memory bandwidth, not just capacity. Large
+  // contexts on CPU cripple throughput. 16K is the practical ceiling regardless
+  // of how much RAM the machine has.
+  if (!isGpu) return Math.min(chosenK * 1024, 16384);
 
   return chosenK * 1024;
 }

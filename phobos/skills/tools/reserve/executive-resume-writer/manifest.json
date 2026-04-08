@@ -1,0 +1,10 @@
+﻿{
+  "id": "executive-resume-writer",
+  "name": "executive resume writer",
+  "description": "Use this skill when the user: - Is applying for C-suite, VP, or Director roles",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user: - Is applying for C-suite, VP, or Director roles",
+  "runner": null
+}

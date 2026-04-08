@@ -1,0 +1,10 @@
+﻿{
+  "id": "whisper",
+  "name": "whisper",
+  "description": "OpenAI's multilingual speech recognition model.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use when:** - Speech-to-text transcription (99 languages)",
+  "runner": null
+}

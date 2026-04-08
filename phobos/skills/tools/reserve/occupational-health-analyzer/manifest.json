@@ -1,0 +1,10 @@
+﻿{
+  "id": "occupational-health-analyzer",
+  "name": "occupational health analyzer",
+  "description": "职业健康分析技能提供全面的职业健康数据分析功能，帮助用户追踪工作相关健康问题、识别职业健康风险、评估工作环境人机工程水平和优化职业健康。",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

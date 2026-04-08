@@ -1,0 +1,10 @@
+﻿{
+  "id": "sexual-health-analyzer",
+  "name": "sexual health analyzer",
+  "description": "本技能提供全面的性健康数据分析功能,包括IIEF-5评分分析、STD筛查管理、避孕效果评估、性活动统计以及与用药、慢性病、心理、营养、运动等模块的深度关联分析。",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

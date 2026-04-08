@@ -1,0 +1,10 @@
+﻿{
+  "id": "filesystem-context",
+  "name": "filesystem context",
+  "description": "The filesystem provides a single interface through which agents can flexibly store, retrieve, and update an effectively unlimited amount of context. This pattern addresses the fundamental constrain...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Activate this skill when: - Tool outputs are bloating the context window",
+  "runner": null
+}

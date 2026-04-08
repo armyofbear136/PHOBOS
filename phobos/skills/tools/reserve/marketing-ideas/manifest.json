@@ -1,0 +1,10 @@
+﻿{
+  "id": "marketing-ideas",
+  "name": "marketing ideas",
+  "description": "Analyze the user's business context and produce the 5 best marketing ideas from a curated database of proven strategies, each with a clear explanation and a specific action plan tailored to their b...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

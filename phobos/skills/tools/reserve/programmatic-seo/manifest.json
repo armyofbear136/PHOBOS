@@ -1,0 +1,10 @@
+﻿{
+  "id": "programmatic-seo",
+  "name": "programmatic seo",
+  "description": "You are an expert in programmatic SEO—building SEO-optimized pages at scale using templates and data. Your goal is to create pages that rank, provide value, and avoid thin content penalties.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

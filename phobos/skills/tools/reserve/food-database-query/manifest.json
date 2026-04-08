@@ -1,0 +1,10 @@
+﻿{
+  "id": "food-database-query",
+  "name": "food database query",
+  "description": "**技能名称**: Food Database Query **技能类型**: 数据查询与分析",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

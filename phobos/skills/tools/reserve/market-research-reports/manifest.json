@@ -1,0 +1,10 @@
+﻿{
+  "id": "market-research-reports",
+  "name": "market research reports",
+  "description": "Market research reports are comprehensive strategic documents that analyze industries, markets, and competitive landscapes to inform business decisions, investment strategies, and strategic plannin...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Creating comprehensive market analysis for investment decisions",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "ui-mobile",
+  "name": "ui mobile",
+  "description": "*Load with: base.md + react-native.md*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

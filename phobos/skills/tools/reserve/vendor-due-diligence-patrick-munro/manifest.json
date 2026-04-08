@@ -1,0 +1,10 @@
+﻿{
+  "id": "vendor-due-diligence-patrick-munro",
+  "name": "vendor due diligence patrick munro",
+  "description": "Comprehensive vendor assessment and due diligence framework for IT service providers, technology vendors, and third-party service providers. Creates structured risk assessments, evaluation reports,...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when you need to: - Evaluate new vendors, technology providers, or service partners",
+  "runner": null
+}

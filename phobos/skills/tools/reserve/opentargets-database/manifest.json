@@ -1,0 +1,10 @@
+﻿{
+  "id": "opentargets-database",
+  "name": "opentargets database",
+  "description": "The Open Targets Platform is a comprehensive resource for systematic identification and prioritization of potential therapeutic drug targets. It integrates publicly available datasets including hum...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when:",
+  "runner": null
+}

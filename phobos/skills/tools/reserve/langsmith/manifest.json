@@ -1,0 +1,10 @@
+﻿{
+  "id": "langsmith",
+  "name": "langsmith",
+  "description": "Development platform for debugging, evaluating, and monitoring language models and AI applications.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use LangSmith when:** - Debugging LLM application issues (prompts, chains, agents)",
+  "runner": null
+}

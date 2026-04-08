@@ -1,0 +1,10 @@
+﻿{
+  "id": "statute-analysis-rafal-fryc",
+  "name": "statute analysis rafal fryc",
+  "description": "Use this skill when the user asks about: - How to read and interpret statutes, regulations, or rules",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user asks about: - How to read and interpret statutes, regulations, or rules",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "weights-and-biases",
+  "name": "weights and biases",
+  "description": "Use Weights & Biases (W&B) when you need to: - **Track ML experiments** with automatic metric logging",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use Weights & Biases (W&B) when you need to: - **Track ML experiments** with automatic metric logging",
+  "runner": null
+}

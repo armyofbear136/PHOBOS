@@ -1,0 +1,10 @@
+﻿{
+  "id": "brand-voice-extractor",
+  "name": "brand voice extractor",
+  "description": "Detect from context or ask: *\"Quick snapshot, full Voice Guide, or full guide with AI training examples?\"*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

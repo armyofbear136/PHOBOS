@@ -1,0 +1,10 @@
+﻿{
+  "id": "hosted-agents",
+  "name": "hosted agents",
+  "description": "Hosted agents run in remote sandboxed environments rather than on local machines. When designed well, they provide unlimited concurrency, consistent execution environments, and multiplayer collabor...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Activate this skill when: - Building background coding agents that run independently of user devices",
+  "runner": null
+}

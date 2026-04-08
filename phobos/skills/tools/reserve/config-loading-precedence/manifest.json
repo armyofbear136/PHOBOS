@@ -1,0 +1,10 @@
+﻿{
+  "id": "config-loading-precedence",
+  "name": "config loading precedence",
+  "description": "1. Individual CLI flags (`--ocr`, `--output-format`, `--chunk`) 2. Inline JSON config (`--config-json` or `--config-json-base64`)",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

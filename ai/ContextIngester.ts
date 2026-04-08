@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { coordinatorCall, coordinatorStream } from './clients.js';
 import type { AgentStateManager } from './AgentStateManager.js';
+import { getInjection } from './SkillManager.js';
 
 
 
@@ -30,6 +31,17 @@ export interface FileSummary {
   content: string;       // raw content (kept for engine injection if needed)
 }
 
+/**
+ * Project-level scope — classified by SAYON during ingest.
+ * Drives how many tasks SEREN plans and how much content each task produces.
+ *
+ * MINIMAL      → Exactly what was asked. No extras. One thing, done precisely.
+ * STANDARD     → All files a competent developer considers naturally implied.
+ * COMPREHENSIVE → Production-ready. Tests, supporting files, configs where relevant.
+ * EXHAUSTIVE   → Everything. Every file, every edge case, every supporting artifact.
+ */
+export type ProjectScope = 'MINIMAL' | 'STANDARD' | 'COMPREHENSIVE' | 'EXHAUSTIVE';
+
 export interface IngestionResult {
   fileSummaries: FileSummary[];
   rewrittenUserMessage: string;
@@ -41,9 +53,39 @@ export interface IngestionResult {
    * so SEREN can receive them verbatim via loadedFiles injection.
    */
   extractedFiles: Array<{ path: string; content: string }>;
+  /**
+   * SAYON's assessment of the project-level scope of this request.
+   * Drives how many tasks SEREN plans and how much content each task produces.
+   */
+  projectScope: ProjectScope;
+  /**
+   * When SAYON needs clarification before handing off to SEREN, this is set.
+   * The caller (LoopController) exits early, sends these questions to the user,
+   * and records the thread as pending Phase 1 clarification.
+   */
+  phase1Clarification?: {
+    questions: string[];
+    /** Full Q&A transcript built up across rounds */
+    log: Array<{ questions: string[]; userReply: string }>;
+  };
 }
 
-// Files larger than this are truncated before sending to the coordinator.
+// ── Module-level file summary cache ──────────────────────────────────────────
+// Keyed on "filename:mtimeMs:sizeBytes". A file is re-summarised only when its
+// mtime or size changes — not on every request. The cache persists for the life
+// of the server process. Content is cached alongside the summary so TaskPlanner
+// enrichment still works without re-reading disk.
+interface CachedSummary {
+  summary: string;
+  content: string;
+  language: string;
+}
+const _summaryCache = new Map<string, CachedSummary>();
+
+function _summaryCacheKey(filename: string, mtimeMs: number, sizeBytes: number): string {
+  return `${filename}:${mtimeMs}:${sizeBytes}`;
+}
+
 // ~20k chars ≈ ~5k tokens — safe for Qwen3-8B's 32k context with room to spare.
 const MAX_FILE_CHARS = 20_000;
 // Only summarise files smaller than this — huge files get a size-only note
@@ -73,7 +115,11 @@ export class ContextIngester {
     chatSummary?: string,
     agentState?: AgentStateManager,
     clarificationLog?: Array<{ questions: string[]; userReply: string }>,
-    intentType?: string
+    intentType?: string,
+    /** Phase 1 clarification state — set when the user is replying to SAYON's pre-SEREN questions */
+    phase1ClarificationLog?: Array<{ questions: string[]; userReply: string }>,
+    /** The original first-message request that triggered Phase 1 — needed for synthesis */
+    phase1OriginalRequest?: string
   ): Promise<IngestionResult> {
     // ── Pre-step: Extract inline content blocks from user message ───────────
     // If the user pasted a code block or HTML directly into the chat, SAYON's
@@ -90,7 +136,8 @@ export class ContextIngester {
       sendStatus(`Reading ${filesToProcess.length} workspace file${filesToProcess.length > 1 ? 's' : ''}…`);
     }
 
-    const fileContents: Array<{ filename: string; content: string; sizeBytes: number; language: string }> = [];
+    // ── Step 1: Read files — cache hit skips disk read ─────────────────────
+    const fileContents: Array<{ filename: string; content: string; sizeBytes: number; language: string; cacheKey: string; cached: boolean }> = [];
     for (const filename of filesToProcess) {
       try {
         agentState?.transition('reading', filename.split('/').pop()!.slice(0, 20));
@@ -98,10 +145,17 @@ export class ContextIngester {
         const stat = await fs.stat(absPath);
         const ext = path.extname(filename).slice(1) || 'text';
         const language = LANGUAGE_LABELS[ext] ?? ext;
+        const cacheKey = _summaryCacheKey(filename, stat.mtimeMs, stat.size);
+
+        // Cache hit — no need to read file or re-summarise
+        if (_summaryCache.has(cacheKey)) {
+          const hit = _summaryCache.get(cacheKey)!;
+          fileContents.push({ filename, content: hit.content, sizeBytes: stat.size, language: hit.language, cacheKey, cached: true });
+          continue;
+        }
 
         if (stat.size > SUMMARISE_THRESHOLD_BYTES) {
-          // Too large to summarise meaningfully — note the size only
-          fileContents.push({ filename, content: `[File too large to display: ${(stat.size / 1024).toFixed(0)}KB]`, sizeBytes: stat.size, language });
+          fileContents.push({ filename, content: `[File too large to display: ${(stat.size / 1024).toFixed(0)}KB]`, sizeBytes: stat.size, language, cacheKey, cached: false });
           continue;
         }
 
@@ -109,76 +163,175 @@ export class ContextIngester {
         const content = raw.length > MAX_FILE_CHARS
           ? raw.slice(0, MAX_FILE_CHARS) + `\n... [truncated at ${MAX_FILE_CHARS} chars, full size ${raw.length} chars]`
           : raw;
-        fileContents.push({ filename, content, sizeBytes: stat.size, language });
+        fileContents.push({ filename, content, sizeBytes: stat.size, language, cacheKey, cached: false });
       } catch {
         // File disappeared between index and read — skip silently
       }
     }
 
-    // ── Step 2: Summarise files ─────────────────────────────────────────────
+    // ── Step 2: Summarise files — only those not already cached ────────────
     const fileSummaries: FileSummary[] = [];
+    const needsSummarising = fileContents.filter(f => !f.cached);
+    const cachedCount = fileContents.length - needsSummarising.length;
 
-    if (fileContents.length > 0) {
-      sendStatus(`Summarising ${fileContents.length} file${fileContents.length > 1 ? 's' : ''}…`);
+    if (needsSummarising.length > 0) {
+      sendStatus(cachedCount > 0
+        ? `Summarising ${needsSummarising.length} file${needsSummarising.length > 1 ? 's' : ''} (${cachedCount} cached)…`
+        : `Summarising ${needsSummarising.length} file${needsSummarising.length > 1 ? 's' : ''}…`
+      );
 
-      // Batch all files into one coordinator call to avoid round-trip overhead.
-      // Qwen3-8B handles this well up to ~12 files within its context window.
-      const fileBlocks = fileContents
-        .map((f) => `<file path="${f.filename}" language="${f.language}">\n${f.content}\n</file>`)
-        .join('\n\n');
+      const SUMMARY_BATCH_SIZE = 4;
+      const compressionGuidance = getInjection('sayon_ingest');
+      const summaryMap = new Map<string, string>();
 
-      const summaryPrompt =
-        `Summarise each file below. For each file, document EVERY critical part of the file: ` +
-        `what it does, its key exports or responsibilities, and main dependencies. ` +
-        `Use as much space as is truly necessary and no more. ` +
-        `Respond ONLY with a JSON array: [{"filename":"...","summary":"..."}]. No preamble.\n\n` +
-        fileBlocks;
+      for (let batchStart = 0; batchStart < needsSummarising.length; batchStart += SUMMARY_BATCH_SIZE) {
+        const batch = needsSummarising.slice(batchStart, batchStart + SUMMARY_BATCH_SIZE);
+        const fileBlocks = batch
+          .map((f) => `<file path="${f.filename}" language="${f.language}">\n${f.content.slice(0, 8_000)}\n</file>`)
+          .join('\n\n');
+
+        const summaryPrompt =
+          `You are SAYON preparing file summaries for SEREN. Summarise each file below. ` +
+          `For each file, document EVERY critical part: what it does, its key exports or ` +
+          `responsibilities, and main dependencies. Use as much space as is truly necessary and no more. ` +
+          `Respond ONLY with a JSON array: [{"filename":"...","summary":"..."}]. No preamble.` +
+          compressionGuidance +
+          `\n\n` +
+          fileBlocks;
+
+        try {
+          const raw = await coordinatorCall({
+            systemPrompt: '',
+            messages: [{ role: 'user', content: summaryPrompt }],
+            maxTokens: 1024,
+            temperature: 0.1,
+            mode: 'no_think',
+          });
+          const jsonMatch = raw.match(/\[[\s\S]*\]/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]) as Array<{ filename: string; summary: string }>;
+            for (const p of parsed) summaryMap.set(p.filename, p.summary);
+          }
+        } catch (err) {
+          console.warn(`[ContextIngester] Batch summarisation failed (batch ${batchStart}), using fallbacks:`, err);
+        }
+      }
+
+      // Write new summaries into cache
+      for (const f of needsSummarising) {
+        const summary = summaryMap.get(f.filename) ?? `${f.language} file, ${(f.sizeBytes / 1024).toFixed(1)}KB`;
+        _summaryCache.set(f.cacheKey, { summary, content: f.content, language: f.language });
+      }
+    } else if (cachedCount > 0) {
+      sendStatus(`${cachedCount} file${cachedCount > 1 ? 's' : ''} loaded from cache…`);
+    }
+
+    // Assemble fileSummaries from cache + fresh results
+    for (const f of fileContents) {
+      const cached = _summaryCache.get(f.cacheKey);
+      fileSummaries.push({
+        filename: f.filename,
+        language: f.language,
+        sizeBytes: f.sizeBytes,
+        summary: cached?.summary ?? `${f.language} file, ${(f.sizeBytes / 1024).toFixed(1)}KB`,
+        content: f.content,
+      });
+    }
+
+    // ── Phase 1 Clarification check ────────────────────────────────────────
+    // synthesisMode is declared here (hoisted) because Phase 1 check needs it.
+    // It is fully set in Step 3 below — here we just need to know if we are
+    // already mid-SEREN clarification so we can skip Phase 1.
+    const synthesisMode = !!(clarificationLog && clarificationLog.length > 0);
+
+    // Fires for CODE_REQUEST and PLAN_REQUEST regardless of whether a workspace
+    // is present — non-file tasks (writing, analysis, docs) need clarity too.
+    // Only skipped when already mid-clarification loop (either kind).
+    const canAskPhase1 =
+      !synthesisMode &&
+      !phase1ClarificationLog?.length &&
+      (intentType === 'CODE_REQUEST' || intentType === 'PLAN_REQUEST');
+
+    if (canAskPhase1) {
+      // Build the full picture SAYON now has after Step 2 — this is why Phase 1
+      // must fire AFTER file summarisation, not before it.
+      const contextSummaryForClarity: string[] = [];
+      if (chatSummary) contextSummaryForClarity.push(`Prior conversation summary available.`);
+      if (fileSummaries.length > 0) {
+        contextSummaryForClarity.push(
+          `Workspace files:\n` +
+          fileSummaries.map(f => `  ${f.filename}: ${f.summary}`).join('\n')
+        );
+      }
+
+      const clarityCheckPrompt =
+        `You are SAYON. You have read the user's request and all available workspace context. ` +
+        `Before handing this to the execution engine, decide: is the request ` +
+        `clear enough to plan and execute without risking producing the wrong result?\n\n` +
+        `Ask yourself:\n` +
+        `- Do I know exactly what the user wants as the end result?\n` +
+        `- If files are involved, do I know which ones and what changes to make?\n` +
+        `- If no files are involved, do I know the format, scope, and content expected?\n` +
+        `- Is there any ambiguity that would force the executor to guess at intent?\n\n` +
+        `If YES to all: respond {"decision":"PROCEED"}.\n` +
+        `If any answer is NO: respond {"decision":"CLARIFY","questions":["<q1>","<q2>"]}.\n` +
+        `Maximum 2 questions. Only ask what you genuinely cannot infer from the request and context.\n` +
+        `Do NOT ask about files if the request clearly does not involve files.\n\n` +
+        `USER REQUEST: ${effectiveUserMessage}` +
+        (contextSummaryForClarity.length > 0
+          ? `\n\nAVAILABLE CONTEXT:\n${contextSummaryForClarity.join('\n\n')}`
+          : `\nNo workspace files are present.`) +
+        `\n\nRespond ONLY with JSON. No preamble.`;
 
       try {
+        sendStatus('SAYON reviewing request clarity…');
         const raw = await coordinatorCall({
           systemPrompt: '',
-          messages: [{ role: 'user', content: summaryPrompt }],
-          maxTokens: 1024,
+          messages: [{ role: 'user', content: clarityCheckPrompt }],
+          maxTokens: 256,
           temperature: 0.1,
           mode: 'no_think',
         });
-        const jsonMatch = raw.match(/\[[\s\S]*\]/);
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0]) as Array<{ filename: string; summary: string }>;
-          const summaryMap = new Map(parsed.map((p) => [p.filename, p.summary]));
-          for (const f of fileContents) {
-            fileSummaries.push({
-              filename: f.filename,
-              language: f.language,
-              sizeBytes: f.sizeBytes,
-              summary: summaryMap.get(f.filename) ?? `${f.language} file, ${(f.sizeBytes / 1024).toFixed(1)}KB`,
-              content: f.content,
-            });
-          }
-        } else {
-          // Parse failed — use size-based fallbacks, still keep content
-          for (const f of fileContents) {
-            fileSummaries.push({
-              filename: f.filename,
-              language: f.language,
-              sizeBytes: f.sizeBytes,
-              summary: `${f.language} file, ${(f.sizeBytes / 1024).toFixed(1)}KB`,
-              content: f.content,
-            });
+          const parsed = JSON.parse(jsonMatch[0]) as { decision: string; questions?: string[] };
+          if (parsed.decision === 'CLARIFY' && Array.isArray(parsed.questions) && parsed.questions.length > 0) {
+            return {
+              fileSummaries,
+              rewrittenUserMessage: effectiveUserMessage,
+              coordinatorSummary: 'I need a bit more information before I can get started.',
+              extractedFiles,
+              projectScope: 'STANDARD', // default — will be set properly on re-entry
+              phase1Clarification: {
+                questions: parsed.questions,
+                log: [{ questions: parsed.questions, userReply: '' }],
+              },
+            };
           }
         }
       } catch (err) {
-        console.warn('[ContextIngester] File summarisation failed, using size fallbacks:', err);
-        for (const f of fileContents) {
-          fileSummaries.push({
-            filename: f.filename,
-            language: f.language,
-            sizeBytes: f.sizeBytes,
-            summary: `${f.language} file, ${(f.sizeBytes / 1024).toFixed(1)}KB`,
-            content: f.content,
-          });
-        }
+        console.warn('[ContextIngester] Phase 1 clarity check failed, proceeding anyway:', err);
       }
+    }
+
+    // If we are re-entering with Phase 1 answers, build a transcript seed.
+    // This is set before contextHints/synthesisMode so the rewrite can use it.
+    // phase1SeedOverride only activates when at least one log entry has a filled
+    // userReply. If all entries have empty replies, the user hasn't answered yet
+    // and we should NOT enter synthesis mode — let Phase 1 ask again or proceed.
+    let phase1SeedOverride: string | null = null;
+    const hasFilledPhase1Replies = phase1ClarificationLog?.some(e => e.userReply.trim().length > 0) ?? false;
+    if (phase1ClarificationLog && phase1ClarificationLog.length > 0 && hasFilledPhase1Replies) {
+      // Use the stored originalRequest (first message) as the anchor — NOT effectiveUserMessage
+      // which is just the second message (the answer). Without this, the original "build me a
+      // website" request is lost and only the short answer makes it into the synthesis.
+      const anchor = phase1OriginalRequest ?? effectiveUserMessage;
+      const parts: string[] = [`Original request: ${anchor}`];
+      for (const entry of phase1ClarificationLog) {
+        for (const q of entry.questions) parts.push(`SAYON asked: ${q}`);
+        if (entry.userReply) parts.push(`User replied: ${entry.userReply}`);
+      }
+      phase1SeedOverride = parts.join('\n');
     }
 
     // ── Step 3: Rewrite user message with full context ─────────────────────
@@ -198,10 +351,8 @@ export class ContextIngester {
     // Injected BEFORE the rewrite rules so SAYON can see exactly what was asked
     // and what the user said, rather than relying on the compressed chat summary.
     let clarificationHistoryBlock = '';
-    let synthesisMode = false;
-    if (clarificationLog && clarificationLog.length > 0) {
-      synthesisMode = true;
-      const rounds = clarificationLog
+    if (synthesisMode) {
+      const rounds = clarificationLog!
         .map((entry, i) => {
           const qLines = entry.questions.map((q, qi) => `  Q${qi + 1}: ${q}`).join('\n');
           const replyLine = entry.userReply
@@ -232,6 +383,9 @@ export class ContextIngester {
       }
       if (parts.length > 1) seedMessage = parts.join('\n');
     }
+    // Phase 1 clarification transcript overrides any other seed — it carries
+    // the full SAYON Q&A history before SEREN ever saw the request.
+    if (phase1SeedOverride) seedMessage = phase1SeedOverride;
 
     // ── Intent-aware rewrite prompt ────────────────────────────────────────
     // The rewrite prompt branches on three distinct modes:
@@ -249,25 +403,25 @@ export class ContextIngester {
 
     let rewritePrompt: string;
 
-    if (synthesisMode) {
+    if (synthesisMode || phase1SeedOverride) {
       // ── Mode 2: Clarification synthesis ──────────────────────────────────────
+      // Used for both SEREN clarification re-entry and Phase 1 SAYON clarification re-entry.
+      // seedMessage already contains the full Q&A transcript in either case.
+      const historyBlock = phase1SeedOverride
+        ? `<phase1_clarification_history>\n${phase1SeedOverride}\n</phase1_clarification_history>\n\n`
+        : clarificationHistoryBlock;
+
       rewritePrompt =
-        clarificationHistoryBlock +
-        `You are preparing a task brief for SEREN, an execution engine. ` +
-        `Rewrite the user's message into a precise, unambiguous task description. ` +
-        `Resolve any vague references using the available context (exact function names, ` +
-        `file paths, line numbers if relevant).\n\n` +
-        `SYNTHESIS RULE: This is a clarification follow-up. The user has already answered ` +
-        `questions — do NOT flag ambiguity, do NOT prefix with [AMBIGUOUS]. Instead, synthesize ` +
-        `ALL of the user's replies (including prior rounds shown in <clarification_history>) into ` +
-        `one complete, unambiguous task description. If the user said "I don't have X, just create ` +
-        `something new", treat that as a complete answer — make reasonable creative choices and ` +
-        `describe them explicitly in the reformulated prompt (e.g. "create home_networking.html ` +
-        `in the workspace root with standard HTML5 structure").\n\n` +
-        `SCOPE RULE: Describe only what files need to change and what the outcome must be. ` +
-        `Do NOT expand scope beyond what is asked. Do NOT mention project setup, tsconfig, ` +
-        `package.json, package managers, or infrastructure unless explicitly requested. ` +
-        `If the request is for a single function or snippet, state that explicitly.\n\n` +
+        historyBlock +
+        `You are SAYON, preparing the final task brief for SEREN. ` +
+        `The user's request has been clarified through a Q&A exchange. ` +
+        `Synthesise ALL of the information below into a single precise, unambiguous task description ` +
+        `that SEREN can execute without needing to ask anything further.\n\n` +
+        `SYNTHESIS RULE: Do NOT flag ambiguity, do NOT prefix with [AMBIGUOUS]. ` +
+        `Incorporate every answer the user gave. Make reasonable creative choices for ` +
+        `anything left genuinely open, and describe those choices explicitly. ` +
+        `The reformulated prompt must fully describe the complete original request — ` +
+        `do not reduce it to just the clarification answers.\n\n` +
         `CONTENT PRESERVATION RULE: If the user's message contains code, HTML, templates, ` +
         `examples, or other structured content, do NOT summarise or omit it. Inline content ` +
         `has already been extracted as attached files — reference them by filename.\n\n` +
@@ -311,21 +465,27 @@ export class ContextIngester {
 
     } else {
       // ── Mode 3: Execution (CODE_REQUEST / PLAN_REQUEST) ─────────────────────────────
+      const hasFiles = fileSummaries.length > 0;
       rewritePrompt =
-        `You are preparing a task brief for SEREN, a coding execution engine. ` +
-        `Rewrite the user's message into a precise, unambiguous task description. ` +
-        `Resolve any vague references using the available context (exact function names, ` +
-        `file paths, line numbers if relevant).\n\n` +
-        `AMBIGUITY RULE: If you cannot assertain which files to modify with reasonable confidence, ` +
-        `what the output should look like, or which approach to take among multiple valid options — ` +
-        `flag this in the reformulated prompt by prefixing it with [AMBIGUOUS: <what is unclear>]. ` +
-        `Do not guess or fill in details the user did not provide. It is ALWAYS better to surface ` +
-        `ambiguity than to silently assume an interpretation.\n\n` +
-        `SCOPE RULE: Describe only what files need to change and what the outcome must be. ` +
-        `Do NOT expand scope beyond what is asked. Do NOT mention project setup, tsconfig, ` +
-        `package.json, package managers, or infrastructure unless explicitly requested. ` +
-        `If the request is for a single function or snippet, state that explicitly so the ` +
-        `planner produces exactly one task — not a full project scaffold.\n\n` +
+        `You are SAYON, preparing a task brief for SEREN, the execution engine. ` +
+        `Rewrite the user's request into a precise, unambiguous description that SEREN ` +
+        `can act on without needing to guess at intent.\n\n` +
+        `AMBIGUITY RULE: If the request leaves the expected outcome unclear — whether that ` +
+        `is a file change, a written document, a code snippet, or an analysis — flag it ` +
+        `by prefixing the reformulated prompt with [AMBIGUOUS: <what is unclear>]. ` +
+        `Do not invent details the user did not provide. Surface ambiguity rather than ` +
+        `silently assuming an interpretation.\n\n` +
+        `SCOPE RULE: Describe exactly what needs to be produced and what the outcome must be. ` +
+        `Do NOT expand scope. Do NOT add infrastructure (tsconfig, package.json, scaffolding) ` +
+        `unless explicitly requested. If the request is for a single function, snippet, or ` +
+        `written response, state that explicitly — do not escalate it into a larger task.\n\n` +
+        (hasFiles
+          ? `FILE RULE: If files are involved, name them exactly using the filenames from context. ` +
+            `If the task does not require touching any file, state that clearly so SEREN ` +
+            `produces a text response rather than a file operation.\n\n`
+          : `FILE RULE: No workspace files are present. If the user's request requires a file ` +
+            `to be created, name it explicitly. If the request is for a response or analysis ` +
+            `with no file output, state that clearly.\n\n`) +
         `CONTENT PRESERVATION RULE: If the user's message contains code, HTML, templates, ` +
         `examples, or other structured content meant to be used as input or reference, do NOT ` +
         `summarise or omit it. Inline content has already been extracted as attached files — ` +
@@ -366,7 +526,38 @@ export class ContextIngester {
       console.warn('[ContextIngester] Request rewrite failed, using original:', err);
     }
 
-    return { fileSummaries, rewrittenUserMessage, coordinatorSummary, extractedFiles };
+    // ── Scope classification ──────────────────────────────────────────────
+    // A quick follow-up SAYON call to classify the project scope based on the
+    // rewritten message and available context. Cheap, no_think, single token output.
+    let projectScope: ProjectScope = 'STANDARD';
+    if (intentType === 'CODE_REQUEST' || intentType === 'PLAN_REQUEST') {
+      const scopePrompt =
+        `Classify the scope of this request into exactly one of: MINIMAL, STANDARD, COMPREHENSIVE, EXHAUSTIVE.\n\n` +
+        `MINIMAL      = Exactly one specific thing asked for. A single file, function, fix, or short response.\n` +
+        `STANDARD     = A well-defined task with an understood set of deliverables. A feature, a component, a document.\n` +
+        `COMPREHENSIVE = A substantial project or feature that should be production-ready. Multiple files, tests if relevant.\n` +
+        `EXHAUSTIVE   = The user wants everything possible. A full system, full site, full app, or explicitly comprehensive output.\n\n` +
+        `REQUEST: ${rewrittenUserMessage.slice(0, 2_000)}\n\n` +
+        `Respond with ONLY one word: MINIMAL, STANDARD, COMPREHENSIVE, or EXHAUSTIVE. Nothing else.`;
+      try {
+        const scopeRaw = await coordinatorCall({
+          systemPrompt: '',
+          messages: [{ role: 'user', content: scopePrompt }],
+          maxTokens: 8,
+          temperature: 0.0,
+          mode: 'no_think',
+        });
+        const scopeWord = scopeRaw.trim().toUpperCase() as ProjectScope;
+        if (['MINIMAL', 'STANDARD', 'COMPREHENSIVE', 'EXHAUSTIVE'].includes(scopeWord)) {
+          projectScope = scopeWord;
+        }
+      } catch (err) {
+        console.warn('[ContextIngester] Scope classification failed, defaulting to STANDARD:', err);
+      }
+      console.log(`[ingest:scope] classified as ${projectScope}`);
+    }
+
+    return { fileSummaries, rewrittenUserMessage, coordinatorSummary, extractedFiles, projectScope };
   }
 
   /**

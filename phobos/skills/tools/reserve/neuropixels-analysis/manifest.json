@@ -1,0 +1,10 @@
+﻿{
+  "id": "neuropixels-analysis",
+  "name": "neuropixels analysis",
+  "description": "Comprehensive toolkit for analyzing Neuropixels high-density neural recordings using current best practices from SpikeInterface, Allen Institute, and International Brain Laboratory (IBL). Supports ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Working with Neuropixels recordings (.ap.bin, .lf.bin, .meta files)",
+  "runner": null
+}

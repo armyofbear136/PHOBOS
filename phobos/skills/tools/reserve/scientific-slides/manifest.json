@@ -1,0 +1,10 @@
+﻿{
+  "id": "scientific-slides",
+  "name": "scientific slides",
+  "description": "Scientific presentations are a critical medium for communicating research, sharing findings, and engaging with academic and professional audiences. This skill provides comprehensive guidance for cr...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Preparing conference presentations (5-20 minutes)",
+  "runner": null
+}

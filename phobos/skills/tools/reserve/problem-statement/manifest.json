@@ -1,0 +1,10 @@
+﻿{
+  "id": "problem-statement",
+  "name": "problem statement",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Kicking off discovery or problem validation work - Aligning stakeholders before solutioning",
+  "runner": null
+}

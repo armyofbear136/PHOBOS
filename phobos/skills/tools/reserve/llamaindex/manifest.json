@@ -1,0 +1,10 @@
+﻿{
+  "id": "llamaindex",
+  "name": "llamaindex",
+  "description": "The leading framework for connecting LLMs with your data.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use LlamaIndex when:** - Building RAG (retrieval-augmented generation) applications",
+  "runner": null
+}

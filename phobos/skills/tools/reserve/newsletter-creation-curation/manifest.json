@@ -1,0 +1,10 @@
+﻿{
+  "id": "newsletter-creation-curation",
+  "name": "newsletter creation curation",
+  "description": "Use this skill to create B2B newsletters that match business context, not generic content templates.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

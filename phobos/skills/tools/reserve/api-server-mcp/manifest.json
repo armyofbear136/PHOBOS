@@ -1,0 +1,10 @@
+﻿{
+  "id": "api-server-mcp",
+  "name": "api server mcp",
+  "description": "**Axum server design for document extraction endpoints, middleware, async processing, and Model Context Protocol integration for AI agents**",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

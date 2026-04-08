@@ -1,0 +1,10 @@
+﻿{
+  "id": "lead-magnet-generator",
+  "name": "lead magnet generator",
+  "description": "Generate 2 viral lead magnet posts that get your audience to comment a trigger word in exchange for a free resource, maximizing engagement and DM opt-ins.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

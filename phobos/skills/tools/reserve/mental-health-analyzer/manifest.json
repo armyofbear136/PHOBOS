@@ -1,0 +1,10 @@
+﻿{
+  "id": "mental-health-analyzer",
+  "name": "mental health analyzer",
+  "description": "心理健康分析技能提供全面的心理健康数据分析功能，帮助用户追踪心理状态、识别情绪模式、监测危机风险和优化应对策略。",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

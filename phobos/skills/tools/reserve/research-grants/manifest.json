@@ -1,0 +1,10 @@
+﻿{
+  "id": "research-grants",
+  "name": "research grants",
+  "description": "Research grant writing is the process of developing competitive funding proposals for federal agencies and foundations. Master agency-specific requirements, review criteria, narrative structure, bu...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Writing research proposals for NSF, NIH, DOE, DARPA, or NSTC programs",
+  "runner": null
+}

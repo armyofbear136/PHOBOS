@@ -1,0 +1,10 @@
+﻿{
+  "id": "tool-design",
+  "name": "tool design",
+  "description": "Tools are the primary mechanism through which agents interact with the world. They define the contract between deterministic systems and non-deterministic agents. Unlike traditional software APIs d...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Activate this skill when: - Creating new tools for agent systems",
+  "runner": null
+}

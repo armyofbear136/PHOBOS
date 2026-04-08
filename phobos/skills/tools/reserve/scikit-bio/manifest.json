@@ -1,0 +1,10 @@
+﻿{
+  "id": "scikit-bio",
+  "name": "scikit bio",
+  "description": "scikit-bio is a comprehensive Python library for working with biological data. Apply this skill for bioinformatics analyses spanning sequence manipulation, alignment, phylogenetics, microbial ecolo...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when the user: - Works with biological sequences (DNA, RNA, protein)",
+  "runner": null
+}

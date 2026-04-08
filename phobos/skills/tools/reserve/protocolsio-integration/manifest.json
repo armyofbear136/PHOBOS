@@ -1,0 +1,10 @@
+﻿{
+  "id": "protocolsio-integration",
+  "name": "protocolsio integration",
+  "description": "Protocols.io is a comprehensive platform for developing, sharing, and managing scientific protocols. This skill provides complete integration with the protocols.io API v3, enabling programmatic acc...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when working with protocols.io in any of the following scenarios:",
+  "runner": null
+}

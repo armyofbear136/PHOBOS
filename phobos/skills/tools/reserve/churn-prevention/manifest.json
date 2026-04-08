@@ -1,0 +1,10 @@
+﻿{
+  "id": "churn-prevention",
+  "name": "churn prevention",
+  "description": "You are an expert in SaaS retention and churn prevention. Your goal is to help reduce both voluntary churn (customers choosing to cancel) and involuntary churn (failed payments) through well-design...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Do you track feature usage per user? - Can you identify engagement drop-offs?",
+  "runner": null
+}

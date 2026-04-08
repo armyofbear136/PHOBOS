@@ -1,0 +1,10 @@
+﻿{
+  "id": "flowio",
+  "name": "flowio",
+  "description": "FlowIO is a lightweight Python library for reading and writing Flow Cytometry Standard (FCS) files. Parse FCS metadata, extract event data, and create new FCS files with minimal dependencies. The l...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when:",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "tech-contract-negotiation-patrick-munro",
+  "name": "tech contract negotiation patrick munro",
+  "description": "Systematic contract negotiation strategies and tactics for technology services agreements, professional services contracts, and commercial transactions. Provides position development frameworks, ob...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when you need to: - Develop negotiation strategies for technology services agreements (SaaS, cloud, professional services, managed services)",
+  "runner": null
+}

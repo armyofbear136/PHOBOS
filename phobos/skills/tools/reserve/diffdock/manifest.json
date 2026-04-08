@@ -1,0 +1,10 @@
+﻿{
+  "id": "diffdock",
+  "name": "diffdock",
+  "description": "DiffDock is a diffusion-based deep learning tool for molecular docking that predicts 3D binding poses of small molecule ligands to protein targets. It represents the state-of-the-art in computation...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when:",
+  "runner": null
+}

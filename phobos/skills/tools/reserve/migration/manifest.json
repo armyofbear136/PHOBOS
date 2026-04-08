@@ -1,0 +1,10 @@
+﻿{
+  "id": "migration",
+  "name": "migration",
+  "description": "> Move to Playwright with confidence — side-by-side command mappings, architecture translations, and incremental migration strategies.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

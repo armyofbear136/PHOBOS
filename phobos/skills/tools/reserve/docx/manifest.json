@@ -1,0 +1,10 @@
+﻿{
+  "id": "docx",
+  "name": "docx",
+  "description": "A .docx file is a ZIP archive containing XML files.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

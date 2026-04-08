@@ -1,0 +1,10 @@
+﻿{
+  "id": "pestel-analysis",
+  "name": "pestel analysis",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Entering a new market or geography - Strategic planning (annual roadmapping, 3-5 year planning)",
+  "runner": null
+}

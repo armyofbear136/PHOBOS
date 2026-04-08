@@ -1,0 +1,10 @@
+﻿{
+  "id": "gtm-motions",
+  "name": "gtm motions",
+  "description": "Identify and evaluate the best go-to-market motions for your product. This skill analyzes seven proven GTM approaches with specific tools and tactics to help you build a balanced acquisition strategy.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Selecting marketing channels for your product - Choosing between inbound vs outbound strategy",
+  "runner": null
+}

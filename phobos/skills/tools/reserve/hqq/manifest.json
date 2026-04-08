@@ -1,0 +1,10 @@
+﻿{
+  "id": "hqq",
+  "name": "hqq",
+  "description": "Fast, calibration-free weight quantization supporting 8/4/3/2/1-bit precision with multiple optimized backends.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use HQQ when:** - Quantizing models without calibration data (no dataset needed)",
+  "runner": null
+}

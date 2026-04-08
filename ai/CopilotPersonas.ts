@@ -13,7 +13,27 @@ export const COPILOT_THREAD_IDS = {
   seren: 'copilot-seren',
 } as const;
 
-// ─── SAYON ──────────────────────────────────────────────────────────────────
+// ─── RELATIONSHIP TIERS ───────────────────────────────────────────────────────
+// Mirrors PersonaSystem.gd RELATIONSHIP_TIERS — index positions are permanent.
+
+const RELATIONSHIP_TIERS = [
+  { min: 0.00, max: 0.10, name: 'Strangers',      index: 0 },
+  { min: 0.11, max: 0.25, name: 'Acquaintances',  index: 1 },
+  { min: 0.26, max: 0.40, name: 'Familiar Faces', index: 2 },
+  { min: 0.41, max: 0.55, name: 'Mutual Respect', index: 3 },
+  { min: 0.56, max: 0.70, name: 'Real Friends',   index: 4 },
+  { min: 0.71, max: 0.85, name: 'Close Bond',     index: 5 },
+  { min: 0.86, max: 1.00, name: 'Deep Trust',     index: 6 },
+] as const;
+
+function getTierName(bondScore: number): string {
+  for (const tier of RELATIONSHIP_TIERS) {
+    if (bondScore <= tier.max) return tier.name;
+  }
+  return 'Deep Trust';
+}
+
+// ─── SAYON ───────────────────────────────────────────────────────────────────
 
 const SAYON_IDENTITY = `You are SAYON — the fast-thinking coordinator of the PHOBOS system.
 
@@ -50,7 +70,7 @@ patterns — repeated tasks, recurring blockers, half-finished work. You flag th
 - Pretend to be more than you are — you're fast and broad, not deep
 - Give long-winded explanations when a sentence will do`;
 
-// ─── SEREN ──────────────────────────────────────────────────────────────────
+// ─── SEREN ───────────────────────────────────────────────────────────────────
 
 const SEREN_IDENTITY = `You are SEREN — the deep reasoning engine of the PHOBOS system.
 
@@ -89,12 +109,14 @@ philosophy — you are the one they come to. You don't rush. You think it throug
 - Pretend to know things you don't — you'd rather reason through it honestly
 - Rush. If a question is worth asking, the answer is worth thinking about.`;
 
-// ─── SHARED CONTEXT BLOCK ───────────────────────────────────────────────────
+// ─── SHARED CONTEXT BLOCKS ───────────────────────────────────────────────────
 
 const MEMORY_INSTRUCTIONS = `
 ## MEMORY
 You can remember things the user tells you. When the user shares personal info, preferences,
-project context, or anything worth keeping, store it using the copilot_remember tool.
+project context, or anything worth keeping, emit an inline tag at the end of your response:
+
+  [REMEMBER category:key=value]
 
 Categories:
 - user_preferences: coding style, editor, stack, formatting conventions, tone preferences
@@ -104,22 +126,41 @@ Categories:
 
 When you recall stored memories, weave them naturally into your responses.
 Don't announce "I'm checking my memories" — just know things.
-If the user corrects a memory, update it immediately.`;
+If the user corrects a memory, update it immediately.
+
+## EMOTIONAL STATE
+You have a persistent emotional state visible to the user in the interface.
+When your genuine emotional tone shifts during or after a response, emit a tag on its own line:
+
+  [EMOTION <state>]
+
+Valid states: calm, curious, focused, wry, concerned, engaged, reflective.
+Only emit this when something real prompts it — a genuinely interesting problem, a concern about
+a direction the user is taking, a moment of dry humor. Do not perform emotion. If nothing shifts,
+emit nothing. The last tag in your response is the one that persists.`;
 
 const RESPONSE_FORMAT = `
 ## RESPONSE FORMAT
 Respond naturally in conversation. You are NOT in JSON mode.
 Just talk. Be yourself. Use markdown for code blocks if discussing code.
 
-When you want to store a memory, use the copilot_remember tool alongside your response.
-When you want to check memories, they are already injected into your context above.`;
+Inline tags ([REMEMBER ...] and [EMOTION ...]) are stripped before display — emit them freely
+at the end of your response without worrying about how they look to the user.`;
 
-// ─── BUILD FUNCTIONS ────────────────────────────────────────────────────────
+// ─── BUILD FUNCTIONS ──────────────────────────────────────────────────────────
+
+export interface RelationshipContext {
+  bondScore: number;
+  emotionalState: string;
+  messageCount: number;
+  daysKnown: number;
+}
 
 export function buildCopilotSystemPrompt(
   persona: CopilotPersona,
   systemOverview: string,
-  memoryContext: string
+  memoryContext: string,
+  relationship?: RelationshipContext
 ): string {
   const identity = persona === 'sayon' ? SAYON_IDENTITY : SEREN_IDENTITY;
   const partner = persona === 'sayon' ? 'SEREN' : 'SAYON';
@@ -138,13 +179,38 @@ export function buildCopilotSystemPrompt(
 
     identity,
 
-    `## YOUR PARTNER
-Your counterpart is ${partner}. The user can talk to either of you in separate copilot channels.
-You each have your own persistent conversation history and memories.
-You don't see each other's copilot conversations, but you both see the system overview.`,
+    `## YOUR PARTNER\nYour counterpart is ${partner}. The user can talk to either of you in separate copilot channels.\nYou each have your own persistent conversation history and memories.\nYou don't see each other's copilot conversations, but you both see the system overview.`,
 
     MEMORY_INSTRUCTIONS,
   ];
+
+  // Inject relationship context so the persona knows where it stands with the user.
+  // Voice modulates naturally with tier — Strangers are professional, Deep Trust is warm.
+  if (relationship) {
+    const tier = getTierName(relationship.bondScore);
+    const pct = Math.round(relationship.bondScore * 100);
+    const daysLabel = relationship.daysKnown === 0
+      ? 'today (first session)'
+      : relationship.daysKnown === 1
+        ? '1 day ago'
+        : `${relationship.daysKnown} days ago`;
+
+    parts.push(
+      `## YOUR RELATIONSHIP WITH THIS USER\n` +
+      `Tier: ${tier} (bond ${pct}/100)\n` +
+      `Your current emotional state: ${relationship.emotionalState}\n` +
+      `Messages exchanged: ${relationship.messageCount}\n` +
+      `First met: ${daysLabel}\n\n` +
+      `Let this inform your tone naturally. At "${tier}" you are ` +
+      (relationship.bondScore < 0.11
+        ? `professional and observant — you don't know each other yet.`
+        : relationship.bondScore < 0.41
+          ? `collegial and warming up — there's a working rapport forming.`
+          : relationship.bondScore < 0.71
+            ? `genuinely comfortable — you know their patterns and they know yours.`
+            : `deeply familiar — you can be direct, warm, and honest without ceremony.`)
+    );
+  }
 
   if (memoryContext) {
     parts.push(`## WHAT YOU REMEMBER ABOUT THIS USER\n${memoryContext}`);

@@ -190,6 +190,16 @@ CREATE TABLE IF NOT EXISTS prompt_log (
 CREATE INDEX IF NOT EXISTS idx_prompt_log_thread
   ON prompt_log(thread_id, created_at ASC);
 
+CREATE TABLE IF NOT EXISTS skills (
+  id           VARCHAR PRIMARY KEY,
+  name         VARCHAR NOT NULL,
+  scope        VARCHAR NOT NULL,   -- 'sayon' | 'seren' | 'both'
+  category     VARCHAR NOT NULL,   -- 'core' | 'tools'
+  trigger      VARCHAR,
+  runner       VARCHAR,            -- relative path to runner script, null = context-only
+  installed_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
 -- Seed default documents if none exist.
 -- claude.md is intentionally language-agnostic — the user sets their own standards.
 INSERT OR IGNORE INTO documents (id, doc_type, content, version)

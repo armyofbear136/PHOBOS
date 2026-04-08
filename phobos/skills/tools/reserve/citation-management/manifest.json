@@ -1,0 +1,10 @@
+﻿{
+  "id": "citation-management",
+  "name": "citation management",
+  "description": "Manage citations systematically throughout the research and writing process. This skill provides tools and strategies for searching academic databases (Google Scholar, PubMed), extracting accurate ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when: - Searching for specific papers on Google Scholar or PubMed",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "threejs-interaction",
+  "name": "threejs interaction",
+  "description": "```javascript import * as THREE from \"three\";",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "```javascript const mouse = new THREE.Vector2();",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "wellally-tech",
+  "name": "wellally tech",
+  "description": "Integrate multiple digital health data sources, connect to [WellAlly.tech](https://www.wellally.tech/) knowledge base, providing data import and knowledge reference for personal health management s...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when users mention the following scenarios:",
+  "runner": null
+}

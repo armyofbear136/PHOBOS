@@ -1,0 +1,10 @@
+﻿{
+  "id": "ray-data",
+  "name": "ray data",
+  "description": "Distributed data processing library for ML and AI workloads.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use Ray Data when:** - Processing large datasets (>100GB) for ML training",
+  "runner": null
+}

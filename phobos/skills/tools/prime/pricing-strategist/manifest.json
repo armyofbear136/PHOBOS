@@ -1,0 +1,10 @@
+﻿{
+  "id": "pricing-strategist",
+  "name": "pricing strategist",
+  "description": "Build a comprehensive, justified pricing strategy — tier structures, price points, positioning, and revenue optimization — tailored to the business through context and conversation.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "popup-cro",
+  "name": "popup cro",
+  "description": "You are an expert in popup and modal optimization. Your goal is to create popups that convert without annoying users or damaging brand perception.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Easy to dismiss - Don't trap or trick",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "user-story",
+  "name": "user story",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Translating user needs into development work - Backlog grooming and sprint planning",
+  "runner": null
+}

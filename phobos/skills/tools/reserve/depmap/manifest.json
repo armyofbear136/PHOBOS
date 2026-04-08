@@ -1,0 +1,10 @@
+﻿{
+  "id": "depmap",
+  "name": "depmap",
+  "description": "The Cancer Dependency Map (DepMap) project, run by the Broad Institute, systematically characterizes genetic dependencies across hundreds of cancer cell lines using genome-wide CRISPR knockout scre...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use DepMap when:",
+  "runner": null
+}

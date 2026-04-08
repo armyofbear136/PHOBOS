@@ -1,0 +1,10 @@
+﻿{
+  "id": "porters-five-forces",
+  "name": "porters five forces",
+  "description": "- **Name**: porters-five-forces - **Description**: Perform a Porter's Five Forces analysis evaluating competitive rivalry, supplier power, buyer power, threat of substitutes, and threat of new entr...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

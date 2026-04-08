@@ -1,0 +1,10 @@
+﻿{
+  "id": "pyhealth",
+  "name": "pyhealth",
+  "description": "PyHealth is a comprehensive Python library for healthcare AI that provides specialized tools, models, and datasets for clinical machine learning. Use this skill when developing healthcare predictio...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke this skill when:",
+  "runner": null
+}

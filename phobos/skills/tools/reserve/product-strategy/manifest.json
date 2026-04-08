@@ -1,0 +1,10 @@
+﻿{
+  "id": "product-strategy",
+  "name": "product strategy",
+  "description": "- **Name**: product-strategy - **Description**: Generate a comprehensive product strategy using the 9-section Product Strategy Canvas. Covers vision, market segments, costs, value propositions, tra...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

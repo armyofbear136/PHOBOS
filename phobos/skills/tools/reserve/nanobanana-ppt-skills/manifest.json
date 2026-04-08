@@ -1,0 +1,10 @@
+﻿{
+  "id": "nanobanana-ppt-skills",
+  "name": "nanobanana ppt skills",
+  "description": "- **Skill 名称**: ppt-generator-pro - **版本**: 2.0.0",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

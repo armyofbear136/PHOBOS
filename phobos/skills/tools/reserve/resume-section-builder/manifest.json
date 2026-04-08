@@ -1,0 +1,10 @@
+﻿{
+  "id": "resume-section-builder",
+  "name": "resume section builder",
+  "description": "Use this skill when the user: - Needs help with specific resume sections",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user: - Needs help with specific resume sections",
+  "runner": null
+}

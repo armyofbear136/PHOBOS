@@ -1,0 +1,10 @@
+﻿{
+  "id": "playwright-skill",
+  "name": "playwright skill",
+  "description": "General-purpose browser automation skill. I'll write custom Playwright code for any automation task you request and execute it via the universal executor.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

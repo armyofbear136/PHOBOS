@@ -1,0 +1,10 @@
+﻿{
+  "id": "vscode-extension-builder-lawvable",
+  "name": "vscode extension builder lawvable",
+  "description": "Build VS Code extensions from scratch or convert existing web apps into portable, shareable extensions.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

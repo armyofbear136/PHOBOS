@@ -1,0 +1,10 @@
+﻿{
+  "id": "emergency-card",
+  "name": "emergency card",
+  "description": "生成紧急情况下快速访问的医疗信息摘要，用于急救或就医。",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

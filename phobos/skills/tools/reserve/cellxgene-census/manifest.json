@@ -1,0 +1,10 @@
+﻿{
+  "id": "cellxgene-census",
+  "name": "cellxgene census",
+  "description": "The CZ CELLxGENE Census provides programmatic access to a comprehensive, versioned collection of standardized single-cell genomics data from CZ CELLxGENE Discover. This skill enables efficient quer...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Querying single-cell expression data by cell type, tissue, or disease",
+  "runner": null
+}

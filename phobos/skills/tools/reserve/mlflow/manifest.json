@@ -1,0 +1,10 @@
+﻿{
+  "id": "mlflow",
+  "name": "mlflow",
+  "description": "Use MLflow when you need to: - **Track ML experiments** with parameters, metrics, and artifacts",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use MLflow when you need to: - **Track ML experiments** with parameters, metrics, and artifacts",
+  "runner": null
+}

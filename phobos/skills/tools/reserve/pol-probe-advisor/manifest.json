@@ -1,0 +1,10 @@
+﻿{
+  "id": "pol-probe-advisor",
+  "name": "pol probe advisor",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "✅ **Use this when:** - You have a clear hypothesis but don't know which validation method to use",
+  "runner": null
+}

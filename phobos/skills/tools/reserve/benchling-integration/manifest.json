@@ -1,0 +1,10 @@
+﻿{
+  "id": "benchling-integration",
+  "name": "benchling integration",
+  "description": "Benchling is a cloud platform for life sciences R&D. Access registry entities (DNA, proteins), inventory, electronic lab notebooks, and workflows programmatically via Python SDK and REST API.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Working with Benchling's Python SDK or REST API",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "git-commit",
+  "name": "git commit",
+  "description": "Creates git commits following Conventional Commits format.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

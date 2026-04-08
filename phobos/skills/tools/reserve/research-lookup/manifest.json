@@ -1,0 +1,10 @@
+﻿{
+  "id": "research-lookup",
+  "name": "research lookup",
+  "description": "This skill provides real-time research information lookup with **intelligent backend routing**:",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when you need:",
+  "runner": null
+}

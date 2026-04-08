@@ -1,0 +1,10 @@
+﻿{
+  "id": "startup-canvas",
+  "name": "startup canvas",
+  "description": "- **Name**: startup-canvas - **Description**: Generate a Startup Canvas for a new product. Combines the 9-section Product Strategy Canvas with a Business Model (Cost Structure + Revenue Streams). D...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

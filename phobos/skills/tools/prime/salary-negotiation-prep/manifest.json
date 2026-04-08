@@ -1,0 +1,10 @@
+﻿{
+  "id": "salary-negotiation-prep",
+  "name": "salary negotiation prep",
+  "description": "Use this skill when the user wants to: - Negotiate a job offer or salary",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user wants to: - Negotiate a job offer or salary",
+  "runner": null
+}

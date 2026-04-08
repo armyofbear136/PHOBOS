@@ -1,0 +1,10 @@
+﻿{
+  "id": "labarchive-integration",
+  "name": "labarchive integration",
+  "description": "LabArchives is an electronic lab notebook platform for research documentation and data management. Access notebooks, manage entries and attachments, generate reports, and integrate with third-party...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Working with LabArchives REST API for notebook automation",
+  "runner": null
+}

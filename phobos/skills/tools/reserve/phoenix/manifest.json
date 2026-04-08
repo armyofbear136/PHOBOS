@@ -1,0 +1,10 @@
+﻿{
+  "id": "phoenix",
+  "name": "phoenix",
+  "description": "Open-source AI observability and evaluation platform for LLM applications with tracing, evaluation, datasets, experiments, and real-time monitoring.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use Phoenix when:** - Debugging LLM application issues with detailed traces",
+  "runner": null
+}

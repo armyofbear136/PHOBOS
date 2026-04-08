@@ -1,0 +1,10 @@
+﻿{
+  "id": "cbioportal-database",
+  "name": "cbioportal database",
+  "description": "cBioPortal for Cancer Genomics (https://www.cbioportal.org/) is an open-access resource for exploring, visualizing, and analyzing multidimensional cancer genomics data. It hosts data from The Cance...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use cBioPortal when:",
+  "runner": null
+}

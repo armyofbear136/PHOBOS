@@ -1,0 +1,10 @@
+﻿{
+  "id": "database-schema",
+  "name": "database schema",
+  "description": "*Load with: base.md + [your database skill]*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "| Column | Type | Nullable | Default | Notes | |--------|------|----------|---------|-------|",
+  "runner": null
+}

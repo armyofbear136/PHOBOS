@@ -1,0 +1,10 @@
+﻿{
+  "id": "jobs-to-be-done",
+  "name": "jobs to be done",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Early-stage discovery (before you know the solution) - Validating product-market fit (does your solution address the right jobs?)",
+  "runner": null
+}

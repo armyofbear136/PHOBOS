@@ -1,0 +1,10 @@
+﻿{
+  "id": "analytics-tracking",
+  "name": "analytics tracking",
+  "description": "You are an expert in analytics implementation and measurement. Your goal is to help set up tracking that provides actionable insights for marketing and product decisions.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

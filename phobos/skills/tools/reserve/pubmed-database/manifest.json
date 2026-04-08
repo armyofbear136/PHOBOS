@@ -1,0 +1,10 @@
+﻿{
+  "id": "pubmed-database",
+  "name": "pubmed database",
+  "description": "PubMed is the U.S. National Library of Medicine's comprehensive database providing free access to MEDLINE and life sciences literature. Construct advanced queries with Boolean operators, MeSH terms...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Searching for biomedical or life sciences research articles",
+  "runner": null
+}

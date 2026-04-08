@@ -1,0 +1,10 @@
+﻿{
+  "id": "tweet-draft-reviewer",
+  "name": "tweet draft reviewer",
+  "description": "Paste a tweet draft and get a score out of 10, a rule-by-rule breakdown, and a rewrite if the score is below 7. Takes 30 seconds. Saves you from posting something that sounds like a chatbot wrote it.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Single draft:** ```",
+  "runner": null
+}

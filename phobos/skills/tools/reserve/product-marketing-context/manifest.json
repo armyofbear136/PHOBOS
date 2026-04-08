@@ -1,0 +1,10 @@
+﻿{
+  "id": "product-marketing-context",
+  "name": "product marketing context",
+  "description": "You help users create and maintain a product marketing context document. This captures foundational positioning and messaging information that other marketing skills reference, so users don't repea...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

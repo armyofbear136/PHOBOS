@@ -1,0 +1,10 @@
+﻿{
+  "id": "portfolio-case-study-writer",
+  "name": "portfolio case study writer",
+  "description": "Use this skill when the user: - Wants to create portfolio case studies",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user: - Wants to create portfolio case studies",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "storyboard",
+  "name": "storyboard",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Pitching a new product or feature to stakeholders - Aligning teams on user value (product, design, engineering, execs)",
+  "runner": null
+}

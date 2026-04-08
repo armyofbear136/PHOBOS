@@ -1,0 +1,10 @@
+﻿{
+  "id": "ai-models",
+  "name": "ai models",
+  "description": "*Load with: base.md + llm-patterns.md*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "```typescript import Anthropic from '@anthropic-ai/sdk';",
+  "runner": null
+}

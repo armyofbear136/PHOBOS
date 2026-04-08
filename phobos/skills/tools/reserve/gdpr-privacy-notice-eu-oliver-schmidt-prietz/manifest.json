@@ -1,0 +1,10 @@
+﻿{
+  "id": "gdpr-privacy-notice-eu-oliver-schmidt-prietz",
+  "name": "gdpr privacy notice eu oliver schmidt prietz",
+  "description": "Generate jurisdiction-aware, GDPR-compliant privacy notices as professional .docx documents.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "pytdc",
+  "name": "pytdc",
+  "description": "PyTDC is an open-science platform providing AI-ready datasets and benchmarks for drug discovery and development. Access curated datasets spanning the entire therapeutics pipeline with standardized ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Working with drug discovery or therapeutic ML datasets",
+  "runner": null
+}

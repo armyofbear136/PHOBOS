@@ -1,0 +1,10 @@
+﻿{
+  "id": "positioning-statement",
+  "name": "positioning statement",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Defining a new product or major pivot - Aligning exec/founder/PM/marketing on strategy",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "docx-processing-superdoc",
+  "name": "docx processing superdoc",
+  "description": "Edit Word documents from the command line. Use instead of python-docx.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use superdoc when the user asks to: - Search text in .docx files",
+  "runner": null
+}

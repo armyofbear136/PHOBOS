@@ -1,0 +1,10 @@
+﻿{
+  "id": "transcribe-video",
+  "name": "transcribe video",
+  "description": "Generate subtitles and transcripts from `$ARGUMENTS` (a video or audio file path, optionally followed by a language code like `en-US` or `es-ES`) using AWS Transcribe.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

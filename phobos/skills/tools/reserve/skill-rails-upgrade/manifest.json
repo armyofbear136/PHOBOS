@@ -1,0 +1,10 @@
+﻿{
+  "id": "skill-rails-upgrade",
+  "name": "skill rails upgrade",
+  "description": "Analyze the current Rails application and provide a comprehensive upgrade assessment with selective file merging.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

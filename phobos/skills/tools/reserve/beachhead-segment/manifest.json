@@ -1,0 +1,10 @@
+﻿{
+  "id": "beachhead-segment",
+  "name": "beachhead segment",
+  "description": "Identify the first beachhead market segment for product launch. This skill evaluates potential market segments against key criteria to find your initial winning segment that enables fast PMF valida...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Choosing a first market for your product - Targeting an initial customer segment",
+  "runner": null
+}

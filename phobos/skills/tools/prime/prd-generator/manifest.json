@@ -1,0 +1,10 @@
+﻿{
+  "id": "prd-generator",
+  "name": "prd generator",
+  "description": "Transform a rough product idea into a comprehensive, AI-ready Product Requirements Document (PDF) through targeted questions and structured output.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

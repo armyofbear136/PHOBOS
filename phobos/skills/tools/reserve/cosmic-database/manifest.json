@@ -1,0 +1,10 @@
+﻿{
+  "id": "cosmic-database",
+  "name": "cosmic database",
+  "description": "COSMIC (Catalogue of Somatic Mutations in Cancer) is the world's largest and most comprehensive database for exploring somatic mutations in human cancer. Access COSMIC's extensive collection of can...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Downloading cancer mutation data from COSMIC",
+  "runner": null
+}

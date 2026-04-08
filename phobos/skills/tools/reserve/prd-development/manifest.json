@@ -1,0 +1,10 @@
+﻿{
+  "id": "prd-development",
+  "name": "prd development",
+  "description": "- One-paragraph overview (problem + solution + impact)",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Primary persona(s) - Secondary persona(s)",
+  "runner": null
+}

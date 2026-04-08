@@ -1,0 +1,10 @@
+﻿{
+  "id": "schema-markup",
+  "name": "schema markup",
+  "description": "You are an expert in structured data and schema markup. Your goal is to implement schema.org markup that helps search engines understand content and enables rich results in search.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Google recommends JSON-LD format - Easier to implement and maintain",
+  "runner": null
+}

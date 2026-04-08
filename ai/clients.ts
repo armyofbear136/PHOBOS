@@ -312,7 +312,9 @@ export function getThinkingStrategy(provider: string, model: string): ThinkingSt
         systemSuffix: '',
         thinkingPath: 'tag',
         thinkingForcedOpen: true,
-        extraBodyThink:   { reasoning_format: 'none', chat_template_kwargs: { enable_thinking: true } },
+        // b8660: enable_thinking:true crashes the Jinja template renderer (upstream autoparser regression).
+        // Server is launched with --reasoning on so thinking fires by default — no per-request activation needed.
+        extraBodyThink:   { reasoning_format: 'none' },
         extraBodyNoThink: { reasoning_format: 'none', chat_template_kwargs: { enable_thinking: false } },
       };
     }
@@ -383,7 +385,9 @@ export function getThinkingStrategy(provider: string, model: string): ThinkingSt
       return {
         systemSuffix: '',
         thinkingPath: 'field',
-        extraBodyThink:   { reasoning_format: 'deepseek', chat_template_kwargs: { enable_thinking: true } },
+        // b8660: enable_thinking:true crashes the Jinja template renderer (upstream autoparser regression).
+        // Server is launched with --reasoning on so thinking fires by default — no per-request activation needed.
+        extraBodyThink:   { reasoning_format: 'deepseek' },
         extraBodyNoThink: { reasoning_format: 'none',     chat_template_kwargs: { enable_thinking: false } },
       };
     }
@@ -475,6 +479,30 @@ export function getThinkingStrategy(provider: string, model: string): ThinkingSt
   };
 }
 
+/**
+ * Returns whether each model role currently supports vision (image content arrays).
+ *
+ * For phobos provider: reads supportsVision from GGUFSpec — authoritative.
+ * For non-phobos providers: heuristic pattern match on known vision-capable model names.
+ * Returns false for any unknown model — safe default.
+ */
+export function getModelVisionCapability(): {
+  coordinatorSupportsVision: boolean;
+  engineSupportsVision: boolean;
+} {
+  const CLOUD_VISION_RE = /gpt-4o|gpt-4-turbo|claude-3|gemini.*vision|gemini-1\.5|gemini-2/i;
+
+  const coordinatorSupportsVision = COORDINATOR_PROVIDER === 'phobos'
+    ? (getSpec(COORDINATOR_MODEL)?.supportsVision ?? false)
+    : CLOUD_VISION_RE.test(COORDINATOR_MODEL);
+
+  const engineSupportsVision = ENGINE_PROVIDER === 'phobos'
+    ? (getSpec(ENGINE_MODEL)?.supportsVision ?? false)
+    : CLOUD_VISION_RE.test(ENGINE_MODEL);
+
+  return { coordinatorSupportsVision, engineSupportsVision };
+}
+
 export function isThinkingModel(model: string): boolean {
   // For phobos provider, check the spec — most authoritative source
   const spec = getSpec(model);
@@ -562,7 +590,11 @@ export async function coordinatorCall(opts: {
   console.log(`[coordinatorCall] mode=${opts.mode} extraBody=${JSON.stringify(extraBody)} model=${COORDINATOR_MODEL}`);
 
   const strategy = getThinkingStrategy(COORDINATOR_PROVIDER, COORDINATOR_MODEL);
-  const startInThink = strategy.thinkingForcedOpen === true;
+  // thinkingForcedOpen=true means Nemotron's template prepends <think> to generation.
+  // Only applies when mode==='think' — in no_think mode, enable_thinking:false suppresses
+  // the opening <think> token entirely, so the router must start outside the think block.
+  // Starting inThink=true in no_think mode discards the entire response.
+  const startInThink = strategy.thinkingForcedOpen === true && mode === 'think';
   const router = new ThinkingTokenRouter(strategy, mode, undefined, startInThink);
   let _callDbgN = 0;
 
@@ -667,7 +699,7 @@ export async function coordinatorStream(opts: {
   console.log(`[coordinatorStream] mode=${opts.mode} extraBody=${JSON.stringify(extraBody)}`);
 
   const strategy = getThinkingStrategy(COORDINATOR_PROVIDER, COORDINATOR_MODEL);
-  const startInThinkCS = strategy.thinkingForcedOpen === true;
+  const startInThinkCS = strategy.thinkingForcedOpen === true && mode === 'think';
   const router = new ThinkingTokenRouter(strategy, mode, onThinkToken, startInThinkCS);
 
   if (isPhobosProvider(COORDINATOR_PROVIDER)) {
@@ -742,6 +774,12 @@ export async function engineStream(opts: {
   mode?: 'think' | 'no_think' | 'none';
   onThinkToken?: (token: string) => void;
   stage?: PromptStage;
+  /**
+   * Image attachments to append to the final user message as a content array.
+   * Each image becomes a { type:'image_url' } block following the text block.
+   * Only passed when ENGINE_PROVIDER supports vision (getModelVisionCapability().engineSupportsVision).
+   */
+  imageAttachments?: Array<{ filename: string; base64: string; mimeType: string }>;
 }): Promise<string> {
   const { mode = 'think', onThinkToken } = opts;
   const t0 = Date.now();
@@ -758,15 +796,42 @@ export async function engineStream(opts: {
     mode
   );
 
-  const allMessages = stratSystem
-    ? [{ role: 'system' as const, content: stratSystem }, ...stratMsgs]
-    : stratMsgs;
+  // When image attachments are present, transform the last user message into a
+  // content array: existing text as { type:'text' } + one { type:'image_url' } per image.
+  // Option A: images appended to the final user message — not injected as a separate message.
+  // Cast to unknown[] is intentional — OpenAI wire format accepts content arrays but the
+  // SDK type is narrow. Both raw-fetch and SDK paths serialise JSON verbatim so the
+  // actual array value is transmitted correctly.
+  type AnyMessage = { role: 'system' | 'user' | 'assistant'; content: string | unknown[] };
+  const rawMessages: AnyMessage[] = stratSystem
+    ? [{ role: 'system' as const, content: stratSystem }, ...(stratMsgs as AnyMessage[])]
+    : [...(stratMsgs as AnyMessage[])];
+
+  if (opts.imageAttachments && opts.imageAttachments.length > 0) {
+    const lastIdx = rawMessages.length - 1;
+    const last = rawMessages[lastIdx];
+    if (last && last.role === 'user') {
+      const textContent = typeof last.content === 'string' ? last.content : '';
+      rawMessages[lastIdx] = {
+        role: 'user' as const,
+        content: [
+          { type: 'text', text: textContent },
+          ...opts.imageAttachments.map(img => ({
+            type: 'image_url',
+            image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+          })),
+        ],
+      };
+    }
+  }
+
+  const allMessages = rawMessages as Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
 
   const extraBody = getThinkingExtraBody(liveProvider, liveModel, mode);
   console.log(`[engineStream] mode=${mode} provider=${liveProvider} model=${liveModel} extraBody=${JSON.stringify(extraBody)}`);
 
   const strategy = getThinkingStrategy(liveProvider, liveModel);
-  const startInThinkCS = strategy.thinkingForcedOpen === true;
+  const startInThinkCS = strategy.thinkingForcedOpen === true && mode === 'think';
   const router = new ThinkingTokenRouter(strategy, mode, onThinkToken, startInThinkCS);
 
   if (isPhobosProvider(liveProvider)) {

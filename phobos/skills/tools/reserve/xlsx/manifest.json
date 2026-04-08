@@ -1,0 +1,10 @@
+﻿{
+  "id": "xlsx",
+  "name": "xlsx",
+  "description": "- Use a consistent, professional font (e.g., Arial, Times New Roman) for all deliverables unless otherwise instructed by the user",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Study and EXACTLY match existing format, style, and conventions when modifying files - Never impose standardized formatting on files with established patterns",
+  "runner": null
+}

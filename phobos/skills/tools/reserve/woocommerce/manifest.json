@@ -1,0 +1,10 @@
+﻿{
+  "id": "woocommerce",
+  "name": "woocommerce",
+  "description": "*Load with: base.md + (typescript.md or python.md)*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "curl https://your-store.com/wp-json/wc/v3/products \\ ?consumer_key=ck_xxx&consumer_secret=cs_xxx",
+  "runner": null
+}

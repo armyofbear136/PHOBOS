@@ -1,0 +1,10 @@
+﻿{
+  "id": "latchbio-integration",
+  "name": "latchbio integration",
+  "description": "Latch is a Python framework for building and deploying bioinformatics workflows as serverless pipelines. Built on Flyte, create workflows with @workflow/@task decorators, manage cloud data with Lat...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

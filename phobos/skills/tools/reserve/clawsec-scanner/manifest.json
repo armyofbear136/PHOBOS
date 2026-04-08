@@ -1,0 +1,10 @@
+﻿{
+  "id": "clawsec-scanner",
+  "name": "clawsec scanner",
+  "description": "Comprehensive security scanner for agent platforms that automates vulnerability detection across multiple dimensions:",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

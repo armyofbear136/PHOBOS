@@ -1,0 +1,10 @@
+﻿{
+  "id": "tutor",
+  "name": "tutor",
+  "description": "Quiz-based tutor that tracks what the user knows and doesn't know at the **concept level**. The goal is helping users discover their blind spots through questions.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

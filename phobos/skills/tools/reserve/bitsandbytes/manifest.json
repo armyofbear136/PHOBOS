@@ -1,0 +1,10 @@
+﻿{
+  "id": "bitsandbytes",
+  "name": "bitsandbytes",
+  "description": "bitsandbytes reduces LLM memory by 50% (8-bit) or 75% (4-bit) with <1% accuracy loss.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

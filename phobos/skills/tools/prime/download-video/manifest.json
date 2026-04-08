@@ -1,0 +1,10 @@
+﻿{
+  "id": "download-video",
+  "name": "download video",
+  "description": "Download a video from `$ARGUMENTS` (a social media URL) to the current directory using `yt-dlp`.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

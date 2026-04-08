@@ -1,0 +1,10 @@
+﻿{
+  "id": "dhdna-profiler",
+  "name": "dhdna profiler",
+  "description": "A structured system for extracting the cognitive fingerprint of any text's author. Based on the Digital Human DNA (DHDNA) framework — the theory that every mind has a unique signature pattern expre...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

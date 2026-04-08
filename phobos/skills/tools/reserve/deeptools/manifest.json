@@ -1,0 +1,10 @@
+﻿{
+  "id": "deeptools",
+  "name": "deeptools",
+  "description": "deepTools is a comprehensive suite of Python command-line tools designed for processing and analyzing high-throughput sequencing data. Use deepTools to perform quality control, normalize data, comp...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when:",
+  "runner": null
+}

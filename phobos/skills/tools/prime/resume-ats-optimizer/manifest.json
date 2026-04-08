@@ -1,0 +1,10 @@
+﻿{
+  "id": "resume-ats-optimizer",
+  "name": "resume ats optimizer",
+  "description": "Use this skill when the user wants to: - Optimize their resume for Applicant Tracking Systems (ATS)",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user wants to: - Optimize their resume for Applicant Tracking Systems (ATS)",
+  "runner": null
+}

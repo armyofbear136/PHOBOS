@@ -1,0 +1,10 @@
+﻿{
+  "id": "brenda-database",
+  "name": "brenda database",
+  "description": "BRENDA (BRaunschweig ENzyme DAtabase) is the world's most comprehensive enzyme information system, containing detailed enzyme data from scientific literature. Query kinetic parameters (Km, kcat), r...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Searching for enzyme kinetic parameters (Km, kcat, Vmax)",
+  "runner": null
+}

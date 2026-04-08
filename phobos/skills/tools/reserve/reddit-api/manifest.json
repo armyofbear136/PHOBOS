@@ -1,0 +1,10 @@
+﻿{
+  "id": "reddit-api",
+  "name": "reddit api",
+  "description": "*Load with: base.md + [language].md*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "```python import praw",
+  "runner": null
+}

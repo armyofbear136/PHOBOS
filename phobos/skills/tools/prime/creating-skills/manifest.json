@@ -1,0 +1,10 @@
+﻿{
+  "id": "creating-skills",
+  "name": "creating skills",
+  "description": "Guide for creating Claude Code skills following Anthropic's official best practices.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

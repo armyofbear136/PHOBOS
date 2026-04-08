@@ -1,0 +1,10 @@
+﻿{
+  "id": "cohort-analysis",
+  "name": "cohort analysis",
+  "description": "Analyze user engagement and retention patterns by cohort to identify trends in user behavior, feature adoption, and long-term engagement. Combine quantitative insights with qualitative research rec...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "cover-letter-generator",
+  "name": "cover letter generator",
+  "description": "Use this skill when the user wants to: - Write a cover letter for a job application",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user wants to: - Write a cover letter for a job application",
+  "runner": null
+}

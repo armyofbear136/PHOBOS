@@ -1,0 +1,10 @@
+﻿{
+  "id": "nemo-curator",
+  "name": "nemo curator",
+  "description": "NVIDIA's toolkit for preparing high-quality training data for LLMs.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use NeMo Curator when:** - Preparing LLM training data from web scrapes (Common Crawl)",
+  "runner": null
+}

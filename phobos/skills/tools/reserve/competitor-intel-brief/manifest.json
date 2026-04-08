@@ -1,0 +1,10 @@
+﻿{
+  "id": "competitor-intel-brief",
+  "name": "competitor intel brief",
+  "description": "Detect from context or ask: *\"Quick teardown, full intel brief, or full brief with attack plan?\"*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "grpo-rl-training",
+  "name": "grpo rl training",
+  "description": "Expert-level guidance for implementing Group Relative Policy Optimization (GRPO) using the Transformer Reinforcement Learning (TRL) library. This skill provides battle-tested patterns, critical ins...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use GRPO training when you need to: - **Enforce specific output formats** (e.g., XML tags, JSON, structured reasoning)",
+  "runner": null
+}

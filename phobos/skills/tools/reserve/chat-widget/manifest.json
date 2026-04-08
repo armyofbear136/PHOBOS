@@ -1,0 +1,10 @@
+﻿{
+  "id": "chat-widget",
+  "name": "chat widget",
+  "description": "Build a real-time support chat system with a floating widget for users and an admin dashboard for support staff.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use when the user wants to: - Add a live chat widget to their app",
+  "runner": null
+}

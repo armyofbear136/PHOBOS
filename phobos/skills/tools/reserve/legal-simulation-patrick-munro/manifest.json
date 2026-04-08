@@ -1,0 +1,10 @@
+﻿{
+  "id": "legal-simulation-patrick-munro",
+  "name": "legal simulation patrick munro",
+  "description": "Realistic simulation framework for demonstrating how AI can assist with legal information needs while respecting professional boundaries and data protection principles. Provides detailed personas a...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when you need to: - Demonstrate AI capabilities in legal information contexts (presentations, training, proof-of-concepts)",
+  "runner": null
+}

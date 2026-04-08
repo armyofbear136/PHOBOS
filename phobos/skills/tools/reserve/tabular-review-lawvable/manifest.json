@@ -1,0 +1,10 @@
+﻿{
+  "id": "tabular-review-lawvable",
+  "name": "tabular review lawvable",
+  "description": "Extract structured data from multiple documents into an Excel matrix with citations.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use `AskUserQuestion` to collect:",
+  "runner": null
+}

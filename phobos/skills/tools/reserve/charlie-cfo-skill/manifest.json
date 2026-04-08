@@ -1,0 +1,10 @@
+﻿{
+  "id": "charlie-cfo-skill",
+  "name": "charlie cfo skill",
+  "description": "Your AI CFO for bootstrapped, profitable companies. Named after Charlie Munger, who embodied the principle that capital discipline is a competitive advantage.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

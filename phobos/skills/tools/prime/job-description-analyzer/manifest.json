@@ -1,0 +1,10 @@
+﻿{
+  "id": "job-description-analyzer",
+  "name": "job description analyzer",
+  "description": "Use this skill when the user: - Wants to analyze a job posting",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user: - Wants to analyze a job posting",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "nda-review-jamie-tso",
+  "name": "nda review jamie tso",
+  "description": "| What this skill does | What it does not do | |---|---|",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use a single table so counsel and business owners can track issues, owners, and deadlines.",
+  "runner": null
+}

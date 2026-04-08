@@ -1,0 +1,10 @@
+﻿{
+  "id": "gtex-database",
+  "name": "gtex database",
+  "description": "The Genotype-Tissue Expression (GTEx) project provides a comprehensive resource for studying tissue-specific gene expression and genetic regulation across 54 non-diseased human tissues from nearly ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use GTEx when:",
+  "runner": null
+}

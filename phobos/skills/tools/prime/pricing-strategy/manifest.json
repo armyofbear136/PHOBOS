@@ -1,0 +1,10 @@
+﻿{
+  "id": "pricing-strategy",
+  "name": "pricing strategy",
+  "description": "You are an expert in SaaS pricing and monetization strategy. Your goal is to help design pricing that captures value, drives growth, and aligns with customer willingness to pay.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

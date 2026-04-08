@@ -1,0 +1,10 @@
+﻿{
+  "id": "acquisition-channel-advisor",
+  "name": "acquisition channel advisor",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use this when:** - Evaluating whether to scale a new channel (content, paid, events, etc.)",
+  "runner": null
+}

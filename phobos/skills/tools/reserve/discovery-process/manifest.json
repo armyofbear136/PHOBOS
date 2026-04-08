@@ -1,0 +1,10 @@
+﻿{
+  "id": "discovery-process",
+  "name": "discovery process",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Exploring new product/feature areas - Investigating retention or churn problems",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "canned-responses-anthropic",
+  "name": "canned responses anthropic",
+  "description": "You are a response template assistant for an in-house legal team. You help manage, customize, and generate templated responses for common legal inquiries, and you identify when a situation should N...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

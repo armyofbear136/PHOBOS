@@ -1,0 +1,10 @@
+﻿{
+  "id": "segment-anything",
+  "name": "segment anything",
+  "description": "Comprehensive guide to using Meta AI's Segment Anything Model for zero-shot image segmentation.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use SAM when:** - Need to segment any object in images without task-specific training",
+  "runner": null
+}

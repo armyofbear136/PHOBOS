@@ -1,0 +1,10 @@
+﻿{
+  "id": "moe-training",
+  "name": "moe training",
+  "description": "Use MoE Training when you need to: - **Train larger models** with limited compute (5× cost reduction vs dense models)",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use MoE Training when you need to: - **Train larger models** with limited compute (5× cost reduction vs dense models)",
+  "runner": null
+}

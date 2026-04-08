@@ -1,0 +1,10 @@
+﻿{
+  "id": "reactome-database",
+  "name": "reactome database",
+  "description": "Reactome is a free, open-source, curated pathway database with 2,825+ human pathways. Query biological pathways, perform overrepresentation and expression analysis, map genes to pathways, explore m...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Performing pathway enrichment analysis on gene or protein lists",
+  "runner": null
+}

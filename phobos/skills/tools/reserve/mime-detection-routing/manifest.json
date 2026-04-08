@@ -1,0 +1,10 @@
+﻿{
+  "id": "mime-detection-routing",
+  "name": "mime detection routing",
+  "description": "``` Extension → EXT_TO_MIME map → validate → Registry lookup → Extractor",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

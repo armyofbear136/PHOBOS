@@ -1,0 +1,10 @@
+﻿{
+  "id": "ci",
+  "name": "ci",
+  "description": "> Ship reliable tests in every pipeline — CI-specific patterns for speed, stability, and actionable reports.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -218,11 +218,11 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
   );
 
   // ── PATCH /api/threads/:threadId/workflows/:workflowId/config ─────────────
-  // Updates workflow session config: modelId and/or targetGpuIndex.
-  // Used by the model/GPU dropdowns in the workflow panel header.
+  // Updates workflow session config: modelId, targetGpuIndex, and/or imageBackend.
+  // Used by the model/GPU/backend dropdowns in the workflow panel header.
   fastify.patch<{
     Params: { threadId: string; workflowId: string };
-    Body:   { modelId?: string; targetGpuIndex?: number | null };
+    Body:   { modelId?: string; targetGpuIndex?: number | null; imageBackend?: 'auto' | 'pytorch' | 'sdcli' };
   }>(
     '/api/threads/:threadId/workflows/:workflowId/config',
     async (req, reply) => {
@@ -240,6 +240,12 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
       // targetGpuIndex: number = specific GPU, null/undefined = auto (default)
       if (req.body?.targetGpuIndex !== undefined) {
         (session as any).targetGpuIndex = req.body.targetGpuIndex;
+        changed = true;
+      }
+
+      // imageBackend: 'auto' | 'pytorch' | 'sdcli'
+      if (req.body?.imageBackend !== undefined) {
+        (session as any).imageBackend = req.body.imageBackend;
         changed = true;
       }
 
@@ -485,6 +491,27 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
     }
   );
 
+  // ── GET /api/threads/:threadId/workflows/:workflowId/nodes/:nodeId/output-mtime ──
+  // Returns the mtime (ms since epoch) of the node's output file. Used by the
+  // batch loop to confirm the file was written by the current iteration before
+  // copying it, preventing duplicate images when consecutive runs are fast.
+  fastify.get<{ Params: { threadId: string; workflowId: string; nodeId: string } }>(
+    '/api/threads/:threadId/workflows/:workflowId/nodes/:nodeId/output-mtime',
+    async (req, reply) => {
+      const { threadId, workflowId, nodeId } = req.params;
+      const session = readSession(threadId, workflowId);
+      if (!session) return reply.status(404).send({ error: 'Workflow not found' });
+      const node = session.nodes.find((n) => n.id === nodeId);
+      if (!node || !node.outputPath) return reply.send({ mtime: 0 });
+      try {
+        const stat = fs.statSync(node.outputPath);
+        return reply.send({ mtime: stat.mtimeMs });
+      } catch {
+        return reply.send({ mtime: 0 });
+      }
+    }
+  );
+
   // ── POST /api/threads/:threadId/workflows/:workflowId/nodes/:nodeId/save-batch-output ──
   // Called after each batch step completes. Copies the node's current output.png
   // to the workspace images dir using the batch naming convention:
@@ -657,6 +684,7 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
       let sdCfg = await buildSdConfig({
         modelId: effectiveModelId,
         targetGpuIndex: (session as any).targetGpuIndex,
+        imageBackend: (session as any).imageBackend,
       });
       if (!sdCfg) {
         return reply.status(503).send({ error: 'No image model is downloaded.' });
@@ -740,7 +768,9 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
                   if (status.aborted) break;
                   const freeMb  = await queryGpuFreeVram(targetGpu) ?? 0;
                   const elapsed = Date.now() - SETTLE_START;
-                  const stable  = freeMb <= lastFreeMb;
+                  // Only call stable if VRAM has actually been released (freeMb > 0).
+                  // When freeMb is still 0, the driver hasn't reclaimed yet — keep polling.
+                  const stable  = freeMb > 0 && freeMb <= lastFreeMb;
                   lastFreeMb    = freeMb;
                   if (stable || elapsed >= SETTLE_MAX_MS) break;
                 }
@@ -750,6 +780,7 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
                   const refreshed = await buildSdConfig({
                     modelId: session.modelId,
                     targetGpuIndex: (session as any).targetGpuIndex,
+                    imageBackend: (session as any).imageBackend,
                   });
                   if (refreshed) sdCfg = refreshed;
                 }
@@ -811,6 +842,19 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
           // Restart all LLM servers that were stopped (background, non-blocking)
           if (snaps.length > 0) {
             pushPhase('restarting_llm', `Reloading ${snaps.map(s => s.role.toUpperCase()).join(' + ')}…`);
+
+            // PyTorch (especially XPU/Arc) holds VRAM for several seconds after the
+            // process exits — the driver defers actual page reclaim. Give it time
+            // before restarting the LLM server or it will OOM immediately on startup.
+            const usedPyTorch = sdCfg?.imageBackend !== 'sdcli';
+            const isXpu = snaps.some(s => s.gpuBackend === 'vulkan' && s.deviceIndex !== undefined && s.deviceIndex >= 100);
+            if (usedPyTorch) {
+              // XPU (Arc) needs longer — driver reclaim observed at 10-15s
+              // CUDA/ROCm settle faster but still benefit from a brief wait
+              const postGenSettleMs = isXpu ? 12_000 : 3_000;
+              await new Promise(r => setTimeout(r, postGenSettleMs));
+            }
+
             for (const snap of snaps) {
               try {
                 await startServer(snap.role, {
@@ -822,7 +866,10 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
                   deviceIndex: snap.deviceIndex,
                   gpuBackend:  snap.gpuBackend,
                 });
-              } catch { /* non-fatal */ }
+              } catch (err) {
+                // Non-fatal — user isn't stuck, but log so it's diagnosable
+                console.warn(`[workflows] ${snap.role} restart failed after image gen: ${(err as Error).message}`);
+              }
             }
           }
         }

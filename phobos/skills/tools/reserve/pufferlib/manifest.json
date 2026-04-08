@@ -1,0 +1,10 @@
+﻿{
+  "id": "pufferlib",
+  "name": "pufferlib",
+  "description": "PufferLib is a high-performance reinforcement learning library designed for fast parallel environment simulation and training. It achieves training at millions of steps per second through optimized...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when: - **Training RL agents** with PPO on any environment (single or multi-agent)",
+  "runner": null
+}

@@ -1,7 +1,8 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { coordinatorCall, coordinatorStream, engineStream } from './clients.js';
-import type { FileSummary } from './ContextIngester.js';
+import type { FileSummary, ProjectScope } from './ContextIngester.js';
+import { getPrimeTriggerList } from './SkillManager.js';
 
 
 /**
@@ -29,10 +30,16 @@ export interface Task {
   index: number;
   /** One-line title for status display */
   title: string;
-  /** Which file this task primarily targets (may be empty for analysis tasks) */
+  /** Which file this task primarily targets (empty for respond/analyze tasks) */
   targetFile: string;
-  /** 'modify' | 'create' | 'delete' | 'analyze' */
-  operation: 'modify' | 'create' | 'delete' | 'analyze';
+  /**
+   * 'modify'  — edit an existing file
+   * 'create'  — create a new file
+   * 'delete'  — remove a file
+   * 'analyze' — read and reason, no file output
+   * 'respond' — produce a text response with no file operations
+   */
+  operation: 'modify' | 'create' | 'delete' | 'analyze' | 'respond' | 'image_gen';
   /**
    * The full distilled prompt sent to the engine for this task.
    * Contains: what to do, constraints, relevant extracted context.
@@ -44,6 +51,45 @@ export interface Task {
    * Injected as <task_context> in the engine's system prompt.
    */
   context: string;
+  /**
+   * Which model executes this task.
+   * Defaults to 'seren'. SEREN may assign simpler tasks to 'sayon'.
+   */
+  assignedTo?: 'sayon' | 'seren';
+  /**
+   * Optional skill ID SEREN selected for this task from available tool skills.
+   */
+  skillId?: string;
+  /**
+   * Executor-level scope for this specific task — set by SEREN during planning.
+   * Independent of project scope: an EXHAUSTIVE project can have BRIEF tasks.
+   *
+   * BRIEF    → Small, focused artifact. Write exactly what's needed.
+   * STANDARD → Complete, correct, follows conventions. No stubs.
+   * DETAILED → Substantial artifact. All states, edge cases, documented.
+   * COMPLETE → Exhaustive implementation. Every feature, every edge case.
+   */
+  taskScope?: 'BRIEF' | 'STANDARD' | 'DETAILED' | 'COMPLETE';
+  /**
+   * Task indices (1-based) that need this task's full output injected into their
+   * prompt before they execute. Used when an analyze/respond task produces data
+   * that downstream tasks depend on. SEREN sets this during planning.
+   * Example: task 1 extracts JSON → outputRequiredBy: [2, 3]
+   */
+  outputRequiredBy?: number[];
+  /**
+   * Filled by LoopController after this task executes — the raw output text.
+   * Injected into the prompt of any task listed in outputRequiredBy.
+   */
+  completedOutput?: string;
+  /**
+   * Additional workspace files this task needs in full — beyond targetFile.
+   * SEREN sets these during planning when a task needs to read source documents,
+   * reference files, or data files that inform its output.
+   * The enrichment step injects their full content as <source_file> blocks.
+   * Example: a page creation task that needs the full design document.
+   */
+  sourceFiles?: string[];
 }
 
 export interface TaskPlan {
@@ -64,8 +110,7 @@ const OVERLAP_CHARS = Math.floor(PAGE_SIZE_CHARS * 0.12);
 const MAX_DISCOVERY_FILES = 8;
 /** Max chars of extracted context per task */
 const MAX_TASK_CONTEXT_CHARS = 8_000;
-/** Hard cap on tasks SEREN can produce — safety valve */
-const MAX_TASKS = 8;
+// Task count is no longer hard-capped — scope directive guides SEREN instead.
 /**
  * Max total chars of raw file content injected into SEREN's planning context.
  * ~80k chars ≈ 20k tokens. Leaves room for system prompt, summaries, and thinking.
@@ -96,6 +141,7 @@ export class TaskPlanner {
     onThinkPhaseComplete?: (source: 'coordinator' | 'engine') => Promise<void>,
     clarificationIteration?: number,
     clarificationLog?: Array<{ questions: string[]; userReply: string }>,
+    projectScope: ProjectScope = 'STANDARD',
   ): Promise<TaskPlan> {
 
     // ── Step 1: SAYON — Discovery roadmap ─────────────────────────────────
@@ -114,12 +160,15 @@ export class TaskPlanner {
     }
 
     // ── Step 3: SEREN — Task decomposition ───────────────────────────────
+    // Cache for clarification re-entry (messages.ts reads via getLastCompleteContext)
+    this._lastCompleteContext = completeContext;
     sendStatus('SEREN planning tasks…');
     const plan = await this.decomposeTasks(
       userMessage, fileSummaries, completeContext, repoMap,
       sendEngineThinking ?? sendThinking,
       clarificationIteration,
-      clarificationLog
+      clarificationLog,
+      projectScope,
     );
 
     await onThinkPhaseComplete?.('engine').catch(() => {});
@@ -130,6 +179,53 @@ export class TaskPlanner {
    * SAYON Step 1: Ask coordinator which files to read and why.
    * Returns a list of filenames to load. Cheap, fast, no thinking needed.
    */
+  /** Stores the completeContext from the last plan() call for clarification caching. */
+  private _lastCompleteContext = '';
+
+  /** Returns the completeContext assembled in the last plan() call. */
+  getLastCompleteContext(): string {
+    return this._lastCompleteContext;
+  }
+
+  /**
+   * Skip SAYON's discovery + extraction (Steps 1+2) and go straight to decomposeTasks.
+   * Used on SEREN clarification re-entry to preserve the original planning context
+   * rather than having SAYON rewrite it around the short clarification answer.
+   */
+  async decomposeWithCachedContext(
+    rewrittenMessage: string,
+    fileSummaries: FileSummary[],
+    completeContext: string,
+    repoMap: string,
+    sendStatus: (content: string) => void,
+    sendThinking: (token: string) => void,
+    onThinkPhaseComplete?: (source: 'coordinator' | 'engine') => Promise<void>,
+    clarificationIteration?: number,
+    clarificationLog?: Array<{ questions: string[]; userReply: string }>,
+    projectScope: ProjectScope = 'STANDARD',
+  ): Promise<TaskPlan> {
+    sendStatus('SEREN re-planning with clarification…');
+    const plan = await this.decomposeTasks(
+      rewrittenMessage,
+      fileSummaries,
+      completeContext,
+      repoMap,
+      sendThinking,
+      clarificationIteration,
+      clarificationLog,
+      projectScope,
+    );
+    await onThinkPhaseComplete?.('engine').catch(() => {});
+    return plan;
+  }
+
+  /**
+   * File importance tags used in SEREN's planning context.
+   * CRITICAL: SEREN receives the full file content — essential for planning.
+   * CONTEXT:  SEREN receives summary only — useful background, not line-level detail.
+   */
+  private discoveryTags = new Map<string, 'CRITICAL' | 'CONTEXT'>();
+
   private async buildDiscoveryRoadmap(
     userMessage: string,
     fileSummaries: FileSummary[],
@@ -137,17 +233,22 @@ export class TaskPlanner {
     sendThinking: (token: string) => void
   ): Promise<string[]> {
     if (fileSummaries.length === 0) return [];
+    this.discoveryTags.clear();
 
     const summaryBlock = fileSummaries
       .map((f) => `  ${f.filename}: ${f.summary}`)
       .join('\n');
 
+    // Ask SAYON to classify files as CRITICAL (needs full content) or CONTEXT (summary only)
     const prompt =
-      `Given this task and the available workspace files, ` +
-      `list which files need to be read to make an accurate implementation plan. ` +
-      `Only include files genuinely needed — not all of them. ` +
-      `Respond ONLY with a JSON array of filenames: ["file1.ts","file2.ts"]. ` +
-      `Max ${MAX_DISCOVERY_FILES} files. Empty array if no files needed.\n\n` +
+      `Given this task and the available workspace files, classify which files SEREN needs ` +
+      `to plan an implementation. For each file, assign one of:\n` +
+      `  CRITICAL — SEREN needs the full file content to plan accurately (e.g. files being modified, ` +
+      `primary source documents the output is based on)\n` +
+      `  CONTEXT — summary is enough for planning (e.g. reference files, adjacent components)\n\n` +
+      `Respond ONLY with a JSON array: [{"file":"name.ts","importance":"CRITICAL"},...]. ` +
+      `Omit files not needed at all. Max ${MAX_DISCOVERY_FILES} files total. ` +
+      `Empty array if no files needed.\n\n` +
       `TASK: ${userMessage}\n\n` +
       `AVAILABLE FILES:\n${summaryBlock}`;
 
@@ -155,15 +256,22 @@ export class TaskPlanner {
       const clean = await coordinatorCall({
         systemPrompt: '',
         messages: [{ role: 'user', content: prompt }],
-        maxTokens: 256,
+        maxTokens: 512,
         temperature: 0.1,
         mode: 'no_think',
       });
       const match = clean.match(/\[[\s\S]*\]/);
       if (match) {
-        const files = JSON.parse(match[0]) as string[];
+        const entries = JSON.parse(match[0]) as Array<{ file: string; importance?: string }>;
         const known = new Set(fileSummaries.map((f) => f.filename));
-        return files.filter((f) => typeof f === 'string' && known.has(f)).slice(0, MAX_DISCOVERY_FILES);
+        const files: string[] = [];
+        for (const e of entries) {
+          if (typeof e.file === 'string' && known.has(e.file) && files.length < MAX_DISCOVERY_FILES) {
+            files.push(e.file);
+            this.discoveryTags.set(e.file, e.importance === 'CONTEXT' ? 'CONTEXT' : 'CRITICAL');
+          }
+        }
+        return files;
       }
     } catch (err) {
       console.warn('[TaskPlanner] Discovery roadmap failed:', err);
@@ -192,6 +300,7 @@ export class TaskPlanner {
     let rawBudgetRemaining = SEREN_CONTEXT_BUDGET;
 
     for (const filename of filenames) {
+      const tag = this.discoveryTags.get(filename) ?? 'CRITICAL';
       const absPath = path.resolve(this.workspaceDir, filename);
       let content: string;
       try {
@@ -201,17 +310,24 @@ export class TaskPlanner {
         continue;
       }
 
-      // Store raw content for per-task enrichment in decomposeTasks
+      // Always store raw content for per-task enrichment regardless of tag
       this.discoveredFileContents.set(filename, content);
 
+      // CONTEXT-tagged files: SEREN already sees a summary in fileListSection.
+      // Don't re-inject the same info — just record the content for task enrichment.
+      if (tag === 'CONTEXT') {
+        console.log(`[planner:discovery] "${filename}" tagged CONTEXT — skipping full injection (summary sufficient)`);
+        continue;
+      }
+
+      // CRITICAL-tagged files: inject full content so SEREN can plan at line level
       if (content.length <= PAGE_SIZE_CHARS) {
         const extracted = await this.extractFromChunk(
           filename, content, userMessage, sendThinking
         );
-        // Include both SAYON analysis and raw content (budget-gated)
         if (content.length <= rawBudgetRemaining) {
           contextParts.push(
-            `<file_context path="${filename}">\n` +
+            `<file_context path="${filename}" importance="CRITICAL">\n` +
             `<sayon_analysis>\n${extracted}\n</sayon_analysis>\n` +
             `<full_content>\n${content}\n</full_content>\n` +
             `</file_context>`
@@ -219,7 +335,7 @@ export class TaskPlanner {
           rawBudgetRemaining -= content.length;
         } else {
           // Over budget — extraction only
-          contextParts.push(`<file_context path="${filename}">\n${extracted}\n</file_context>`);
+          contextParts.push(`<file_context path="${filename}" importance="CRITICAL">\n${extracted}\n</file_context>`);
         }
       } else {
         const chunks = this.paginate(content);
@@ -231,11 +347,8 @@ export class TaskPlanner {
           );
           extractions.push(extracted);
         }
-        // Large paginated files: extraction only in the planning context.
-        // Full content is still available via discoveredFileContents for
-        // per-task injection in decomposeTasks.
         contextParts.push(
-          `<file_context path="${filename}" chunks="${chunks.length}">\n` +
+          `<file_context path="${filename}" importance="CRITICAL" chunks="${chunks.length}">\n` +
           extractions.join('\n---\n') +
           `\n</file_context>`
         );
@@ -299,26 +412,70 @@ export class TaskPlanner {
     sendThinking: (token: string) => void,
     clarificationIteration?: number,
     clarificationLog?: Array<{ questions: string[]; userReply: string }>,
+    projectScope: ProjectScope = 'STANDARD',
   ): Promise<TaskPlan> {
     const contextSection = completeContext
-      ? `EXTRACTED FILE CONTEXT:\n${completeContext.slice(0, 12_000)}\n\n`
+      ? `EXTRACTED FILE CONTEXT:\n${completeContext.slice(0, 40_000)}\n\n`
       : '';
 
+    // Files tagged CRITICAL get full content in contextSection — mark them so SEREN
+    // knows not to re-derive from the summary what it already has verbatim.
+    const criticalFiles = new Set(
+      [...this.discoveryTags.entries()]
+        .filter(([, tag]) => tag === 'CRITICAL')
+        .map(([f]) => f)
+    );
     const fileListSection = fileSummaries.length > 0
-      ? `WORKSPACE FILES:\n${fileSummaries.map((f) => `  ${f.filename}: ${f.summary}`).join('\n')}\n\n`
+      ? `WORKSPACE FILES:\n` +
+        fileSummaries.map((f) => {
+          const tag = criticalFiles.has(f.filename) ? ' [full content provided below]' : '';
+          return `  ${f.filename}${tag}: ${f.summary}`;
+        }).join('\n') +
+        `\n\n`
       : '';
 
-    // Estimate complexity from the request text — used in the scope instruction
-    const isLikelySimple = this.looksSimple(userMessage, fileSummaries);
+    // ── Scope-driven planning directive ─────────────────────────────────────
+    // SAYON classified the project scope during ingest. This drives how many
+    // tasks SEREN plans and what ambition level each task should have.
+    // There is NO hard task count limit — scope guides completeness instead.
+    const scopePlanningDirectives: Record<string, string> = {
+      MINIMAL:
+        `SCOPE — MINIMAL: The user asked for exactly one specific thing. ` +
+        `Create exactly as many tasks as the request explicitly requires — no more. ` +
+        `Do not add scaffolding, config files, tests, or extras. ` +
+        `Even so: every task you create must be fully implemented — never stub or truncate.`,
+      STANDARD:
+        `SCOPE — STANDARD: Create all tasks a competent practitioner would consider ` +
+        `naturally necessary for this request. Include implied dependencies ` +
+        `(a component needs its styles, a route needs its handler) but do not pad. ` +
+        `Every task must be fully implemented — no stubs, no placeholders.`,
+      COMPREHENSIVE:
+        `SCOPE — COMPREHENSIVE: The user wants a production-ready result. ` +
+        `Include every task needed: all files, supporting configs, and anything that makes ` +
+        `the deliverable genuinely complete and shippable. Do not cut corners. ` +
+        `Every task must be fully implemented with RICH, DETAILED content — not outlines or stubs. ` +
+        `For content tasks (pages, documents, copy): each must contain substantial real content ` +
+        `drawn from the source material — multiple sections, full paragraphs, specific details. ` +
+        `"Rich details" means 300-600+ words of real content per page, not placeholder text.`,
+      EXHAUSTIVE:
+        `SCOPE — EXHAUSTIVE: Spare nothing. Create a task for every file, every page, ` +
+        `every component, every config. Every task must be exhaustively implemented — ` +
+        `no stubs, no truncation, no placeholder text. ` +
+        `For content tasks: each page must contain COMPREHENSIVE content drawn from source material — ` +
+        `multiple detailed sections, 500-1000+ words of specific, accurate information. ` +
+        `If you find yourself about to write a short stub — stop and write the full thing instead.`,
+    };
+    const scopeRule = (scopePlanningDirectives[projectScope] ?? scopePlanningDirectives['STANDARD']) + '\n\n';
 
-    const scopeRule = isLikelySimple
-      ? `SCOPE: This request appears simple. Produce the MINIMUM number of tasks ` +
-        `to satisfy it — do not add project scaffolding, config files, package.json, ` +
-        `tsconfig, or dependency installation unless explicitly requested. ` +
-        `If the request can be done in a single file, produce exactly one task.\n\n`
-      : `SCOPE: Only touch files the request explicitly mentions or that are directly ` +
-        `required by the change. Do not add infrastructure (config, manifests, lockfiles) ` +
-        `unless the request asks for it. When in doubt, do less. Precision edits, complete functions.\n\n`;
+    // Per-task scope guidance injected into each task's context field during planning.
+    // SEREN uses this to know how much to write when executing that specific task.
+    const taskScopeGuidance: Record<string, string> = {
+      MINIMAL:  'BRIEF',
+      STANDARD: 'STANDARD',
+      COMPREHENSIVE: 'DETAILED',
+      EXHAUSTIVE: 'COMPLETE',
+    };
+    const defaultTaskScope = taskScopeGuidance[projectScope] ?? 'STANDARD';
 
     // Clarification weight — injected when this is a follow-up to a prior
     // NEEDS_CLARIFICATION. The weight increases pressure to attempt the task
@@ -368,18 +525,20 @@ export class TaskPlanner {
         `You have all the information you need to proceed. Make reasonable creative decisions ` +
         `for any details the user left open (filename, structure, content). ` +
         `Do NOT ask another NEEDS_CLARIFICATION — proceed to BUILD_QUEUE.\n\n`
-      : `BEFORE PLANNING — ask yourself: "Do I know if I'm editing a file or creating one or not at all? ` +
-        `If so do I know what to change, and exactly what the result should look like?" If the answer to ANY of ` +
-        `those is no, return NEEDS_CLARIFICATION with specific questions. It is ALWAYS better ` +
-        `to ask one question and get it right than to produce work the user has to redo.\n\n`;
+      : `BEFORE PLANNING — ask yourself: "Do I know exactly what the user wants as the end result? ` +
+        `Do I know whether this requires file changes, a written response, or an analysis? ` +
+        `If file changes are needed, do I know which files and what to change?" ` +
+        `If the answer to ANY of those is no, return NEEDS_CLARIFICATION with specific questions. ` +
+        `It is ALWAYS better to ask one question and get it right than to produce work the user has to redo.\n\n`;
+
+    const toolSkillsBlock = getPrimeTriggerList();
 
     const prompt =
-      `You are SEREN, a critical analysis and intelligence execution engine. Decompose the request below into ` +
-      `ordered, atomic, tasks that you will execute yourself. Determine the purpose of the task: code - logic - general` +
-      `Each task needs a meaningful plan and performs one clear operation. ` +
+      `Hi SEREN, this is SAYON. I've spoken with the user and prepared the request below for you. ` +
+      `Please decompose it into ordered, atomic tasks. Each task performs one clear operation. ` +
       `For each task write a precise self-contained prompt — ` +
-      `if it is a general question, task, or analysis, structure it critically. For code, include exact function names, ` +
-      `line references, and constraints from the context. Don't include your full file contents in prompts.\n\n` +
+      `for code, include exact function names, line references, and constraints. ` +
+      `For written responses or analysis, describe exactly what must be produced.\n\n` +
       beforePlanningRule +
       clarificationBlock +
       scopeRule +
@@ -391,10 +550,15 @@ export class TaskPlanner {
       `  "tasks": [\n` +
       `    {\n` +
       `      "title": "<short action phrase>",\n` +
-      `      "targetFile": "<filename or empty string>",\n` +
-      `      "operation": "<modify|create|delete|analyze>",\n` +
+      `      "targetFile": "<filename or empty string if no file involved>",\n` +
+      `      "operation": "<modify|create|delete|analyze|respond|image_gen>",\n` +
       `      "prompt": "<full self-contained engine prompt>",\n` +
-      `      "context": "<extracted constraints for this task only, max 400 words>"\n` +
+      `      "context": "<extracted constraints for this task only, max 400 words>",\n` +
+      `      "assignedTo": "<seren|sayon — seren is default, assign sayon only for simple fast tasks>",\n` +
+      `      "skillId": "<skill id from available_skills, or omit if none needed>",\n` +
+      `      "taskScope": "<BRIEF|STANDARD|DETAILED|COMPLETE — how much to produce for this specific task>",\n` +
+      `      "outputRequiredBy": [<task indices that need this task\'s output, e.g. [2,3] — omit if none>],\n` +
+      `      "sourceFiles": ["<workspace filename that this task needs to read in full, e.g. doc.md>"]\n` +
       `    }\n` +
       `  ]\n` +
       `}\n\n` +
@@ -407,34 +571,91 @@ export class TaskPlanner {
       `REQUEST: ${userMessage}\n\n` +
       fileListSection +
       contextSection +
-      `RULES:\n` +
+      toolSkillsBlock +
+      `\nRULES:\n` +
       `- Tasks must be ordered so dependencies come first (create before modify)\n` +
       `- Ensure sequenced tasks have adequate context about their expected input\n` +
       `- Consolidate multiple changes to the same file into one task\n` +
-      `- Hard maximum: ${MAX_TASKS} tasks\n` +
-      `- If the request touches a file, try to fit as much into a single task as makes sense\n` +
-      `- AVOID creating tasks for files not mentioned or directly required\n` +
-      `- IF a substantial amount of accesory data is pertinent, such as large quantities of changes or notes\n` +
-      `determine the best format to relay that information in such as .md or .html\n` +
+      `- Create as many tasks as the scope requires — do not artificially limit the count\n` +
+      `- Use operation "respond" for tasks that produce text output with no file changes\n` +
+      `- Use operation "analyze" for tasks that read files but produce no output file\n` +
+      `- Use operation "image_gen" ONLY when you want PHOBOS to literally generate image files ` +
+      `using its built-in image synthesis engine (Stable Diffusion / FLUX / Chroma). ` +
+      `This is NOT for creating React components, UI elements, or placeholder tags — ` +
+      `it triggers actual image generation hardware. Use it when the task is to produce ` +
+      `real image files (hero images, illustrations, diagrams) as output artifacts. ` +
+      `Describe each image: subject, style, dimensions (e.g. 1216x704 for 16:9), model if relevant. ` +
+      `SEREN should NOT use image_gen for web components that display images; ` +
+      `use \"create\" for those instead.\n` +
+      `- AVOID creating tasks for files not mentioned or directly required by scope\n` +
+      `- Assign "assignedTo":"sayon" only for simple, fast tasks SAYON can handle well; use "seren" for everything else\n` +
+      `- Only set skillId if a skill from available_skills is genuinely useful for that task\n` +
+      `- Set taskScope per-task: BRIEF for small focused artifacts, STANDARD for typical deliverables, ` +
+      `DETAILED for substantial implementations, COMPLETE for exhaustive artifacts\n` +
+      `- Default taskScope if unsure: ${defaultTaskScope}\n` +
+      `- Use outputRequiredBy when a task produces data (JSON, analysis, extracted content) that ` +
+      `a later task needs as input. Set it to the array of task indices that depend on this output.\n` +
+      `- For "analyze" and "respond" operations: always set outputRequiredBy if any later task references this task\'s results\n` +
+      `\nFILE INJECTION - read carefully:\n` +
+      `- sourceFiles: list workspace files this task needs to read in full. ` +
+      `The executor receives complete file content without any read_file call.\n` +
+      `- Ask for each task: does it need to know what is inside [filename]? If yes, add it to sourceFiles.\n` +
+      `- Example: LandingPage.jsx uses PHOBOS-System-Design-v9.md for text content -> sourceFiles: ["PHOBOS-System-Design-v9.md"]\n` +
+      `- For large complex documents (design docs, specs, long markdown): ` +
+      `create an analyze task to extract structured data via outputRequiredBy, ` +
+      `AND still put the file in sourceFiles on tasks that use it directly. ` +
+      `Both serve different purposes: analyze gives structured extracts; sourceFiles gives raw access.\n` +
+      `- Do NOT add files to sourceFiles unless the task actually uses their content.\n` +
       ((!clarificationIteration || clarificationIteration === 0)
-        ? `- If you are uncertain on which files, what approach, or what the outcome should be — use NEEDS_CLARIFICATION`
-        : `- User has already answered questions — if suitable do your best to fill in the gaps and proceed with BUILD_QUEUE. If absolutely necessary use NEEDS_CLARIFICATION if your result might error.`);
+        ? `- If you are uncertain on the intent, outcome, or which files are involved -- use NEEDS_CLARIFICATION`
+        : `- User has already answered questions -- proceed with BUILD_QUEUE using your best interpretation. Use NEEDS_CLARIFICATION only if proceeding would cause an error.`)
 
-    console.log(`[planner:seren:decompose] task="${userMessage.slice(0, 120).replace(/\n/g, ' ')}" simple=${isLikelySimple}`);
+    console.log(`[planner:seren:decompose] task="${userMessage.slice(0, 120).replace(/\n/g, ' ')}" scope=${projectScope}`);
 
     try {
-      const clean = await engineStream({
+      let raw = await engineStream({
         systemPrompt: '',
         messages: [{ role: 'user', content: prompt }],
-        maxTokens: 8192,  // thinking models (Phi-4, SmolLM3, Ministral) spend 500-2000 tokens
-                          // thinking before producing JSON — 2048 was too tight and caused truncation
+        maxTokens: 16384, // Large plans (10+ tasks with full prompts) exceed 8192 tokens.
+                          // Thinking tokens consume ~2000-4000 tokens before JSON starts.
+                          // 16384 gives headroom for COMPREHENSIVE/EXHAUSTIVE plans.
         temperature: 0.2,
         mode: 'think',
         onThinkToken: sendThinking,
       });
 
-      console.log(`[planner:raw] "${clean.slice(0, 600).replace(/\n/g, ' ')}"`);
+      console.log(`[planner:raw] "${raw.slice(0, 600).replace(/\n/g, ' ')}"`);
 
+      // ── Truncation recovery ───────────────────────────────────────────────
+      // If the output ends mid-JSON (no closing }]), attempt one continuation
+      // turn to get the remainder. This happens when a large plan hits the token
+      // limit before the JSON array closes.
+      const openBraces = (raw.match(/\{/g) ?? []).length;
+      const closeBraces = (raw.match(/\}/g) ?? []).length;
+      const looksIncomplete = openBraces > closeBraces || (raw.includes('"tasks"') && !raw.trimEnd().endsWith('}'));
+      if (looksIncomplete) {
+        console.warn('[planner:truncation] Planning JSON appears truncated — requesting continuation');
+        try {
+          const continuation = await engineStream({
+            systemPrompt: '',
+            messages: [
+              { role: 'user', content: prompt },
+              { role: 'assistant', content: raw },
+              { role: 'user', content: 'Your JSON was cut off. Continue from exactly where you left off — do not repeat anything already written. Complete the JSON.' },
+            ],
+            maxTokens: 8192,
+            temperature: 0.0,
+            mode: 'no_think',
+            onThinkToken: sendThinking,
+          });
+          raw = raw.trimEnd() + continuation.trimStart();
+          console.log(`[planner:truncation] Continuation added ${continuation.length} chars`);
+        } catch (contErr) {
+          console.warn('[planner:truncation] Continuation failed:', contErr);
+        }
+      }
+
+      const clean = raw;
       const match = clean.match(/\{[\s\S]*\}/);
       if (match) {
         const parsed = JSON.parse(match[0]) as {
@@ -467,21 +688,48 @@ export class TaskPlanner {
 
         // ── BUILD_QUEUE (normal path) ─────────────────────────────────────
         if (Array.isArray(parsed.tasks) && parsed.tasks.length > 0) {
-          const tasks: Task[] = parsed.tasks.slice(0, MAX_TASKS).map((t, i) => ({
-            index: i + 1,
-            title: String(t.title ?? `Task ${i + 1}`),
-            targetFile: String(t.targetFile ?? ''),
-            operation: (['modify', 'create', 'delete', 'analyze'].includes(t.operation)
-              ? t.operation
-              : 'modify') as Task['operation'],
-            prompt: String(t.prompt ?? userMessage),
-            context: String(t.context ?? '').slice(0, MAX_TASK_CONTEXT_CHARS),
-          }));
+          const VALID_OPS: ReadonlyArray<Task['operation']> = ['modify', 'create', 'delete', 'analyze', 'respond', 'image_gen'];
+          const VALID_TASK_SCOPES = ['BRIEF', 'STANDARD', 'DETAILED', 'COMPLETE'] as const;
+          const tasks: Task[] = parsed.tasks.map((raw, i) => {
+            // Cast the JSON-parsed task to a typed record — parsed tasks are
+            // plain objects whose fields may be missing or wrongly typed.
+            const t = raw as {
+              title?: unknown; targetFile?: unknown; operation?: unknown;
+              prompt?: unknown; context?: unknown;
+              assignedTo?: unknown; skillId?: unknown; taskScope?: unknown; outputRequiredBy?: unknown;
+              sourceFiles?: unknown;
+            };
+            const op = VALID_OPS.includes(t.operation as Task['operation'])
+              ? (t.operation as Task['operation'])
+              : 'modify';
+            const ts: Task['taskScope'] =
+              typeof t.taskScope === 'string' &&
+              (VALID_TASK_SCOPES as readonly string[]).includes(t.taskScope)
+                ? (t.taskScope as Task['taskScope'])
+                : (defaultTaskScope as Task['taskScope']);
+            return {
+              index: i + 1,
+              title: String(t.title ?? `Task ${i + 1}`),
+              targetFile: String(t.targetFile ?? ''),
+              operation: op,
+              prompt: String(t.prompt ?? userMessage),
+              context: String(t.context ?? '').slice(0, MAX_TASK_CONTEXT_CHARS),
+              assignedTo: (t.assignedTo === 'sayon' ? 'sayon' : 'seren') as Task['assignedTo'],
+              skillId: typeof t.skillId === 'string' && t.skillId.trim() ? t.skillId.trim() : undefined,
+              taskScope: ts,
+              outputRequiredBy: Array.isArray(t.outputRequiredBy)
+                ? (t.outputRequiredBy as unknown[]).filter((n): n is number => typeof n === 'number')
+                : undefined,
+              sourceFiles: Array.isArray(t.sourceFiles)
+                ? (t.sourceFiles as unknown[]).filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+                : undefined,
+            };
+          });
 
-          // ── Enrich: inject full target file content into each task ───────
-          // SEREN's context field from planning is a 400-word summary.
-          // For modify/analyze operations, replace it with the actual file
-          // so the engine has the real code during execution.
+          // ── Enrich: inject full target file + sourceFiles content ─────────
+          // For modify/analyze operations, targetFile gets its content injected.
+          // sourceFiles declared by SEREN get their full content injected too,
+          // so executors have raw access to source documents without read_file calls.
           this.enrichTasksWithFileContent(tasks, fileSummaries);
 
           return {
@@ -503,6 +751,7 @@ export class TaskPlanner {
         operation: 'modify',
         prompt: userMessage,
         context: completeContext.slice(0, MAX_TASK_CONTEXT_CHARS),
+        taskScope: defaultTaskScope as Task['taskScope'],
       }],
       planSummary: 'Sending task to engine.',
     };
@@ -511,14 +760,15 @@ export class TaskPlanner {
   /**
    * Post-plan enrichment: for each task that targets an existing file,
    * replace the SEREN-generated 400-word context summary with the actual
-   * file content. The target file always gets full injection regardless of
-   * budget — this is the file SEREN is about to edit.
+   * file content. Also injects any sourceFiles SEREN declared — these are
+   * source documents the executor needs to read in full to do its job.
    *
    * Sources checked in order:
    *   1. discoveredFileContents — files read during SAYON discovery (Step 2)
    *   2. fileSummaries[].content — files read during Stage 1 ingestion
    *
-   * For 'create' operations the file doesn't exist yet, so no enrichment.
+   * For 'create' operations targetFile doesn't exist yet, so no targetFile enrichment.
+   * sourceFiles enrichment always runs regardless of operation type.
    */
   private enrichTasksWithFileContent(tasks: Task[], fileSummaries: FileSummary[]): void {
     const summaryContentMap = new Map<string, string>();
@@ -529,49 +779,45 @@ export class TaskPlanner {
     }
 
     for (const task of tasks) {
-      if (!task.targetFile || task.operation === 'create') continue;
+      // ── targetFile enrichment (existing files being modified/analyzed) ───
+      if (task.targetFile && task.operation !== 'create') {
+        const fullContent =
+          this.discoveredFileContents.get(task.targetFile) ??
+          summaryContentMap.get(task.targetFile);
 
-      // Prefer discovery content (read at full resolution in Step 2)
-      // Fall back to ingestion content (may be truncated at 20k chars)
-      const fullContent =
-        this.discoveredFileContents.get(task.targetFile) ??
-        summaryContentMap.get(task.targetFile);
+        if (fullContent) {
+          task.context =
+            task.context +
+            `\n\n<target_file path="${task.targetFile}">\n` +
+            fullContent +
+            `\n</target_file>`;
+          console.log(`[planner:enrich:target] task=${task.index} file="${task.targetFile}" injected=${fullContent.length} chars`);
+        }
+      }
 
-      if (!fullContent) continue;
-
-      // Preserve SEREN's extracted constraints as a preamble, then append full file.
-      // The constraints tell SEREN what to focus on; the file gives it the real code.
-      const enriched =
-        task.context +
-        `\n\n<target_file path="${task.targetFile}">\n` +
-        fullContent +
-        `\n</target_file>`;
-
-      task.context = enriched;
-      console.log(`[planner:enrich] task=${task.index} file="${task.targetFile}" injected=${fullContent.length} chars`);
+      // ── sourceFiles enrichment — source documents declared by SEREN ─────
+      // These are files the executor needs to read for content (e.g. a design doc
+      // that a page creation task draws its text from). Injected as <source_file>
+      // blocks so the executor has raw access without a read_file round-trip.
+      if (task.sourceFiles && task.sourceFiles.length > 0) {
+        const sourceBlocks: string[] = [];
+        for (const filename of task.sourceFiles) {
+          // Don't re-inject targetFile — already handled above
+          if (filename === task.targetFile) continue;
+          const content =
+            this.discoveredFileContents.get(filename) ??
+            summaryContentMap.get(filename);
+          if (!content) continue;
+          sourceBlocks.push(
+            `<source_file path="${filename}">\n${content}\n</source_file>`
+          );
+          console.log(`[planner:enrich:source] task=${task.index} file="${filename}" injected=${content.length} chars`);
+        }
+        if (sourceBlocks.length > 0) {
+          task.context = task.context + '\n\n' + sourceBlocks.join('\n\n');
+        }
+      }
     }
-  }
-
-  /**
-   * Heuristic: does this request look simple enough to warrant a strict
-   * single-file scope guard? Used to set the SCOPE instruction in the
-   * SEREN decomposition prompt.
-   *
-   * Simple signals:
-   * - Short request text (< 120 chars)
-   * - Contains "function", "hello", "snippet", "example", "demo", "test"
-   * - Empty workspace (no existing files)
-   * - Request mentions exactly one file or none
-   */
-  private looksSimple(userMessage: string, fileSummaries: FileSummary[]): boolean {
-    const msg = userMessage.toLowerCase();
-    if (fileSummaries.length === 0) return true;
-    if (userMessage.length < 120) return true;
-    if (/\b(hello|snippet|example|demo|sample|test function|simple function)\b/.test(msg)) return true;
-    // Count explicit file references — if zero or one, likely simple
-    const fileRefs = (userMessage.match(/\.(ts|js|tsx|jsx|py|go|rs|cs|cpp|c|json|md)\b/gi) ?? []).length;
-    if (fileRefs <= 1) return true;
-    return false;
   }
 
   /** Split content into overlapping pages */

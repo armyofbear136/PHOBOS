@@ -1,0 +1,10 @@
+﻿{
+  "id": "cro-optimization",
+  "name": "cro optimization",
+  "description": "Analyze a landing page and deliver a comprehensive CRO audit with specific, actionable recommendations to maximize conversions.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

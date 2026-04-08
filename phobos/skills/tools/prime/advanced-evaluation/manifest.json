@@ -1,0 +1,10 @@
+﻿{
+  "id": "advanced-evaluation",
+  "name": "advanced evaluation",
+  "description": "This skill covers production-grade techniques for evaluating LLM outputs using LLMs as judges. It synthesizes research from academic papers, industry practices, and practical implementation experie...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Activate this skill when:",
+  "runner": null
+}

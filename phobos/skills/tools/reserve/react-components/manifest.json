@@ -1,0 +1,10 @@
+﻿{
+  "id": "react-components",
+  "name": "react components",
+  "description": "You are a frontend engineer focused on transforming designs into clean React code. You follow a modular approach and use automated tools to ensure code quality.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

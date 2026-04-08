@@ -140,6 +140,22 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
       spec.modelId.startsWith('smollm3')
     );
     args.push('--jinja', '--reasoning-format', isTagPathModel ? 'none' : 'deepseek');
+    // b8662: enable_thinking:true per-request crashes the Jinja template renderer for
+    // models with a toggleable thinking mode (Nemotron, Qwen, Gemma, Nanbeige).
+    // Do NOT set --reasoning on for those — it overrides enable_thinking:false in
+    // the no-think request body and causes thinking bleed on coordinator calls.
+    //
+    // EXCEPTION: R1-distill models that ALWAYS think (Phi-4 mini reasoning, Ministral 3
+    // Reasoning, SmolLM3) have no off-switch in their templates. For these, --reasoning on
+    // is harmless since they always produce <think> tags regardless.
+    const isAlwaysThinkModel = (
+      spec.modelId.startsWith('phi4-mini-reasoning') ||
+      spec.modelId.startsWith('ministral-') ||
+      spec.modelId.startsWith('smollm3')
+    );
+    if (spec.thinkingTokens && isAlwaysThinkModel) {
+      args.push('--reasoning', 'on');
+    }
   }
 
   // ── Build environment for GPU device targeting ──────────────────────────
@@ -204,7 +220,7 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
         const vkIdx = cfg.vulkanIndex ?? cfg.deviceIndex;
         env.GGML_VK_VISIBLE_DEVICES = String(vkIdx);
         // GGML_VK_VISIBLE_DEVICES already filters to one device (Vulkan0 in the filtered set).
-        // Do NOT pass --device Vulkan0 — newer llama.cpp builds reject device name args.
+        // No --device arg on the NVIDIA Vulkan fallback path — env var filtering is sufficient here.
         if ((cfg as any).runnerKind === 'nvidia-legacy') {
           console.log(`[LlamaServerManager] ${role}: NVIDIA legacy GPU — attempting Vulkan${vkIdx}. If ICD not registered, will fall to CPU.`);
         }
@@ -248,8 +264,12 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
       env.CUDA_VISIBLE_DEVICES    = '-1'; // hide CUDA — no NVIDIA context overhead
       env.HIP_VISIBLE_DEVICES     = '-1'; // hide ROCm
       env.GGML_VK_VISIBLE_DEVICES = String(vkIdx);
-      // GGML_VK_VISIBLE_DEVICES filters to one device — no --device arg needed.
-      // Newer llama.cpp builds reject --device VulkanN style arguments.
+      // GGML_VK_VISIBLE_DEVICES filters the device list so the target becomes Vulkan0
+      // in the subprocess. --device Vulkan0 explicitly pins all tensor allocation to
+      // that device, preventing the Vulkan backend from split-loading layers between
+      // device VRAM and system RAM (the 890M symptom: model half in VRAM, half in RAM).
+      // Confirmed working on b8665 — test-model-parse.ts passes all 12 models with it.
+      args.push('--device', 'Vulkan0');
     }
   } else if (cfg.gpuLayers > 0) {
     // No specific device — let llama-server auto-select
@@ -282,6 +302,9 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
   // (ggml-vulkan.dll, ggml-cpu-*.dll, ggml-rpc.dll, ggml-cuda.dll) are found.
   const binDir = path.dirname(bin);
 
+  // Track early exits so we can detect code=1 before the port is ready.
+  let earlyExitCode: number | null = null;
+
   const proc = spawn(bin, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     env,
@@ -299,9 +322,8 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
     managed.state   = code === 0 ? 'stopped' : 'error';
     if (code !== 0 && code !== null) {
       managed.error = `Exited with code ${code}`;
+      earlyExitCode = code;
     }
-
-
   });
 
   managed.process = proc;
@@ -314,6 +336,69 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
     managed.state = 'error';
     managed.error = (err as Error).message;
     proc.kill();
+
+    // ── Vulkan index fallback ──────────────────────────────────────────────
+    // If a non-NVIDIA Vulkan GPU exited code=1 and GGML_VK_VISIBLE_DEVICES was
+    // set to a non-zero index, the assigned index may not exist in the current
+    // Vulkan enumeration (e.g. iGPU Vulkan ICD not registered this boot, or the
+    // NVIDIA Vulkan ICD took the only available slot). Retry once with index 0.
+    const isNonNvidiaVulkan = cfg.gpuBackend !== 'cuda' && cfg.gpuBackend !== 'metal'
+      && cfg.gpuLayers > 0 && cfg.deviceIndex !== undefined;
+    const wasVulkanIndexMismatch = earlyExitCode === 1
+      && isNonNvidiaVulkan
+      && env.GGML_VK_VISIBLE_DEVICES !== undefined
+      && env.GGML_VK_VISIBLE_DEVICES !== '0'
+      && env.GGML_VK_VISIBLE_DEVICES !== '';
+
+    if (wasVulkanIndexMismatch) {
+      const originalIdx = env.GGML_VK_VISIBLE_DEVICES;
+      console.warn(
+        `[LlamaServerManager] ${role}: GGML_VK_VISIBLE_DEVICES=${originalIdx} produced code=1 — ` +
+        `Vulkan device not found at that index. Retrying with GGML_VK_VISIBLE_DEVICES=0.`
+      );
+      env.GGML_VK_VISIBLE_DEVICES = '0';
+      earlyExitCode = null;
+
+      const retryProc = spawn(bin, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env,
+        cwd: binDir,
+      });
+      retryProc.stderr?.on('data', (data: Buffer) => {
+        const line = data.toString().trim();
+        if (line) console.log(`[llama-server:${role}] ${line}`);
+      });
+      retryProc.on('exit', (code, signal) => {
+        console.log(`[LlamaServerManager] ${role} exited code=${code} signal=${signal}`);
+        managed.process = null;
+        managed.state   = code === 0 ? 'stopped' : 'error';
+        if (code !== 0 && code !== null) managed.error = `Exited with code ${code}`;
+      });
+      managed.process = retryProc;
+      managed.state   = 'starting';
+      managed.error   = null;
+
+      try {
+        await waitForPort(cfg.port, 60_000);
+        managed.state = 'running';
+        console.log(`[LlamaServerManager] ${role} ready on :${cfg.port} (Vulkan fallback index 0)`);
+
+        // Update the cached hardware profile so future reconcile calls use
+        // the correct index rather than repeating the bad assignment.
+        const hwNow = getCachedHardware();
+        const gpuEntry = hwNow?.gpus.find(g => g.index === cfg.deviceIndex);
+        if (gpuEntry?.runner) {
+          console.log(`[LlamaServerManager] Updating ${gpuEntry.name} vulkanIndex cache: ${originalIdx} -> 0`);
+          gpuEntry.runner.vulkanIndex = 0;
+        }
+        return;
+      } catch (retryErr) {
+        retryProc.kill();
+        managed.state = 'error';
+        managed.error = (retryErr as Error).message;
+      }
+    }
+
     throw err;
   }
 }

@@ -1,0 +1,10 @@
+﻿{
+  "id": "statsmodels",
+  "name": "statsmodels",
+  "description": "Statsmodels is Python's premier library for statistical modeling, providing tools for estimation, inference, and diagnostics across a wide range of statistical methods. Apply this skill for rigorou...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Fitting regression models (OLS, WLS, GLS, quantile regression)",
+  "runner": null
+}

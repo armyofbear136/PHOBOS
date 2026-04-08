@@ -1,0 +1,10 @@
+﻿{
+  "id": "epic-hypothesis",
+  "name": "epic hypothesis",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Early-stage feature exploration (before committing to full roadmap) - Validating product-market fit for new capabilities",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "nnsight",
+  "name": "nnsight",
+  "description": "nnsight (/ɛn.saɪt/) enables researchers to interpret and manipulate the internals of any PyTorch model, with the unique capability of running the same code locally on small models or remotely on ma...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use nnsight when you need to:** - Run interpretability experiments on models too large for local GPUs (70B, 405B)",
+  "runner": null
+}

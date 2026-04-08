@@ -1,0 +1,10 @@
+﻿{
+  "id": "roadmap-planning",
+  "name": "roadmap planning",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Annual or quarterly planning cycles - After product strategy session (translate strategy to roadmap)",
+  "runner": null
+}

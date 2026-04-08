@@ -1,0 +1,10 @@
+﻿{
+  "id": "imaging-data-commons",
+  "name": "imaging data commons",
+  "description": "Use the `idc-index` Python package to query and download public cancer imaging data from the National Cancer Institute Imaging Data Commons (IDC). No authentication required for data access.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Finding publicly available radiology (CT, MR, PET) or pathology (slide microscopy) images - Selecting image subsets by cancer type, modality, anatomical si...",
+  "runner": null
+}

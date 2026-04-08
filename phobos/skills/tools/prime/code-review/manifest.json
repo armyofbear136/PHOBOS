@@ -1,0 +1,10 @@
+﻿{
+  "id": "code-review",
+  "name": "code review",
+  "description": "*Load with: base.md + [codex-review.md for OpenAI Codex] + [gemini-review.md for Google Gemini]*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "/code-review",
+  "runner": null
+}

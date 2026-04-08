@@ -1,0 +1,10 @@
+﻿{
+  "id": "notification-licenciement-selim-brihi",
+  "name": "notification licenciement selim brihi",
+  "description": "Ce skill permet de rédiger des notifications de licenciement conformes au droit du travail français, en particulier pour les licenciements pour faute grave ou motif personnel.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

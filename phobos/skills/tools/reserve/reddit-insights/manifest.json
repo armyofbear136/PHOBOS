@@ -1,0 +1,10 @@
+﻿{
+  "id": "reddit-insights",
+  "name": "reddit insights",
+  "description": "Semantic search across millions of Reddit posts. Unlike keyword search, this understands intent and meaning.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

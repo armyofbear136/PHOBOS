@@ -1,0 +1,10 @@
+﻿{
+  "id": "workspace",
+  "name": "workspace",
+  "description": "> Dynamic multi-repo and monorepo awareness for Claude Code. Analyze workspace topology, track API contracts, and maintain cross-repo context.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

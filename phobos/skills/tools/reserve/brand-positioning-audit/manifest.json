@@ -1,0 +1,10 @@
+﻿{
+  "id": "brand-positioning-audit",
+  "name": "brand positioning audit",
+  "description": "Most brands don't have a messaging problem. They have a positioning problem — and bad messaging is the symptom.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+{
+  "id": "context-compression",
+  "name": "Context Compression",
+  "description": "Guides SAYON to compress long-form context efficiently, preserving signal and dropping noise.",
+  "version": "1.0.0",
+  "scope": "sayon",
+  "category": "core",
+  "trigger": "Active during file summarisation and request rewriting in Phase 1",
+  "runner": null
+}

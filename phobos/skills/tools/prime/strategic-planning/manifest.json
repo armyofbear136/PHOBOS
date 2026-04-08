@@ -1,0 +1,10 @@
+﻿{
+  "id": "strategic-planning",
+  "name": "strategic planning",
+  "description": "Analyze the founder's business and current situation to deliver 3 specific, actionable next moves that will drive measurable results in marketing or sales.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use the AskUserQuestion tool to gather missing information. Ask between 3-10 questions based on what's needed:",
+  "runner": null
+}

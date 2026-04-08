@@ -1,0 +1,10 @@
+﻿{
+  "id": "rowan",
+  "name": "rowan",
+  "description": "Rowan is a cloud-based computational chemistry platform that provides programmatic access to quantum chemistry workflows through a Python API. It enables automation of complex molecular simulations...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

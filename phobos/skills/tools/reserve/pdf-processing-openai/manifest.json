@@ -1,0 +1,10 @@
+﻿{
+  "id": "pdf-processing-openai",
+  "name": "pdf processing openai",
+  "description": "- Read or review PDF content where layout and visuals matter. - Create PDFs programmatically with reliable formatting.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Read or review PDF content where layout and visuals matter. - Create PDFs programmatically with reliable formatting.",
+  "runner": null
+}

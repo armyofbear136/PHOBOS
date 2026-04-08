@@ -1,0 +1,10 @@
+﻿{
+  "id": "ui-web",
+  "name": "ui web",
+  "description": "*Load with: base.md + react-web.md*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

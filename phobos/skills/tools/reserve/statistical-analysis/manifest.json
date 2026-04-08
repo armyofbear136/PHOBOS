@@ -1,0 +1,10 @@
+﻿{
+  "id": "statistical-analysis",
+  "name": "statistical analysis",
+  "description": "Statistical analysis is a systematic process for testing hypotheses and quantifying relationships. Conduct hypothesis tests (t-test, ANOVA, chi-square), regression, correlation, and Bayesian analys...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Conducting statistical hypothesis tests (t-tests, ANOVA, chi-square)",
+  "runner": null
+}

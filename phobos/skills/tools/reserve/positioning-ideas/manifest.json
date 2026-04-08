@@ -1,0 +1,10 @@
+﻿{
+  "id": "positioning-ideas",
+  "name": "positioning ideas",
+  "description": "Brainstorm product positioning ideas differentiated from competitors. Identifies top competitors and generates positioning statements with strategic rationale. Use when developing product positioni...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Developing product positioning strategy - Differentiating from competitors",
+  "runner": null
+}

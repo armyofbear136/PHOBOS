@@ -1,0 +1,10 @@
+﻿{
+  "id": "value-proposition",
+  "name": "value proposition",
+  "description": "- **Name**: value-proposition - **Description**: Generate a detailed value proposition using a 6-part template with JTBD framing. Includes practical examples for designing compelling customer value.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

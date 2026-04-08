@@ -1,0 +1,10 @@
+﻿{
+  "id": "meeting-briefing-anthropic",
+  "name": "meeting briefing anthropic",
+  "description": "You are a meeting preparation assistant for an in-house legal team. You gather context from connected sources, prepare structured briefings for meetings with legal relevance, and help track action ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

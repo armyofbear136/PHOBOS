@@ -1,0 +1,10 @@
+﻿{
+  "id": "molecular-dynamics",
+  "name": "molecular dynamics",
+  "description": "Molecular dynamics (MD) simulation computationally models the time evolution of molecular systems by integrating Newton's equations of motion. This skill covers two complementary tools:",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use molecular dynamics when:",
+  "runner": null
+}

@@ -15,7 +15,7 @@ Usage:
     --device cuda:0 \
     --output /path/to/output.png
 
-Supported model types: flux, chroma, sdxl
+Supported model types: flux, chroma, sdxl, wan, qwen-image, kontext, z-image
 Supported formats: GGUF (via GGUFQuantizationConfig), safetensors (single-file)
 """
 
@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Model
     p.add_argument("--model-path", required=True, help="Path to diffusion model (GGUF or safetensors)")
-    p.add_argument("--model-type", required=True, choices=["flux", "chroma", "sdxl", "flux2", "z-image", "kontext", "qwen-image"],
+    p.add_argument("--model-type", required=True, choices=["flux", "chroma", "sdxl", "flux2", "z-image", "kontext", "qwen-image", "wan"],
                    help="Model architecture family")
     p.add_argument("--config-repo", default=None, help="HuggingFace repo ID for model config (e.g. black-forest-labs/FLUX.1-dev)")
     p.add_argument("--config-path", default=None, help="Local path to HuggingFace config directory")
@@ -66,9 +66,18 @@ def build_parser() -> argparse.ArgumentParser:
     # Kontext
     p.add_argument("--ref-image", default=None, help="Reference image (Kontext editing)")
 
-    # LoRA
-    p.add_argument("--lora-path", default=None, help="Path to LoRA weights")
-    p.add_argument("--lora-scale", type=float, default=1.0, help="LoRA influence (0-1)")
+    # Video (Wan)
+    p.add_argument("--num-frames", type=int, default=49, help="Number of video frames (Wan)")
+    p.add_argument("--fps", type=int, default=12, help="Video frames per second (Wan)")
+    p.add_argument("--flow-shift", type=float, default=3.0, help="Flow matching shift (Wan: 3.0 for 480P, 5.0 for 720P)")
+
+    # Artist Plugin System — multi-adapter LoRA
+    # Colon-delimited lists for 1–3 plugins per node.
+    # --lora-kinds: 'plugin' = read lora.safetensors from .phobos zip; 'raw_lora' = flat file.
+    p.add_argument("--lora-paths",   default=None, help="Colon-delimited LoRA archive/file paths")
+    p.add_argument("--lora-weights", default=None, help="Colon-delimited adapter weights (0.0–1.0)")
+    p.add_argument("--lora-names",   default=None, help="Colon-delimited adapter names (plugin_0, ...)")
+    p.add_argument("--lora-kinds",   default=None, help="Colon-delimited kinds: 'plugin' or 'raw_lora'")
 
     # Device / dtype
     p.add_argument("--device", default="cuda:0", help="PyTorch device (cuda:0, xpu:0, mps, cpu)")
@@ -145,45 +154,73 @@ def is_gguf(path: str) -> bool:
 def load_flux_gguf_pipeline(args, device: str, dtype):
     """Load a FLUX/Chroma model from GGUF with Diffusers.
 
-    Assembles the pipeline manually from individual components to avoid
-    hitting gated HuggingFace repos. All configs are bundled locally.
+    Uses model-type-specific Transformer and Pipeline classes:
+    - Chroma: ChromaTransformer2DModel + ChromaPipeline (config from lodestones/Chroma1-HD)
+    - FLUX:   FluxTransformer2DModel + FluxPipeline (config from city96 or bundled)
+
+    Assembles pipeline manually from individual components.
     """
     import torch
-    from diffusers import FluxPipeline, FluxTransformer2DModel, AutoencoderKL, GGUFQuantizationConfig
+    from diffusers import (
+        FluxPipeline, FluxTransformer2DModel,
+        ChromaPipeline, ChromaTransformer2DModel,
+        AutoencoderKL, GGUFQuantizationConfig,
+    )
     from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
     from transformers import CLIPTextModel, CLIPTokenizer, T5EncoderModel, T5TokenizerFast
 
-    # ── Resolve bundled config path ──────────────────────────────────────────
-    # The config.json sits next to phobos-diffusers.py in configs/flux-transformer/
-    script_dir = Path(__file__).parent
-    transformer_config_dir = script_dir / "configs" / "flux-transformer"
+    is_chroma = args.model_type == "chroma"
 
+    # ── Config source per model type ─────────────────────────────────────────
+    # Each model type needs a non-gated HuggingFace repo for its config.json.
+    # These are tiny JSON downloads (~500 bytes), cached permanently.
+    #
+    # IMPORTANT: schnell has a different transformer config (distilled, fewer layers)
+    # but shares the same VAE as FLUX dev. The bundled configs/flux1-schnell/ dir
+    # only contains transformer/config.json — it has no VAE config. So we track
+    # transformer_config and vae_config separately.
+    if is_chroma:
+        transformer_config = "lodestones/Chroma1-HD"
+        vae_config = "lodestones/Chroma1-HD"
+        TransformerClass = ChromaTransformer2DModel
+        PipelineClass = ChromaPipeline
+    else:
+        # VAE config always uses the full FLUX repo (has vae/ subfolder with config.json)
+        vae_config = "ostris/Flex.1-alpha"
+
+        # FLUX schnell has a different transformer architecture (distilled, fewer layers).
+        # Detect by filename or explicit --config-path.
+        model_lower = Path(args.model_path).name.lower()
+        if "schnell" in model_lower or (args.config_path and "schnell" in args.config_path.lower()):
+            # Bundled config at phobos/configs/flux1-schnell/
+            script_dir = Path(__file__).parent
+            bundled = script_dir / "configs" / "flux1-schnell"
+            if bundled.is_dir():
+                transformer_config = str(bundled)
+            else:
+                transformer_config = "city96/FLUX.1-schnell-gguf"
+        else:
+            transformer_config = "ostris/Flex.1-alpha"  # FLUX dev — Apache 2.0, not gated
+        TransformerClass = FluxTransformer2DModel
+        PipelineClass = FluxPipeline
+
+    # Explicit user override always wins — applies to both configs
     if args.config_path and os.path.isdir(args.config_path):
-        transformer_config_dir = Path(args.config_path)
-
-    if not (transformer_config_dir / "config.json").exists():
-        raise FileNotFoundError(
-            f"Transformer config not found at {transformer_config_dir / 'config.json'}. "
-            "Ensure phobos/configs/flux-transformer/config.json exists."
-        )
+        transformer_config = args.config_path
+        vae_config = args.config_path
 
     # ── Load transformer from GGUF ───────────────────────────────────────────
     log(f"loading diffusion model from {Path(args.model_path).name}")
 
     quant_config = GGUFQuantizationConfig(compute_dtype=dtype)
 
-    # Set offline mode to prevent any HuggingFace network calls during loading.
-    # Diffusers should auto-detect the architecture from GGUF metadata.
-    os.environ["HF_HUB_OFFLINE"] = "1"
-
-    transformer = FluxTransformer2DModel.from_single_file(
+    transformer = TransformerClass.from_single_file(
         args.model_path,
         quantization_config=quant_config,
+        config=transformer_config,
+        subfolder="transformer",
         torch_dtype=dtype,
     )
-
-    # Restore online mode for subsequent downloads (tokenizers etc)
-    del os.environ["HF_HUB_OFFLINE"]
     log("loading diffusion model completed")
 
     # ── Load VAE ─────────────────────────────────────────────────────────────
@@ -192,6 +229,8 @@ def load_flux_gguf_pipeline(args, device: str, dtype):
         log(f"loading vae from {Path(args.vae_path).name}")
         vae = AutoencoderKL.from_single_file(
             args.vae_path,
+            config=vae_config,
+            subfolder="vae",
             torch_dtype=dtype,
         )
         log("loading vae completed")
@@ -214,31 +253,30 @@ def load_flux_gguf_pipeline(args, device: str, dtype):
                 torch_dtype=dtype,
             )
         log("loading t5xxl completed")
-        # T5 tokenizer — download from HuggingFace (small, not gated)
+        # T5 tokenizer — small, public, cached permanently
         log("loading t5 tokenizer")
         tokenizer_2 = T5TokenizerFast.from_pretrained("google/t5-v1_1-xxl", legacy=False)
 
-    # ── Load CLIP-L encoder (FLUX.1, not Chroma) ────────────────────────────
+    # ── Load CLIP-L encoder (FLUX.1 only, not Chroma) ────────────────────────
     text_encoder = None
     tokenizer = None
-    if args.clip_path and os.path.exists(args.clip_path):
-        log(f"loading clip from {Path(args.clip_path).name}")
-        # CLIP-L is a safetensors file — load the model and tokenizer
-        text_encoder = CLIPTextModel.from_pretrained(
-            "openai/clip-vit-large-patch14",
-            torch_dtype=dtype,
-        )
-        tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-        log("loading clip completed")
-    elif args.model_type != "chroma":
-        # Non-Chroma FLUX needs CLIP-L — try loading from HuggingFace
-        log("loading clip from openai/clip-vit-large-patch14")
-        text_encoder = CLIPTextModel.from_pretrained(
-            "openai/clip-vit-large-patch14",
-            torch_dtype=dtype,
-        )
-        tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-        log("loading clip completed")
+    if not is_chroma:
+        if args.clip_path and os.path.exists(args.clip_path):
+            log(f"loading clip from {Path(args.clip_path).name}")
+            text_encoder = CLIPTextModel.from_pretrained(
+                "openai/clip-vit-large-patch14",
+                torch_dtype=dtype,
+            )
+            tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+            log("loading clip completed")
+        else:
+            log("loading clip from openai/clip-vit-large-patch14")
+            text_encoder = CLIPTextModel.from_pretrained(
+                "openai/clip-vit-large-patch14",
+                torch_dtype=dtype,
+            )
+            tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+            log("loading clip completed")
 
     # ── Assemble pipeline ────────────────────────────────────────────────────
     log("loading pipeline components")
@@ -248,20 +286,28 @@ def load_flux_gguf_pipeline(args, device: str, dtype):
     pipe_kwargs = {
         "transformer": transformer,
         "scheduler": scheduler,
-        "torch_dtype": dtype,
     }
     if vae is not None:
         pipe_kwargs["vae"] = vae
-    if text_encoder_2 is not None:
-        pipe_kwargs["text_encoder_2"] = text_encoder_2
-    if tokenizer_2 is not None:
-        pipe_kwargs["tokenizer_2"] = tokenizer_2
-    if text_encoder is not None:
-        pipe_kwargs["text_encoder"] = text_encoder
-    if tokenizer is not None:
-        pipe_kwargs["tokenizer"] = tokenizer
 
-    pipe = FluxPipeline(**pipe_kwargs)
+    if is_chroma:
+        # ChromaPipeline: T5 is "text_encoder", no CLIP
+        if text_encoder_2 is not None:
+            pipe_kwargs["text_encoder"] = text_encoder_2
+        if tokenizer_2 is not None:
+            pipe_kwargs["tokenizer"] = tokenizer_2
+    else:
+        # FluxPipeline: CLIP is "text_encoder", T5 is "text_encoder_2"
+        if text_encoder_2 is not None:
+            pipe_kwargs["text_encoder_2"] = text_encoder_2
+        if tokenizer_2 is not None:
+            pipe_kwargs["tokenizer_2"] = tokenizer_2
+        if text_encoder is not None:
+            pipe_kwargs["text_encoder"] = text_encoder
+        if tokenizer is not None:
+            pipe_kwargs["tokenizer"] = tokenizer
+
+    pipe = PipelineClass(**pipe_kwargs)
 
     # Memory management
     if args.offload_cpu:
@@ -297,6 +343,273 @@ def load_sdxl_safetensors_pipeline(args, device: str, dtype):
 
 # ── Pipeline loading dispatch ────────────────────────────────────────────────
 
+def load_wan_pipeline(args, device: str, dtype):
+    """Load a Wan 2.1 T2V model from GGUF with Diffusers.
+
+    Wan uses: WanTransformer3DModel (GGUF) + AutoencoderKLWan (float32) +
+    UMT5EncoderModel (text encoder). Scheduler: UniPCMultistepScheduler.
+    """
+    import torch
+    from diffusers import WanPipeline, WanTransformer3DModel, AutoencoderKLWan, GGUFQuantizationConfig
+    from diffusers.schedulers import UniPCMultistepScheduler
+
+    config_repo = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+
+    # ── Load transformer from GGUF ──────────────────────────────────────────
+    log(f"loading diffusion model from {Path(args.model_path).name}")
+    quant_config = GGUFQuantizationConfig(compute_dtype=dtype)
+    transformer = WanTransformer3DModel.from_single_file(
+        args.model_path,
+        quantization_config=quant_config,
+        config=config_repo,
+        subfolder="transformer",
+        torch_dtype=dtype,
+    )
+    log("loading diffusion model completed")
+
+    # ── Load VAE (must be float32 for Wan) ──────────────────────────────────
+    log("loading vae from Wan pretrained")
+    vae = AutoencoderKLWan.from_pretrained(
+        config_repo,
+        subfolder="vae",
+        torch_dtype=torch.float32,
+    )
+    log("loading vae completed")
+
+    # ── Assemble pipeline ───────────────────────────────────────────────────
+    log("loading pipeline components")
+    pipe = WanPipeline.from_pretrained(
+        config_repo,
+        transformer=transformer,
+        vae=vae,
+        torch_dtype=dtype,
+    )
+    pipe.scheduler = UniPCMultistepScheduler.from_config(
+        pipe.scheduler.config,
+        flow_shift=args.flow_shift,
+    )
+
+    if args.offload_cpu:
+        log("enabling CPU offload")
+        pipe.enable_model_cpu_offload()
+    else:
+        pipe = pipe.to(device)
+
+    log("loading tensors completed")
+    return pipe
+
+
+def load_qwen_image_pipeline(args, device: str, dtype):
+    """Load Qwen-Image pipeline.
+
+    QwenImagePipeline does NOT support from_single_file(). The pipeline must be
+    loaded via from_pretrained() from the HF repo. When the model path points to
+    a GGUF file, we load the transformer separately via from_single_file() and
+    inject it into the pretrained pipeline.
+
+    On ≤12 GB VRAM cards, sequential CPU offload is essential.
+    Config repo Qwen/Qwen-Image is not gated.
+    """
+    from diffusers import QwenImagePipeline, GGUFQuantizationConfig
+
+    config_repo = "Qwen/Qwen-Image"
+    log(f"loading Qwen-Image pipeline")
+
+    if is_gguf(args.model_path):
+        # Load transformer from GGUF, inject into pretrained pipeline
+        log(f"loading transformer from {Path(args.model_path).name} (GGUF)")
+        from diffusers import QwenImageTransformer2DModel
+        quant_config = GGUFQuantizationConfig(compute_dtype=dtype)
+        transformer = QwenImageTransformer2DModel.from_single_file(
+            args.model_path,
+            quantization_config=quant_config,
+            config=config_repo,
+            subfolder="transformer",
+            torch_dtype=dtype,
+        )
+        log("loading transformer completed")
+
+        pipe = QwenImagePipeline.from_pretrained(
+            config_repo,
+            transformer=transformer,
+            torch_dtype=dtype,
+        )
+    else:
+        pipe = QwenImagePipeline.from_pretrained(
+            config_repo,
+            torch_dtype=dtype,
+        )
+
+    if args.offload_cpu:
+        log("enabling sequential CPU offload")
+        pipe.enable_sequential_cpu_offload()
+    else:
+        pipe = pipe.to(device)
+
+    log("loading tensors completed")
+    return pipe
+
+
+def load_kontext_pipeline(args, device: str, dtype):
+    """Load FLUX Kontext pipeline.
+
+    Uses FluxKontextPipeline. The official repo (black-forest-labs/FLUX.1-Kontext-dev)
+    is gated — falls back to bundled config or user-provided --config-path.
+    Shares FLUX.1 aux pool: VAE + CLIP-L + T5.
+    """
+    import torch
+    from diffusers import FluxKontextPipeline, FluxTransformer2DModel, AutoencoderKL, GGUFQuantizationConfig
+    from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
+    from transformers import CLIPTextModel, CLIPTokenizer, T5EncoderModel, T5TokenizerFast
+
+    # Kontext uses FLUX architecture — same transformer class, different pipeline
+    config_repo = args.config_path if (args.config_path and os.path.isdir(args.config_path)) else "ostris/Flex.1-alpha"
+
+    # ── Load transformer from GGUF ──────────────────────────────────────────
+    log(f"loading diffusion model from {Path(args.model_path).name}")
+    quant_config = GGUFQuantizationConfig(compute_dtype=dtype)
+    transformer = FluxTransformer2DModel.from_single_file(
+        args.model_path,
+        quantization_config=quant_config,
+        config=config_repo,
+        subfolder="transformer",
+        torch_dtype=dtype,
+    )
+    log("loading diffusion model completed")
+
+    # ── Load VAE ────────────────────────────────────────────────────────────
+    vae = None
+    if args.vae_path and os.path.exists(args.vae_path):
+        log(f"loading vae from {Path(args.vae_path).name}")
+        vae = AutoencoderKL.from_single_file(
+            args.vae_path,
+            config=config_repo,
+            subfolder="vae",
+            torch_dtype=dtype,
+        )
+        log("loading vae completed")
+
+    # ── Load T5 encoder ─────────────────────────────────────────────────────
+    text_encoder_2 = None
+    tokenizer_2 = None
+    if args.t5_path:
+        if is_gguf(args.t5_path):
+            log(f"loading t5xxl from {Path(args.t5_path).name} (GGUF)")
+            text_encoder_2 = T5EncoderModel.from_pretrained(
+                os.path.dirname(args.t5_path),
+                gguf_file=os.path.basename(args.t5_path),
+                torch_dtype=dtype,
+            )
+        else:
+            log(f"loading t5xxl from {Path(args.t5_path).name}")
+            text_encoder_2 = T5EncoderModel.from_pretrained(
+                os.path.dirname(args.t5_path),
+                torch_dtype=dtype,
+            )
+        log("loading t5xxl completed")
+        tokenizer_2 = T5TokenizerFast.from_pretrained("google/t5-v1_1-xxl", legacy=False)
+
+    # ── Load CLIP-L encoder ─────────────────────────────────────────────────
+    log("loading clip from openai/clip-vit-large-patch14")
+    text_encoder = CLIPTextModel.from_pretrained(
+        "openai/clip-vit-large-patch14",
+        torch_dtype=dtype,
+    )
+    tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+    log("loading clip completed")
+
+    # ── Assemble pipeline ───────────────────────────────────────────────────
+    log("loading pipeline components")
+    scheduler = FlowMatchEulerDiscreteScheduler()
+    pipe_kwargs = {
+        "transformer": transformer,
+        "scheduler": scheduler,
+        "text_encoder": text_encoder,
+        "tokenizer": tokenizer,
+    }
+    if vae is not None:
+        pipe_kwargs["vae"] = vae
+    if text_encoder_2 is not None:
+        pipe_kwargs["text_encoder_2"] = text_encoder_2
+    if tokenizer_2 is not None:
+        pipe_kwargs["tokenizer_2"] = tokenizer_2
+
+    pipe = FluxKontextPipeline(**pipe_kwargs)
+
+    if args.offload_cpu:
+        log("enabling CPU offload")
+        pipe.enable_model_cpu_offload()
+    else:
+        pipe = pipe.to(device)
+
+    log("loading tensors completed")
+    return pipe
+
+
+def load_zimage_pipeline(args, device: str, dtype):
+    """Load Z-Image pipeline.
+
+    Z-Image support was added in Diffusers 0.37.0. Uses its own pipeline class.
+    Z-Image requires a Qwen3 text encoder loaded separately — it cannot be
+    auto-loaded from a single GGUF. The text encoder is loaded from the --llm-path
+    GGUF via the pipeline's expected encoder class.
+
+    IMPORTANT: SageAttention produces black images with Z-Image — always disable.
+    """
+    from diffusers import GGUFQuantizationConfig
+
+    log(f"loading Z-Image pipeline from {Path(args.model_path).name}")
+
+    # Try the Diffusers 0.37.0 pipeline class
+    try:
+        from diffusers import ZImagePipeline
+    except ImportError:
+        raise ImportError(
+            "ZImagePipeline not found in diffusers. "
+            "Requires diffusers >= 0.37.0. Run: pip install --upgrade diffusers"
+        )
+
+    quant_config = GGUFQuantizationConfig(compute_dtype=dtype)
+
+    # Z-Image needs the LLM text encoder pre-loaded — from_single_file cannot
+    # auto-discover it from the diffusion GGUF. Load it from --llm-path.
+    load_kwargs = {
+        "torch_dtype": dtype,
+        "quantization_config": quant_config,
+    }
+
+    if args.llm_path:
+        log(f"loading text encoder from {Path(args.llm_path).name}")
+        # Use the same GGUF quantization config for the text encoder
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        if is_gguf(args.llm_path):
+            text_encoder = AutoModelForCausalLM.from_pretrained(
+                os.path.dirname(args.llm_path),
+                gguf_file=os.path.basename(args.llm_path),
+                torch_dtype=dtype,
+            )
+        else:
+            text_encoder = AutoModelForCausalLM.from_pretrained(
+                args.llm_path,
+                torch_dtype=dtype,
+            )
+        load_kwargs["text_encoder"] = text_encoder
+        log("loading text encoder completed")
+
+    pipe = ZImagePipeline.from_single_file(
+        args.model_path,
+        **load_kwargs,
+    )
+
+    if args.offload_cpu:
+        log("enabling CPU offload")
+        pipe.enable_model_cpu_offload()
+    else:
+        pipe = pipe.to(device)
+
+    log("loading tensors completed")
+    return pipe
+
 def load_pipeline(args, device: str, dtype):
     """Load the appropriate pipeline based on model type and format."""
     model_type = args.model_type
@@ -320,6 +633,18 @@ def load_pipeline(args, device: str, dtype):
 
     if model_type == "sdxl":
         return load_sdxl_safetensors_pipeline(args, device, dtype)
+
+    if model_type == "wan":
+        return load_wan_pipeline(args, device, dtype)
+
+    if model_type == "qwen-image":
+        return load_qwen_image_pipeline(args, device, dtype)
+
+    if model_type == "kontext":
+        return load_kontext_pipeline(args, device, dtype)
+
+    if model_type == "z-image":
+        return load_zimage_pipeline(args, device, dtype)
 
     raise ValueError(f"Unsupported model type: {model_type}")
 
@@ -357,14 +682,35 @@ class ProgressCallback:
         import torch
         from PIL import Image
 
-        with torch.no_grad():
-            # Use the VAE to decode — this is expensive, so only if requested
-            decoded = pipe.vae.decode(latents / pipe.vae.config.scaling_factor, return_dict=False)[0]
-            decoded = (decoded / 2 + 0.5).clamp(0, 1)
-            # Convert to PIL
-            image = decoded[0].cpu().permute(1, 2, 0).float().numpy()
-            image = (image * 255).round().astype("uint8")
-            Image.fromarray(image).save(self.preview_path)
+        try:
+            with torch.no_grad():
+                # Always decode on CPU:
+                # 1. Avoids device mismatch when CPU offload is active (VAE is on CPU,
+                #    latents may be on GPU/XPU/MPS).
+                # 2. Downscale latents 2x first — cuts decode cost by 4x.
+                preview_latents = torch.nn.functional.interpolate(
+                    latents.float().cpu(), scale_factor=0.5,
+                    mode='bilinear', align_corners=False,
+                )
+                # Temporarily move VAE to CPU for decode (no-op if already there)
+                vae = pipe.vae
+                original_device = next(vae.parameters()).device
+                vae_was_on_gpu = str(original_device) != 'cpu'
+                if vae_was_on_gpu:
+                    vae = vae.to('cpu')
+                decoded = vae.decode(
+                    preview_latents.to(vae.dtype) / vae.config.scaling_factor,
+                    return_dict=False,
+                )[0]
+                # Restore VAE to original device if we moved it
+                if vae_was_on_gpu:
+                    pipe.vae.to(original_device)
+                decoded = (decoded / 2 + 0.5).clamp(0, 1)
+                image = decoded[0].permute(1, 2, 0).float().numpy()
+                image = (image * 255).round().astype("uint8")
+                Image.fromarray(image).save(self.preview_path)
+        except Exception:
+            pass  # preview failure is never fatal
 
 
 # ── Generation ───────────────────────────────────────────────────────────────
@@ -392,12 +738,16 @@ def generate_txt2img(pipe, args, device: str, dtype):
 
     if model_type == "chroma":
         gen_kwargs["guidance_scale"] = 0.0  # unconditional
-    elif model_type in ("flux",):
+    elif model_type in ("flux", "kontext"):
         gen_kwargs["guidance_scale"] = args.cfg_scale
     elif model_type == "sdxl":
         gen_kwargs["guidance_scale"] = args.cfg_scale
         if args.negative_prompt:
             gen_kwargs["negative_prompt"] = args.negative_prompt
+    elif model_type == "z-image":
+        gen_kwargs["guidance_scale"] = args.cfg_scale if args.cfg_scale != 3.5 else 1.0
+    elif model_type == "qwen-image":
+        gen_kwargs["guidance_scale"] = args.cfg_scale if args.cfg_scale != 3.5 else 2.5
 
     # Progress callback
     callback = ProgressCallback(
@@ -407,13 +757,50 @@ def generate_txt2img(pipe, args, device: str, dtype):
     )
     gen_kwargs["callback_on_step_end"] = callback
 
-    # LoRA
-    if args.lora_path:
-        log(f"loading LoRA from {Path(args.lora_path).name}")
-        pipe.load_lora_weights(args.lora_path)
-        if args.lora_scale != 1.0:
-            pipe.fuse_lora(lora_scale=args.lora_scale)
-        log("LoRA loaded")
+    # Artist Plugin System — multi-adapter loading
+    if args.lora_paths:
+        import zipfile
+        import io as _io
+
+        raw_paths   = args.lora_paths.split(":")
+        raw_weights = [float(w) for w in args.lora_weights.split(":")] if args.lora_weights else [0.8] * len(raw_paths)
+        raw_names   = args.lora_names.split(":") if args.lora_names else [f"plugin_{i}" for i in range(len(raw_paths))]
+        raw_kinds   = args.lora_kinds.split(":") if args.lora_kinds else ["raw_lora"] * len(raw_paths)
+
+        loaded_names   = []
+        loaded_weights = []
+
+        for archive_path, weight, adapter_name, kind in zip(raw_paths, raw_weights, raw_names, raw_kinds):
+            log(f"loading plugin '{adapter_name}' from {Path(archive_path).name} (weight={weight})")
+            try:
+                if kind == "plugin":
+                    # Read lora.safetensors directly from .phobos zip — no extraction to disk
+                    with zipfile.ZipFile(archive_path, "r") as zf:
+                        if "lora.safetensors" not in zf.namelist():
+                            raise ValueError(f"lora.safetensors not found inside {archive_path}")
+                        lora_bytes = zf.read("lora.safetensors")
+                    lora_buf = _io.BytesIO(lora_bytes)
+                    pipe.load_lora_weights(lora_buf, adapter_name=adapter_name)
+                else:
+                    # raw_lora — flat file path
+                    pipe.load_lora_weights(archive_path, adapter_name=adapter_name)
+
+                loaded_names.append(adapter_name)
+                loaded_weights.append(weight)
+                log(f"plugin '{adapter_name}' loaded")
+            except Exception as e:
+                # Non-fatal — log and skip. Degraded generation beats a crash.
+                log(f"[WARN] failed to load plugin '{adapter_name}': {e}")
+
+        if loaded_names:
+            pipe.set_adapters(loaded_names, adapter_weights=loaded_weights)
+            log(f"adapters active: {loaded_names} weights={loaded_weights}")
+
+    # Kontext reference image
+    if args.ref_image and model_type == "kontext":
+        from PIL import Image as PILImage
+        ref = PILImage.open(args.ref_image).convert("RGB")
+        gen_kwargs["image"] = ref
 
     start = time.time()
     result = pipe(**gen_kwargs)
@@ -481,17 +868,122 @@ def generate_img2img(pipe, args, device: str, dtype):
     return seed, elapsed
 
 
+def generate_video(pipe, args, device: str, dtype):
+    """Run video generation (Wan T2V)."""
+    import torch
+
+    seed = args.seed if args.seed >= 0 else torch.randint(0, 2**32, (1,)).item()
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+
+    log(f"generating video: seed {seed}, {args.num_frames} frames @ {args.fps} fps")
+
+    gen_kwargs = {
+        "prompt": args.prompt,
+        "num_inference_steps": args.steps,
+        "width": args.width,
+        "height": args.height,
+        "num_frames": args.num_frames,
+        "generator": generator,
+        "guidance_scale": args.cfg_scale if args.cfg_scale != 3.5 else 5.0,
+    }
+
+    if args.negative_prompt:
+        gen_kwargs["negative_prompt"] = args.negative_prompt
+
+    callback = ProgressCallback(total_steps=args.steps)
+    gen_kwargs["callback_on_step_end"] = callback
+
+    start = time.time()
+    result = pipe(**gen_kwargs)
+    elapsed = time.time() - start
+
+    # Export video frames to file
+    output_path = args.output
+    # Ensure .mp4 extension
+    if not output_path.lower().endswith(".mp4"):
+        output_path = os.path.splitext(output_path)[0] + ".mp4"
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+    # export_to_video requires opencv — fall back to PIL if not installed
+    frames = result.frames[0]
+    try:
+        from diffusers.utils import export_to_video
+        export_to_video(frames, output_path, fps=args.fps)
+    except ImportError:
+        log("[WARN] OpenCV not found — using PIL for frame export")
+        import torch as _torch
+        import numpy as np
+        from PIL import Image as PILImage
+        # Save frames as individual PNGs (most reliable fallback)
+        stem = os.path.splitext(output_path)[0]
+        for i, frame in enumerate(frames):
+            # Frames can be: torch.Tensor, np.ndarray, or PIL.Image
+            if isinstance(frame, _torch.Tensor):
+                # Shape: (C, H, W) or (H, W, C), range [0,1] or [0,255]
+                arr = frame.cpu().float().numpy()
+                if arr.ndim == 3 and arr.shape[0] in (1, 3, 4):
+                    arr = np.transpose(arr, (1, 2, 0))  # CHW → HWC
+                if arr.max() <= 1.0:
+                    arr = (arr * 255).clip(0, 255)
+                PILImage.fromarray(arr.astype(np.uint8)).save(f"{stem}-frame{i:04d}.png")
+            elif isinstance(frame, np.ndarray):
+                if frame.max() <= 1.0 and frame.dtype in (np.float32, np.float64):
+                    frame = (frame * 255).clip(0, 255).astype(np.uint8)
+                elif frame.dtype != np.uint8:
+                    frame = frame.clip(0, 255).astype(np.uint8)
+                PILImage.fromarray(frame).save(f"{stem}-frame{i:04d}.png")
+            else:
+                # Assume PIL Image
+                frame.save(f"{stem}-frame{i:04d}.png")
+        # Point output_path to first frame for verification
+        output_path = f"{stem}-frame0000.png"
+        log(f"[WARN] Saved {len(frames)} frames as PNG (install opencv-python-headless for .mp4 export)")
+
+    log(f"sampling completed, taking {elapsed:.1f}s")
+    log(f"Video saved to {output_path}")
+    return seed, elapsed
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     parser = build_parser()
     args = parser.parse_args()
 
+    # ── HuggingFace cache configuration ──────────────────────────────────────
+    # Store HF configs alongside PHOBOS models to avoid repeated network hits.
+    # After first download, set HF_HUB_OFFLINE=1 so all subsequent runs are
+    # fully local — eliminates the "unauthenticated requests" warning and the
+    # network round-trip on every generation.
+    phobos_home = os.path.join(os.path.expanduser("~"), ".phobos")
+    hf_cache = os.path.join(phobos_home, "hf-cache")
+    os.makedirs(hf_cache, exist_ok=True)
+    os.environ.setdefault("HF_HOME", hf_cache)
+    os.environ.setdefault("TRANSFORMERS_CACHE", os.path.join(hf_cache, "transformers"))
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    # Suppress the unauthenticated HF Hub warning — PHOBOS uses cached configs only
+    os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+
     # Resolve device
     import torch
     device = select_device(args.device)
     dtype = resolve_dtype(args.dtype)
     log(f"[INFO ] Device: {device}, dtype: {args.dtype}")
+
+    # ── XPU fp64 workaround ───────────────────────────────────────────────────
+    # Intel Arc (Alchemist/Xe-HPG) does not support fp64 in hardware.
+    # Diffusers' RoPE embedding path calls torch.arange(..., dtype=float64) which
+    # crashes with "Required aspect fp64 is not supported on the device".
+    # Patch torch.arange to silently downcast float64 → float32 on XPU devices.
+    if device.startswith("xpu"):
+        _original_arange = torch.arange
+        def _xpu_safe_arange(*args, **kwargs):
+            if kwargs.get("dtype") == torch.float64:
+                kwargs["dtype"] = torch.float32
+            return _original_arange(*args, **kwargs)
+        torch.arange = _xpu_safe_arange
+        log("[INFO ] XPU: fp64->fp32 arange patch applied (Arc fp64 workaround)")
 
     # Load pipeline
     load_start = time.time()
@@ -500,13 +992,20 @@ def main():
     log(f"[INFO ] Model loaded in {load_elapsed:.1f}s")
 
     # Generate
-    if args.init_image:
+    if args.model_type == "wan":
+        seed, gen_elapsed = generate_video(pipe, args, device, dtype)
+    elif args.init_image:
         seed, gen_elapsed = generate_img2img(pipe, args, device, dtype)
     else:
         seed, gen_elapsed = generate_txt2img(pipe, args, device, dtype)
 
-    # Verify output
-    if not os.path.exists(args.output):
+    # Verify output — check original path, .mp4 variant, and PNG frame fallback for video
+    output_exists = os.path.exists(args.output)
+    if not output_exists and args.model_type == "wan":
+        mp4_path = os.path.splitext(args.output)[0] + ".mp4"
+        png_fallback = os.path.splitext(mp4_path)[0] + "-frame0000.png"
+        output_exists = os.path.exists(mp4_path) or os.path.exists(png_fallback)
+    if not output_exists:
         log("[ERROR] Generation completed but output file not found")
         sys.exit(1)
 

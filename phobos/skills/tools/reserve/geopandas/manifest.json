@@ -1,0 +1,10 @@
+﻿{
+  "id": "geopandas",
+  "name": "geopandas",
+  "description": "GeoPandas extends pandas to enable spatial operations on geometric types. It combines the capabilities of pandas and shapely for geospatial data analysis.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "gdf_projected['area'] = gdf_projected.geometry.area",
+  "runner": null
+}

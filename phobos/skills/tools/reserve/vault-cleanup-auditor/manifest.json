@@ -1,0 +1,10 @@
+﻿{
+  "id": "vault-cleanup-auditor",
+  "name": "vault cleanup auditor",
+  "description": "Runs 4 targeted checks against your Obsidian vault and saves a prioritized audit report to `vault-audit/YYYY-MM-DD-audit.md`. Takes under 30 seconds. No APIs, no paid services.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Open Claude Code and say:",
+  "runner": null
+}

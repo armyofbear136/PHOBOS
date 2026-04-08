@@ -1,0 +1,10 @@
+﻿{
+  "id": "dnanexus-integration",
+  "name": "dnanexus integration",
+  "description": "DNAnexus is a cloud platform for biomedical data analysis and genomics. Build and deploy apps/applets, manage data objects, run workflows, and use the dxpy Python SDK for genomics pipeline developm...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Creating, building, or modifying DNAnexus apps/applets",
+  "runner": null
+}

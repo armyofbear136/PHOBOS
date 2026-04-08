@@ -1,0 +1,10 @@
+﻿{
+  "id": "uspto-database",
+  "name": "uspto database",
+  "description": "USPTO provides specialized APIs for patent and trademark data. Search patents by keywords/inventors/assignees, retrieve examination history via PEDS, track assignments, analyze citations and office...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when:",
+  "runner": null
+}

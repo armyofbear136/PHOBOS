@@ -1,0 +1,10 @@
+﻿{
+  "id": "plan-my-day",
+  "name": "plan my day",
+  "description": "Generate a clean, actionable hour-by-hour plan for the day based on priorities, energy patterns, and constraints.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "``` /plan-my-day [optional: YYYY-MM-DD for future date]",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "product-strategy-session",
+  "name": "product strategy session",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Launching a new product or major initiative - Annual/quarterly strategic planning cycles",
+  "runner": null
+}

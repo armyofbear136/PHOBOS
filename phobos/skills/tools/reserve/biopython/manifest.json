@@ -1,0 +1,10 @@
+﻿{
+  "id": "biopython",
+  "name": "biopython",
+  "description": "Biopython is a comprehensive set of freely available Python tools for biological computation. It provides functionality for sequence manipulation, file I/O, database access, structural bioinformati...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when:",
+  "runner": null
+}

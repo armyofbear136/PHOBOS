@@ -1,0 +1,10 @@
+﻿{
+  "id": "deepchem",
+  "name": "deepchem",
+  "description": "DeepChem is a comprehensive Python library for applying machine learning to chemistry, materials science, and biology. Enable molecular property prediction, drug discovery, materials design, and bi...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Loading and processing molecular data (SMILES strings, SDF files, protein sequences)",
+  "runner": null
+}

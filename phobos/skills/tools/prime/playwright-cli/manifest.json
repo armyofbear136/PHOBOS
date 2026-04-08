@@ -1,0 +1,10 @@
+﻿{
+  "id": "playwright-cli",
+  "name": "playwright cli",
+  "description": "> Comprehensive CLI-driven browser automation — navigate, interact, mock, debug, record, and generate tests without writing a single script file.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

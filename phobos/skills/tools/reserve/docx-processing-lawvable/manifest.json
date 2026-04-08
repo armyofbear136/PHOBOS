@@ -1,0 +1,10 @@
+﻿{
+  "id": "docx-processing-lawvable",
+  "name": "docx processing lawvable",
+  "description": "Edit Word documents with live preview and track changes in VS Code via [SuperDoc extension](https://github.com/lawvable/superdoc-vscode-extension/tree/feat/programmatic-command-api).",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

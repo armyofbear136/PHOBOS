@@ -1,0 +1,10 @@
+﻿{
+  "id": "linkedin-profile-optimizer",
+  "name": "linkedin profile optimizer",
+  "description": "**Audit your LinkedIn profile and rewrite it to attract the right people — in 15 minutes.**",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

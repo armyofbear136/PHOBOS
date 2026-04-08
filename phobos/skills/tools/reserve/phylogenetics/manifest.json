@@ -1,0 +1,10 @@
+﻿{
+  "id": "phylogenetics",
+  "name": "phylogenetics",
+  "description": "Phylogenetic analysis reconstructs the evolutionary history of biological sequences (genes, proteins, genomes) by inferring the branching pattern of descent. This skill covers the standard pipeline:",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use phylogenetics when:",
+  "runner": null
+}

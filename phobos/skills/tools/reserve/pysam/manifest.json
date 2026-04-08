@@ -1,0 +1,10 @@
+﻿{
+  "id": "pysam",
+  "name": "pysam",
+  "description": "Pysam is a Python module for reading, manipulating, and writing genomic datasets. Read/write SAM/BAM/CRAM alignment files, VCF/BCF variant files, and FASTA/FASTQ sequences with a Pythonic interface...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Working with sequencing alignment files (BAM/CRAM)",
+  "runner": null
+}

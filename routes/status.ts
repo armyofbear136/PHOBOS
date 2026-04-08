@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { checkBackendHealth, reconfigureClients, COORDINATOR_MODEL, ENGINE_MODEL, COORDINATOR_PROVIDER, ENGINE_PROVIDER, isThinkingModel } from '../ai/clients.js';
+import { checkBackendHealth, reconfigureClients, COORDINATOR_MODEL, ENGINE_MODEL, COORDINATOR_PROVIDER, ENGINE_PROVIDER, isThinkingModel, getModelVisionCapability } from '../ai/clients.js';
 import { CORE_VERSION } from '../version';
 import { isImageGenerating } from './workflows.js';
 import { isRelocating } from './phobosLocal.js';
@@ -74,6 +74,7 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
       configOptimal,
       recommendedSayon,
       recommendedSeren,
+      visionCapability: getModelVisionCapability(),
       timestamp: new Date().toISOString(),
     });
   });

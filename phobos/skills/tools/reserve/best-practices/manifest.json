@@ -1,0 +1,10 @@
+﻿{
+  "id": "best-practices",
+  "name": "best practices",
+  "description": "**Always consult [better-auth.com/docs](https://better-auth.com/docs) for code examples and latest API.**",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

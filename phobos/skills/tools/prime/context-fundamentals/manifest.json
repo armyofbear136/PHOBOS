@@ -1,0 +1,10 @@
+﻿{
+  "id": "context-fundamentals",
+  "name": "context fundamentals",
+  "description": "Context is the complete state available to a language model at inference time. It includes everything the model can attend to when generating responses: system instructions, tool definitions, retri...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Activate this skill when: - Designing new agent systems or modifying existing architectures",
+  "runner": null
+}

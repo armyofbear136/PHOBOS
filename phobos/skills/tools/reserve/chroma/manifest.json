@@ -1,0 +1,10 @@
+﻿{
+  "id": "chroma",
+  "name": "chroma",
+  "description": "The AI-native database for building LLM applications with memory.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use Chroma when:** - Building RAG (retrieval-augmented generation) applications",
+  "runner": null
+}

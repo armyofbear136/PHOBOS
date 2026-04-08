@@ -1,0 +1,10 @@
+﻿{
+  "id": "ansoff-matrix",
+  "name": "ansoff matrix",
+  "description": "- **Name**: ansoff-matrix - **Description**: Generate an Ansoff Matrix analysis mapping growth strategies across market penetration, market development, product development, and diversification.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

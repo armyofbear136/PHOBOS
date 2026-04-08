@@ -1,0 +1,10 @@
+﻿{
+  "id": "pdb-database",
+  "name": "pdb database",
+  "description": "RCSB PDB is the worldwide repository for 3D structural data of biological macromolecules. Search for structures, retrieve coordinates and metadata, perform sequence and structure similarity searche...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Searching for protein or nucleic acid 3D structures by text, sequence, or structural similarity",
+  "runner": null
+}

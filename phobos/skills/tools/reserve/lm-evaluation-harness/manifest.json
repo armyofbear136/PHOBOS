@@ -1,0 +1,10 @@
+﻿{
+  "id": "lm-evaluation-harness",
+  "name": "lm evaluation harness",
+  "description": "lm-evaluation-harness evaluates LLMs across 60+ academic benchmarks using standardized prompts and metrics.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

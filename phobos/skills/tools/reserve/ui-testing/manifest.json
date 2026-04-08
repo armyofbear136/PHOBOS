@@ -1,0 +1,10 @@
+﻿{
+  "id": "ui-testing",
+  "name": "ui testing",
+  "description": "*Load with: ui-web.md or ui-mobile.md*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "``` 1. Right-click element → Inspect",
+  "runner": null
+}

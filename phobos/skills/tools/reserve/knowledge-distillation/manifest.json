@@ -1,0 +1,10 @@
+﻿{
+  "id": "knowledge-distillation",
+  "name": "knowledge distillation",
+  "description": "Use Knowledge Distillation when you need to: - **Compress models** from 70B → 7B while retaining 90%+ performance",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use Knowledge Distillation when you need to: - **Compress models** from 70B → 7B while retaining 90%+ performance",
+  "runner": null
+}

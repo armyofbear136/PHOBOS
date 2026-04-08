@@ -1,0 +1,10 @@
+﻿{
+  "id": "market-segments",
+  "name": "market segments",
+  "description": "Identify and analyze 3-5 distinct customer segments for your product, understanding their unique jobs-to-be-done, desired outcomes, pain points, and product fit. Use this skill to evaluate market o...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

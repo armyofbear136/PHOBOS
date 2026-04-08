@@ -1,0 +1,10 @@
+﻿{
+  "id": "fixing-motion-performance",
+  "name": "fixing motion performance",
+  "description": "Fix animation performance issues.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- `/fixing-motion-performance` Apply these constraints to any UI animation work in this conversation.",
+  "runner": null
+}

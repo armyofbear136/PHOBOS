@@ -1,0 +1,10 @@
+﻿{
+  "id": "timesfm-forecasting",
+  "name": "timesfm forecasting",
+  "description": "TimesFM (Time Series Foundation Model) is a pretrained decoder-only foundation model developed by Google Research for time-series forecasting. It works **zero-shot** — feed it",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when:",
+  "runner": null
+}

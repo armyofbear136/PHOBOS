@@ -1,0 +1,10 @@
+﻿{
+  "id": "last30days",
+  "name": "last30days",
+  "description": "**Real-time intelligence engine:** Find what's working RIGHT NOW, not last quarter.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Perfect for:** - **Trend discovery** - \"What's hot in AI agents right now?\"",
+  "runner": null
+}

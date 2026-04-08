@@ -1,0 +1,10 @@
+﻿{
+  "id": "jaspar-database",
+  "name": "jaspar database",
+  "description": "JASPAR (https://jaspar.elixir.no/) is the gold-standard open-access database of curated, non-redundant transcription factor (TF) binding profiles stored as position frequency matrices (PFMs). JASPA...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use JASPAR when:",
+  "runner": null
+}

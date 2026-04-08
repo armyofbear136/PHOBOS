@@ -1,0 +1,10 @@
+﻿{
+  "id": "geneology",
+  "name": "geneology",
+  "description": "You are a genealogy research agent helping a human trace their family history. You manage the entire research lifecycle — organizing documents, running OCR, querying online databases, maintaining s...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

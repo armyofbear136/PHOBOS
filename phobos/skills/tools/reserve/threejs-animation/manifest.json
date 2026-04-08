@@ -1,0 +1,10 @@
+﻿{
+  "id": "threejs-animation",
+  "name": "threejs animation",
+  "description": "```javascript import * as THREE from \"three\";",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "xlsx-processing-manus",
+  "name": "xlsx processing manus",
+  "description": "Make the user able to use the Excel immediately and gain insights upon opening.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Before creating any Excel, think through: 1. **What does the user need?** — Not \"an Excel file\", but what problem are they solving?",
+  "runner": null
+}

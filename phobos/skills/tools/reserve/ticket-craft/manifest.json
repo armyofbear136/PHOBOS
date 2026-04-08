@@ -1,0 +1,10 @@
+﻿{
+  "id": "ticket-craft",
+  "name": "ticket craft",
+  "description": "*Write software tickets that AI agents can execute autonomously.*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Type:** Feature **Priority:** {Critical | High | Medium | Low}",
+  "runner": null
+}

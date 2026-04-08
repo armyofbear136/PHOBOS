@@ -1,0 +1,10 @@
+﻿{
+  "id": "deepspeed",
+  "name": "deepspeed",
+  "description": "Comprehensive assistance with deepspeed development, generated from official documentation.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be triggered when: - Working with deepspeed",
+  "runner": null
+}

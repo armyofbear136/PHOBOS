@@ -1,0 +1,10 @@
+﻿{
+  "id": "tiledbvcf",
+  "name": "tiledbvcf",
+  "description": "TileDB-VCF is a high-performance C++ library with Python and CLI interfaces for efficient storage and retrieval of genomic variant-call data. Built on TileDB's sparse array technology, it enables s...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Learning TileDB-VCF concepts and workflows",
+  "runner": null
+}

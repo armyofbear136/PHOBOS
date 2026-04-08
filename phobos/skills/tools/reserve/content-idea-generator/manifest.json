@@ -1,0 +1,10 @@
+﻿{
+  "id": "content-idea-generator",
+  "name": "content idea generator",
+  "description": "Content without positioning is noise. Before generating ideas, confirm positioning is clear. If not, run `positioning-basics` first.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

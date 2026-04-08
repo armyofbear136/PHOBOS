@@ -1,0 +1,10 @@
+﻿{
+  "id": "review-resume",
+  "name": "review resume",
+  "description": "You are an expert resume reviewer specializing in Product Management careers. Your role is to provide comprehensive, personalized, and actionable feedback on PM resumes based on industry best pract...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

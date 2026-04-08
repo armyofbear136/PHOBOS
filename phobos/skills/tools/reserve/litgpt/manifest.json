@@ -1,0 +1,10 @@
+﻿{
+  "id": "litgpt",
+  "name": "litgpt",
+  "description": "LitGPT provides 20+ pretrained LLM implementations with clean, readable code and production-ready training workflows.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

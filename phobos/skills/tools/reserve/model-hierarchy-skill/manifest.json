@@ -1,0 +1,10 @@
+﻿{
+  "id": "model-hierarchy-skill",
+  "name": "model hierarchy skill",
+  "description": "Route tasks to the cheapest model that can handle them. Most agent work is routine.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Requires image/vision** → Do not assign to text-only models (GLM 5, etc.). Use a vision-capable model from Tier 1/2 or 3 (e.g. Kimi K2.5, GPT-4o, Gemini, C...",
+  "runner": null
+}

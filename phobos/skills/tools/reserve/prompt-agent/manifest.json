@@ -1,0 +1,10 @@
+﻿{
+  "id": "prompt-agent",
+  "name": "prompt agent",
+  "description": "Security audit enforcement for AI agents. Protects your agent through automated security scans and continuous health verification.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

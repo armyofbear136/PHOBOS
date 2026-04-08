@@ -1,0 +1,10 @@
+﻿{
+  "id": "clinical-reports",
+  "name": "clinical reports",
+  "description": "Clinical report writing is the process of documenting medical information with precision, accuracy, and compliance with regulatory standards. This skill covers four major categories of clinical rep...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Writing clinical case reports for journal submission (CARE guidelines)",
+  "runner": null
+}

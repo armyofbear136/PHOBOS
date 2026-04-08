@@ -1,0 +1,10 @@
+﻿{
+  "id": "pptx-posters",
+  "name": "pptx posters",
+  "description": "**⚠️ USE THIS SKILL ONLY WHEN USER EXPLICITLY REQUESTS PPTX/POWERPOINT POSTER FORMAT.**",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**ONLY use this skill when:** - User explicitly requests \"PPTX poster\", \"PowerPoint poster\", or \"PPT poster\"",
+  "runner": null
+}

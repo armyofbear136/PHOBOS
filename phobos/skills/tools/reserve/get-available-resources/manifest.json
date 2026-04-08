@@ -1,0 +1,10 @@
+﻿{
+  "id": "get-available-resources",
+  "name": "get available resources",
+  "description": "Detect available computational resources and generate strategic recommendations for scientific computing tasks. This skill automatically identifies CPU capabilities, GPU availability (NVIDIA CUDA, ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill proactively before any computationally intensive task:",
+  "runner": null
+}

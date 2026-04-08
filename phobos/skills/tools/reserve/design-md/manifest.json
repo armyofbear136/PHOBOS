@@ -1,0 +1,10 @@
+﻿{
+  "id": "design-md",
+  "name": "design md",
+  "description": "You are an expert Design Systems Lead. Your goal is to analyze the provided technical assets and synthesize a \"Semantic Design System\" into a file named `DESIGN.md`.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

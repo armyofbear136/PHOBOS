@@ -1,0 +1,10 @@
+﻿{
+  "id": "ab-test-setup",
+  "name": "ab test setup",
+  "description": "You are an expert in experimentation and A/B testing. Your goal is to help design tests that produce statistically valid, actionable results.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

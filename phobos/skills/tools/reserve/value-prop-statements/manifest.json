@@ -1,0 +1,10 @@
+﻿{
+  "id": "value-prop-statements",
+  "name": "value prop statements",
+  "description": "Generate value proposition statements from existing value propositions for marketing, sales, and onboarding. Creates statements that address target segments, emphasize benefits, and highlight capab...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Writing marketing copy and promotional content - Creating sales decks and pitch materials",
+  "runner": null
+}

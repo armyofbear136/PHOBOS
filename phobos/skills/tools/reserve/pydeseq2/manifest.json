@@ -1,0 +1,10 @@
+﻿{
+  "id": "pydeseq2",
+  "name": "pydeseq2",
+  "description": "PyDESeq2 is a Python implementation of DESeq2 for differential expression analysis with bulk RNA-seq data. Design and execute complete workflows from data loading through result interpretation, inc...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Analyzing bulk RNA-seq count data for differential expression",
+  "runner": null
+}

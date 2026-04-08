@@ -1,0 +1,10 @@
+﻿{
+  "id": "ensembl-database",
+  "name": "ensembl database",
+  "description": "Access and query the Ensembl genome database, a comprehensive resource for vertebrate genomic data maintained by EMBL-EBI. The database provides gene annotations, sequences, variants, regulatory in...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when:",
+  "runner": null
+}

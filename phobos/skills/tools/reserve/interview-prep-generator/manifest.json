@@ -1,0 +1,10 @@
+﻿{
+  "id": "interview-prep-generator",
+  "name": "interview prep generator",
+  "description": "Use this skill when the user wants to: - Prepare for a job interview",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user wants to: - Prepare for a job interview",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "adaptyv",
+  "name": "adaptyv",
+  "description": "Adaptyv is a cloud laboratory platform that provides automated protein testing and validation services. Submit protein sequences via API or web interface and receive experimental results in approxi...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Submit protein sequences for testing:",
+  "runner": null
+}

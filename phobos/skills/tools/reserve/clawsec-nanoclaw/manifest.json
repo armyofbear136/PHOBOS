@@ -1,0 +1,10 @@
+﻿{
+  "id": "clawsec-nanoclaw",
+  "name": "clawsec nanoclaw",
+  "description": "Security advisory monitoring that protects your WhatsApp bot from known vulnerabilities in skills and dependencies.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use ClawSec tools when: - Installing a new skill (check safety first)",
+  "runner": null
+}

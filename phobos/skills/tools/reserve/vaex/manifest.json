@@ -1,0 +1,10 @@
+﻿{
+  "id": "vaex",
+  "name": "vaex",
+  "description": "Vaex is a high-performance Python library designed for lazy, out-of-core DataFrames to process and visualize tabular datasets that are too large to fit into RAM. Vaex can process over a billion row...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use Vaex when: - Processing tabular datasets larger than available RAM (gigabytes to terabytes)",
+  "runner": null
+}

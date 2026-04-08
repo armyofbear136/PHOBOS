@@ -1,0 +1,10 @@
+﻿{
+  "id": "lambda-labs",
+  "name": "lambda labs",
+  "description": "Comprehensive guide to running ML workloads on Lambda Labs GPU cloud with on-demand instances and 1-Click Clusters.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use Lambda Labs when:** - Need dedicated GPU instances with full SSH access",
+  "runner": null
+}

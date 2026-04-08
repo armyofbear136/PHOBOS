@@ -1,0 +1,10 @@
+﻿{
+  "id": "testimonial-collector",
+  "name": "testimonial collector",
+  "description": "Detect from context or ask: *\"One script, full system, or full system with campaign?\"*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "sentence-transformers",
+  "name": "sentence transformers",
+  "description": "Python framework for sentence and text embeddings using transformers.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use when:** - Need high-quality embeddings for RAG",
+  "runner": null
+}

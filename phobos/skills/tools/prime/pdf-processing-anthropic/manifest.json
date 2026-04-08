@@ -1,0 +1,10 @@
+﻿{
+  "id": "pdf-processing-anthropic",
+  "name": "pdf processing anthropic",
+  "description": "This guide covers essential PDF processing operations using Python libraries and command-line tools. For advanced features, JavaScript libraries, and detailed examples, see REFERENCE.md. If you nee...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

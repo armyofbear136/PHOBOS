@@ -1,0 +1,10 @@
+﻿{
+  "id": "clinicaltrials-database",
+  "name": "clinicaltrials database",
+  "description": "ClinicalTrials.gov is a comprehensive registry of clinical studies conducted worldwide, maintained by the U.S. National Library of Medicine. Access API v2 to search for trials, retrieve detailed st...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when working with clinical trial data in scenarios such as:",
+  "runner": null
+}

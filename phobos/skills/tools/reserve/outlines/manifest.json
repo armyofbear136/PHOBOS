@@ -1,0 +1,10 @@
+﻿{
+  "id": "outlines",
+  "name": "outlines",
+  "description": "Use Outlines when you need to: - **Guarantee valid JSON/XML/code** structure during generation",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use Outlines when you need to: - **Guarantee valid JSON/XML/code** structure during generation",
+  "runner": null
+}

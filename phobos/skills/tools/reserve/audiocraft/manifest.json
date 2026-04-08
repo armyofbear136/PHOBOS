@@ -1,0 +1,10 @@
+﻿{
+  "id": "audiocraft",
+  "name": "audiocraft",
+  "description": "Comprehensive guide to using Meta's AudioCraft for text-to-music and text-to-audio generation with MusicGen, AudioGen, and EnCodec.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use AudioCraft when:** - Need to generate music from text descriptions",
+  "runner": null
+}

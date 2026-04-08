@@ -1,0 +1,10 @@
+﻿{
+  "id": "assignation-refere-recouvrement-creance-selim-brihi",
+  "name": "assignation refere recouvrement creance selim brihi",
+  "description": "Ce skill guide la rédaction d'assignations en référé devant le président du tribunal de commerce ou des activités économiques lorsqu'un créancier demande la condamnation de son débiteur au paiement...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

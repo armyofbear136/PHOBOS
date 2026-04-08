@@ -1,0 +1,10 @@
+﻿{
+  "id": "llava",
+  "name": "llava",
+  "description": "Open-source vision-language model for conversational image understanding.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use when:** - Building vision-language chatbots",
+  "runner": null
+}

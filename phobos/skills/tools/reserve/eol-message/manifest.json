@@ -1,0 +1,10 @@
+﻿{
+  "id": "eol-message",
+  "name": "eol message",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Discontinuing a product, feature, or service - Migrating customers from legacy to new platform",
+  "runner": null
+}

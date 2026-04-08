@@ -1,0 +1,10 @@
+﻿{
+  "id": "product-hunt-launch-plan",
+  "name": "product hunt launch plan",
+  "description": "Generate a comprehensive, personalized Product Hunt launch plan with actionable steps from A-Z to help the user rank #1 Product of the Day.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

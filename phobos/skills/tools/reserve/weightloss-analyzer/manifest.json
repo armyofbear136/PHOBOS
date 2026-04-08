@@ -1,0 +1,10 @@
+﻿{
+  "id": "weightloss-analyzer",
+  "name": "weightloss analyzer",
+  "description": "分析减肥数据，计算代谢率，追踪能量缺口，管理减肥阶段。",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

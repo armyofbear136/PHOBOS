@@ -1,0 +1,10 @@
+﻿{
+  "id": "skill-creator-anthropic",
+  "name": "skill creator anthropic",
+  "description": "This skill provides guidance for creating effective skills.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

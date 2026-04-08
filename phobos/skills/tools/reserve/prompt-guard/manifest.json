@@ -1,0 +1,10 @@
+﻿{
+  "id": "prompt-guard",
+  "name": "prompt guard",
+  "description": "Prompt Guard is an 86M parameter classifier that detects prompt injections and jailbreak attempts in LLM applications.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Filter user prompts before LLM**: ```python",
+  "runner": null
+}

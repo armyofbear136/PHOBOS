@@ -1,0 +1,10 @@
+﻿{
+  "id": "youtube-clipper-skill",
+  "name": "youtube clipper skill",
+  "description": "> **Installation**: If you're installing this skill from GitHub, please refer to [README.md](README.md#installation) for installation instructions. The recommended method is `npx skills add https:/...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "awq",
+  "name": "awq",
+  "description": "4-bit quantization that preserves salient weights based on activation patterns, achieving 3x speedup with minimal accuracy loss.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "4-bit quantization that preserves salient weights based on activation patterns, achieving 3x speedup with minimal accuracy loss.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "langchain",
+  "name": "langchain",
+  "description": "The most popular framework for building LLM-powered applications.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use LangChain when:** - Building agents with tool calling and reasoning (ReAct pattern)",
+  "runner": null
+}

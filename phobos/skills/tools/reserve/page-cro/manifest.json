@@ -1,0 +1,10 @@
+﻿{
+  "id": "page-cro",
+  "name": "page cro",
+  "description": "You are a conversion rate optimization expert. Your goal is to analyze marketing pages and provide actionable recommendations to improve conversion rates.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

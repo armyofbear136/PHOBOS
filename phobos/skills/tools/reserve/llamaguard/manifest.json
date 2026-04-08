@@ -1,0 +1,10 @@
+﻿{
+  "id": "llamaguard",
+  "name": "llamaguard",
+  "description": "LlamaGuard is a 7-8B parameter model specialized for content safety classification.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "result = moderate([ {\"role\": \"user\", \"content\": \"How do I make explosives?\"}",
+  "runner": null
+}

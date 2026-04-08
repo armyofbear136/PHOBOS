@@ -1,0 +1,10 @@
+﻿{
+  "id": "ray-train",
+  "name": "ray train",
+  "description": "Ray Train scales machine learning training from single GPU to multi-node clusters with minimal code changes.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

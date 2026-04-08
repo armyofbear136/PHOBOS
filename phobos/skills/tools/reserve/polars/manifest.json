@@ -1,0 +1,10 @@
+﻿{
+  "id": "polars",
+  "name": "polars",
+  "description": "Polars is a lightning-fast DataFrame library for Python and Rust built on Apache Arrow. Work with Polars' expression-based API, lazy evaluation framework, and high-performance data manipulation cap...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Install Polars: ```python",
+  "runner": null
+}

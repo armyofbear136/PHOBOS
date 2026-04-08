@@ -1,0 +1,10 @@
+﻿{
+  "id": "chunking-embeddings",
+  "name": "chunking embeddings",
+  "description": "**Text splitting strategies, embedding generation with FastEmbed, RAG pipeline integration**",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

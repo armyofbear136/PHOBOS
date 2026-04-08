@@ -1,0 +1,10 @@
+﻿{
+  "id": "nutrition-analyzer",
+  "name": "nutrition analyzer",
+  "description": "分析饮食和营养数据，识别营养模式，评估营养状况，并提供个性化营养改善建议。",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

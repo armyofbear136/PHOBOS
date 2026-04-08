@@ -3,6 +3,7 @@ import { MessageStore } from '../db/MessageStore.js';
 import { ThreadStore } from '../db/ThreadStore.js';
 import { DocumentStore } from '../db/DocumentStore.js';
 import { DatabaseManager } from '../db/DatabaseManager.js';
+import { MessageAttachmentStore } from '../db/MessageAttachmentStore.js';
 
 const DEBUG = process.env.PHOBOS_DEBUG === '1' || process.env.PHOBOS_DEBUG === 'true';
 const dbg = (...args: unknown[]) => { if (DEBUG) console.log(...args); };
@@ -18,7 +19,7 @@ import { ThreadWorkspace } from '../context/ThreadWorkspace.js';
 import { ThinkingStripper } from '../context/ThinkingStripper.js';
 import type { IntentType } from '../ai/IntentClassifier.js';
 import type { ClassificationContext } from '../ai/IntentClassifier.js';
-import { ENGINE_MODEL, COORDINATOR_MODEL as COORD_MODEL_REF, COORDINATOR_PROVIDER, getThinkingStrategy, setLogContext, clearLogContext } from '../ai/clients.js';
+import { ENGINE_MODEL, COORDINATOR_MODEL as COORD_MODEL_REF, COORDINATOR_PROVIDER, getThinkingStrategy, setLogContext, clearLogContext, getModelVisionCapability } from '../ai/clients.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { exec, execFile, spawn } from 'child_process';
@@ -40,6 +41,8 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   // Workspace is a module-level singleton —
   // it caches internally so no per-request filesystem walks.
   const workspace = new ThreadWorkspace(db);
+  const attachmentStore = new MessageAttachmentStore(db);
+  await attachmentStore.ensureTable();
 
   // Tracks threads that are mid-clarification. When the user responds to a
   // NEEDS_CLARIFICATION question, we skip classification and route directly
@@ -53,6 +56,26 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
     // the user replied, in order. Injected as <clarification_history> into
     // ContextIngester and TaskPlanner so neither loses the thread between turns.
     log: Array<{ questions: string[]; userReply: string }>;
+    // SAYON's assembled planning context from the first pass — cached so that
+    // on re-entry we skip re-running discovery/extraction and go straight to
+    // decomposeTasks with the original context + the clarification answer appended.
+    planningContext?: {
+      rewrittenMessage: string;
+      fileSummaries: import('../ai/ContextIngester.js').FileSummary[];
+      completeContext: string;
+      projectScope: import('../ai/ContextIngester.js').ProjectScope;
+      repoMap: string;
+    };
+  }>();
+
+  // Tracks threads where SAYON asked Phase 1 clarification before handing to SEREN.
+  // Separate from pendingClarification — Phase 1 is pre-planning, SEREN hasn't seen
+  // the request yet. On user reply, the full Q&A log is passed to ContextIngester
+  // as phase1ClarificationLog so SAYON synthesises it into the final brief.
+  const pendingPhase1Clarification = new Map<string, {
+    originalIntent: IntentType;
+    originalRequest: string;
+    log: Array<{ questions: string[]; userReply: string }>;
   }>();
 
   // GET /api/threads/:id/messages
@@ -62,13 +85,32 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   }>('/api/threads/:id/messages', async (req, reply) => {
     const includeThinking = req.query.includeThinking === 'true';
     const messages = await messageStore.getByThread(req.params.id, includeThinking);
-    const mapped = messages.map((m) => ({
-      id: m.id,
-      role: m.role,
-      content: m.content,
-      timestamp: m.created_at,
-      thinking: m.thinking_trace ?? undefined,
-    }));
+
+    // Fetch all attachments for this thread in one query, then group by message_id.
+    // This is the source of truth for file chips on reload.
+    const allAttachments = await attachmentStore.getByThread(req.params.id);
+    const attachsByMsg = new Map<string, typeof allAttachments>();
+    for (const a of allAttachments) {
+      if (!attachsByMsg.has(a.message_id)) attachsByMsg.set(a.message_id, []);
+      attachsByMsg.get(a.message_id)!.push(a);
+    }
+
+    const mapped = messages.map((m) => {
+      const attachments = (attachsByMsg.get(m.id) ?? []).map((a) => ({
+        id: a.id,
+        filename: a.filename,
+        is_image: a.is_image,
+        size_bytes: a.size_bytes,
+      }));
+      return {
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        timestamp: m.created_at,
+        thinking: m.thinking_trace ?? undefined,
+        ...(attachments.length > 0 ? { attachments } : {}),
+      };
+    });
     return reply.send(mapped);
   });
 
@@ -200,6 +242,64 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
       const filename = (req.params as Record<string, string>)['*'];
       await workspace.deleteFile(req.params.id, filename);
       return reply.status(204).send();
+    }
+  );
+
+  // ── Message attachments ───────────────────────────────────────────────────
+  // POST /api/threads/:id/attachments
+  // Upload a file to be attached to a user message. Called by the frontend
+  // before submitting the message. Returns the attachment record so the
+  // frontend can pass attachment_ids in the message body.
+  // The file lives at <WORKSPACES_ROOT>/<threadId>/attachments/<id>-<filename>
+  // and is never written to the AI-editable workspace root.
+  fastify.post<{
+    Params: { id: string };
+    Body: { filename: string; content: string; mime_type?: string; message_id?: string };
+  }>('/api/threads/:id/attachments', async (req, reply) => {
+    const threadId = req.params.id;
+    const { filename, content, mime_type = 'text/plain', message_id = '' } = req.body;
+    if (!filename || content === undefined) {
+      return reply.status(400).send({ error: 'filename and content required' });
+    }
+    const attachment = await attachmentStore.save(threadId, filename, content, mime_type, message_id);
+    return reply.send({
+      id: attachment.id,
+      filename: attachment.filename,
+      is_image: attachment.is_image,
+      size_bytes: attachment.size_bytes,
+    });
+  });
+
+  // PATCH /api/threads/:id/attachments/:attachmentId
+  // Links a previously uploaded attachment to a message after the message is created.
+  fastify.patch<{
+    Params: { id: string; attachmentId: string };
+    Body: { message_id: string };
+  }>('/api/threads/:id/attachments/:attachmentId', async (req, reply) => {
+    const { attachmentId } = req.params;
+    const { message_id } = req.body;
+    if (!message_id) return reply.status(400).send({ error: 'message_id required' });
+    await db.run(
+      `UPDATE message_attachments SET message_id = ? WHERE id = ?`,
+      [message_id, attachmentId]
+    );
+    return reply.status(204).send();
+  });
+
+  // GET /api/threads/:id/attachments/:attachmentId/content
+  // Returns the raw text content of an attachment — used by the file viewer chip.
+  fastify.get<{ Params: { id: string; attachmentId: string } }>(
+    '/api/threads/:id/attachments/:attachmentId/content',
+    async (req, reply) => {
+      const attachment = await attachmentStore.getById(req.params.attachmentId);
+      if (!attachment || attachment.thread_id !== req.params.id) {
+        return reply.status(404).send({ error: 'Attachment not found' });
+      }
+      if (attachment.is_image) {
+        return reply.status(400).send({ error: 'Use /raw for binary files' });
+      }
+      const content = await attachmentStore.readContent(attachment);
+      return reply.send({ content, filename: attachment.filename });
     }
   );
 
@@ -356,12 +456,13 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
       project_root?: string;
       build_command?: string;
       skip_build?: boolean;
-      attached_files?: Array<{ name: string; content: string }>;
+      /** IDs of pre-uploaded attachments — replaces old attached_files content array */
+      attachment_ids?: string[];
       context_history_depth?: number;
     };
   }>('/api/threads/:id/messages', async (req, reply) => {
     const { id: threadId } = req.params;
-    const { content, build_command, skip_build, attached_files, context_history_depth } = req.body;
+    const { content, build_command, skip_build, attachment_ids, context_history_depth } = req.body;
 
     // Validate/create thread
     let thread = await threadStore.getById(threadId);
@@ -377,24 +478,100 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
     // Ensure workspace directory exists for this thread
     const workspaceDir = await workspace.ensureWorkspace(threadId);
 
-    // Store user message
-    await messageStore.insert({
+    // ── Resolve active model vision capability once per turn ──────────────────
+    // Used to decide: reject image attachments, build content arrays, inject descriptions.
+    const { coordinatorSupportsVision, engineSupportsVision } = getModelVisionCapability();
+
+    // Store user message — content is the user's typed text ONLY.
+    // Attachment contents are never stored in the messages table; they live on disk
+    // and are linked via message_attachments.message_id.
+    const userMsg = await messageStore.insert({
       thread_id: threadId,
       role: 'user',
       content,
     });
 
-    // Inline any attached files into the message and write them to the workspace
+    // Load attachments from disk and link them to this message.
+    // Build fullUserMessage for the engine — this is the only place file content
+    // enters the pipeline. It is never persisted.
     let fullUserMessage = content;
-    if (attached_files && attached_files.length > 0) {
-      for (const f of attached_files) {
-        // Write to workspace so the engine can reference by path next time
-        await workspace.writeFile(threadId, f.name, f.content, 'user');
+    const loadedAttachmentFiles: Array<{ path: string; content: string }> = [];
+    // Image bytes for vision-capable engine — populated only when engineSupportsVision.
+    const imageAttachmentsForEngine: Array<{ filename: string; base64: string; mimeType: string }> = [];
+    // Image content blocks for coordinator — populated only when coordinatorSupportsVision.
+    const imageBlocksForCoord: Array<{ type: 'image_url'; image_url: { url: string } }> = [];
+
+    if (attachment_ids && attachment_ids.length > 0) {
+      // Pre-load all attachment records to check for images before processing.
+      const allAttachRecs = await Promise.all(attachment_ids.map(aid => attachmentStore.getById(aid)));
+      const validAttachRecs = allAttachRecs.filter(Boolean) as NonNullable<typeof allAttachRecs[number]>[];
+      const hasImages = validAttachRecs.some(att => att.is_image);
+
+      // Reject the turn early if images are attached but neither model supports vision.
+      // SSE headers have not been written yet at this point, so respond with a plain
+      // HTTP 400 rather than an SSE error frame.
+      if (hasImages && !coordinatorSupportsVision && !engineSupportsVision) {
+        return reply.status(400).send({
+          error: 'Neither model supports images. Attach text files only, or switch to a vision-capable model in settings.',
+        });
       }
-      const fileBlock = attached_files
-        .map((f) => `<file path="${f.name}">\n${f.content}\n</file>`)
-        .join('\n\n');
-      fullUserMessage += `\n\n<attached_files>\n${fileBlock}\n</attached_files>`;
+
+      const fileBlocks: string[] = [];
+
+      for (const att of validAttachRecs) {
+        // Link attachment to the now-created message
+        await db.run(
+          `UPDATE message_attachments SET message_id = ? WHERE id = ?`,
+          [userMsg.id, att.id]
+        );
+
+        if (att.is_image) {
+          // Read raw bytes for base64 encoding — readFileSync is fine here since this
+          // is a request handler and the file is small (user-attached image).
+          const imgBuf = fs.readFileSync(att.disk_path);
+          const b64 = imgBuf.toString('base64');
+
+          if (coordinatorSupportsVision) {
+            // SAYON receives the actual image bytes via content array.
+            imageBlocksForCoord.push({
+              type: 'image_url',
+              image_url: { url: `data:${att.mime_type};base64,${b64}` },
+            });
+            if (!engineSupportsVision) {
+              // SAYON can see the image but SEREN cannot — instruct SAYON to describe it.
+              fileBlocks.push(
+                `[image: ${att.filename}]\n` +
+                `IMPORTANT: SEREN does not support vision. You can see this image directly. ` +
+                `When constructing SEREN's task brief, describe the image contents in complete ` +
+                `detail so SEREN has full visual context without seeing the image bytes.`
+              );
+            } else {
+              // Both have vision — SAYON gets image bytes; SEREN gets them via imageAttachmentsForEngine below.
+              fileBlocks.push(`[image: ${att.filename}]`);
+            }
+          } else {
+            // SAYON does not support vision — filename reference only.
+            fileBlocks.push(`[image: ${att.filename}]`);
+          }
+
+          if (engineSupportsVision) {
+            imageAttachmentsForEngine.push({
+              filename: att.filename,
+              base64: b64,
+              mimeType: att.mime_type,
+            });
+          }
+        } else {
+          const fileContent = await attachmentStore.readContent(att);
+          fileBlocks.push(`<file path="${att.filename}">\n${fileContent}\n</file>`);
+          // Also expose to the loop controller so the engine can reference by path
+          loadedAttachmentFiles.push({ path: att.filename, content: fileContent });
+        }
+      }
+
+      if (fileBlocks.length > 0) {
+        fullUserMessage += `\n\n<attached_files>\n${fileBlocks.join('\n\n')}\n</attached_files>`;
+      }
     }
 
     // SSE headers
@@ -444,11 +621,20 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
       // be handled by SAYON as a new standalone request.
       const pendingClarity = pendingClarification.get(threadId);
 
+      // If this thread is mid-Phase-1 clarification (SAYON asked before handing to SEREN),
+      // skip classification and route to LoopController with the Phase 1 log so
+      // ContextIngester can synthesise all Q&A into the final brief for SEREN.
+      const pendingPhase1 = pendingPhase1Clarification.get(threadId);
+
       // Stage 2 (3D): context-aware classification + knowledge search in parallel.
-      // Skipped if we already know where to route (pendingClarification hit).
-      const [intent, knowledgeResults] = pendingClarity
+      // Skipped if we already know where to route (either clarification hit).
+      const [intent, knowledgeResults] = (pendingClarity || pendingPhase1)
         ? [
-            { type: pendingClarity.originalIntent, confidence: 1.0, routing: 'NEEDS_SEREN' as const },
+            {
+              type: (pendingClarity?.originalIntent ?? pendingPhase1?.originalIntent) as IntentType,
+              confidence: 1.0,
+              routing: 'NEEDS_SEREN' as const,
+            },
             await knowledgeStore.search(fullUserMessage, 5),
           ]
         : await Promise.all([
@@ -506,7 +692,8 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           messageStore,
           eventStore,
           segmentStore,
-          trackingsendEvent
+          trackingsendEvent,
+          coordinatorSupportsVision ? imageBlocksForCoord : []
         );
         if (directMsgId && activityLog.length > 0) {
           await eventStore.insert(threadId, 'activity', { type: 'activity', events: activityLog }, directMsgId);
@@ -590,6 +777,33 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
             // agent_state already written to SSE by AgentStateManager — persist for replay
             eventStore.insert(threadId, 'agent_state', event, assistantMsg.id).catch(() => {});
           },
+          onDispatch: async (info) => {
+            // Log the full SEREN system prompt + task prompt for each dispatched task.
+            // This makes execution prompts visible in the export transcript.
+            try {
+              const { PromptLogStore: PLS } = await import('../db/PromptLogStore.js');
+              const { DatabaseManager: DM } = await import('../db/DatabaseManager.js');
+              const pls = new PLS(DM.getInstance());
+              const who = info.assignedTo === 'sayon' ? 'sayon' : 'seren';
+              const promptText =
+                `### SYSTEM
+${info.systemPrompt}
+
+` +
+                `### USER (Task ${info.taskIndex}/${info.total}: ${info.title})
+${info.userPrompt}`;
+              await pls.insert({
+                threadId,
+                messageId: info.messageId ?? assistantMsg.id,
+                role: who,
+                stage: 'dispatch',
+                model: who === 'sayon' ? (process.env.COORDINATOR_MODEL ?? 'coordinator') : (process.env.ENGINE_MODEL ?? 'engine'),
+                prompt: promptText,
+                response: `[dispatched — op=${info.operation} file="${info.targetFile}"]`,
+                latencyMs: 0,
+              });
+            } catch { /* never crash the pipeline */ }
+          },
           onImageStatus: (status) => {
             // Stream image generation phase updates to frontend as they happen.
             // 'generating' phase locks chat input; 'done'/'error' unlocks it.
@@ -612,6 +826,18 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           },
         });
 
+        // ── Phase 1 reply pre-fill ───────────────────────────────────────────
+        // When the user is replying to a Phase 1 question, backfill their reply
+        // into the log BEFORE passing to LoopController. Without this, ContextIngester
+        // sees an empty userReply, skips synthesis, and rewrites only the latest
+        // message in isolation — losing the original request context entirely.
+        const phase1LogForLoop = pendingPhase1
+          ? [
+              ...pendingPhase1.log.slice(0, -1),
+              { ...pendingPhase1.log[pendingPhase1.log.length - 1], userReply: fullUserMessage },
+            ]
+          : undefined;
+
         const startTime = Date.now();
         const attempts = await loopController.run(reply, {
           userMessage: fullUserMessage,
@@ -623,22 +849,53 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           chatSummary: chatSummaryRow?.summary,
           conversationHistory: priorHistory,
           repoMap: workspaceIndex,
-          loadedFiles: (attached_files ?? []).map((f) => ({ path: f.name, content: f.content })),
+          loadedFiles: loadedAttachmentFiles,
           knowledgeContext: knowledgeResults.length > 0 ? knowledgeResults : undefined,
           clarificationIteration: pendingClarity ? pendingClarity.count : undefined,
           clarificationLog: pendingClarity ? pendingClarity.log : undefined,
+          phase1ClarificationLog: phase1LogForLoop,
+          phase1OriginalRequest: pendingPhase1?.originalRequest,
+          serenPlanningContext: pendingClarity?.planningContext,
+          imageAttachments: imageAttachmentsForEngine.length > 0 ? imageAttachmentsForEngine : undefined,
         }, assistantMsg.id);
 
-        // Track clarification state:
+        // ── Post-loop state tracking ─────────────────────────────────────────
+        const lastAttempt = attempts[attempts.length - 1];
+
+        // Phase 1 clarification (SAYON asked before SEREN):
+        // - Fresh Phase 1 exit → record questions, store pending state
+        // - Re-entry with user reply → backfill reply, clear state (SEREN proceeds)
+        if (lastAttempt?.isPhase1Clarification) {
+          const questions = lastAttempt.clarificationQuestions ?? [];
+          if (pendingPhase1) {
+            // Re-entry: ContextIngester fired Phase 1 again despite having a filled log.
+            // The pre-fill above already put the reply in phase1LogForLoop.
+            // Persist the filled log and keep state — next message will synthesise.
+            pendingPhase1Clarification.set(threadId, {
+              originalIntent: intent.type as IntentType,
+              originalRequest: pendingPhase1.originalRequest,
+              log: phase1LogForLoop ?? pendingPhase1.log,
+            });
+          } else {
+            // Fresh Phase 1 question — record it, wait for user reply
+            pendingPhase1Clarification.set(threadId, {
+              originalIntent: intent.type as IntentType,
+              originalRequest: fullUserMessage,
+              log: [{ questions, userReply: '' }],
+            });
+          }
+        } else if (pendingPhase1) {
+          // SEREN proceeded successfully — Phase 1 is resolved, clear state
+          pendingPhase1Clarification.delete(threadId);
+        }
+
+        // SEREN clarification (SEREN asked during planning):
         // - Fresh SEREN clarification → start tracking with log entry recording the questions
         // - Mid-clarification + SEREN asked again → backfill user reply into last log entry,
         //   append new entry for the new questions, increment count
         // - Mid-clarification + SEREN proceeded → clear state
-        const lastAttempt = attempts[attempts.length - 1];
-        if (lastAttempt?.needsClarification) {
+        if (lastAttempt?.needsClarification && !lastAttempt?.isPhase1Clarification) {
           const questions = lastAttempt.clarificationQuestions ?? [];
-          // If we were already in a clarification loop, record what the user just said
-          // as the reply to the previous round's questions before starting a new entry.
           const updatedLog = pendingClarity
             ? [
                 ...pendingClarity.log.slice(0, -1),
@@ -646,11 +903,17 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
                 { questions, userReply: '' },
               ]
             : [{ questions, userReply: '' }];
+
+          // Cache SAYON's planning context from this run so the next re-entry can skip
+          // Steps 1+2 (discovery + extraction) and go straight to decomposeTasks.
+          const planCtx = loopController.lastPlanningContext ?? pendingClarity?.planningContext;
+
           pendingClarification.set(threadId, {
             originalIntent: intent.type as IntentType,
             originalRequest: pendingClarity?.originalRequest ?? fullUserMessage,
             count: pendingClarity ? pendingClarity.count + 1 : 1,
             log: updatedLog,
+            planningContext: planCtx,
           });
         } else if (pendingClarity) {
           pendingClarification.delete(threadId);
@@ -658,12 +921,13 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
 
         const latencyMs = Date.now() - startTime;
 
-        // When SEREN returned NEEDS_CLARIFICATION, the coordinator bubble carrying
-        // the questions was already persisted by persistAndSend. The pre-created
+        // When any clarification was returned (Phase 1 or SEREN), the coordinator bubble
+        // carrying the questions was already persisted by persistAndSend. The pre-created
         // empty assistantMsg has no content and must be deleted — otherwise the
         // 600ms refetch picks it up and renders a blank message, terminating the
         // conversation visually even though input is re-enabled.
-        const isClarificationReturn = attempts.length === 1 && attempts[0].needsClarification;
+        const isClarificationReturn = attempts.length === 1 &&
+          (attempts[0].needsClarification || attempts[0].isPhase1Clarification);
         if (isClarificationReturn) {
           await db.run('DELETE FROM messages WHERE id = ?', [assistantMsg.id]).catch(() => {});
         } else {
@@ -756,7 +1020,8 @@ async function handleDirectResponse(
   messageStore: MessageStore,
   eventStore: MessageEventStore,
   segmentStore: ThinkingSegmentStore,
-  sendEvent: (data: Record<string, unknown>) => void
+  sendEvent: (data: Record<string, unknown>) => void,
+  imageContentBlocks: Array<{ type: 'image_url'; image_url: { url: string } }> = []
 ): Promise<string | null> {
   const { coordinatorClient, COORDINATOR_MODEL, getThinkingStrategy: getStrategy, COORDINATOR_PROVIDER: COORD_PROV } = await import('../ai/clients.js');
 
@@ -797,7 +1062,18 @@ async function handleDirectResponse(
     ...history
       .filter((m) => m.role === 'user' || m.role === 'assistant')
       .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
-    { role: 'user' as const, content: userMessage },
+    // When coordinator supports vision, build a content array for the final user message
+    // so image bytes are transmitted alongside the text. Otherwise plain string.
+    ...(imageContentBlocks.length > 0
+      ? [{
+          role: 'user' as const,
+          content: [
+            { type: 'text', text: userMessage },
+            ...imageContentBlocks,
+          ] as unknown as string,
+        }]
+      : [{ role: 'user' as const, content: userMessage }]
+    ),
   ];
 
   // Apply thinking strategy — injects /think prefix for FastFlowLLM Qwen3
@@ -935,13 +1211,21 @@ async function handleDirectResponse(
         });
 
         const raw = (completion as any).choices?.[0]?.message?.content ?? '';
-        const cleaned = raw.replace(/```json\s*|```/g, '').trim();
+        // Strip thinking tokens before parsing.
+        // Tag-path models (Nemotron 3, Phi-4, Ministral, SmolLM3) emit
+        // <think>...</think> in delta.content when no extraBodyNoThink is applied.
+        // This call goes through the raw OpenAI client — no thinking strategy is
+        // applied — so the full <think> block lands in content and must be stripped
+        // before we attempt JSON extraction. Without this, the entire reasoning
+        // trace gets passed to sd-cli as the --prompt argument.
+        const stripped = raw.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+        const cleaned = stripped.replace(/```json\s*|```/g, '').trim();
         try {
           const parsed = JSON.parse(cleaned);
           if (parsed.prompt) enhancedPrompt = parsed.prompt;
           if (parsed.negativePrompt) enhancedNegative = parsed.negativePrompt;
         } catch {
-          enhancedPrompt = raw.trim() || userMessage;
+          enhancedPrompt = stripped || userMessage;
         }
       } catch (err) {
         console.warn(`[handleDirect:${isVideo ? 'video' : 'image'}] SAYON prompt enhancement failed:`, (err as Error).message);

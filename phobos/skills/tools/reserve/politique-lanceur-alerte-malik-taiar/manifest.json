@@ -1,0 +1,10 @@
+﻿{
+  "id": "politique-lanceur-alerte-malik-taiar",
+  "name": "politique lanceur alerte malik taiar",
+  "description": "This Guide can help you (a) assess the compliance of an existing whistleblower system or (b) draft a reporting policy based on a provided template.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "| Mode | Description | Output | |------|-------------|--------|",
+  "runner": null
+}

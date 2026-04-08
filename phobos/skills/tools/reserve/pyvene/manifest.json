@@ -1,0 +1,10 @@
+﻿{
+  "id": "pyvene",
+  "name": "pyvene",
+  "description": "pyvene is Stanford NLP's library for performing causal interventions on PyTorch models. It provides a declarative, dict-based framework for activation patching, causal tracing, and interchange inte...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use pyvene when you need to:** - Perform causal tracing (ROME-style localization)",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "ena-database",
+  "name": "ena database",
+  "description": "The European Nucleotide Archive (ENA) is a comprehensive public repository for nucleotide sequence data and associated metadata. Access and query DNA/RNA sequences, raw reads, genome assemblies, an...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when:",
+  "runner": null
+}

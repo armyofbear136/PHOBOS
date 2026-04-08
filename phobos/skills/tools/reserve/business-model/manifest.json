@@ -1,0 +1,10 @@
+﻿{
+  "id": "business-model",
+  "name": "business model",
+  "description": "- **Name**: business-model - **Description**: Generate a Business Model Canvas with all 9 building blocks. Use when creating a business model, documenting how a business creates value, or analyzing...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

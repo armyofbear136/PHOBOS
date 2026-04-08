@@ -1,0 +1,10 @@
+﻿{
+  "id": "linkedin-writer",
+  "name": "linkedin writer",
+  "description": "Generate 2 viral LinkedIn posts in different proven formats, matched to the founder's voice, using battle-tested templates and patterns that drive engagement on LinkedIn.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

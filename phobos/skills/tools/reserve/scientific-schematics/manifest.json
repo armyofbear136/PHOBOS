@@ -1,0 +1,10 @@
+﻿{
+  "id": "scientific-schematics",
+  "name": "scientific schematics",
+  "description": "Scientific schematics and diagrams transform complex concepts into clear visual representations for publication. **This skill uses Nano Banana 2 AI for diagram generation with Gemini 3.1 Pro Previe...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

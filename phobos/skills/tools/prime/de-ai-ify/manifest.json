@@ -1,0 +1,10 @@
+﻿{
+  "id": "de-ai-ify",
+  "name": "de ai ify",
+  "description": "Remove AI-generated patterns and restore natural human voice to your writing.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "``` /de-ai-ify <file_path>",
+  "runner": null
+}

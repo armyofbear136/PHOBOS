@@ -1,0 +1,10 @@
+﻿{
+  "id": "case-study-builder",
+  "name": "case study builder",
+  "description": "Everyone wants social proof. Nobody makes time to create it. You finish a project, the client's happy, you move on — and six months later you're in a sales call with nothing to show.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

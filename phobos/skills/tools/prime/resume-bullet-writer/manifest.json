@@ -1,0 +1,10 @@
+﻿{
+  "id": "resume-bullet-writer",
+  "name": "resume bullet writer",
+  "description": "Use this skill when the user wants to: - Write or improve resume bullet points",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user wants to: - Write or improve resume bullet points",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "peer-review",
+  "name": "peer review",
+  "description": "Peer review is a systematic process for evaluating scientific manuscripts. Assess methodology, statistics, design, reproducibility, ethics, and reporting standards. Apply this skill for manuscript ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Conducting peer review of scientific manuscripts for journals",
+  "runner": null
+}

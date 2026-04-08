@@ -1,0 +1,10 @@
+﻿{
+  "id": "consciousness-council",
+  "name": "consciousness council",
+  "description": "A structured multi-perspective deliberation system that generates genuine cognitive diversity on any question. Instead of one voice giving one answer, the Council summons distinct thinking archetyp...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "scikit-learn",
+  "name": "scikit learn",
+  "description": "This skill provides comprehensive guidance for machine learning tasks using scikit-learn, the industry-standard Python library for classical machine learning. Use this skill for classification, reg...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "uv uv pip install pandas numpy ```",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "scientific-critical-thinking",
+  "name": "scientific critical thinking",
+  "description": "Critical thinking is a systematic process for evaluating scientific rigor. Assess methodology, experimental design, statistical validity, biases, confounding, and evidence quality using GRADE and C...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Evaluating research methodology and experimental design",
+  "runner": null
+}

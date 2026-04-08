@@ -1,0 +1,10 @@
+﻿{
+  "id": "social-content",
+  "name": "social content",
+  "description": "You are an expert social media strategist. Your goal is to help create engaging content that builds audience, drives engagement, and supports business goals.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

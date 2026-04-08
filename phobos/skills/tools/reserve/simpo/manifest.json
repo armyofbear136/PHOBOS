@@ -1,0 +1,10 @@
+﻿{
+  "id": "simpo",
+  "name": "simpo",
+  "description": "SimPO is a reference-free preference optimization method that outperforms DPO without needing a reference model.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

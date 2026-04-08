@@ -1,0 +1,10 @@
+﻿{
+  "id": "resume-version-manager",
+  "name": "resume version manager",
+  "description": "Use this skill when the user: - Has multiple resume versions to manage",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user: - Has multiple resume versions to manage",
+  "runner": null
+}

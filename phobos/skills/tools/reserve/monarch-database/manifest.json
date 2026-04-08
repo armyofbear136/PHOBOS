@@ -1,0 +1,10 @@
+﻿{
+  "id": "monarch-database",
+  "name": "monarch database",
+  "description": "The Monarch Initiative (https://monarchinitiative.org/) is a multi-species integrated knowledgebase that links genes, diseases, and phenotypes across humans and model organisms. It integrates data ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use Monarch when:",
+  "runner": null
+}

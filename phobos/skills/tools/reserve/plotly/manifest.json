@@ -1,0 +1,10 @@
+﻿{
+  "id": "plotly",
+  "name": "plotly",
+  "description": "Python graphing library for creating interactive, publication-quality visualizations with 40+ chart types.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "For quick, standard visualizations with sensible defaults: - Working with pandas DataFrames",
+  "runner": null
+}

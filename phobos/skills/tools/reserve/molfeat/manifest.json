@@ -1,0 +1,10 @@
+﻿{
+  "id": "molfeat",
+  "name": "molfeat",
+  "description": "Molfeat is a comprehensive Python library for molecular featurization that unifies 100+ pre-trained embeddings and hand-crafted featurizers. Convert chemical structures (SMILES strings or RDKit mol...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when working with: - **Molecular machine learning**: Building QSAR/QSPR models, property prediction",
+  "runner": null
+}

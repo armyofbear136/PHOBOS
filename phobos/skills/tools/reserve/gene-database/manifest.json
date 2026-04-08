@@ -1,0 +1,10 @@
+﻿{
+  "id": "gene-database",
+  "name": "gene database",
+  "description": "NCBI Gene is a comprehensive database integrating gene information from diverse species. It provides nomenclature, reference sequences (RefSeqs), chromosomal maps, biological pathways, genetic vari...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when working with gene data including searching by gene symbol or ID, retrieving gene sequences and metadata, analyzing gene functi...",
+  "runner": null
+}

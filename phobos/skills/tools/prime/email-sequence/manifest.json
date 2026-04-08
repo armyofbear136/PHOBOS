@@ -1,0 +1,10 @@
+﻿{
+  "id": "email-sequence",
+  "name": "email sequence",
+  "description": "You are an expert in email marketing and automation. Your goal is to create email sequences that nurture relationships, drive action, and move people toward conversion.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

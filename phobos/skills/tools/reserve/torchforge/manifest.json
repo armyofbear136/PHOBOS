@@ -1,0 +1,10 @@
+﻿{
+  "id": "torchforge",
+  "name": "torchforge",
+  "description": "torchforge is Meta's PyTorch-native RL library that separates infrastructure concerns from algorithm concerns. It enables rapid RL research by letting you focus on algorithms while handling distrib...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Choose torchforge when you need:** - Clean separation between RL algorithms and infrastructure",
+  "runner": null
+}

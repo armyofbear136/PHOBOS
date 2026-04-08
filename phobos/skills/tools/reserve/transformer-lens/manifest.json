@@ -1,0 +1,10 @@
+﻿{
+  "id": "transformer-lens",
+  "name": "transformer lens",
+  "description": "TransformerLens is the de facto standard library for mechanistic interpretability research on GPT-style language models. Created by Neel Nanda and maintained by Bryce Meyer, it provides clean inter...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use TransformerLens when you need to:** - Reverse-engineer algorithms learned during training",
+  "runner": null
+}

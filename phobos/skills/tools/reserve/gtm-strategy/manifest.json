@@ -1,0 +1,10 @@
+﻿{
+  "id": "gtm-strategy",
+  "name": "gtm strategy",
+  "description": "Create a comprehensive go-to-market strategy for a product launch. This skill covers marketing channels, messaging development, success metrics definition, and launch planning.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Planning a product launch - Creating a GTM plan from scratch",
+  "runner": null
+}

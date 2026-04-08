@@ -1,0 +1,10 @@
+﻿{
+  "id": "aeon",
+  "name": "aeon",
+  "description": "Aeon is a scikit-learn compatible Python toolkit for time series machine learning. It provides state-of-the-art algorithms for classification, regression, clustering, forecasting, anomaly detection...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Apply this skill when: - Classifying or predicting from time series data",
+  "runner": null
+}

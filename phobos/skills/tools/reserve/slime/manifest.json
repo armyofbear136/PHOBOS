@@ -1,0 +1,10 @@
+﻿{
+  "id": "slime",
+  "name": "slime",
+  "description": "slime is an LLM post-training framework from Tsinghua's THUDM team, powering GLM-4.5, GLM-4.6, and GLM-4.7. It connects Megatron-LM for training with SGLang for high-throughput rollout generation.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Choose slime when you need:** - Megatron-LM native training with SGLang inference",
+  "runner": null
+}

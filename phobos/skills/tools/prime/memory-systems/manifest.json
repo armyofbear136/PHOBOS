@@ -1,0 +1,10 @@
+﻿{
+  "id": "memory-systems",
+  "name": "memory systems",
+  "description": "Memory provides the persistence layer that allows agents to maintain continuity across sessions and reason over accumulated knowledge. Simple agents rely entirely on context for memory, losing all ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Activate this skill when: - Building agents that must persist knowledge across sessions",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "clinpgx-database",
+  "name": "clinpgx database",
+  "description": "ClinPGx (Clinical Pharmacogenomics Database) is a comprehensive resource for clinical pharmacogenomics information, successor to PharmGKB. It consolidates data from PharmGKB, CPIC, and PharmCAT, pr...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when:",
+  "runner": null
+}

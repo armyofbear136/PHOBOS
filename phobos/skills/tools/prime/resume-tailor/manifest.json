@@ -1,0 +1,10 @@
+﻿{
+  "id": "resume-tailor",
+  "name": "resume tailor",
+  "description": "Use this skill when the user wants to: - Customize their resume for a specific job posting",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user wants to: - Customize their resume for a specific job posting",
+  "runner": null
+}

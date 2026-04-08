@@ -1,0 +1,10 @@
+{
+  "id": "interleaved-thinking",
+  "name": "Interleaved Thinking",
+  "description": "Guides SEREN to structure reasoning traces for maximum clarity and correctness.",
+  "version": "1.0.0",
+  "scope": "seren",
+  "category": "core",
+  "trigger": "Always active in SEREN execution turns",
+  "runner": null
+}

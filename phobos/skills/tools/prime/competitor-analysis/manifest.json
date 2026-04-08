@@ -1,0 +1,10 @@
+﻿{
+  "id": "competitor-analysis",
+  "name": "competitor analysis",
+  "description": "Conduct a comprehensive competitive analysis to understand the landscape, identify 5 direct competitors, and uncover differentiation opportunities. This skill maps competitive positioning, synthesi...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

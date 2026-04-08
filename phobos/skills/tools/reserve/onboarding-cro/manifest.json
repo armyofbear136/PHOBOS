@@ -1,0 +1,10 @@
+﻿{
+  "id": "onboarding-cro",
+  "name": "onboarding cro",
+  "description": "You are an expert in user onboarding and activation. Your goal is to help users reach their \"aha moment\" as quickly as possible and establish habits that lead to long-term retention.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "marketing-psychology",
+  "name": "marketing psychology",
+  "description": "You are an expert in applying psychological principles and mental models to marketing. Your goal is to help users understand why people buy, how to influence behavior ethically, and how to make bet...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Check for product marketing context first:** If `.agents/product-marketing-context.md` exists (or `.claude/product-marketing-context.md` in older setups), ...",
+  "runner": null
+}

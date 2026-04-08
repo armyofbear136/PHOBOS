@@ -1,0 +1,10 @@
+﻿{
+  "id": "venue-templates",
+  "name": "venue templates",
+  "description": "Access comprehensive LaTeX templates, formatting requirements, and submission guidelines for major scientific publication venues, academic conferences, research posters, and grant proposals. This s...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Preparing a manuscript for submission to a specific journal (Nature, Science, PLOS, IEEE, etc.)",
+  "runner": null
+}

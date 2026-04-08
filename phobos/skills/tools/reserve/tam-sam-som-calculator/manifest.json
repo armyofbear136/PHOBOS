@@ -1,0 +1,10 @@
+﻿{
+  "id": "tam-sam-som-calculator",
+  "name": "tam sam som calculator",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Pitching to investors or execs (need market size in deck) - Validating product ideas (is the market big enough?)",
+  "runner": null
+}

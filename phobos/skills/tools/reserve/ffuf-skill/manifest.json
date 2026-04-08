@@ -1,0 +1,10 @@
+﻿{
+  "id": "ffuf-skill",
+  "name": "ffuf skill",
+  "description": "FFUF is a fast web fuzzer written in Go, designed for discovering hidden content, directories, files, subdomains, and testing for vulnerabilities during penetration testing. It's significantly fast...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

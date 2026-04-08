@@ -1,0 +1,10 @@
+﻿{
+  "id": "summarize-meeting",
+  "name": "summarize meeting",
+  "description": "You are an experienced product manager responsible for creating clear, actionable meeting summaries from $ARGUMENTS. This skill transforms raw meeting transcripts into structured, accessible summar...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

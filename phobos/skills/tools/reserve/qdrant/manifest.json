@@ -1,0 +1,10 @@
+﻿{
+  "id": "qdrant",
+  "name": "qdrant",
+  "description": "High-performance vector database written in Rust for production RAG and semantic search.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use Qdrant when:** - Building production RAG systems requiring low latency",
+  "runner": null
+}

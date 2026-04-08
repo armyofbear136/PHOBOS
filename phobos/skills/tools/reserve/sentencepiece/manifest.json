@@ -1,0 +1,10 @@
+﻿{
+  "id": "sentencepiece",
+  "name": "sentencepiece",
+  "description": "Unsupervised tokenizer that works on raw text without language-specific preprocessing.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use SentencePiece when:** - Building multilingual models (no language-specific rules)",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "test-scenarios",
+  "name": "test scenarios",
+  "description": "Create comprehensive test scenarios from user stories with test objectives, starting conditions, user roles, step-by-step test actions, and expected outcomes.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

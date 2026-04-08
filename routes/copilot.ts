@@ -3,6 +3,7 @@ import { DatabaseManager } from '../db/DatabaseManager.js';
 import { MessageStore } from '../db/MessageStore.js';
 import { ThreadStore } from '../db/ThreadStore.js';
 import { CopilotMemoryStore } from '../db/CopilotMemoryStore.js';
+import { CopilotRelationshipStore } from '../db/CopilotRelationshipStore.js';
 import { CopilotIndex } from '../context/CopilotIndex.js';
 import { buildCopilotSystemPrompt, COPILOT_THREAD_IDS, type CopilotPersona } from '../ai/CopilotPersonas.js';
 
@@ -22,10 +23,17 @@ export async function registerCopilotRoutes(fastify: FastifyInstance): Promise<v
   const threadStore = new ThreadStore(db);
   const messageStore = new MessageStore(db);
   const memoryStore = new CopilotMemoryStore(db);
+  const relStore = new CopilotRelationshipStore(db);
   const copilotIndex = new CopilotIndex(db);
 
-  // Ensure memory table exists
+  // Ensure tables exist
   await memoryStore.ensureTable();
+  await relStore.ensureTable();
+
+  // Increment session counter on startup (after first interaction exists)
+  for (const persona of ['sayon', 'seren'] as const) {
+    relStore.recordSession(persona).catch(() => { /* non-fatal */ });
+  }
 
   // Ensure both copilot threads exist
   for (const [persona, threadId] of Object.entries(COPILOT_THREAD_IDS)) {
@@ -80,12 +88,31 @@ export async function registerCopilotRoutes(fastify: FastifyInstance): Promise<v
     }
   );
 
+  // ── GET /api/copilot/:persona/stats ─────────────────────────────────────
+  fastify.get<{ Params: { persona: string } }>(
+    '/api/copilot/:persona/stats',
+    async (req, reply) => {
+      const persona = req.params.persona as CopilotPersona;
+      if (!COPILOT_THREAD_IDS[persona]) return reply.status(400).send({ error: 'Invalid persona' });
+      const state = await relStore.getState(persona);
+      const days_known = await relStore.getDaysKnown(persona);
+      return reply.send({
+        bond_score: state.bond_score,
+        emotional_state: state.emotional_state,
+        message_count: state.message_count,
+        session_count: state.session_count,
+        days_known,
+        first_interaction_at: state.first_interaction_at,
+      });
+    }
+  );
+
   // ── POST /api/copilot/sayon ─────────────────────────────────────────────
   fastify.post<{ Body: { content: string } }>(
     '/api/copilot/sayon',
     async (req, reply) => {
       await handleCopilotStream('sayon', req.body.content, reply, {
-        messageStore, memoryStore, copilotIndex,
+        messageStore, memoryStore, relStore, copilotIndex,
       });
     }
   );
@@ -95,7 +122,7 @@ export async function registerCopilotRoutes(fastify: FastifyInstance): Promise<v
     '/api/copilot/seren',
     async (req, reply) => {
       await handleCopilotStream('seren', req.body.content, reply, {
-        messageStore, memoryStore, copilotIndex,
+        messageStore, memoryStore, relStore, copilotIndex,
       });
     }
   );
@@ -106,6 +133,7 @@ export async function registerCopilotRoutes(fastify: FastifyInstance): Promise<v
 interface CopilotDeps {
   messageStore: MessageStore;
   memoryStore: CopilotMemoryStore;
+  relStore: CopilotRelationshipStore;
   copilotIndex: CopilotIndex;
 }
 
@@ -115,7 +143,7 @@ async function handleCopilotStream(
   reply: any,
   deps: CopilotDeps
 ): Promise<void> {
-  const { messageStore, memoryStore, copilotIndex } = deps;
+  const { messageStore, memoryStore, relStore, copilotIndex } = deps;
   const threadId = COPILOT_THREAD_IDS[persona];
 
   // Persist user message
@@ -138,13 +166,22 @@ async function handleCopilotStream(
   };
 
   try {
-    // Build context
-    const [systemOverview, memoryContext] = await Promise.all([
+    // Build context — fetch all three in parallel
+    const [systemOverview, memoryContext, relState] = await Promise.all([
       copilotIndex.renderSystemOverview(),
       memoryStore.renderMemoryContext(persona),
+      relStore.getState(persona),
     ]);
+    const daysKnown = await relStore.getDaysKnown(persona);
 
-    const systemPrompt = buildCopilotSystemPrompt(persona, systemOverview, memoryContext);
+    const relationship = {
+      bondScore: relState.bond_score,
+      emotionalState: relState.emotional_state,
+      messageCount: relState.message_count,
+      daysKnown,
+    };
+
+    const systemPrompt = buildCopilotSystemPrompt(persona, systemOverview, memoryContext, relationship);
 
     // Load conversation history (last 15 messages for context)
     const allMessages = await messageStore.getByThread(threadId, false);
@@ -155,9 +192,9 @@ async function handleCopilotStream(
 
     // Route to the correct model
     if (persona === 'sayon') {
-      await streamSayon(systemPrompt, history, sendEvent, threadId, messageStore, memoryStore);
+      await streamSayon(systemPrompt, history, sendEvent, threadId, messageStore, memoryStore, relStore);
     } else {
-      await streamSeren(systemPrompt, history, sendEvent, threadId, messageStore, memoryStore);
+      await streamSeren(systemPrompt, history, sendEvent, threadId, messageStore, memoryStore, relStore);
     }
   } catch (err) {
     console.error(`[Copilot:${persona}] Error:`, err);
@@ -175,7 +212,8 @@ async function streamSayon(
   sendEvent: (data: Record<string, unknown>) => void,
   threadId: string,
   messageStore: MessageStore,
-  memoryStore: CopilotMemoryStore
+  memoryStore: CopilotMemoryStore,
+  relStore: CopilotRelationshipStore
 ): Promise<void> {
   const {
     coordinatorClient, COORDINATOR_MODEL,
@@ -281,15 +319,21 @@ async function streamSayon(
   }
 
   // Persist assistant message — NO thinking_segments writes, NO thinking_trace in DB
-  const finalContent = outputBuf.trim() || '(no output)';
+  // Strip inline directive tags before storing — they are backend instructions, not chat content
+  const finalContent = outputBuf
+    .replace(/\[REMEMBER\s+\w+:[^\]]+\]/gi, '')
+    .replace(/\[EMOTION\s+\w+\]/gi, '')
+    .trim() || '(no output)';
   await messageStore.insert({
     thread_id: threadId,
     role: 'assistant',
     content: finalContent,
   });
 
-  // Check for memory store requests in output (simple inline format)
-  await extractAndStoreMemories(finalContent, 'sayon', memoryStore);
+  // Extract inline memory and emotion tags from raw output, then record the exchange
+  await extractAndStoreMemories(outputBuf, 'sayon', memoryStore);
+  await extractAndStoreEmotion(outputBuf, 'sayon', relStore);
+  await relStore.recordExchange('sayon');
 
   sendEvent({ type: 'complete' });
 }
@@ -302,7 +346,8 @@ async function streamSeren(
   sendEvent: (data: Record<string, unknown>) => void,
   threadId: string,
   messageStore: MessageStore,
-  memoryStore: CopilotMemoryStore
+  memoryStore: CopilotMemoryStore,
+  relStore: CopilotRelationshipStore
 ): Promise<void> {
   const {
     engineClient, ENGINE_MODEL,
@@ -465,14 +510,21 @@ async function streamSeren(
   }
 
   // Persist assistant message — NO thinking_segments, NO thinking_trace
-  const finalContent = outputBuf.trim() || '(no output)';
+  // Strip inline directive tags before storing — they are backend instructions, not chat content
+  const finalContent = outputBuf
+    .replace(/\[REMEMBER\s+\w+:[^\]]+\]/gi, '')
+    .replace(/\[EMOTION\s+\w+\]/gi, '')
+    .trim() || '(no output)';
   await messageStore.insert({
     thread_id: threadId,
     role: 'assistant',
     content: finalContent,
   });
 
-  await extractAndStoreMemories(finalContent, 'seren', memoryStore);
+  // Extract from raw output before stripping, then record the exchange
+  await extractAndStoreMemories(outputBuf, 'seren', memoryStore);
+  await extractAndStoreEmotion(outputBuf, 'seren', relStore);
+  await relStore.recordExchange('seren');
 
   sendEvent({ type: 'complete' });
 }
@@ -502,5 +554,37 @@ async function extractAndStoreMemories(
     } catch (err) {
       console.warn(`[Copilot:${persona}] Memory store failed:`, err);
     }
+  }
+}
+
+// ─── EMOTION EXTRACTION ───────────────────────────────────────────────────────
+
+/**
+ * Scans model output for inline emotional state tags.
+ * Format: [EMOTION <state>]
+ * e.g. [EMOTION curious]  [EMOTION wry]  [EMOTION concerned]
+ *
+ * Only the last match in a response wins — if the model shifts emotion
+ * mid-reply, the final state is what persists. Same inline-tag pattern
+ * as [REMEMBER]. Valid states are soft-enforced in the system prompt;
+ * anything the model emits is stored as-is (lowercased, trimmed).
+ */
+async function extractAndStoreEmotion(
+  output: string,
+  persona: CopilotPersona,
+  relStore: CopilotRelationshipStore
+): Promise<void> {
+  const pattern = /\[EMOTION\s+(\w+)\]/gi;
+  let match: RegExpExecArray | null;
+  let last: string | null = null;
+  while ((match = pattern.exec(output)) !== null) {
+    last = match[1];
+  }
+  if (!last) return;
+  try {
+    await relStore.setEmotionalState(persona, last);
+    console.log(`[Copilot:${persona}] Emotional state: ${last}`);
+  } catch (err) {
+    console.warn(`[Copilot:${persona}] Emotion store failed:`, err);
   }
 }

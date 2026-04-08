@@ -1,0 +1,10 @@
+﻿{
+  "id": "ideal-customer-profile",
+  "name": "ideal customer profile",
+  "description": "Identify your Ideal Customer Profile (ICP) from research and survey data. This skill synthesizes customer research to define the customer most likely to find value, retain, and expand with your pro...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Defining ICP from product-market fit survey data - Targeting high-value customer segments",
+  "runner": null
+}

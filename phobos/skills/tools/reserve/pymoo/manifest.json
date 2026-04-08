@@ -1,0 +1,10 @@
+﻿{
+  "id": "pymoo",
+  "name": "pymoo",
+  "description": "Pymoo is a comprehensive Python framework for optimization with emphasis on multi-objective problems. Solve single and multi-objective optimization using state-of-the-art algorithms (NSGA-II/III, M...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Solving optimization problems with one or multiple objectives",
+  "runner": null
+}

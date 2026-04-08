@@ -1,0 +1,10 @@
+﻿{
+  "id": "denario",
+  "name": "denario",
+  "description": "Denario is a multiagent AI system designed to automate scientific research workflows from initial data analysis through publication-ready manuscripts. Built on AG2 and LangGraph frameworks, it orch...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when: - Analyzing datasets to generate novel research hypotheses",
+  "runner": null
+}

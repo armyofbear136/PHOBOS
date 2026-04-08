@@ -1,0 +1,10 @@
+﻿{
+  "id": "what-if-oracle",
+  "name": "what if oracle",
+  "description": "A structured system for exploring uncertain futures through rigorous multi-branch scenario analysis. Instead of one prediction, the Oracle maps the full **possibility space** — branching timelines ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

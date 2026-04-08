@@ -1,0 +1,10 @@
+﻿{
+  "id": "hypogenic",
+  "name": "hypogenic",
+  "description": "Hypogenic provides automated hypothesis generation and testing using large language models to accelerate scientific discovery. The framework supports three approaches: HypoGeniC (data-driven hypoth...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when working on: - Generating scientific hypotheses from observational datasets",
+  "runner": null
+}

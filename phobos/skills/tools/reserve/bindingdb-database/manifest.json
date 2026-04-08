@@ -1,0 +1,10 @@
+﻿{
+  "id": "bindingdb-database",
+  "name": "bindingdb database",
+  "description": "BindingDB (https://www.bindingdb.org/) is the primary public database of measured drug-protein binding affinities. It contains over 3 million binding data records for ~1.4 million compounds tested ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use BindingDB when:",
+  "runner": null
+}

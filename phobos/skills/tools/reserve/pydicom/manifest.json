@@ -1,0 +1,10 @@
+﻿{
+  "id": "pydicom",
+  "name": "pydicom",
+  "description": "Pydicom is a pure Python package for working with DICOM files, the standard format for medical imaging data. This skill provides guidance on reading, writing, and manipulating DICOM files, includin...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when working with: - Medical imaging files (CT, MRI, X-ray, ultrasound, PET, etc.)",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "pymc",
+  "name": "pymc",
+  "description": "PyMC is a Python library for Bayesian modeling and probabilistic programming. Build, fit, validate, and compare Bayesian models using PyMC's modern API (version 5.x+), including hierarchical models...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Building Bayesian models (linear/logistic regression, hierarchical models, time series, etc.)",
+  "runner": null
+}

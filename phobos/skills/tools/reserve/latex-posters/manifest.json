@@ -1,0 +1,10 @@
+﻿{
+  "id": "latex-posters",
+  "name": "latex posters",
+  "description": "Research posters are a critical medium for scientific communication at conferences, symposia, and academic events. This skill provides comprehensive guidance for creating professional, visually app...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Creating research posters for conferences, symposia, or poster sessions",
+  "runner": null
+}

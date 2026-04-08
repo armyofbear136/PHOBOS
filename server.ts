@@ -13,9 +13,11 @@ import { projectsRoute } from './routes/projects.js';
 import { exportRoute } from './routes/export.js';
 import { workflowsRoute } from './routes/workflows.js';
 import { registerCopilotRoutes } from './routes/copilot.js';
+import { registerPluginRoutes } from './routes/pluginRoutes.js';
 import { stopAllServers } from './phobos/LlamaServerManager.js';
 import { reconfigureClients, COORDINATOR_MODEL, ENGINE_MODEL } from './ai/clients.js';
 import * as ModelPathStore from './db/ModelPathStore.js';
+import { loadRegistry } from './ai/SkillManager.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -72,6 +74,14 @@ async function buildServer() {
     }
   );
 
+  // Raw binary — used by plugin file upload endpoint (one file per POST)
+  // Limit: 256MB to handle large .safetensors LoRA files
+  fastify.addContentTypeParser(
+    'application/octet-stream',
+    { parseAs: 'buffer', bodyLimit: 256 * 1024 * 1024 },
+    (_req, body, done) => done(null, body)
+  );
+
   // Register all routes
   await fastify.register(threadsRoute);
   await fastify.register(messagesRoute);
@@ -85,6 +95,7 @@ async function buildServer() {
   await fastify.register(projectsRoute);
   await registerLicenseRoutes(fastify);
   await registerCopilotRoutes(fastify);
+  await registerPluginRoutes(fastify);
 
   // Health check
   fastify.get('/health', async () => ({ ok: true, ts: Date.now() }));
@@ -118,6 +129,7 @@ async function main() {
   // before any route or PhobosLocalManager call resolves model paths.
   await ModelPathStore.loadAsync(db);
   await reconfigureClients();
+  await loadRegistry();
 
   const fastify = await buildServer();
 

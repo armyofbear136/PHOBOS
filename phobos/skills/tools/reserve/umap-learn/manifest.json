@@ -1,0 +1,10 @@
+﻿{
+  "id": "umap-learn",
+  "name": "umap learn",
+  "description": "UMAP (Uniform Manifold Approximation and Projection) is a dimensionality reduction technique for visualization and general non-linear dimensionality reduction. Apply this skill for fast, scalable e...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "UMAP follows scikit-learn conventions and can be used as a drop-in replacement for t-SNE or PCA.",
+  "runner": null
+}

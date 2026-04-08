@@ -1,0 +1,10 @@
+﻿{
+  "id": "ipados",
+  "name": "ipados",
+  "description": "Comprehensive rules for building iPad-native apps following Apple's Human Interface Guidelines. iPad is not a big iPhone -- it demands adaptive layouts, multitasking support, pointer interactions, ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "iPad presents two horizontal size classes: **regular** (full screen, large splits) and **compact** (Slide Over, narrow splits). Design for both. Never hardco...",
+  "runner": null
+}

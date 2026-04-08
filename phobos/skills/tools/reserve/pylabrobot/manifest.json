@@ -1,0 +1,10 @@
+﻿{
+  "id": "pylabrobot",
+  "name": "pylabrobot",
+  "description": "PyLabRobot is a hardware-agnostic, pure Python Software Development Kit for automated and autonomous laboratories. Use this skill to control liquid handling robots, plate readers, pumps, heater sha...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when: - Programming liquid handling robots (Hamilton STAR/STARlet, Opentrons OT-2, Tecan EVO)",
+  "runner": null
+}

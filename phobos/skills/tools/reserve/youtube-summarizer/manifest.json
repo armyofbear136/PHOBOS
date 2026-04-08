@@ -1,0 +1,10 @@
+﻿{
+  "id": "youtube-summarizer",
+  "name": "youtube summarizer",
+  "description": "Automatically fetch transcripts from YouTube videos, generate structured summaries, and deliver full transcripts to messaging platforms.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Activate this skill when: - User shares a YouTube URL (youtube.com/watch, youtu.be, youtube.com/shorts)",
+  "runner": null
+}

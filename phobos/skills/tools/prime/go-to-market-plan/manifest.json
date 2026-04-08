@@ -1,0 +1,10 @@
+﻿{
+  "id": "go-to-market-plan",
+  "name": "go to market plan",
+  "description": "Analyze the founder's business and current stage to deliver 3 specific, actionable go-to-market strategies that will drive measurable market penetration and customer acquisition.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use the AskUserQuestion tool to gather missing information. Ask between 3-10 questions based on what's needed:",
+  "runner": null
+}

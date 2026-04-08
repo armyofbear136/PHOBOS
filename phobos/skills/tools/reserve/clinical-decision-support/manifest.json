@@ -1,0 +1,10 @@
+﻿{
+  "id": "clinical-decision-support",
+  "name": "clinical decision support",
+  "description": "Generate professional clinical decision support (CDS) documents for pharmaceutical companies, clinical researchers, and medical decision-makers. This skill specializes in analytical, evidence-based...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill is specifically designed for pharmaceutical and clinical research applications:",
+  "runner": null
+}

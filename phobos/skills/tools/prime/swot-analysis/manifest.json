@@ -1,0 +1,10 @@
+﻿{
+  "id": "swot-analysis",
+  "name": "swot analysis",
+  "description": "- **Name**: swot-analysis - **Description**: Perform a detailed SWOT analysis for a product. Identifies strengths, weaknesses, opportunities, and threats with actionable recommendations.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

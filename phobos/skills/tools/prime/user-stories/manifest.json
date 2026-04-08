@@ -1,0 +1,10 @@
+﻿{
+  "id": "user-stories",
+  "name": "user stories",
+  "description": "Create user stories following the 3 C's (Card, Conversation, Confirmation) and INVEST criteria. Generates stories with descriptions, design links, and acceptance criteria.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Create user stories following the 3 C's (Card, Conversation, Confirmation) and INVEST criteria. Generates stories with descriptions, design links, and accept...",
+  "runner": null
+}

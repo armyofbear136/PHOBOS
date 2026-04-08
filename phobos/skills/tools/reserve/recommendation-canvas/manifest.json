@@ -1,0 +1,10 @@
+﻿{
+  "id": "recommendation-canvas",
+  "name": "recommendation canvas",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Proposing a new AI-powered product or feature - Pitching to execs or securing budget/sponsorship",
+  "runner": null
+}

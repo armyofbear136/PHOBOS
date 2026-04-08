@@ -1,0 +1,10 @@
+﻿{
+  "id": "finding-duplicate-functions",
+  "name": "finding duplicate functions",
+  "description": "LLM-generated codebases accumulate semantic duplicates: functions that serve the same purpose but were implemented independently. Classical copy-paste detectors (jscpd) find syntactic duplicates bu...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Codebase has grown organically with multiple contributors (human or LLM) - You suspect utility functions have been reimplemented multiple times",
+  "runner": null
+}

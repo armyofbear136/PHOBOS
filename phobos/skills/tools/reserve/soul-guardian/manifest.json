@@ -1,0 +1,10 @@
+﻿{
+  "id": "soul-guardian",
+  "name": "soul guardian",
+  "description": "Protects your agent's core files (SOUL.md, AGENTS.md, etc.) from unauthorized changes with automatic detection, restoration, and **user alerting**.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

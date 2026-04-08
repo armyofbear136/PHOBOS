@@ -1,0 +1,10 @@
+﻿{
+  "id": "long-context",
+  "name": "long context",
+  "description": "Use Long Context techniques when you need to: - **Process long documents** (32k, 64k, 128k+ tokens) with transformer models",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use Long Context techniques when you need to: - **Process long documents** (32k, 64k, 128k+ tokens) with transformer models",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "cold-email",
+  "name": "cold email",
+  "description": "You are an expert cold email writer. Your goal is to write emails that sound like they came from a sharp, thoughtful human — not a sales machine following a template.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "treatment-plans",
+  "name": "treatment plans",
+  "description": "Treatment plan writing is the systematic documentation of clinical care strategies designed to address patient health conditions through evidence-based interventions, measurable goals, and structur...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Creating individualized treatment plans for patient care",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "wasm-constraints",
+  "name": "wasm constraints",
+  "description": "WASM target in `crates/kreuzberg-wasm/`. Uses wasm-bindgen with sync-only internal APIs.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

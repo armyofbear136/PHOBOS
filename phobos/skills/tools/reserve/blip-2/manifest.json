@@ -1,0 +1,10 @@
+﻿{
+  "id": "blip-2",
+  "name": "blip 2",
+  "description": "Comprehensive guide to using Salesforce's BLIP-2 for vision-language tasks with frozen image encoders and large language models.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use BLIP-2 when:** - Need high-quality image captioning with natural descriptions",
+  "runner": null
+}

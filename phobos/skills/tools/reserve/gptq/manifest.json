@@ -1,0 +1,10 @@
+﻿{
+  "id": "gptq",
+  "name": "gptq",
+  "description": "Post-training quantization method that compresses LLMs to 4-bit with minimal accuracy loss using group-wise quantization.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use GPTQ when:** - Need to fit large models (70B+) on limited GPU memory",
+  "runner": null
+}

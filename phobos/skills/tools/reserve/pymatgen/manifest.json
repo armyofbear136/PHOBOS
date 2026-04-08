@@ -1,0 +1,10 @@
+﻿{
+  "id": "pymatgen",
+  "name": "pymatgen",
+  "description": "Pymatgen is a comprehensive Python library for materials analysis that powers the Materials Project. Create, analyze, and manipulate crystal structures and molecules, compute phase diagrams and the...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Working with crystal structures or molecular systems in materials science",
+  "runner": null
+}

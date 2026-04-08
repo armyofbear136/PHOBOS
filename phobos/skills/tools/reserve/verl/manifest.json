@@ -1,0 +1,10 @@
+﻿{
+  "id": "verl",
+  "name": "verl",
+  "description": "verl is a flexible, efficient, and production-ready RL training library for large language models from ByteDance's Seed team. It implements the HybridFlow framework (EuroSys 2025) and powers models...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Choose verl when you need:** - Production-ready RL training at scale (tested up to 671B parameters)",
+  "runner": null
+}

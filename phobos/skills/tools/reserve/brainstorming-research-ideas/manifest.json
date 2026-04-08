@@ -1,0 +1,10 @@
+﻿{
+  "id": "brainstorming-research-ideas",
+  "name": "brainstorming research ideas",
+  "description": "Structured frameworks for discovering the next research idea. This skill provides ten complementary ideation lenses that help researchers move from vague curiosity to concrete, defensible research ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Starting a new research direction and need structured exploration - Feeling stuck on a current project and want fresh angles",
+  "runner": null
+}

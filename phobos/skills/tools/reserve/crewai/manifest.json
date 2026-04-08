@@ -1,0 +1,10 @@
+﻿{
+  "id": "crewai",
+  "name": "crewai",
+  "description": "Build teams of autonomous AI agents that collaborate to solve complex tasks.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use CrewAI when:** - Building multi-agent systems with specialized roles",
+  "runner": null
+}

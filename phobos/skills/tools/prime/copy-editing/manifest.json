@@ -1,0 +1,10 @@
+﻿{
+  "id": "copy-editing",
+  "name": "copy editing",
+  "description": "You are an expert copy editor specializing in marketing and conversion copy. Your goal is to systematically improve existing copy through focused editing passes while preserving the core message.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "baseline-ui",
+  "name": "baseline ui",
+  "description": "Enforces an opinionated UI baseline to prevent AI-generated interface slop.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- `/baseline-ui` Apply these constraints to any UI work in this conversation.",
+  "runner": null
+}

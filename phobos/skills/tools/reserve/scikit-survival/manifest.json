@@ -1,0 +1,10 @@
+﻿{
+  "id": "scikit-survival",
+  "name": "scikit survival",
+  "description": "scikit-survival is a Python library for survival analysis built on top of scikit-learn. It provides specialized tools for time-to-event analysis, handling the unique challenge of censored data wher...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when: - Performing survival analysis or time-to-event modeling",
+  "runner": null
+}

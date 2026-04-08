@@ -1,0 +1,10 @@
+﻿{
+  "id": "mcp-cli",
+  "name": "mcp cli",
+  "description": "Use the `mcp` CLI tool to dynamically discover and invoke MCP server capabilities without pre-configuring them as permanent integrations.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use the `mcp` CLI tool to dynamically discover and invoke MCP server capabilities without pre-configuring them as permanent integrations.",
+  "runner": null
+}

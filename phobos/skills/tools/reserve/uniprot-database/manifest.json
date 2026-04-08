@@ -1,0 +1,10 @@
+﻿{
+  "id": "uniprot-database",
+  "name": "uniprot database",
+  "description": "UniProt is the world's leading comprehensive protein sequence and functional information resource. Search proteins by name, gene, or accession, retrieve sequences in FASTA format, perform ID mappin...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Searching for protein entries by name, gene symbol, accession, or organism",
+  "runner": null
+}

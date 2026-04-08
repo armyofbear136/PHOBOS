@@ -1,0 +1,10 @@
+﻿{
+  "id": "scientific-writing",
+  "name": "scientific writing",
+  "description": "**This is the core skill for the deep research and writing tool**—combining AI-driven deep research with well-formatted written outputs. Every document produced is backed by comprehensive literatur...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Writing or revising any section of a scientific manuscript (abstract, introduction, methods, results, discussion)",
+  "runner": null
+}

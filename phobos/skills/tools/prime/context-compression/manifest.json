@@ -1,0 +1,10 @@
+﻿{
+  "id": "context-compression",
+  "name": "context compression",
+  "description": "When agent sessions generate millions of tokens of conversation history, compression becomes mandatory. The naive approach is aggressive compression to minimize tokens per request. The correct opti...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Activate this skill when: - Agent sessions exceed context window limits",
+  "runner": null
+}

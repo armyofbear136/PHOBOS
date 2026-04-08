@@ -1,0 +1,10 @@
+﻿{
+  "id": "project-development",
+  "name": "project development",
+  "description": "This skill covers the principles for identifying tasks suited to LLM processing, designing effective project architectures, and iterating rapidly using agent-assisted development. The methodology a...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Activate this skill when: - Starting a new project that might benefit from LLM processing",
+  "runner": null
+}

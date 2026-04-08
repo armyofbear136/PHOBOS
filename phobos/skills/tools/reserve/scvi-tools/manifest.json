@@ -1,0 +1,10 @@
+﻿{
+  "id": "scvi-tools",
+  "name": "scvi tools",
+  "description": "scvi-tools is a comprehensive Python framework for probabilistic models in single-cell genomics. Built on PyTorch and PyTorch Lightning, it provides deep generative models using variational inferen...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when: - Analyzing single-cell RNA-seq data (dimensionality reduction, batch correction, integration)",
+  "runner": null
+}

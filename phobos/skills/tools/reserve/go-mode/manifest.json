@@ -1,0 +1,10 @@
+﻿{
+  "id": "go-mode",
+  "name": "go mode",
+  "description": "Give me a goal. I'll plan it, confirm with you, execute it, and report back. You steer — I drive.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- [ ] External communication (needs approval) - [ ] Financial spend > $1",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "tech-resume-optimizer",
+  "name": "tech resume optimizer",
+  "description": "Use this skill when the user: - Is applying for software engineering roles",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user: - Is applying for software engineering roles",
+  "runner": null
+}

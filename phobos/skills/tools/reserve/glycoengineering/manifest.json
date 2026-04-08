@@ -1,0 +1,10 @@
+﻿{
+  "id": "glycoengineering",
+  "name": "glycoengineering",
+  "description": "Glycosylation is the most common and complex post-translational modification (PTM) of proteins, affecting over 50% of all human proteins. Glycans regulate protein folding, stability, immune recogni...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when:",
+  "runner": null
+}

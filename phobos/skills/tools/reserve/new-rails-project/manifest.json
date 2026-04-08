@@ -1,0 +1,10 @@
+﻿{
+  "id": "new-rails-project",
+  "name": "new rails project",
+  "description": "Set up the following tech stack: - **Rails ~8** with PostgreSQL - Server-side framework and database",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

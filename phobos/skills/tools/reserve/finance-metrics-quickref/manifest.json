@@ -1,0 +1,10 @@
+﻿{
+  "id": "finance-metrics-quickref",
+  "name": "finance metrics quickref",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use this when:** - You need a quick formula or benchmark",
+  "runner": null
+}

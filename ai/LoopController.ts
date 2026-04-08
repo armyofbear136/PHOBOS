@@ -1,6 +1,6 @@
 import type { FastifyReply } from 'fastify';
 import { AgentStateManager, type AgentStateEvent } from './AgentStateManager.js';
-import { engineClient, coordinatorClient, ENGINE_MODEL, COORDINATOR_MODEL, ENGINE_PROVIDER, COORDINATOR_PROVIDER, applyThinkingStrategy, getThinkingStrategy, getThinkingExtraBody, coordinatorStream } from './clients.js';
+import { engineClient, coordinatorClient, coordinatorCall, ENGINE_MODEL, COORDINATOR_MODEL, ENGINE_PROVIDER, COORDINATOR_PROVIDER, applyThinkingStrategy, getThinkingStrategy, getThinkingExtraBody, coordinatorStream } from './clients.js';
 import { ThinkingTokenRouter } from './ThinkingTokenRouter.js';
 import { DispatchComposer, type ComposeInput } from './DispatchComposer.js';
 import { ContextIngester } from './ContextIngester.js';
@@ -16,6 +16,7 @@ import { SyntaxValidator } from '../patch/SyntaxValidator.js';
 import { BuildRunner } from '../build/BuildRunner.js';
 import { ErrorFormatter } from '../build/ErrorFormatter.js';
 import type { FileToolResult } from './FileTools.js';
+import { getInjection, searchReserve, getReserveCompactList, getSkillInstructions } from './SkillManager.js';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -165,6 +166,22 @@ export interface LoopOptions {
   onOutputChunk?: (content: string, messageId?: string) => Promise<void>;
   /** Called during image generation phases — wire to SSE for frontend status updates */
   onImageStatus?: (status: import('../phobos/ImageGenerationHandler.js').ImageGenStatus) => void;
+  /**
+   * Called just before each task is dispatched to SEREN/SAYON for execution.
+   * Receives the full system prompt + user message so it can be logged for export/debugging.
+   * Non-blocking — errors are swallowed.
+   */
+  onDispatch?: (info: {
+    taskIndex: number;
+    total: number;
+    title: string;
+    assignedTo: 'sayon' | 'seren';
+    operation: string;
+    targetFile: string;
+    systemPrompt: string;
+    userPrompt: string;
+    messageId?: string;
+  }) => Promise<void>;
 }
 
 export interface AttemptResult {
@@ -181,6 +198,10 @@ export interface AttemptResult {
   needsClarification?: boolean;
   /** The questions SEREN asked — populated when needsClarification is true */
   clarificationQuestions?: string[];
+  /** True when SAYON asked Phase 1 clarification before handing to SEREN */
+  isPhase1Clarification?: boolean;
+  /** finish_reason from the last stream chunk — 'length' signals truncation */
+  finishReason?: string;
 }
 
 export type SSEEvent =
@@ -199,6 +220,7 @@ export type SSEEvent =
   | { type: 'complete'; approved: boolean; bestAttempt: number }
   | { type: 'thinking_retry'; attempt: number }
   | { type: 'clarification_needed'; questions: string[] }
+  | { type: 'phase1_clarification_needed'; questions: string[]; log: Array<{ questions: string[]; userReply: string }> }
   | { type: 'error'; message: string };
 
 interface StreamResult {
@@ -206,6 +228,8 @@ interface StreamResult {
   output: string;
   interventionResumePrompt?: string;
   interventionQuestion?: string;
+  /** 'length' when the model hit max_tokens mid-output — paginated writing trigger */
+  finishReason?: string;
 }
 
 export class LoopController {
@@ -214,6 +238,18 @@ export class LoopController {
   private interventionHandler = new InterventionHandler();
   private toolParser = new FileToolParser();
   private budgetMonitor = new ThinkingBudgetMonitor();
+
+  /**
+   * After a fresh planning pass, holds SAYON's assembled context so messages.ts
+   * can cache it for SEREN clarification re-entry. Cleared at the start of each run.
+   */
+  lastPlanningContext: {
+    rewrittenMessage: string;
+    fileSummaries: import('./ContextIngester.js').FileSummary[];
+    completeContext: string;
+    projectScope: import('./ContextIngester.js').ProjectScope;
+    repoMap: string;
+  } | undefined = undefined;
 
   private static MAX_INTERVENTIONS = 3;
   // Max read_file → act cycles per attempt (prevents infinite read loops)
@@ -282,6 +318,7 @@ export class LoopController {
     const projectRoot = this.options.projectRoot ?? process.cwd();
     const workspaceDir = this.options.workspaceDir ?? projectRoot;
     const taskId = Math.random().toString(36).slice(2, 10);
+    this.lastPlanningContext = undefined; // clear from previous run
 
     // ── Agent state manager — emits agent_state SSE events ─────────────────
     const agentState = new AgentStateManager((event) => {
@@ -338,7 +375,9 @@ export class LoopController {
       composeInput.chatSummary,
       agentState,
       composeInput.clarificationLog,
-      composeInput.intentType        // intent-aware rewrite prompt branching
+      composeInput.intentType,        // intent-aware rewrite prompt branching
+      composeInput.phase1ClarificationLog, // Phase 1 Q&A for synthesis re-entry
+      composeInput.phase1OriginalRequest   // original first-message request for synthesis anchor
     );
 
     // After ingestion always go idle briefly before next stage (planning or direct dispatch)
@@ -357,6 +396,7 @@ export class LoopController {
       userMessage: ingestion.rewrittenUserMessage,
       fileSummaries: ingestion.fileSummaries,
       loadedFiles: mergedLoadedFiles.length > 0 ? mergedLoadedFiles : undefined,
+      projectScope: ingestion.projectScope,
     };
 
     await this.persistAndSend(
@@ -364,6 +404,45 @@ export class LoopController {
       { type: 'coordinator', content: ingestion.coordinatorSummary, source: 'coordinator' },
       assistantMessageId
     );
+
+    // ── Phase 1 Clarification early exit ────────────────────────────────────
+    // SAYON determined during ingestion that the request needs clarification
+    // before SEREN can plan. Emit questions, record pending state, return.
+    // The caller (routes/messages.ts) handles state tracking via the returned result.
+    if (ingestion.phase1Clarification) {
+      const { questions } = ingestion.phase1Clarification;
+      const questionText = questions.map((q, i) => `${i + 1}. ${q}`).join('\n');
+      await this.persistAndSend(
+        reply,
+        {
+          type: 'coordinator',
+          content: `Before I get started, I have a couple of quick questions:\n\n${questionText}`,
+          source: 'coordinator',
+        },
+        assistantMessageId
+      );
+      this.sendEvent(reply, {
+        type: 'phase1_clarification_needed',
+        questions,
+        log: ingestion.phase1Clarification.log,
+      });
+      agentState.idle();
+      this.sendEvent(reply, { type: 'complete', approved: true, bestAttempt: 0 });
+      return [{
+        attemptNumber: 0,
+        taskIndex: 0,
+        thinking: '',
+        output: '',
+        patchesApplied: false,
+        buildPassed: false,
+        reviewScore: 0,
+        approved: false,
+        needsClarification: true,
+        clarificationQuestions: questions,
+        isPhase1Clarification: true,
+      }];
+    }
+
 
     const allAttempts: AttemptResult[] = [];
     const allChangedFiles: string[] = [];
@@ -387,17 +466,58 @@ export class LoopController {
     if (needsPlanning) {
       agentState.transition('planning', 'Decomposing tasks');
       const planner = new TaskPlanner(workspaceDir);
-      const plan = await planner.plan(
-        ingestion.rewrittenUserMessage,
-        ingestion.fileSummaries,
-        composeInput.repoMap ?? '',
-        sendStatus,
-        sendThinking,            // SAYON: discovery + extraction thinking → coordinator panel
-        sendEngineThinking,      // SEREN: decomposition thinking → engine panel
-        this.options.onThinkPhaseComplete,  // closes the planning engine segment in DB
-        composeInput.clarificationIteration,  // weight system for clarification loop
-        composeInput.clarificationLog         // full Q&A transcript for this loop
+
+      // ── SEREN clarification re-entry shortcut ────────────────────────────
+      // When the user is answering SEREN's clarification question, we already
+      // ran SAYON's full discovery + extraction on the first pass. Re-running it
+      // would cause SAYON to rewrite the context around the short answer (e.g.
+      // "use placeholder images") — burying the original request. Instead, we
+      // skip Steps 1+2 and go straight to decomposeTasks with the cached context,
+      // injecting the Q&A answer via the clarificationLog mechanism that already exists.
+      const cachedCtx = composeInput.serenPlanningContext;
+      const useCachedContext = !!(
+        cachedCtx &&
+        composeInput.clarificationIteration &&
+        composeInput.clarificationIteration > 0
       );
+
+      const plan = useCachedContext
+        ? await planner.decomposeWithCachedContext(
+            cachedCtx!.rewrittenMessage,
+            cachedCtx!.fileSummaries,
+            cachedCtx!.completeContext,
+            cachedCtx!.repoMap,
+            sendStatus,
+            sendEngineThinking,
+            this.options.onThinkPhaseComplete,
+            composeInput.clarificationIteration,
+            composeInput.clarificationLog,
+            cachedCtx!.projectScope,
+          )
+        : await planner.plan(
+            ingestion.rewrittenUserMessage,
+            ingestion.fileSummaries,
+            composeInput.repoMap ?? '',
+            sendStatus,
+            sendThinking,            // SAYON: discovery + extraction thinking → coordinator panel
+            sendEngineThinking,      // SEREN: decomposition thinking → engine panel
+            this.options.onThinkPhaseComplete,  // closes the planning engine segment in DB
+            composeInput.clarificationIteration,  // weight system for clarification loop
+            composeInput.clarificationLog,        // full Q&A transcript for this loop
+            ingestion.projectScope,               // SAYON scope classification → drives task count + ambition
+          );
+
+      // Capture planning context for SEREN clarification re-entry.
+      // Only on fresh passes — cached re-entry already has this context.
+      if (!useCachedContext) {
+        this.lastPlanningContext = {
+          rewrittenMessage: ingestion.rewrittenUserMessage,
+          fileSummaries: ingestion.fileSummaries,
+          completeContext: planner.getLastCompleteContext(),
+          projectScope: ingestion.projectScope,
+          repoMap: composeInput.repoMap ?? '',
+        };
+      }
       // Persist planner engine thinking so it survives thread switch/server restart
       if (plannerEngineThinkingAccum && assistantMessageId) {
         await this.options.persistEvent?.('thinking_complete', {
@@ -406,16 +526,8 @@ export class LoopController {
           source: 'engine',
         }, assistantMessageId).catch(() => {});
       }
-      // If intent is CODE_REQUEST, remap any 'analyze' operation to 'modify'.
-      // The coordinator sometimes returns 'analyze' for simple single-file edits
-      // (e.g. "add text to test.txt") when the workspace has few/no files to discover.
-      // An 'analyze' task sends a read-only directive to the engine, causing an
-      // infinite read_file loop. CODE_REQUEST always means something should change.
-      if (composeInput.intentType === 'CODE_REQUEST') {
-        plan.tasks = plan.tasks.map((t) =>
-          t.operation === 'analyze' ? { ...t, operation: 'modify' as const } : t
-        );
-      }
+      // Note: 'analyze' and 'respond' operations are intentional SEREN decisions.
+      // Do not remap them — DispatchComposer gates file_tools appropriately per operation.
 
       // ── NEEDS_CLARIFICATION exit ───────────────────────────────────────────
       // SEREN determined it cannot proceed without more information from the user.
@@ -482,8 +594,34 @@ export class LoopController {
       failReason?: string;
     }> = [];
 
+    // Rolling task log — each approved task appends a short executor-written summary.
+    // Every subsequent task receives the full log so executors can see prior work.
+    const taskLog: string[] = [];
+
     for (const task of tasks) {
       const total = tasks.length;
+
+      // ── Reserve skill on-demand injection ──────────────────────────────────
+      // Legacy SKILL_SEARCH sentinel: if SEREN planned a SKILL_SEARCH task, 
+      // convert it to a reserve search and inject results.
+      if (task.skillId === 'SKILL_SEARCH') {
+        sendStatus(`[${task.index}/${total}] Searching skill library…`);
+        const reserveResults = searchReserve(task.prompt);
+        task.prompt =
+          `You requested a skill search. Here are the reserve skills that match your query:\n\n` +
+          reserveResults +
+          `\n\nBased on these results, select the most appropriate skill (if any) and proceed ` +
+          `with the original task. If a skill is relevant, use it. If none match well enough, ` +
+          `proceed without a skill. Original request context:\n\n` +
+          task.prompt;
+        task.skillId = undefined; // clear sentinel
+        dbg(`[loop:skill_search] reserve search completed for task=${task.index}`);
+      }
+
+      // Injected reserve skill instructions — set when SEREN emitted RESERVE_SKILL_REQUEST
+      // in a prior attempt. Cleared after use so it doesn't re-inject on subsequent retries
+      // unless SEREN requests again.
+      let injectedReserveSkills = '';
 
       this.sendEvent(reply, {
         type: 'task_start',
@@ -492,6 +630,10 @@ export class LoopController {
         title: task.title,
       });
       sendStatus(`[${task.index}/${total}] ${task.title}…`);
+
+      // Snapshot file count before this task runs so we can identify
+      // exactly which files this task changed for the task log summary.
+      const taskStartFileCount = allChangedFiles.length;
 
       const taskAttempts: AttemptResult[] = [];
       let retryContext: ComposeInput['retryContext'] | undefined;
@@ -511,24 +653,245 @@ export class LoopController {
           task.prompt = focusSignal + task.prompt;
         }
 
+        // Build task with any injected reserve skill instructions from a prior attempt
+        const taskWithSkills = injectedReserveSkills
+          ? { ...task, context: task.context + injectedReserveSkills }
+          : task;
+        injectedReserveSkills = ''; // clear after use
+
         const dispatch = await this.composer.compose({
           ...composeInput,
-          currentTask: task,
+          currentTask: taskWithSkills,
           conversationHistory: needsPlanning ? [] : composeInput.conversationHistory,
           retryContext: retryContext ? { ...retryContext, attemptNumber: attempt } : undefined,
+          taskLog: taskLog.length > 0 ? [...taskLog] : undefined,
         });
 
         dbg(`[loop:attempt] task=${task.index}/${total} attempt=${attempt}/${maxAttempts} retryCtx=${retryContext ? 'yes' : 'none'}`);
         agentState.transition('thinking', task.title.slice(0, 20), task.index, total);
         sendStatus(`[${task.index}/${total}] Engine thinking…`);
 
+        // Fire onDispatch so messages.ts can log the full system prompt + user prompt
+        // for export/debugging. Captures exactly what SEREN receives.
+        if (this.options.onDispatch && attempt === 1) {
+          this.options.onDispatch({
+            taskIndex: task.index,
+            total,
+            title: task.title,
+            assignedTo: task.assignedTo ?? 'seren',
+            operation: task.operation,
+            targetFile: task.targetFile,
+            systemPrompt: dispatch.systemPrompt,
+            userPrompt: task.prompt,
+            messageId: assistantMessageId,
+          }).catch(() => {});
+        }
+
         // ── Engine stream ────────────────────────────────────────────────────────
         const attemptResult = await this.runEngineWithInterventions(
-          reply, dispatch, task.prompt, taskId, attempt, sendEngineThinking, assistantMessageId
+          reply, dispatch, task.prompt, taskId, attempt, sendEngineThinking, assistantMessageId,
+          dispatch.imageAttachments
         );
         attemptResult.taskIndex = task.index;
+
+        // ── RESERVE_SKILL_REQUEST detection ──────────────────────────────────────
+        // If SEREN emitted "RESERVE_SKILL_REQUEST: skill-id-1, skill-id-2", fetch those
+        // skill instructions and immediately retry the task with them injected.
+        // This consumes one attempt slot but is transparent to the user.
+        const reserveMatch = attemptResult.output.match(/RESERVE_SKILL_REQUEST:\s*([^\r\n]+)/i);
+        if (reserveMatch && attempt < maxAttempts) {
+          const requestedIds = reserveMatch[1].split(',').map((s: string) => s.trim()).filter(Boolean);
+          const skillContent = getSkillInstructions(requestedIds);
+          if (skillContent) {
+            sendStatus(`[${task.index}/${total}] Injecting reserve skills: ${requestedIds.join(', ')}…`);
+            injectedReserveSkills = skillContent;
+            dbg(`[loop:reserve_skill] task=${task.index} requested=${requestedIds.join(',')} found=${skillContent.length > 0}`);
+            // Don't push this attempt — retry immediately with skills injected
+            continue;
+          }
+        }
+
         taskAttempts.push(attemptResult);
         allAttempts.push(attemptResult);
+
+        // ── image_gen operation: parse and dispatch workflow queue ────────────
+        if (task.operation === 'image_gen') {
+          const genMatch = attemptResult.output.match(/<generate_images>([\s\S]*?)<\/generate_images>/i);
+          if (genMatch) {
+            try {
+              const entries = JSON.parse(genMatch[1].trim()) as Array<{
+                prompt: string;
+                negativePrompt?: string;
+                modelId?: string;
+                width?: number;
+                height?: number;
+                outputFolder?: string;
+              }>;
+
+              const { IMAGE_MODEL_CATALOGUE, isFluxDownloaded, getImageModelSpec } = await import('../phobos/PhobosLocalManager.js');
+              const { buildSdConfig } = await import('../phobos/ImageServerManager.js');
+              const { createSession } = await import('../phobos/WorkflowEngine.js');
+
+              // Speed-ordered fallback for auto model selection
+              const IMAGE_SPEED_ORDER = [
+                'sdxl-turbo-fp16', 'dreamshaper-xl-turbo-v2', 'z-image-turbo-q4', 'flux2-klein-4b-q4',
+                'realvisxl-v5-lightning', 'juggernaut-xl-v9-lightning', 'dreamshaper-xl-lightning',
+                'flux-schnell-q4', 'chroma-q4', 'sdxl-base-fp16', 'flux-dev-q4',
+              ];
+              const installedModels = IMAGE_MODEL_CATALOGUE
+                .filter(m => m.category !== 'video' && isFluxDownloaded(m as Parameters<typeof isFluxDownloaded>[0]))
+                .map(m => m.modelId);
+              const fastestModel = IMAGE_SPEED_ORDER.find(id => installedModels.includes(id))
+                ?? installedModels[0]
+                ?? 'chroma-q4';
+
+              const threadId = this.options.threadId ?? 'default';
+              const baseNegative = 'blurry, low quality, watermark, deformed';
+              const createdWorkflows: string[] = [];
+
+              for (const entry of entries) {
+                // Resolve model: use requested if installed, else fallback to fastest
+                let modelId = entry.modelId && entry.modelId !== 'auto' && installedModels.includes(entry.modelId)
+                  ? entry.modelId
+                  : fastestModel;
+
+                // Validate model is loadable
+                try {
+                  const cfg = await buildSdConfig({ modelId });
+                  if (!cfg) modelId = fastestModel;
+                } catch { modelId = fastestModel; }
+
+                const spec = getImageModelSpec(modelId);
+                const profile = spec?.profile;
+                const width  = entry.width  ?? profile?.defaultWidth  ?? 1024;
+                const height = entry.height ?? profile?.defaultHeight ?? 1024;
+
+                // Snap to nearest multiple of 64
+                const snap64 = (n: number) => Math.round(n / 64) * 64;
+
+                const nodeParams = {
+                  prompt:         entry.prompt,
+                  negativePrompt: entry.negativePrompt
+                    ? `${baseNegative}, ${entry.negativePrompt}`
+                    : baseNegative,
+                  steps:   profile?.defaultSteps  ?? 20,
+                  width:   snap64(width),
+                  height:  snap64(height),
+                  seed:    -1,
+                  sampler: profile?.defaultSampler ?? 'euler',
+                };
+
+                const sessionName = entry.prompt.slice(0, 40).trim() || 'AI Generated';
+                const session = createSession(
+                  threadId,
+                  sessionName,
+                  modelId,
+                  [{ type: 'Generate' as const, label: 'Generate', params: nodeParams }],
+                  'image',
+                );
+
+                // Emit workflow created event to frontend
+                this.sendEvent(reply, {
+                  type: 'image_workflow_created' as unknown as 'status',
+                  workflowId: session.workflowId,
+                  threadId,
+                  name: session.name,
+                  prompt: entry.prompt,
+                  outputFolder: entry.outputFolder,
+                } as unknown as import('./LoopController.js').SSEEvent);
+
+                createdWorkflows.push(session.workflowId);
+                dbg(`[loop:image_gen] created workflow ${session.workflowId} model=${modelId} ${nodeParams.width}x${nodeParams.height}`);
+              }
+
+              // Fire all workflows sequentially via the internal run endpoint
+              if (createdWorkflows.length > 0) {
+                sendStatus(`Starting ${createdWorkflows.length} image generation${createdWorkflows.length > 1 ? 's' : ''}…`);
+                const port = process.env.PORT ?? '3001';
+                const { request: httpReq } = await import('node:http');
+                for (const workflowId of createdWorkflows) {
+                  try {
+                    const runUrl = `http://localhost:${port}/api/threads/${threadId}/workflows/${workflowId}/run`;
+                    const postData = JSON.stringify({ targetNodeIndex: 0, forceNodeIndex: 0 });
+                    await new Promise<void>((resolve) => {
+                      const req = httpReq(runUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) },
+                      }, () => resolve());
+                      req.on('error', () => resolve()); // non-fatal
+                      req.write(postData);
+                      req.end();
+                    });
+                  } catch { /* fire-and-forget, non-fatal */ }
+                }
+              }
+
+              taskApproved = true;
+              break;
+            } catch (imageErr) {
+              console.warn('[loop:image_gen] Failed to parse or dispatch image queue:', imageErr);
+              // Fall through to normal task handling
+            }
+          } else {
+            // No generate_images block — treat as pure text output (description of what would be generated)
+            taskApproved = true;
+            break;
+          }
+        }
+
+        // ── Paginated writing ────────────────────────────────────────────────
+        // If the stream ended with finish_reason='length' (hit max_tokens) OR
+        // SEREN emitted a <continue_writing path="..."/> tag, run continuation
+        // turns until the output is complete. Each turn appends to the prior
+        // output. Hard cap: PAGINATE_MAX_CONTINUATIONS turns to prevent loops.
+        //
+        // Test threshold: PAGINATE_THRESHOLD chars. In production this catches
+        // genuine token-limit truncations on large files. Set low for testing.
+        const PAGINATE_THRESHOLD = 1_000;
+        const PAGINATE_MAX_CONTINUATIONS = 6;
+
+        const continueWritingRe = /<continue_writing(?:\s+path="([^"]*)")?\s*\/>/;
+        let paginationCycles = 0;
+
+        while (paginationCycles < PAGINATE_MAX_CONTINUATIONS) {
+          const hitTokenLimit = attemptResult.finishReason === 'length';
+          const continueMatch = continueWritingRe.exec(attemptResult.output);
+          const outputLen = attemptResult.output.length;
+
+          if (!hitTokenLimit && !continueMatch) break;
+          if (outputLen < PAGINATE_THRESHOLD && !continueMatch) break;
+
+          paginationCycles++;
+          const targetPath = continueMatch?.[1] ?? '';
+          sendStatus(`[${task.index}/${total}] Continuing output (part ${paginationCycles + 1})…`);
+          dbg(`[loop:paginate] cycle=${paginationCycles} reason=${hitTokenLimit ? 'length' : 'tag'} path="${targetPath}"`);
+
+          // Strip the continue_writing tag from prior output before appending
+          const priorOutput = attemptResult.output.replace(continueWritingRe, '').trimEnd();
+
+          const continuationMessages = [
+            { role: 'system' as const, content: dispatch.systemPrompt },
+            ...dispatch.messages,
+            { role: 'assistant' as const, content: priorOutput },
+            {
+              role: 'user' as const,
+              content: targetPath
+                ? `Continue writing the file \`${targetPath}\` from exactly where you left off. ` +
+                  `Do not repeat any content already written. Continue seamlessly.`
+                : `You were cut off. Continue your response from exactly where you left off. ` +
+                  `Do not repeat any content already written. Continue seamlessly.`,
+            },
+          ];
+
+          const continued = await this.runSingleStream(
+            reply, continuationMessages, taskId, attemptResult.thinking, sendEngineThinking, assistantMessageId
+          );
+
+          // Concatenate: prior output + continuation. If continuation is empty, stop.
+          if (!continued.output.trim()) break;
+          attemptResult.output = priorOutput + '\n' + continued.output;
+          attemptResult.finishReason = continued.finishReason;
+        }
 
         // ── Parse tool calls ──────────────────────────────────────────────────
         const parsed = this.toolParser.parse(attemptResult.output);
@@ -716,6 +1079,70 @@ export class LoopController {
       dbg(`[loop:task:done] task=${task.index} approved=${taskApproved} failReason="${taskFailReason ?? ''}"`);
       if (taskApproved) {
         this.sendEvent(reply, { type: 'task_complete', taskIndex: task.index, total, title: task.title });
+
+        // ── Store completed output and inject into downstream tasks ─────────
+        // When SEREN marks a task with outputRequiredBy, its full output is
+        // injected into the prompt of those downstream tasks before they run.
+        // This is how analyze/respond tasks pass their results forward.
+        const taskOutput = taskAttempts[taskAttempts.length - 1]?.output ?? '';
+        task.completedOutput = taskOutput;
+
+        if (task.outputRequiredBy && task.outputRequiredBy.length > 0 && taskOutput.trim()) {
+          for (const targetIdx of task.outputRequiredBy) {
+            const targetTask = tasks.find(t => t.index === targetIdx);
+            if (targetTask) {
+              const injectionBlock =
+                `\n\n<prior_task_output from_task="${task.index}" title="${task.title}">\n` +
+                taskOutput.slice(0, 12_000) +  // cap at 12k chars — generous but bounded
+                `\n</prior_task_output>\n`;
+              targetTask.prompt = targetTask.prompt + injectionBlock;
+              dbg(`[loop:inject] task ${task.index} output → task ${targetIdx} prompt (${taskOutput.length} chars)`);
+            }
+          }
+        }
+
+        // ── Generate task summary for rolling log ──────────────────────────
+        // The executor writes a short plain-prose summary of what was done.
+        // This gets passed to every subsequent task as context so executors
+        // can see the work completed before them and build on it cleanly.
+        if (tasks.length > 1) {
+          try {
+            const lastOutput = taskAttempts[taskAttempts.length - 1]?.output ?? '';
+            // Collect files changed during this specific task by comparing
+            // allChangedFiles before vs after — we track the delta via taskStartFileCount.
+            const taskChangedFiles = allChangedFiles
+              .filter((v, i, arr) => arr.indexOf(v) === i)
+              .slice(taskStartFileCount)
+              .join(', ');
+            const changedFilesList = taskChangedFiles;
+
+            const summaryPrompt =
+              `You just completed a task. Write a single short sentence (max 25 words) ` +
+              `summarising exactly what was done. Be specific — mention file names and what changed. ` +
+              `Do NOT mention what still needs to be done. Plain prose only, no markdown.\n\n` +
+              `Task: ${task.title}\n` +
+              (changedFilesList ? `Files modified: ${changedFilesList}\n` : '') +
+              `Output excerpt: ${lastOutput.slice(0, 400)}`;
+
+            // Task log summaries are always short (25 words) — coordinator handles
+            // both SAYON and SEREN task summaries. No SSE stream needed.
+            const summaryText = await coordinatorCall({
+              systemPrompt: '',
+              messages: [{ role: 'user', content: summaryPrompt }],
+              maxTokens: 80,
+              temperature: 0.1,
+              mode: 'no_think',
+            });
+
+            const cleanSummary = summaryText.trim().replace(/^["']|["']$/g, '');
+            taskLog.push(cleanSummary);
+            dbg(`[loop:tasklog] task=${task.index} summary="${cleanSummary}"`);
+          } catch (err) {
+            // Non-fatal — push a simple fallback so the log stays aligned
+            taskLog.push(`${task.title} completed.`);
+            console.warn('[LoopController] Task summary generation failed (non-fatal):', err);
+          }
+        }
       } else {
         this.sendEvent(reply, { type: 'task_failed', taskIndex: task.index, total, title: task.title, reason: taskFailReason ?? 'Unknown' });
       }
@@ -894,16 +1321,20 @@ export class LoopController {
       )
       .join('\n');
 
+    const reflexionGuidance = getInjection('seren_final_validation');
+
     const prompt =
       `You are SEREN performing final validation. Review ALL completed work as a coherent whole.\n\n` +
       `ORIGINAL REQUEST:\n${originalRequest.slice(0, 2_000)}\n\n` +
       `TASK OUTCOMES:\n${taskOutcomes}\n\n` +
       `FINAL FILE STATE:\n${fileContents.join('\n\n')}\n\n` +
-      `Evaluate holistically:\n` +
-      `1. Does the combined output satisfy the original request?\n` +
-      `2. Are there cross-file inconsistencies (mismatched imports, naming, types)?\n` +
-      `3. Is anything missing that the request implied but no task addressed?\n` +
-      `4. Are there any obvious integration issues between the changed files?\n\n` +
+      (reflexionGuidance
+        ? reflexionGuidance + '\n\n'
+        : `Evaluate holistically:\n` +
+          `1. Does the combined output satisfy the original request?\n` +
+          `2. Are there cross-file inconsistencies (mismatched imports, naming, types)?\n` +
+          `3. Is anything missing that the request implied but no task addressed?\n` +
+          `4. Are there any obvious integration issues between the changed files?\n\n`) +
       `Respond with a brief validation summary (3-6 sentences). ` +
       `If everything looks correct, say so. If there are issues, describe them specifically. ` +
       `No JSON, no formatting — just plain prose.`;
@@ -938,24 +1369,34 @@ export class LoopController {
     taskId: string,
     attempt: number,
     sendThinking: (token: string) => void,
-    assistantMessageId?: string
+    assistantMessageId?: string,
+    imageAttachments?: Array<{ filename: string; base64: string; mimeType: string }>
   ): Promise<AttemptResult> {
     let accumulatedThinking = '';
     let finalOutput = '';
     let interventionCount = 0;
+    let lastStreamFinishReason = '';
 
     let engineMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
       { role: 'system', content: dispatch.systemPrompt },
       ...dispatch.messages,
     ];
 
+    // Track whether this is the first stream call for this engine invocation.
+    // Images are only sent on attempt 0 — intervention re-entries have the image
+    // content already established in the conversation context from the first call.
+    let isFirstStream = true;
+
     while (true) {
       const streamResult = await this.runSingleStream(
-        reply, engineMessages, taskId, accumulatedThinking, sendThinking, assistantMessageId
+        reply, engineMessages, taskId, accumulatedThinking, sendThinking, assistantMessageId,
+        isFirstStream ? imageAttachments : undefined
       );
+      isFirstStream = false;
 
       accumulatedThinking += streamResult.thinking;
       finalOutput = streamResult.output;
+      lastStreamFinishReason = streamResult.finishReason ?? '';
 
       if (!streamResult.interventionResumePrompt) break;
 
@@ -995,6 +1436,7 @@ export class LoopController {
       buildPassed: false,
       reviewScore: 0,
       approved: false,
+      finishReason: lastStreamFinishReason || undefined,
     };
   }
 
@@ -1004,7 +1446,8 @@ export class LoopController {
     taskId: string,
     priorThinkingContext: string,
     sendThinking: (token: string) => void,
-    assistantMessageId?: string
+    assistantMessageId?: string,
+    imageAttachments?: Array<{ filename: string; base64: string; mimeType: string }>
   ): Promise<StreamResult> {
     const parser = new StreamParser();
     parser.reset();
@@ -1038,6 +1481,29 @@ export class LoopController {
       ? [{ role: 'system' as const, content: thinkSystemPrompt }, ...thinkMessages]
       : thinkMessages;
 
+    // When image attachments are provided, transform the last user message into a
+    // content array so vision-capable models receive the actual image bytes.
+    // Option A: images appended to the existing final user message — not a separate message.
+    type AnyMessage = { role: 'system' | 'user' | 'assistant'; content: string | unknown[] };
+    const finalMessagesWithImages: AnyMessage[] =
+      imageAttachments && imageAttachments.length > 0
+        ? (finalMessages as AnyMessage[]).map((m, i) => {
+            if (i === finalMessages.length - 1 && m.role === 'user') {
+              return {
+                role: 'user' as const,
+                content: [
+                  { type: 'text', text: typeof m.content === 'string' ? m.content : '' },
+                  ...imageAttachments.map(img => ({
+                    type: 'image_url',
+                    image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+                  })),
+                ],
+              };
+            }
+            return m;
+          })
+        : (finalMessages as AnyMessage[]);
+
     // Read the live baseURL from the client object — always current even in esbuild CJS
     // bundles where module-level `let` exports are captured at init time.
     const engineBaseURL = engineBaseURLEarly;
@@ -1051,7 +1517,7 @@ export class LoopController {
     // SDK (non-phobos): nest under extra_body — the SDK passes it through
     const baseCallParams = {
       model: liveModel,
-      messages: finalMessages as Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+      messages: finalMessagesWithImages as Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
       max_tokens: 32768,
       temperature: 0.4,
     };
@@ -1093,12 +1559,19 @@ export class LoopController {
           if (json === '[DONE]') return;
           try {
             const parsed = JSON.parse(json);
+            // Capture finish_reason so the caller can detect truncation
+            const finishReason = parsed?.choices?.[0]?.finish_reason;
+            if (finishReason) lastFinishReason = finishReason as string;
             const delta = parsed?.choices?.[0]?.delta;
             if (delta) yield delta as Record<string, unknown>;
           } catch { /* malformed chunk — skip */ }
         }
       }
     }
+
+    // Tracks the finish_reason from the last SSE chunk.
+    // 'length' means the model hit max_tokens mid-output — paginated writing trigger.
+    let lastFinishReason = '';
 
     let stream: import('openai/streaming').Stream<import('openai/resources').ChatCompletionChunk> | null = null;
     let rawStream: AsyncGenerator<Record<string, unknown>> | null = null;
@@ -1194,7 +1667,7 @@ export class LoopController {
     }
 
     if (interventionQuestion === null) {
-      return { thinking: streamThinking, output: streamOutput };
+      return { thinking: streamThinking, output: streamOutput, finishReason: lastFinishReason || undefined };
     }
 
     const { resumePrompt } = await this.interventionHandler.handleQuestion(
@@ -1223,41 +1696,50 @@ export class LoopController {
     guidance?: string;
     issues?: Array<{ file: string; line_range?: string; issue: string; expected?: string }>;
   }> {
-    const reviewSystem =
-      'You are SAYON, a coordinator reviewing whether an execution engine correctly solved a task. ' +
+    // llm-as-judge skill provides the rubric when installed.
+    // Falls back to the baseline rubric if the skill is not present.
+    const skillGuidance = getInjection('sayon_review');
+
+    const baselineRubric =
+      'You are SAYON, reviewing whether SEREN correctly solved a task.\n' +
       'Evaluate the output against these criteria:\n' +
-      '1. CORRECTNESS: Does the output address the original task? Are the right files targeted?\n' +
-      '2. COMPLETENESS: Is it code? Is the code complete (not truncated, not stubbed, not placeholder)?\n' +
-      '3. QUALITY: Are there obvious syntax errors, logic flaws, or missing imports?\n' +
+      '1. INTENT ALIGNMENT: Does the output address what was actually asked?\n' +
+      '2. COMPLETENESS: Is it complete — not truncated, not stubbed, not placeholder?\n' +
+      '3. CORRECTNESS: Are there obvious syntax errors, logic flaws, or missing imports?\n' +
       '4. PRESERVATION: Do the changes preserve existing functionality that should remain?\n\n' +
-      'Respond with ONLY a JSON object (no preamble, no markdown):\n' +
+      'APPROVE (score >= 0.8): correct and complete. No critical issues.\n' +
+      'NEEDS_REVISION (0.5–0.8): right direction, specific fixable issues — list them precisely.\n' +
+      'REJECT (score < 0.5): wrong approach, wrong file, stub output, or described instead of doing.';
+
+    const reviewSystem = skillGuidance
+      ? `You are SAYON, reviewing SEREN's work.\n${skillGuidance}`
+      : baselineRubric;
+
+    const reviewSystem_suffix =
+      '\n\nRespond with ONLY a JSON object (no preamble, no markdown):\n' +
       '{\n' +
       '  "score": 0.0-1.0,\n' +
       '  "decision": "APPROVE|NEEDS_REVISION|REJECT",\n' +
       '  "issues": [\n' +
       '    {\n' +
       '      "file": "filename",\n' +
-      '      "line_range": "45-60 (optional, if identifiable)",\n' +
+      '      "line_range": "45-60 (optional)",\n' +
       '      "issue": "what is wrong",\n' +
       '      "expected": "what should be there instead (optional)"\n' +
       '    }\n' +
       '  ],\n' +
-      '  "guidance": "overall direction for the next attempt"\n' +
-      '}\n\n' +
-      'APPROVE (score >= 0.8): correct file, content matches request, no obvious defects.\n' +
-      'NEEDS_REVISION (0.5-0.8): right direction but has specific fixable issues — list them.\n' +
-      'REJECT (score < 0.5): wrong file, stub/placeholder code, or described instead of doing.\n' +
-      'If approving, issues array should be empty.';
+      '  "guidance": "targeted direction for the next attempt, or empty string if APPROVE"\n' +
+      '}';
 
     const reviewPrompt =
       `ORIGINAL TASK:\n${originalTask.slice(0, 2_000)}\n\n` +
       `CHANGES MADE:\n${changedSummary}\n\n` +
-      `FILE CONTENTS AFTER CHANGES:\n${output.slice(0, 8_000)}`;
+      `OUTPUT / FILE CONTENTS:\n${output.slice(0, 8_000)}`;
 
     dbg(`[review:prompt] ${reviewPrompt.slice(0, 400).replace(/\n/g, ' ')}`);
     try {
       const stripped = await coordinatorStream({
-        systemPrompt: reviewSystem,
+        systemPrompt: reviewSystem + reviewSystem_suffix,
         messages: [{ role: 'user', content: reviewPrompt }],
         maxTokens: 512,
         temperature: 0.1,
@@ -1269,7 +1751,6 @@ export class LoopController {
       const cleaned = jsonMatch ? jsonMatch[0] : stripped;
       const parsed = JSON.parse(cleaned);
 
-      // Parse structured issues if present
       let issues: Array<{ file: string; line_range?: string; issue: string; expected?: string }> | undefined;
       if (Array.isArray(parsed.issues) && parsed.issues.length > 0) {
         issues = parsed.issues

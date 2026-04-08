@@ -1,0 +1,10 @@
+﻿{
+  "id": "exploratory-data-analysis",
+  "name": "exploratory data analysis",
+  "description": "Perform comprehensive exploratory data analysis (EDA) on scientific data files across multiple domains. This skill provides automated file type detection, format-specific analysis, data quality ass...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when: - User provides a path to a scientific data file for analysis",
+  "runner": null
+}

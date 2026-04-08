@@ -1,0 +1,10 @@
+﻿{
+  "id": "pytorch-fsdp2",
+  "name": "pytorch fsdp2",
+  "description": "This skill teaches a coding agent how to **add PyTorch FSDP2** to a training loop with correct initialization, sharding, mixed precision/offload configuration, and checkpointing.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill teaches a coding agent how to **add PyTorch FSDP2** to a training loop with correct initialization, sharding, mixed precision/offload configuratio...",
+  "runner": null
+}

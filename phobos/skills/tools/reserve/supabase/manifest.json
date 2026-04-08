@@ -1,0 +1,10 @@
+﻿{
+  "id": "supabase",
+  "name": "supabase",
+  "description": "*Load with: base.md + [supabase-nextjs.md | supabase-python.md | supabase-node.md]*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

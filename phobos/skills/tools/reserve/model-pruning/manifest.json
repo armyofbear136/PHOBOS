@@ -1,0 +1,10 @@
+﻿{
+  "id": "model-pruning",
+  "name": "model pruning",
+  "description": "Use Model Pruning when you need to: - **Reduce model size** by 40-60% with <1% accuracy loss",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use Model Pruning when you need to: - **Reduce model size** by 40-60% with <1% accuracy loss",
+  "runner": null
+}

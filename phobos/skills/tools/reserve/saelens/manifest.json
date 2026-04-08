@@ -1,0 +1,10 @@
+﻿{
+  "id": "saelens",
+  "name": "saelens",
+  "description": "SAELens is the primary library for training and analyzing Sparse Autoencoders (SAEs) - a technique for decomposing polysemantic neural network activations into sparse, interpretable features. Based...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use SAELens when you need to:** - Discover interpretable features in model activations",
+  "runner": null
+}

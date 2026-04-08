@@ -1,0 +1,10 @@
+﻿{
+  "id": "megatron-core",
+  "name": "megatron core",
+  "description": "Megatron-Core trains LLMs from 2B to 462B parameters with up to 47% Model FLOP Utilization on H100 GPUs through advanced parallelism strategies.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

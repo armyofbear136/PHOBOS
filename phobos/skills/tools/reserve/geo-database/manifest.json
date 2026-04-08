@@ -1,0 +1,10 @@
+﻿{
+  "id": "geo-database",
+  "name": "geo database",
+  "description": "The Gene Expression Omnibus (GEO) is NCBI's public repository for high-throughput gene expression and functional genomics data. GEO contains over 264,000 studies with more than 8 million samples fr...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when searching for gene expression datasets, retrieving experimental data, downloading raw and processed files, querying expression...",
+  "runner": null
+}

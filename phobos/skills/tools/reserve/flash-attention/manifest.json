@@ -1,0 +1,10 @@
+﻿{
+  "id": "flash-attention",
+  "name": "flash attention",
+  "description": "Flash Attention provides 2-4x speedup and 10-20x memory reduction for transformer attention through IO-aware tiling and recomputation.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "out = F.scaled_dot_product_attention(q, k, v) ```",
+  "runner": null
+}

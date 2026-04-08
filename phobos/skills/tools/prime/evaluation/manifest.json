@@ -1,0 +1,10 @@
+﻿{
+  "id": "evaluation",
+  "name": "evaluation",
+  "description": "Evaluation of agent systems requires different approaches than traditional software or even standard language model applications. Agents make dynamic decisions, are non-deterministic between runs, ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Activate this skill when: - Testing agent performance systematically",
+  "runner": null
+}

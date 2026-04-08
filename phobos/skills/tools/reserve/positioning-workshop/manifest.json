@@ -1,0 +1,10 @@
+﻿{
+  "id": "positioning-workshop",
+  "name": "positioning workshop",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Defining positioning for a new product - Repositioning an existing product (pivot, market shift)",
+  "runner": null
+}

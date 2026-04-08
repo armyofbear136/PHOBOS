@@ -1,0 +1,10 @@
+﻿{
+  "id": "clawtributor",
+  "name": "clawtributor",
+  "description": "Community incident reporting for AI agents. Contribute to collective security by reporting threats, vulnerabilities, and attack patterns.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

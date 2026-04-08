@@ -1,0 +1,10 @@
+﻿{
+  "id": "biorxiv-database",
+  "name": "biorxiv database",
+  "description": "This skill provides efficient Python-based tools for searching and retrieving preprints from the bioRxiv database. It enables comprehensive searches by keywords, authors, date ranges, and categorie...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when: - Searching for recent preprints in specific research areas",
+  "runner": null
+}

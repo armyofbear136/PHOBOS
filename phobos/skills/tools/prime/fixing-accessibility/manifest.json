@@ -1,0 +1,10 @@
+﻿{
+  "id": "fixing-accessibility",
+  "name": "fixing accessibility",
+  "description": "Fix accessibility issues.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- `/fixing-accessibility` Apply these constraints to any UI work in this conversation.",
+  "runner": null
+}

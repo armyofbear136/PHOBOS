@@ -1,0 +1,10 @@
+﻿{
+  "id": "linkedin-authority-builder",
+  "name": "linkedin authority builder",
+  "description": "Here's what most people get wrong about LinkedIn: they're trying to go viral.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

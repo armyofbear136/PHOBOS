@@ -1,0 +1,10 @@
+﻿{
+  "id": "alphafold-database",
+  "name": "alphafold database",
+  "description": "AlphaFold DB is a public repository of AI-predicted 3D protein structures for over 200 million proteins, maintained by DeepMind and EMBL-EBI. Access structure predictions with confidence metrics, d...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when working with AI-predicted protein structures in scenarios such as:",
+  "runner": null
+}

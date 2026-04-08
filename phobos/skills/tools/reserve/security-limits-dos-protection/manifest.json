@@ -1,0 +1,10 @@
+﻿{
+  "id": "security-limits-dos-protection",
+  "name": "security limits dos protection",
+  "description": "Defense-in-depth DoS protection via `SecurityLimits` and validator helpers in `crates/kreuzberg/src/extractors/security.rs`. All archive and complex format extractors MUST use these.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "| Format Family | Required Validators | |--------------|-------------------|",
+  "runner": null
+}

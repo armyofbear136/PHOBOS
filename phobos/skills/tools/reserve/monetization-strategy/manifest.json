@@ -1,0 +1,10 @@
+﻿{
+  "id": "monetization-strategy",
+  "name": "monetization strategy",
+  "description": "- **Name**: monetization-strategy - **Description**: Brainstorm 3-5 monetization strategies with audience fit, risks, and validation experiments. Use when exploring revenue models, pricing strategi...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "reference-list-builder",
+  "name": "reference list builder",
+  "description": "Use this skill when the user: - Needs to create a professional reference list",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user: - Needs to create a professional reference list",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "viral-hook-creator",
+  "name": "viral hook creator",
+  "description": "Generate 3-5 viral hook options using proven psychological patterns that create curiosity, provide value, and drive engagement. Hooks are optimized for social platforms (X/Twitter, LinkedIn, Instag...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "user-story-mapping-workshop",
+  "name": "user story mapping workshop",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "A story map (Jeff Patton) organizes user stories in **two dimensions**:",
+  "runner": null
+}

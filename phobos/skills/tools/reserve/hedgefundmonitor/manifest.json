@@ -1,0 +1,10 @@
+﻿{
+  "id": "hedgefundmonitor",
+  "name": "hedgefundmonitor",
+  "description": "Free, open REST API from the U.S. Office of Financial Research (OFR) providing aggregated hedge fund time series data. No API key or registration required.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

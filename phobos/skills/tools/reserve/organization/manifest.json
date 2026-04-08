@@ -1,0 +1,10 @@
+﻿{
+  "id": "organization",
+  "name": "organization",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Administrators can create organizations for other users (server-side only):",
+  "runner": null
+}

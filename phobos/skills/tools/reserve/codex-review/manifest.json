@@ -1,0 +1,10 @@
+﻿{
+  "id": "codex-review",
+  "name": "codex review",
+  "description": "*Load with: base.md + code-review.md*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

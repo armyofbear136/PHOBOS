@@ -1,0 +1,10 @@
+﻿{
+  "id": "fred-economic-data",
+  "name": "fred economic data",
+  "description": "Access comprehensive economic data through FRED (Federal Reserve Economic Data), a database maintained by the Federal Reserve Bank of St. Louis containing over 800,000 economic time series from ove...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

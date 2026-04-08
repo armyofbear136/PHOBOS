@@ -1,0 +1,10 @@
+﻿{
+  "id": "interpro-database",
+  "name": "interpro database",
+  "description": "InterPro (https://www.ebi.ac.uk/interpro/) is a comprehensive resource for protein family and domain classification maintained by EMBL-EBI. It integrates signatures from 13 member databases includi...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use InterPro when:",
+  "runner": null
+}

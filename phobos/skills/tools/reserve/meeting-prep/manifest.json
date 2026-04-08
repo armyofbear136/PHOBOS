@@ -1,0 +1,10 @@
+﻿{
+  "id": "meeting-prep",
+  "name": "meeting prep",
+  "description": "Generate a meeting prep brief from your Obsidian vault. Researches participants, surfaces vault history, builds a prioritized agenda, and generates sharp questions. No autonomy — you run it, you ge...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Open Claude Code in your vault directory and say:",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "brand-copywriter",
+  "name": "brand copywriter",
+  "description": "Generate professional marketing copy in two versions: one using the optimal framework for the platform/use case, and one using an AI-selected alternative framework for comparison.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "gwas-database",
+  "name": "gwas database",
+  "description": "The GWAS Catalog is a comprehensive repository of published genome-wide association studies maintained by the National Human Genome Research Institute (NHGRI) and the European Bioinformatics Instit...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when queries involve:",
+  "runner": null
+}

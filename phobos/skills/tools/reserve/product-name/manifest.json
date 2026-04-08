@@ -1,0 +1,10 @@
+﻿{
+  "id": "product-name",
+  "name": "product name",
+  "description": "Brainstorm unique, memorable product names with rationale aligned to brand values and target audience. Use when naming a new product, rebranding, or exploring name options that strengthen your bran...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Naming a new product or feature - Rebranding or renaming existing products",
+  "runner": null
+}

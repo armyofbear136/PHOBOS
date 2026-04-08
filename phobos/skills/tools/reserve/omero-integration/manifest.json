@@ -1,0 +1,10 @@
+﻿{
+  "id": "omero-integration",
+  "name": "omero integration",
+  "description": "OMERO is an open-source platform for managing, visualizing, and analyzing microscopy images and metadata. Access images via Python API, retrieve datasets, analyze pixels, manage ROIs and annotation...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Working with OMERO Python API (omero-py) to access microscopy data",
+  "runner": null
+}

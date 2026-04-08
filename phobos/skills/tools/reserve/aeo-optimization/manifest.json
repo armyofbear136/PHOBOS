@@ -1,0 +1,10 @@
+﻿{
+  "id": "aeo-optimization",
+  "name": "aeo optimization",
+  "description": "*Load with: base.md + web-content.md + site-architecture.md*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

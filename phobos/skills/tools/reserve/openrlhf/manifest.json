@@ -1,0 +1,10 @@
+﻿{
+  "id": "openrlhf",
+  "name": "openrlhf",
+  "description": "OpenRLHF is a Ray-based RLHF framework optimized for distributed training with vLLM inference acceleration.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

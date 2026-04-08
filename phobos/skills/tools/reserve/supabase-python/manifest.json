@@ -1,0 +1,10 @@
+﻿{
+  "id": "supabase-python",
+  "name": "supabase python",
+  "description": "*Load with: base.md + supabase.md + python.md*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

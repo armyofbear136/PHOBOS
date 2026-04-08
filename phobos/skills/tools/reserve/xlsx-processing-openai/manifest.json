@@ -1,0 +1,10 @@
+﻿{
+  "id": "xlsx-processing-openai",
+  "name": "xlsx processing openai",
+  "description": "- Build new workbooks with formulas, formatting, and structured layouts. - Read or analyze tabular data (filter, aggregate, pivot, compute metrics).",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Build new workbooks with formulas, formatting, and structured layouts. - Read or analyze tabular data (filter, aggregate, pivot, compute metrics).",
+  "runner": null
+}

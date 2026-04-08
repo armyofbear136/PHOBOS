@@ -1,0 +1,10 @@
+﻿{
+  "id": "speculative-decoding",
+  "name": "speculative decoding",
+  "description": "Use Speculative Decoding when you need to: - **Speed up inference** by 1.5-3.6× without quality loss",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use Speculative Decoding when you need to: - **Speed up inference** by 1.5-3.6× without quality loss",
+  "runner": null
+}

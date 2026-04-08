@@ -1,0 +1,10 @@
+﻿{
+  "id": "tensorboard",
+  "name": "tensorboard",
+  "description": "Use TensorBoard when you need to: - **Visualize training metrics** like loss and accuracy over time",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use TensorBoard when you need to: - **Visualize training metrics** like loss and accuracy over time",
+  "runner": null
+}

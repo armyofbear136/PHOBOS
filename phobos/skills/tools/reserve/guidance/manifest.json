@@ -1,0 +1,10 @@
+﻿{
+  "id": "guidance",
+  "name": "guidance",
+  "description": "Use Guidance when you need to: - **Control LLM output syntax** with regex or grammars",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use Guidance when you need to: - **Control LLM output syntax** with regex or grammars",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "hmdb-database",
+  "name": "hmdb database",
+  "description": "The Human Metabolome Database (HMDB) is a comprehensive, freely available resource containing detailed information about small molecule metabolites found in the human body.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when performing metabolomics research, clinical chemistry, biomarker discovery, or metabolite identification tasks.",
+  "runner": null
+}

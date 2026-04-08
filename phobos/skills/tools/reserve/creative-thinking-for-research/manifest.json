@@ -1,0 +1,10 @@
+﻿{
+  "id": "creative-thinking-for-research",
+  "name": "creative thinking for research",
+  "description": "Eight empirically grounded frameworks from cognitive science, applied to computer science and AI research. Unlike ad-hoc brainstorming, each framework here is backed by decades of creativity resear...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Generating genuinely novel ideas, not incremental extensions of prior work - Feeling trapped in a local optimum of thinking within a single subfield",
+  "runner": null
+}

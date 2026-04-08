@@ -1,0 +1,10 @@
+﻿{
+  "id": "sympy",
+  "name": "sympy",
+  "description": "SymPy is a Python library for symbolic mathematics that enables exact computation using mathematical symbols rather than numerical approximations. This skill provides comprehensive guidance for per...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when: - Solving equations symbolically (algebraic, differential, systems of equations)",
+  "runner": null
+}

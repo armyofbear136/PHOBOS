@@ -1,0 +1,10 @@
+﻿{
+  "id": "security-bluebook-builder",
+  "name": "security bluebook builder",
+  "description": "Build a minimal but real security policy for sensitive apps. The output is a single, coherent Blue Book document using MUST/SHOULD/CAN language, with explicit assumptions, scope, and security gates.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

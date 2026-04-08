@@ -1,0 +1,10 @@
+﻿{
+  "id": "metabolomics-workbench-database",
+  "name": "metabolomics workbench database",
+  "description": "The Metabolomics Workbench is a comprehensive NIH Common Fund-sponsored platform hosted at UCSD that serves as the primary repository for metabolomics research data. It provides programmatic access...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when querying metabolite structures, accessing study data, standardizing nomenclature, performing mass spectrometry searches, or re...",
+  "runner": null
+}

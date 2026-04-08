@@ -1,0 +1,10 @@
+﻿{
+  "id": "model-merging",
+  "name": "model merging",
+  "description": "Use Model Merging when you need to: - **Combine capabilities** from multiple fine-tuned models without retraining",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use Model Merging when you need to: - **Combine capabilities** from multiple fine-tuned models without retraining",
+  "runner": null
+}

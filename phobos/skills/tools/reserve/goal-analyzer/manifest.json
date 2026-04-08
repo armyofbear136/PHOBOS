@@ -1,0 +1,10 @@
+﻿{
+  "id": "goal-analyzer",
+  "name": "goal analyzer",
+  "description": "分析健康目标数据,识别目标模式和进度,评估目标达成情况,并提供个性化目标管理建议。",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

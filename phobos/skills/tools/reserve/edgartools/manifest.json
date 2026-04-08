@@ -1,0 +1,10 @@
+﻿{
+  "id": "edgartools",
+  "name": "edgartools",
+  "description": "Python library for accessing all SEC filings since 1994 with structured data extraction.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "shap",
+  "name": "shap",
+  "description": "SHAP is a unified approach to explain machine learning model outputs using Shapley values from cooperative game theory. This skill provides comprehensive guidance for:",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Trigger this skill when users ask about**: - \"Explain which features are most important in my model\"",
+  "runner": null
+}

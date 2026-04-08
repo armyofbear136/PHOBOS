@@ -1,0 +1,10 @@
+﻿{
+  "id": "competitor-intel",
+  "name": "competitor intel",
+  "description": "Provide data-backed competitive intelligence by researching real signals across the web—no assumptions, no made-up numbers.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

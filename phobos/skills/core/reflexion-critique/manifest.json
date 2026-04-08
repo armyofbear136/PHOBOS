@@ -1,0 +1,10 @@
+{
+  "id": "reflexion-critique",
+  "name": "Reflexion Critique",
+  "description": "Guides SEREN's final holistic review with structured self-critique patterns.",
+  "version": "1.0.0",
+  "scope": "seren",
+  "category": "core",
+  "trigger": "Active during SEREN final validation in Phase 4.5",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "hig-project-context",
+  "name": "hig project context",
+  "description": "Create and maintain `.claude/apple-design-context.md` so other HIG skills can skip redundant questions.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Primary personas (1-3) - Key use cases and environments (desk, on-the-go, glanceable, immersive)",
+  "runner": null
+}

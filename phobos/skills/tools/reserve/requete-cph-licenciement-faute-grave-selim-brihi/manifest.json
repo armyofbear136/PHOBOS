@@ -1,0 +1,10 @@
+﻿{
+  "id": "requete-cph-licenciement-faute-grave-selim-brihi",
+  "name": "requete cph licenciement faute grave selim brihi",
+  "description": "Ce skill guide la rédaction de requêtes devant le Conseil de prud'hommes (juridiction du travail français) pour un salarié contestant son licenciement pour faute grave et demandant la requalificati...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

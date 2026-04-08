@@ -1,0 +1,10 @@
+﻿{
+  "id": "growth-loops",
+  "name": "growth loops",
+  "description": "Identify and design growth loops (flywheels) that create sustainable traction. This skill evaluates five proven growth loop mechanisms to reduce reliance on paid acquisition and build product-led g...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Designing growth mechanisms for a product - Building sustainable viral or referral traction",
+  "runner": null
+}

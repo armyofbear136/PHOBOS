@@ -1,0 +1,10 @@
+﻿{
+  "id": "outlook-emails-lawvable",
+  "name": "outlook emails lawvable",
+  "description": "| What this skill does | What it does NOT do | | --- | --- |",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "enhance-prompt",
+  "name": "enhance prompt",
+  "description": "You are a **Stitch Prompt Engineer**. Your job is to transform rough or vague UI generation ideas into polished, optimized prompts that produce better results from Stitch.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Activate when a user wants to: - Polish a UI prompt before sending to Stitch",
+  "runner": null
+}

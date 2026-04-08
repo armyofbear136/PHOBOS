@@ -1,0 +1,10 @@
+﻿{
+  "id": "company-research",
+  "name": "company research",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Competitive analysis (understanding how competitors approach PM) - Partnership evaluation (assessing cultural fit and strategic direction)",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "rehabilitation-analyzer",
+  "name": "rehabilitation analyzer",
+  "description": "康复训练分析技能提供全面的康复数据分析功能，帮助用户追踪康复进展、识别改善模式和优化训练计划。",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

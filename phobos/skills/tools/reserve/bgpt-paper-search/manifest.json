@@ -1,0 +1,10 @@
+﻿{
+  "id": "bgpt-paper-search",
+  "name": "bgpt paper search",
+  "description": "BGPT is a remote MCP server that searches a curated database of scientific papers built from raw experimental data extracted from full-text studies. Unlike traditional literature databases that ret...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when: - Searching for scientific papers with specific experimental details",
+  "runner": null
+}

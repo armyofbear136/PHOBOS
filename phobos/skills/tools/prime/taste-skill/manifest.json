@@ -1,0 +1,10 @@
+﻿{
+  "id": "taste-skill",
+  "name": "taste skill",
+  "description": "* DESIGN_VARIANCE: 8 (1=Perfect Symmetry, 10=Artsy Chaos) * MOTION_INTENSITY: 6 (1=Static/No movement, 10=Cinematic/Magic Physics)",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "bigcode-evaluation-harness",
+  "name": "bigcode evaluation harness",
+  "description": "BigCode Evaluation Harness evaluates code generation models across 15+ benchmarks including HumanEval, MBPP, and MultiPL-E (18 languages).",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

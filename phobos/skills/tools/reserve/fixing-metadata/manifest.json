@@ -1,0 +1,10 @@
+﻿{
+  "id": "fixing-metadata",
+  "name": "fixing metadata",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Reference these guidelines when: - adding or changing page titles, descriptions, canonical, robots",
+  "runner": null
+}

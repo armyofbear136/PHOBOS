@@ -1,0 +1,50 @@
+{
+  "version": "1.0",
+  "generated": "2026-04-01T21:52:40.892Z",
+  "skills": [
+    {
+      "id": "context-compression",
+      "name": "Context Compression",
+      "description": "Guides SAYON to compress long-form context efficiently, preserving signal and dropping noise.",
+      "version": "1.0.0",
+      "scope": "sayon",
+      "category": "core",
+      "trigger": "Active during file summarisation and request rewriting in Phase 1",
+      "runner": null,
+      "path": "C:\\Users\\armyo\\NodeJS\\Projects\\dual-reasoning\\phobos\\skills\\core\\context-compression"
+    },
+    {
+      "id": "interleaved-thinking",
+      "name": "Interleaved Thinking",
+      "description": "Guides SEREN to structure reasoning traces for maximum clarity and correctness.",
+      "version": "1.0.0",
+      "scope": "seren",
+      "category": "core",
+      "trigger": "Always active in SEREN execution turns",
+      "runner": null,
+      "path": "C:\\Users\\armyo\\NodeJS\\Projects\\dual-reasoning\\phobos\\skills\\core\\interleaved-thinking"
+    },
+    {
+      "id": "llm-as-judge",
+      "name": "LLM-as-Judge",
+      "description": "Structured rubric-based evaluation for SAYON's per-task review. Replaces binary approve/reject with scored, reasoned decisions.",
+      "version": "1.0.0",
+      "scope": "sayon",
+      "category": "core",
+      "trigger": "Active during SAYON per-task review in Phase 4",
+      "runner": null,
+      "path": "C:\\Users\\armyo\\NodeJS\\Projects\\dual-reasoning\\phobos\\skills\\core\\llm-as-judge"
+    },
+    {
+      "id": "reflexion-critique",
+      "name": "Reflexion Critique",
+      "description": "Guides SEREN's final holistic review with structured self-critique patterns.",
+      "version": "1.0.0",
+      "scope": "seren",
+      "category": "core",
+      "trigger": "Active during SEREN final validation in Phase 4.5",
+      "runner": null,
+      "path": "C:\\Users\\armyo\\NodeJS\\Projects\\dual-reasoning\\phobos\\skills\\core\\reflexion-critique"
+    }
+  ]
+}

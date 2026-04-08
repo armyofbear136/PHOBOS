@@ -1,0 +1,10 @@
+﻿{
+  "id": "politique-confidentialite-malik-taiar",
+  "name": "politique confidentialite malik taiar",
+  "description": "The privacy policy is the main document for informing data subjects under Articles 13 and 14 of the GDPR. It must be clear, accessible, and comprehensive.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

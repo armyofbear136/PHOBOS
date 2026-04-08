@@ -1,0 +1,10 @@
+﻿{
+  "id": "scvelo",
+  "name": "scvelo",
+  "description": "scVelo is the leading Python package for RNA velocity analysis in single-cell RNA-seq data. It infers cell state transitions by modeling the kinetics of mRNA splicing — using the ratio of unspliced...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use scVelo when:",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+{
+  "id": "llm-as-judge",
+  "name": "LLM-as-Judge",
+  "description": "Structured rubric-based evaluation for SAYON's per-task review. Replaces binary approve/reject with scored, reasoned decisions.",
+  "version": "1.0.0",
+  "scope": "sayon",
+  "category": "core",
+  "trigger": "Active during SAYON per-task review in Phase 4",
+  "runner": null
+}

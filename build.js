@@ -476,6 +476,55 @@ export async function buildForPlatform({
     log('  ⚠️  bin/ missing — run: node scripts/fetch-llamacpp.js');
   }
 
+  // ── PyTorch script + bundled model configs ─────────────────────────────────
+  // phobos-diffusers.py is spawned by ImageServerManager for PyTorch generation.
+  // The bundled configs/ dir contains transformer config.json files for models
+  // whose HuggingFace repos are gated or need architecture-specific overrides.
+  const pyScript = path.join(__dirname, 'phobos', 'phobos-diffusers.py');
+  if (fs.existsSync(pyScript)) {
+    fs.copyFileSync(pyScript, path.join(distDir, 'phobos-diffusers.py'));
+    log('  ✅ phobos-diffusers.py (PyTorch generation script)');
+  }
+  // Shared recursive directory copy -- used for configs/ and phobos/skills/
+  const copyDirRec = (src, dst) => {
+    fs.mkdirSync(dst, { recursive: true });
+    for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+      const s = path.join(src, e.name), d = path.join(dst, e.name);
+      e.isDirectory() ? copyDirRec(s, d) : fs.copyFileSync(s, d);
+    }
+  };
+
+  const configsDir = path.join(__dirname, 'phobos', 'configs');
+  if (fs.existsSync(configsDir)) {
+    copyDirRec(configsDir, path.join(distDir, 'configs'));
+    log('  ✅ configs/ (bundled model configs for PyTorch)');
+  }
+
+  // ── Skills library ──────────────────────────────────────────────────────────
+  // phobos/skills/ must ship alongside the exe so SkillManager can find it at
+  // runtime via process.execPath. The directory structure is preserved exactly:
+  //   dist/phobos/skills/_registry.json
+  //   dist/phobos/skills/core/<id>/manifest.json + instruction_manual.md
+  //   dist/phobos/skills/tools/prime/<id>/...
+  //   dist/phobos/skills/tools/reserve/<id>/...
+  const skillsSrc = path.join(__dirname, 'phobos', 'skills');
+  if (fs.existsSync(skillsSrc)) {
+    const skillsDst = path.join(distDir, 'phobos', 'skills');
+    copyDirRec(skillsSrc, skillsDst);
+    // Count staged skill manifests for confirmation
+    let skillCount = 0;
+    const countManifests = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (e.isDirectory()) countManifests(path.join(dir, e.name));
+        else if (e.name === 'manifest.json') skillCount++;
+      }
+    };
+    countManifests(skillsDst);
+    log(`  ✅ phobos/skills/ (${skillCount} skills staged → dist/phobos/skills/)`);
+  } else {
+    log('  ⚠️  phobos/skills/ missing — skills will not load on client machines');
+  }
+
   // ── 5. Cleanup ──────────────────────────────────────────────────────────────
   for (const f of ['sea-prep.blob', 'sea-config.json']) {
     const p = path.join(distDir, f);

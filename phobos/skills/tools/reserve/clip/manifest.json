@@ -1,0 +1,10 @@
+﻿{
+  "id": "clip",
+  "name": "clip",
+  "description": "OpenAI's model that understands images from natural language.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use when:** - Zero-shot image classification (no training data needed)",
+  "runner": null
+}

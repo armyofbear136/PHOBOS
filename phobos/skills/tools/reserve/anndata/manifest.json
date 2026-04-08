@@ -1,0 +1,10 @@
+﻿{
+  "id": "anndata",
+  "name": "anndata",
+  "description": "AnnData is a Python package for handling annotated data matrices, storing experimental measurements (X) alongside observation metadata (obs), variable metadata (var), and multi-dimensional annotati...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when: - Creating, reading, or writing AnnData objects",
+  "runner": null
+}

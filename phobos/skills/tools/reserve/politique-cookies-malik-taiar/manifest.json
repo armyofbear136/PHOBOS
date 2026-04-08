@@ -1,0 +1,10 @@
+﻿{
+  "id": "politique-cookies-malik-taiar",
+  "name": "politique cookies malik taiar",
+  "description": "A cookie policy informs users about cookies and trackers placed on their device. It is distinct from the privacy policy but can be integrated into it. It must comply with CNIL 2020 guidelines.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "STRICTLY NECESSARY COOKIES (exempt from consent) - [ ] Session cookie",
+  "runner": null
+}

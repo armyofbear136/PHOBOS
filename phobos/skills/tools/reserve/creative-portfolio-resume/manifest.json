@@ -1,0 +1,10 @@
+﻿{
+  "id": "creative-portfolio-resume",
+  "name": "creative portfolio resume",
+  "description": "Use this skill when the user: - Works in a creative field (design, marketing, writing)",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user: - Works in a creative field (design, marketing, writing)",
+  "runner": null
+}

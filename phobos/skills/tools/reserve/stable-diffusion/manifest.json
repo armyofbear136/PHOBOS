@@ -1,0 +1,10 @@
+﻿{
+  "id": "stable-diffusion",
+  "name": "stable diffusion",
+  "description": "Comprehensive guide to generating images with Stable Diffusion using the HuggingFace Diffusers library.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use Stable Diffusion when:** - Generating images from text descriptions",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "string-database",
+  "name": "string database",
+  "description": "STRING is a comprehensive database of known and predicted protein-protein interactions covering 59M proteins and 20B+ interactions across 5000+ organisms. Query interaction networks, perform functi...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Retrieving protein-protein interaction networks for single or multiple proteins",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "north-star-metric",
+  "name": "north star metric",
+  "description": "Identify a North Star Metric and 3-5 Input Metrics that form a metrics constellation. Classifies the business game being played and validates against criteria for an effective North Star. Use when ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Defining your company's key metric framework - Setting up a metrics tracking system",
+  "runner": null
+}

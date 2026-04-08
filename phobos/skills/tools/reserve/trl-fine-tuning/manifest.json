@@ -1,0 +1,10 @@
+﻿{
+  "id": "trl-fine-tuning",
+  "name": "trl fine tuning",
+  "description": "TRL provides post-training methods for aligning language models with human preferences.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "instructor",
+  "name": "instructor",
+  "description": "Use Instructor when you need to: - **Extract structured data** from LLM responses reliably",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use Instructor when you need to: - **Extract structured data** from LLM responses reliably",
+  "runner": null
+}

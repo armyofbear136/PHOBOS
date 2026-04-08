@@ -1,0 +1,10 @@
+﻿{
+  "id": "autogpt",
+  "name": "autogpt",
+  "description": "Comprehensive platform for building, deploying, and managing continuous AI agents through a visual interface or development toolkit.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use AutoGPT when:** - Building autonomous agents that run continuously",
+  "runner": null
+}

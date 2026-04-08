@@ -1,0 +1,10 @@
+﻿{
+  "id": "proto-persona",
+  "name": "proto persona",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- **Speed:** Align teams quickly without waiting for months of research - **Focus:** Provides a shared reference point for \"who we're building for\"",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "slack-messaging",
+  "name": "slack messaging",
+  "description": "Send and read Slack messages from the command line using `slackcli` (shaharia-lab/slackcli).",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "slackcli messages send --recipient-id=C0XXXXXXXX --message=\"Hello from CLI\"",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "create-auth",
+  "name": "create auth",
+  "description": "Guide for adding authentication to TypeScript/JavaScript applications using Better Auth.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

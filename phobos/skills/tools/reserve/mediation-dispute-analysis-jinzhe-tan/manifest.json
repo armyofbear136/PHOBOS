@@ -1,0 +1,10 @@
+﻿{
+  "id": "mediation-dispute-analysis-jinzhe-tan",
+  "name": "mediation dispute analysis jinzhe tan",
+  "description": "This skill helps lawyers and mediators rapidly analyze case materials to produce a structured dispute analysis — identifying the core issues, each party's position and underlying interests, relevan...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "offer-comparison-analyzer",
+  "name": "offer comparison analyzer",
+  "description": "Use this skill when the user: - Has multiple job offers to compare",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user: - Has multiple job offers to compare",
+  "runner": null
+}

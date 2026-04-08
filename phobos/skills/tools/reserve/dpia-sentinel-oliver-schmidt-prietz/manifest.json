@@ -1,0 +1,10 @@
+﻿{
+  "id": "dpia-sentinel-oliver-schmidt-prietz",
+  "name": "dpia sentinel oliver schmidt prietz",
+  "description": "> **Important:** This provides structured GDPR Article 35 guidance based on EDPB Guidelines and national SA requirements. It is not legal advice. Involve your DPO (Art. 35(2)) and qualified counsel...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

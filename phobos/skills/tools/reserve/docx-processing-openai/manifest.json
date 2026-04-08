@@ -1,0 +1,10 @@
+﻿{
+  "id": "docx-processing-openai",
+  "name": "docx processing openai",
+  "description": "- Read or review DOCX content where layout matters (tables, diagrams, pagination). - Create or edit DOCX files with professional formatting.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Read or review DOCX content where layout matters (tables, diagrams, pagination). - Create or edit DOCX files with professional formatting.",
+  "runner": null
+}

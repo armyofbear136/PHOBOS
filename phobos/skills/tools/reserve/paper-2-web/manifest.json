@@ -1,0 +1,10 @@
+﻿{
+  "id": "paper-2-web",
+  "name": "paper 2 web",
+  "description": "This skill enables the transformation of academic papers into multiple promotional and presentation formats using the Paper2All autonomous pipeline. The system converts research papers (LaTeX or PD...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when:",
+  "runner": null
+}

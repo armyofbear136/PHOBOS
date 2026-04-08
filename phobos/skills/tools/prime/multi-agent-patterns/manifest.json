@@ -1,0 +1,10 @@
+﻿{
+  "id": "multi-agent-patterns",
+  "name": "multi agent patterns",
+  "description": "Multi-agent architectures distribute work across multiple language model instances, each with its own context window. When designed well, this distribution enables capabilities beyond single-agent ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Activate this skill when: - Single-agent context limits constrain task complexity",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "ai-employee-onboarding-wizard",
+  "name": "ai employee onboarding wizard",
+  "description": "Most people set up AI agents with a vague system prompt and wonder why it acts generic. The difference between an AI that feels like a real team member and one that feels like a chatbot is the oper...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

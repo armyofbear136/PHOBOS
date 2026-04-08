@@ -1,0 +1,10 @@
+﻿{
+  "id": "simpy",
+  "name": "simpy",
+  "description": "SimPy is a process-based discrete-event simulation framework based on standard Python. Use SimPy to model systems where entities (customers, vehicles, packets, etc.) interact with each other and co...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use the SimPy skill when:",
+  "runner": null
+}

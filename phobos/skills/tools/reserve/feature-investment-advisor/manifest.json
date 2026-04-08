@@ -1,0 +1,10 @@
+﻿{
+  "id": "feature-investment-advisor",
+  "name": "feature investment advisor",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use this when:** - Prioritizing between features with quantifiable revenue/retention impact",
+  "runner": null
+}

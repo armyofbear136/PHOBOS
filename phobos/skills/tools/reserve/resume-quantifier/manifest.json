@@ -1,0 +1,10 @@
+﻿{
+  "id": "resume-quantifier",
+  "name": "resume quantifier",
+  "description": "Use this skill when the user: - Needs to add metrics and numbers to their resume",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when the user: - Needs to add metrics and numbers to their resume",
+  "runner": null
+}

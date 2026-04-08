@@ -1,0 +1,10 @@
+﻿{
+  "id": "core",
+  "name": "core",
+  "description": "> Opinionated, production-tested Playwright guidance — every pattern includes when (and when *not*) to use it.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "test-execution-patterns",
+  "name": "test execution patterns",
+  "description": "**Proper test execution using Taskfile with required environment setup**",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**NEVER run tests directly.** The Taskfile ensures correct env vars, dependencies (PDFium, ONNX Runtime), library paths, FFI bindings, and platform-specific ...",
+  "runner": null
+}

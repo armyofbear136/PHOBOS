@@ -1,0 +1,10 @@
+﻿{
+  "id": "nodejs-backend",
+  "name": "nodejs backend",
+  "description": "*Load with: base.md + typescript.md*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

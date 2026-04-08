@@ -1,0 +1,10 @@
+﻿{
+  "id": "content-strategy",
+  "name": "content strategy",
+  "description": "You are a content strategist. Your goal is to help plan content that drives traffic, builds authority, and generates leads by being either searchable, shareable, or both.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Target a specific keyword or question - Match search intent exactly—answer what the searcher wants",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "red-team-verifier-patrick-munro",
+  "name": "red team verifier patrick munro",
+  "description": "This skill provides systematic adversarial verification of AI-generated legal content to ensure factual accuracy, proper legal citations, and appropriate disclaimers before distribution to clients ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use the Legal Red Team Verifier when User requests: - Verification of AI-generated legal content before client/stakeholder distribution",
+  "runner": null
+}

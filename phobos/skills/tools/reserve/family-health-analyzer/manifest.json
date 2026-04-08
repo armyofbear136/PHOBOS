@@ -1,0 +1,10 @@
+﻿{
+  "id": "family-health-analyzer",
+  "name": "family health analyzer",
+  "description": "本技能提供家庭健康数据的深度分析,包括: - 遗传风险评估",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

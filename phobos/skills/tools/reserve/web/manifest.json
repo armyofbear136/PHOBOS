@@ -1,0 +1,10 @@
+﻿{
+  "id": "web",
+  "name": "web",
+  "description": "Framework-agnostic rules for accessible, performant, responsive web interfaces. Based on WCAG 2.2, MDN Web Docs, and modern web platform APIs.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use elements for their intended purpose. Semantic structure provides free accessibility, SEO, and reader-mode support.",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "user-segmentation",
+  "name": "user segmentation",
+  "description": "Analyze diverse user feedback to identify at least 3 distinct behavioral and needs-based user segments. This skill surfaces hidden customer groups based on jobs-to-be-done, behaviors, and motivatio...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

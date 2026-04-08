@@ -1,0 +1,10 @@
+﻿{
+  "id": "scientific-brainstorming",
+  "name": "scientific brainstorming",
+  "description": "Scientific brainstorming is a conversational process for generating novel research ideas. Act as a research ideation partner to generate hypotheses, explore interdisciplinary connections, challenge...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Generating novel research ideas or directions",
+  "runner": null
+}

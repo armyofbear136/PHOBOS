@@ -1,0 +1,10 @@
+﻿{
+  "id": "aws-aurora",
+  "name": "aws aurora",
+  "description": "*Load with: base.md + [typescript.md | python.md]*",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

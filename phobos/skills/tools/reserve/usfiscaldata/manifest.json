@@ -1,0 +1,10 @@
+﻿{
+  "id": "usfiscaldata",
+  "name": "usfiscaldata",
+  "description": "Free, open REST API from the U.S. Department of the Treasury for federal financial data. No API key or registration required.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

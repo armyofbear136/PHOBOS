@@ -1,0 +1,10 @@
+﻿{
+  "id": "pathml",
+  "name": "pathml",
+  "description": "PathML is a comprehensive Python toolkit for computational pathology workflows, designed to facilitate machine learning and image analysis for whole-slide pathology images. The framework provides m...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Apply this skill for: - Loading and processing whole-slide images (WSI) in various proprietary formats",
+  "runner": null
+}

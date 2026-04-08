@@ -1,0 +1,10 @@
+﻿{
+  "id": "discovery-interview-prep",
+  "name": "discovery interview prep",
+  "description": "No description available.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- Starting product discovery (validating problem space) - Repositioning an existing product (understanding new market)",
+  "runner": null
+}

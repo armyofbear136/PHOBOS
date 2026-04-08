@@ -1,0 +1,10 @@
+﻿{
+  "id": "huggingface-tokenizers",
+  "name": "huggingface tokenizers",
+  "description": "Fast, production-ready tokenizers with Rust performance and Python ease-of-use.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use HuggingFace Tokenizers when:** - Need extremely fast tokenization (<20s per GB of text)",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "20-ml-paper-writing",
+  "name": "20 ml paper writing",
+  "description": "Expert-level guidance for writing publication-ready papers targeting **NeurIPS, ICML, ICLR, ACL, AAAI, COLM** (ML/AI venues) and **OSDI, NSDI, ASPLOS, SOSP** (Systems venues). This skill combines w...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "If you cannot programmatically verify a citation, you MUST:",
+  "runner": null
+}

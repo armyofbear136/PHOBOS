@@ -1,0 +1,10 @@
+﻿{
+  "id": "dask",
+  "name": "dask",
+  "description": "Dask is a Python library for parallel and distributed computing that enables three critical capabilities: - **Larger-than-memory execution** on single machines for data exceeding available RAM",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Process datasets that exceed available RAM",
+  "runner": null
+}

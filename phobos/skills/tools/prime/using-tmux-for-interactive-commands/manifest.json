@@ -1,0 +1,10 @@
+﻿{
+  "id": "using-tmux-for-interactive-commands",
+  "name": "using tmux for interactive commands",
+  "description": "Interactive CLI tools (vim, interactive git rebase, REPLs, etc.) cannot be controlled through standard bash because they require a real terminal. tmux provides detached sessions that can be control...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use tmux when:** - Running vim, nano, or other text editors programmatically",
+  "runner": null
+}

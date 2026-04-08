@@ -1,0 +1,10 @@
+﻿{
+  "id": "clawsec-feed",
+  "name": "clawsec feed",
+  "description": "Security advisory feed monitoring for AI agents. Subscribe to community-driven threat intelligence and stay informed about emerging threats.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

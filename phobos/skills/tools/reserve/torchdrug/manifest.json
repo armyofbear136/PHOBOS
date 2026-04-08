@@ -1,0 +1,10 @@
+﻿{
+  "id": "torchdrug",
+  "name": "torchdrug",
+  "description": "TorchDrug is a comprehensive PyTorch-based machine learning toolbox for drug discovery and molecular science. Apply graph neural networks, pre-trained models, and task definitions to molecules, pro...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when working with:",
+  "runner": null
+}

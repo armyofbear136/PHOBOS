@@ -1,0 +1,10 @@
+﻿{
+  "id": "security-review-openai",
+  "name": "security review openai",
+  "description": "This skill provides a description of how to identify the language and frameworks used by the current context, and then to load information from this skill's references directory about the security ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

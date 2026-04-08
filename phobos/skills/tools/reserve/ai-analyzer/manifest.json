@@ -1,0 +1,10 @@
+﻿{
+  "id": "ai-analyzer",
+  "name": "ai analyzer",
+  "description": "基于AI技术的综合健康分析系统，提供智能健康洞察、风险预测和个性化建议。",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

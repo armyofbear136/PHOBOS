@@ -1,0 +1,10 @@
+﻿{
+  "id": "android",
+  "name": "android",
+  "description": "Enable dynamic color derived from the user's wallpaper. Dynamic color is the default on Android 12+ and should be the primary theming strategy.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

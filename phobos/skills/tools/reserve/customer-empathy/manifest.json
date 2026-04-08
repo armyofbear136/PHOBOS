@@ -1,0 +1,10 @@
+﻿{
+  "id": "customer-empathy",
+  "name": "customer empathy",
+  "description": "Pause and deeply empathize with your users before continuing any work. Think through these questions to clarify who you're building for and how to serve them best.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

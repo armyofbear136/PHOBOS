@@ -1,0 +1,10 @@
+﻿{
+  "id": "ginkgo-cloud-lab",
+  "name": "ginkgo cloud lab",
+  "description": "Ginkgo Cloud Lab (https://cloud.ginkgo.bio) provides remote access to Ginkgo Bioworks' autonomous lab infrastructure. Protocols are executed on Reconfigurable Automation Carts (RACs) -- modular uni...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

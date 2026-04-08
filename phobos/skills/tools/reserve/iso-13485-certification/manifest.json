@@ -1,0 +1,10 @@
+﻿{
+  "id": "iso-13485-certification",
+  "name": "iso 13485 certification",
+  "description": "This skill helps medical device manufacturers prepare comprehensive documentation for ISO 13485:2016 certification. It provides tools, templates, references, and guidance to create, review, and gap...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

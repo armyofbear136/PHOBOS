@@ -1,0 +1,10 @@
+﻿{
+  "id": "markdown-mermaid-writing",
+  "name": "markdown mermaid writing",
+  "description": "This skill teaches you — and enforces a standard for — creating scientific documentation using **markdown with embedded Mermaid diagrams as the default and canonical format**.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use this skill when:",
+  "runner": null
+}

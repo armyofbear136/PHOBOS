@@ -1,0 +1,10 @@
+﻿{
+  "id": "neurokit2",
+  "name": "neurokit2",
+  "description": "NeuroKit2 is a comprehensive Python toolkit for processing and analyzing physiological signals (biosignals). Use this skill to process cardiovascular, neural, autonomic, respiratory, and muscular s...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Apply this skill when working with: - **Cardiac signals**: ECG, PPG, heart rate variability (HRV), pulse analysis",
+  "runner": null
+}

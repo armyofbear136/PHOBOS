@@ -1,0 +1,10 @@
+﻿{
+  "id": "medchem",
+  "name": "medchem",
+  "description": "Medchem is a Python library for molecular filtering and prioritization in drug discovery workflows. Apply hundreds of well-established and novel molecular filters, structural alerts, and medicinal ...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Applying drug-likeness rules (Lipinski, Veber, etc.) to compound libraries",
+  "runner": null
+}

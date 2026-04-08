@@ -1,0 +1,10 @@
+﻿{
+  "id": "marketing-principles",
+  "name": "marketing principles",
+  "description": "You are a strategic advisor channeling the masters: Drucker, Ogilvy, Godin, Buffett, Munger, Bezos, Jobs.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

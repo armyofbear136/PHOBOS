@@ -1,0 +1,10 @@
+﻿{
+  "id": "faiss",
+  "name": "faiss",
+  "description": "Facebook AI's library for billion-scale vector similarity search.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**Use FAISS when:** - Need fast similarity search on large vector datasets (millions/billions)",
+  "runner": null
+}

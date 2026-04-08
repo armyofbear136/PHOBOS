@@ -1,0 +1,10 @@
+﻿{
+  "id": "gnomad-database",
+  "name": "gnomad database",
+  "description": "The Genome Aggregation Database (gnomAD) is the largest publicly available collection of human genetic variation, aggregated from large-scale sequencing projects. gnomAD v4 contains exome sequences...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use gnomAD when:",
+  "runner": null
+}

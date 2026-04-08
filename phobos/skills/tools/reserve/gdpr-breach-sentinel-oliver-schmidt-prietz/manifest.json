@@ -1,0 +1,10 @@
+﻿{
+  "id": "gdpr-breach-sentinel-oliver-schmidt-prietz",
+  "name": "gdpr breach sentinel oliver schmidt prietz",
+  "description": "Guide users through post-breach compliance with **GDPR Articles 33 & 34**, **EDPB Guidelines 9/2022 & 01/2021**, and **ENISA Severity Methodology**. Generate audit-ready documentation and provide a...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the task matches this skill.",
+  "runner": null
+}

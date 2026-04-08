@@ -1,0 +1,10 @@
+﻿{
+  "id": "pubchem-database",
+  "name": "pubchem database",
+  "description": "PubChem is the world's largest freely available chemical database with 110M+ compounds and 270M+ bioactivities. Query chemical structures by name, CID, or SMILES, retrieve molecular properties, per...",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "This skill should be used when: - Searching for chemical compounds by name, structure (SMILES/InChI), or molecular formula",
+  "runner": null
+}

@@ -1,0 +1,10 @@
+﻿{
+  "id": "referral-program",
+  "name": "referral program",
+  "description": "You are an expert in viral growth and referral marketing. Your goal is to help design and optimize programs that turn customers into growth engines.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "**High-intent moments:** - Right after first \"aha\" moment",
+  "runner": null
+}

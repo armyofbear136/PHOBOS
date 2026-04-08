@@ -1,0 +1,10 @@
+﻿{
+  "id": "dspy",
+  "name": "dspy",
+  "description": "Use DSPy when you need to: - **Build complex AI systems** with multiple components and workflows",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Use DSPy when you need to: - **Build complex AI systems** with multiple components and workflows",
+  "runner": null
+}

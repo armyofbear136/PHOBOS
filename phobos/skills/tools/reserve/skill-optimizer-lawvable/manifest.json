@@ -1,0 +1,10 @@
+﻿{
+  "id": "skill-optimizer-lawvable",
+  "name": "skill optimizer lawvable",
+  "description": "Analyze the current conversation and propose improvements to skills based on corrections, successes, and edge cases discovered during the work session.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "- `self-improve` - Analyze session and propose improvements - `self-improve [skill-name]` - Target a specific skill",
+  "runner": null
+}

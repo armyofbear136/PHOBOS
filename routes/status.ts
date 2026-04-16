@@ -8,6 +8,8 @@ import { DispatchLogStore } from '../db/DispatchLogStore.js';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 import { ModelConfigStore, PROVIDERS, getCoordinatorModels, getEngineModels } from '../db/ModelConfigStore.js';
 import { isConfigOptimal, detectHardware } from '../phobos/PhobosLocalManager.js';
+import { getSandboxExecutorEnabled, setSandboxExecutorEnabled } from '../db/ModelPathStore.js';
+import { getCamofoxStatus } from '../phobos/CamofoxManager.js';
 
 // ── Config optimal cache — avoids running the scoring engine on every 5s poll ──
 let _optimalCache: { optimal: boolean; recommendedSayon: string; recommendedSeren: string } | null = null;
@@ -75,6 +77,8 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
       recommendedSayon,
       recommendedSeren,
       visionCapability: getModelVisionCapability(),
+      sandboxExecutorEnabled: await getSandboxExecutorEnabled(db),
+      camofox: getCamofoxStatus(),
       timestamp: new Date().toISOString(),
     });
   });
@@ -137,8 +141,8 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
       const patch = req.body.engine;
       const provider = patch.provider ?? current.provider;
       const providerDef = PROVIDERS.find(p => p.id === provider);
-      // Phobos engine always uses SEREN port (52627), not the shared defaultEndpoint (52626)
-      const phobosEngineEndpoint = 'http://127.0.0.1:52627/v1';
+      // Phobos engine always uses SEREN port (16314), not the shared defaultEndpoint (16313)
+      const phobosEngineEndpoint = 'http://127.0.0.1:16314/v1';
       const endpoint = patch.endpoint ?? (
         patch.provider && providerDef
           ? (provider === 'phobos' ? phobosEngineEndpoint : providerDef.defaultEndpoint)
@@ -176,6 +180,17 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
         providers: PROVIDERS,
       },
     });
+  });
+
+  // PUT /api/config/sandbox-executor
+  // Toggle the optional sandbox executor feature flag.
+  fastify.put<{ Body: { enabled: boolean } }>('/api/config/sandbox-executor', async (req, reply) => {
+    const { enabled } = req.body;
+    if (typeof enabled !== 'boolean') {
+      return reply.status(400).send({ error: 'enabled must be a boolean' });
+    }
+    await setSandboxExecutorEnabled(db, enabled);
+    return reply.send({ ok: true, sandboxExecutorEnabled: enabled });
   });
 
   // GET /api/stats

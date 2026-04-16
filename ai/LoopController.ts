@@ -9,6 +9,7 @@ import { DeliveryComposer } from './DeliveryComposer.js';
 import { StreamParser } from './StreamParser.js';
 import { InterventionHandler } from './InterventionHandler.js';
 import { ThinkingBudgetMonitor } from './ThinkingBudgetMonitor.js';
+import { gsm } from '../game/GameStateManager.js';
 import { FileToolParser } from '../patch/FileToolParser.js';
 import { FileToolExecutor } from '../patch/FileToolExecutor.js';
 import type { StagedFileToolResult } from '../patch/FileToolExecutor.js';
@@ -166,6 +167,8 @@ export interface LoopOptions {
   onOutputChunk?: (content: string, messageId?: string) => Promise<void>;
   /** Called during image generation phases — wire to SSE for frontend status updates */
   onImageStatus?: (status: import('../phobos/ImageGenerationHandler.js').ImageGenStatus) => void;
+  /** Called when an execute task completes — wire to SSE for frontend result card */
+  onExecuteResult?: (result: { taskIndex: number; exitCode: number; durationMs: number; timedOut: boolean; stdoutPreview: string }) => void;
   /**
    * Called just before each task is dispatched to SEREN/SAYON for execution.
    * Receives the full system prompt + user message so it can be logged for export/debugging.
@@ -217,6 +220,7 @@ export type SSEEvent =
   | { type: 'task_start'; taskIndex: number; total: number; title: string }
   | { type: 'task_complete'; taskIndex: number; total: number; title: string }
   | { type: 'task_failed'; taskIndex: number; total: number; title: string; reason: string }
+  | { type: 'execute_result'; taskIndex: number; exitCode: number; durationMs: number; timedOut: boolean; stdoutPreview: string }
   | { type: 'complete'; approved: boolean; bestAttempt: number }
   | { type: 'thinking_retry'; attempt: number }
   | { type: 'clarification_needed'; questions: string[] }
@@ -280,6 +284,7 @@ export class LoopController {
   private makeThinkingSender(reply: FastifyReply, source: 'coordinator' | 'engine' = 'engine'): (token: string) => void {
     return (token: string) => {
       reply.raw.write(`data: ${JSON.stringify({ type: 'think_token', token, source })}\n\n`);
+      gsm.incrementTokens(source === 'coordinator' ? 'sayon' : 'seren');
     };
   }
 
@@ -839,8 +844,201 @@ export class LoopController {
           }
         }
 
-        // ── Paginated writing ────────────────────────────────────────────────
-        // If the stream ended with finish_reason='length' (hit max_tokens) OR
+        // ── browse operation: fetch live web content via Camofox ─────────────
+        if (task.operation === 'browse') {
+          const { getCamofoxStatus } = await import('../phobos/CamofoxManager.js');
+          const camofox = getCamofoxStatus();
+
+          if (camofox.state !== 'running') {
+            // Degrade gracefully — SEREN narrates what it would have fetched
+            attemptResult.output =
+              `[Web browse unavailable — Camofox not running. ` +
+              `Cannot fetch: ${task.browseUrl ?? `${task.browseMacro ?? ''} ${task.browseQuery ?? ''}`.trim()}]`;
+            taskApproved = true;
+            break;
+          }
+
+          const { browseUrl, browseSearch, fetchYoutubeTranscript } = await import('../phobos/CamofoxClient.js');
+
+          let browseOutput: string;
+
+          try {
+            if (task.browseMacro === '@youtube_transcript' && task.browseUrl) {
+              // YouTube transcript — dedicated endpoint, returns full caption text
+              sendStatus(`[${task.index}/${total}] Fetching YouTube transcript…`);
+              const result = await fetchYoutubeTranscript(task.browseUrl);
+              if (result.error) {
+                browseOutput = `[YouTube transcript error: ${result.error}]`;
+              } else {
+                browseOutput =
+                  `[YOUTUBE: ${result.title}]\n[URL: ${result.url}]\n\n${result.transcript}`;
+              }
+            } else if (task.browseMacro && task.browseQuery) {
+              // Search macro
+              sendStatus(`[${task.index}/${total}] Searching web: ${task.browseQuery}…`);
+              const result = await browseSearch(task.browseMacro, task.browseQuery);
+              if (result.error) {
+                browseOutput = `[Browse error: ${result.error}]`;
+              } else {
+                browseOutput =
+                  `[WEB SEARCH: ${task.browseMacro} — ${task.browseQuery}]\n` +
+                  `[TITLE: ${result.title}]\n\n${result.snapshot}`;
+              }
+            } else if (task.browseUrl) {
+              // Direct URL
+              sendStatus(`[${task.index}/${total}] Browsing: ${task.browseUrl}…`);
+              const result = await browseUrl(task.browseUrl);
+              if (result.error) {
+                browseOutput = `[Browse error: ${result.error}]`;
+              } else {
+                browseOutput =
+                  `[WEB: ${result.title}]\n[URL: ${result.url}]\n\n${result.snapshot}`;
+              }
+            } else {
+              browseOutput = `[Browse error: task has no url, macro, or query]`;
+            }
+          } catch (browseErr) {
+            browseOutput = `[Browse error: ${(browseErr as Error).message}]`;
+          }
+
+          // Store output for outputRequiredBy injection — same mechanism as analyze
+          attemptResult.output = browseOutput;
+          task.completedOutput = browseOutput;
+          taskApproved = true;
+          break;
+        }
+
+        // ── execute operation: run code in an isolated sandbox ────────────────
+        if (task.operation === 'execute') {
+          // Gate on feature flag — degrade gracefully if executor is disabled.
+          let executorEnabled = false;
+          try {
+            const { getSandboxExecutorEnabled } = await import('../db/ModelPathStore.js');
+            const { DatabaseManager: DM } = await import('../db/DatabaseManager.js');
+            executorEnabled = await getSandboxExecutorEnabled(DM.getInstance());
+          } catch { /* non-fatal — treat as disabled */ }
+
+          if (!executorEnabled) {
+            const desc = task.entrypoint ?? task.title;
+            const fallback =
+              `[Sandbox Executor is disabled. Cannot run: ${desc}. ` +
+              `Enable it in the PHOBOS Command Center to allow code execution.]`;
+            attemptResult.output = fallback;
+            task.completedOutput = fallback;
+            taskApproved = true;
+            break;
+          }
+
+          const runtime   = task.runtime   ?? 'node';
+          const entrypoint = task.entrypoint;
+          const timeoutMs  = Math.min(120_000, (task.timeoutSeconds ?? 30) * 1_000);
+
+          if (!entrypoint) {
+            const errMsg = `[Execute task missing entrypoint — cannot run]`;
+            attemptResult.output = errMsg;
+            task.completedOutput = errMsg;
+            taskApproved = true;
+            break;
+          }
+
+          let executeOutput: string;
+          try {
+            const { createSandbox, validateEntrypoint } = await import('../execution/SandboxManager.js');
+            const { runInSandbox } = await import('../execution/SandboxExecutor.js');
+
+            const taskIdStr = `${task.index}-${Date.now()}`;
+            const sandbox = await createSandbox({
+              taskId: taskIdStr,
+              workspaceDir: projectRoot,
+              sourceFiles: task.sourceFiles ?? [],
+              useWorkspace: !!(task.sourceFiles?.length),
+            });
+
+            let execResult;
+            try {
+              // Copy any files created by prior create tasks into the sandbox.
+              // These live in the workspace root after simulateAll committed them.
+              // We re-use the sourceFiles mechanism — they were already declared.
+              if (!validateEntrypoint(entrypoint, sandbox.sandboxDir)) {
+                // Entrypoint not in sandbox yet — check workspace and copy it in.
+                const srcPath = `${projectRoot}/${entrypoint}`;
+                const { copyFile } = await import('fs/promises');
+                try {
+                  await copyFile(srcPath, `${sandbox.sandboxDir}/${entrypoint}`);
+                } catch {
+                  executeOutput =
+                    `[Execute error: entrypoint "${entrypoint}" not found in sandbox or workspace. ` +
+                    `Ensure a preceding create task writes this file before execute runs.]`;
+                  await sandbox.cleanup();
+                  attemptResult.output = executeOutput;
+                  task.completedOutput = executeOutput;
+                  taskApproved = true;
+                  break;
+                }
+              }
+
+              agentState.transition('executing', entrypoint, task.index, total);
+              sendStatus(`[${task.index}/${total}] Running ${entrypoint}…`);
+              execResult = await runInSandbox({ runtime: runtime as 'node' | 'python' | 'bash', entrypoint, sandboxDir: sandbox.sandboxDir, timeoutMs });
+
+              // Copy declared output files back to workspace
+              if (task.outputFiles?.length) {
+                await sandbox.collectOutputs(task.outputFiles);
+              }
+            } finally {
+              await sandbox.cleanup();
+            }
+
+            // Emit execute_result SSE event for frontend result card
+            const stdoutPreview = execResult.stdout.split('\n')[0]?.slice(0, 120) ?? '';
+            this.sendEvent(reply, {
+              type: 'execute_result',
+              taskIndex: task.index,
+              exitCode: execResult.exitCode,
+              durationMs: execResult.durationMs,
+              timedOut: execResult.timedOut,
+              stdoutPreview,
+            });
+            this.options.onExecuteResult?.({
+              taskIndex: task.index,
+              exitCode: execResult.exitCode,
+              durationMs: execResult.durationMs,
+              timedOut: execResult.timedOut,
+              stdoutPreview,
+            });
+
+            // Format output for outputRequiredBy injection
+            const exitLabel = execResult.timedOut ? `TIMED OUT after ${timeoutMs / 1000}s` : `EXIT CODE: ${execResult.exitCode}`;
+            executeOutput =
+              `${exitLabel}\nDURATION: ${(execResult.durationMs / 1000).toFixed(1)}s\n\n` +
+              (execResult.stdout ? `STDOUT:\n${execResult.stdout}\n` : 'STDOUT:\n(empty)\n') +
+              (execResult.stderr ? `\nSTDERR:\n${execResult.stderr}` : '');
+
+            // ── Single automatic fix cycle on non-zero exit ─────────────────
+            if (execResult.exitCode !== 0 && task.retryWithFix && attempt < maxAttempts) {
+              sendStatus(`[${task.index}/${total}] Execution failed — requesting fix…`);
+              const fixInjection =
+                `\n\n<prior_task_output task="${task.title}" operation="execute">\n` +
+                executeOutput.slice(0, 8_000) +
+                `\n</prior_task_output>\n\n` +
+                `The script exited with a non-zero code. Fix the error in ${entrypoint} and rewrite it completely.`;
+              retryContext = {
+                attemptNumber: attempt,
+                priorThinking: attemptResult.thinking,
+                errorOutput: fixInjection,
+              };
+              taskFailReason = `Execute failed: exit ${execResult.exitCode}`;
+              continue;
+            }
+          } catch (execErr) {
+            executeOutput = `[Execute error: ${(execErr as Error).message}]`;
+          }
+
+          attemptResult.output = executeOutput;
+          task.completedOutput = executeOutput;
+          taskApproved = true;
+          break;
+        }
         // SEREN emitted a <continue_writing path="..."/> tag, run continuation
         // turns until the output is complete. Each turn appends to the prior
         // output. Hard cap: PAGINATE_MAX_CONTINUATIONS turns to prevent loops.
@@ -1641,6 +1839,7 @@ export class LoopController {
           const safeToken = toolFilter.feed(outChunk);
           if (safeToken) {
             reply.raw.write(`data: ${JSON.stringify({ type: 'output_token', token: safeToken })}\n\n`);
+            gsm.incrementTokens('seren');
           }
         }
 

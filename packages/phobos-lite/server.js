@@ -82,7 +82,12 @@ const MODEL_CATALOGUE = [
     contextLength: 8192,
     ngl:           99,
     jinjaTemplate:    true,
-    reasoningFormat:  'deepseek',  // field-path: <think> parsed into reasoning_content
+    // TAG-PATH: Gemma 4 emits <|channel>thought ... <channel|> tokens, NOT <think>...</think>.
+    // --reasoning-format deepseek CANNOT parse these into reasoning_content — they arrive
+    // verbatim in delta.content. Use 'none' so the server leaves all content in delta.content
+    // and the client extracts thinking via tag parsing after normalization.
+    // Validated against b8777: think probe PASS on E4B (with <|think|> system token) and 26B.
+    reasoningFormat:  'none',      // tag-path: <|channel>thought stays in delta.content
     alwaysThink:      false,       // has enable_thinking toggle — do NOT force --reasoning on
     extraBodyNoThink: { reasoning_format: 'none', chat_template_kwargs: { enable_thinking: false } },
   },
@@ -681,8 +686,18 @@ function buildLlamaArgs(device, model, modelPath, serverPort) {
     // Vulkan0 in the filtered set. --device Vulkan0 explicitly pins all tensor allocation
     // to that device, preventing the Vulkan backend from split-loading layers between
     // device VRAM and system RAM (the 890M symptom: model half in VRAM, half in RAM).
-    // Confirmed working on b8665 — test-model-parse.ts passes all 12 models with it.
+    // Validated working on b8777 — test-model-parse.ts passes all 11 models with it.
     a.push('--device', 'Vulkan0');
+
+    // --no-mmap for UMA/iGPU Vulkan on Windows:
+    // The Windows AMD Vulkan ICD reports a split heap (device-local + host-visible).
+    // mmap() maps the GGUF file into the host-visible heap, which the OS then shadows
+    // into pagefile — this causes very slow load times on iGPUs (54s → 22s with --no-mmap).
+    // On Linux/RADV the driver correctly exposes a single UMA heap so this is not needed.
+    // Intel iGPU on Windows has the same heap-split issue and benefits equally.
+    if (device.isUma && process.platform === 'win32') {
+      a.push('--no-mmap');
+    }
   }
   // Metal: no --device flag. Metal auto-selects the only GPU.
 
@@ -692,8 +707,9 @@ function buildLlamaArgs(device, model, modelPath, serverPort) {
   //
   //   Field-path (--reasoning-format deepseek):
   //     llama-server parses <think>...</think> into reasoning_content in the
-  //     streaming delta. Standard for Qwen3, Qwen3.5, Gemma 4, Magistral,
-  //     DeepSeek-R1, Nanbeige.
+  //     streaming delta. Standard for Qwen3, Qwen3.5, Magistral, DeepSeek-R1, Nanbeige.
+  //     NOTE: Gemma 4 is NOT field-path — it uses <|channel>thought/<channel|> tags
+  //     which deepseek parsing cannot handle. Gemma 4 uses tag-path (reasoningFormat:'none').
   //
   //   Tag-path (--reasoning-format none):
   //     <think> tags stay in delta.content for client-side extraction.

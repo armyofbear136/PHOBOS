@@ -473,6 +473,57 @@ if (MODE_CHECK) {
   writeManifest(manifest);
   console.log(`\n✅ Manifest written → ${path.relative(ROOT, MANIFEST)}`);
   console.log('   Commit this file to pin these versions for all machines.');
+
+  // ── Fetch SYBIL model if missing ────────────────────────────────────────────
+  // nomic-embed-text-v1.5.Q4_K_M.gguf is platform-independent — one copy for all
+  // platforms. Fetched into phobos/models/ and staged into dist/ on every build.
+  const sybilModel = path.join(ROOT, 'phobos', 'models', 'nomic-embed-text-v1.5.Q4_K_M.gguf');
+  if (!fs.existsSync(sybilModel) || fs.statSync(sybilModel).size < 60_000_000) {
+    console.log('\n🧠 SYBIL model missing — fetching nomic-embed-text-v1.5.Q4_K_M.gguf...');
+    try {
+      execSync('node scripts/fetch-sybil-model.js', { stdio: 'inherit', cwd: ROOT });
+    } catch (err) {
+      console.warn(`\n⚠️  SYBIL model fetch failed (non-fatal): ${err.message?.split('\n')[0] ?? err}`);
+      console.warn('   Run manually: node scripts/fetch-sybil-model.js');
+    }
+  } else {
+    const sizeMb = (fs.statSync(sybilModel).size / 1e6).toFixed(0);
+    console.log(`\n🧠 SYBIL model present (${sizeMb} MB) ✅`);
+  }
+
+  // ── Fetch DuckDB VSS extension if missing ────────────────────────────────────
+  // Platform-specific native extension — one per platform, version-pinned.
+  // Stored at phobos/extensions/v{version}/{platform}/vss.duckdb_extension
+  // so DatabaseManager can set extension_directory and LOAD vss finds it.
+  const pkg           = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const duckdbVersion = pkg.dependencies?.duckdb ?? '1.4.4';
+  const platMap       = {
+    'win32-x64':   'windows_amd64',
+    'darwin-arm64':'osx_arm64',
+    'darwin-x64':  'osx_amd64',
+    'linux-x64':   'linux_amd64',
+    'linux-arm64': 'linux_arm64',
+  };
+  for (const plat of targets) {
+    const dbPlat = platMap[plat];
+    if (!dbPlat) continue;
+    const vssPath = path.join(ROOT, 'phobos', 'extensions', `v${duckdbVersion}`, dbPlat, 'vss.duckdb_extension');
+    if (!fs.existsSync(vssPath) || fs.statSync(vssPath).size < 500_000) {
+      console.log(`\n🔌 VSS extension missing for ${plat} — fetching...`);
+      try {
+        execSync(`node scripts/fetch-vss-extension.js`, {
+          stdio: 'inherit', cwd: ROOT,
+          env: { ...process.env, PHOBOS_OVERRIDE_PLATFORM: plat },
+        });
+      } catch (err) {
+        console.warn(`\n⚠️  VSS extension fetch failed for ${plat} (non-fatal): ${err.message?.split('\n')[0] ?? err}`);
+        console.warn('   Run manually: node scripts/fetch-vss-extension.js');
+      }
+    } else {
+      const sizeMb = (fs.statSync(vssPath).size / 1e6).toFixed(2);
+      console.log(`\n🔌 VSS extension present for ${plat} (${sizeMb} MB) ✅`);
+    }
+  }
 }
 
 // ── Upstream check (always runs, informational only) ─────────────────────────

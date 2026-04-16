@@ -366,15 +366,23 @@ export function getReserveCompactList(): string {
  * Returns a formatted <active_skills> block ready for prompt injection.
  */
 export function getSkillInstructions(skillIds: string[]): string {
-  if (!_registryLoaded || _registry.length === 0) return '';
+  if (!_registryLoaded || _registry.length === 0) {
+    // System registry not loaded — try resolving entirely from user skills
+    return getUserSkillInstructions(skillIds);
+  }
 
-  const parts: string[] = [];
+  const systemParts: string[] = [];
+  const unresolvedIds: string[] = [];
+
   for (const id of skillIds) {
     const skill = _registry.find(s => s.manifest.id === id.trim());
-    if (!skill) continue;
+    if (!skill) {
+      unresolvedIds.push(id.trim());
+      continue;
+    }
     const content = skill.instructions?.trim();
     if (content) {
-      parts.push(
+      systemParts.push(
         `<skill id="${skill.manifest.id}" name="${skill.manifest.name}">
 ${content}
 </skill>`
@@ -382,8 +390,16 @@ ${content}
     }
   }
 
-  if (parts.length === 0) return '';
-  return `\n\n<active_skills>\n${parts.join('\n\n')}\n</active_skills>`;
+  // Resolve any IDs not found in the system registry against user skills
+  const userBlock = unresolvedIds.length > 0
+    ? getUserSkillInstructions(unresolvedIds)
+    : '';
+
+  const systemBlock = systemParts.length > 0
+    ? `\n\n<active_skills>\n${systemParts.join('\n\n')}\n</active_skills>`
+    : '';
+
+  return systemBlock + userBlock;
 }
 
 /**
@@ -431,6 +447,90 @@ export async function invokeSkill(
       }
     });
   });
+}
+
+/**
+ * Return a compact trigger-list of enabled user skills for SEREN's planning prompt.
+ * Formatted identically to getPrimeTriggerList() so SEREN treats them uniformly.
+ * Returns an empty string when no enabled user skills exist.
+ */
+export function getUserSkillTriggerList(): string {
+  // Dynamic import — UserSkillManager is a disk store, not loaded at startup.
+  // We call listUserSkills() synchronously via a cached snapshot updated on each
+  // scanOnStartup() / write operation. To avoid making this function async
+  // (which would require cascading async changes through TaskPlanner), we read the
+  // registry JSON synchronously here.
+  try {
+    const os   = require('node:os')   as typeof import('os');
+    const path = require('node:path') as typeof import('path');
+    const fs   = require('node:fs')   as typeof import('fs');
+
+    const registryPath = path.join(os.homedir(), '.phobos', 'user', '_registry.json');
+    if (!fs.existsSync(registryPath)) return '';
+
+    const raw = fs.readFileSync(registryPath, 'utf-8');
+    const registry = JSON.parse(raw) as {
+      skills: Array<{ id: string; name: string; trigger: string; enabled: boolean; scope: string }>;
+    };
+
+    const enabled = registry.skills.filter(s => s.enabled !== false);
+    if (enabled.length === 0) return '';
+
+    const lines = enabled.map(s => {
+      const trigger = (s.trigger || s.name).replace(/\n/g, ' ').slice(0, 120);
+      const scopeTag = s.scope !== 'both' ? ` [${s.scope} only]` : '';
+      return `  ${s.id}: ${trigger}${scopeTag}`;
+    });
+
+    return (
+      `\n\n<user_skills>\n` +
+      `These are skills created by the user. Assign skillId from this list when a task matches.\n` +
+      lines.join('\n') +
+      `\n</user_skills>`
+    );
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Fetch SKILL.md content for one or more user skill IDs.
+ * Returns a formatted <active_skills> block, or empty string if none found.
+ * Merges with system skill instructions — callers pass all requested IDs together.
+ */
+export function getUserSkillInstructions(skillIds: string[]): string {
+  if (skillIds.length === 0) return '';
+
+  try {
+    const os   = require('node:os')   as typeof import('os');
+    const path = require('node:path') as typeof import('path');
+    const fs   = require('node:fs')   as typeof import('fs');
+
+    const skillsDir = path.join(os.homedir(), '.phobos', 'user', 'skills');
+    const parts: string[] = [];
+
+    for (const id of skillIds) {
+      const skillMdPath = path.join(skillsDir, id, 'SKILL.md');
+      if (!fs.existsSync(skillMdPath)) continue;
+      const content = fs.readFileSync(skillMdPath, 'utf-8').trim();
+      if (!content) continue;
+
+      // Also read seren_context.md if present and non-empty — concatenate it
+      let serenCtx = '';
+      const serenPath = path.join(skillsDir, id, 'seren_context.md');
+      if (fs.existsSync(serenPath)) {
+        serenCtx = fs.readFileSync(serenPath, 'utf-8').trim();
+      }
+
+      const fullContent = serenCtx ? `${content}\n\n${serenCtx}` : content;
+      parts.push(`<skill id="${id}" source="user">\n${fullContent}\n</skill>`);
+    }
+
+    if (parts.length === 0) return '';
+    return `\n\n<active_skills>\n${parts.join('\n\n')}\n</active_skills>`;
+  } catch {
+    return '';
+  }
 }
 
 /**

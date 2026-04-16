@@ -19,7 +19,9 @@ import { ThreadWorkspace } from '../context/ThreadWorkspace.js';
 import { ThinkingStripper } from '../context/ThinkingStripper.js';
 import type { IntentType } from '../ai/IntentClassifier.js';
 import type { ClassificationContext } from '../ai/IntentClassifier.js';
-import { ENGINE_MODEL, COORDINATOR_MODEL as COORD_MODEL_REF, COORDINATOR_PROVIDER, getThinkingStrategy, setLogContext, clearLogContext, getModelVisionCapability } from '../ai/clients.js';
+import { ENGINE_MODEL, COORDINATOR_MODEL as COORD_MODEL_REF, COORDINATOR_PROVIDER, getThinkingStrategy, setLogContext, clearLogContext, getModelVisionCapability, coordinatorCall, engineStream } from '../ai/clients.js';
+import { embedTaskCompletion, retrieveWorkspaceMemory } from '../ai/MemoryWriter.js';
+import { gsm } from '../game/GameStateManager.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { exec, execFile, spawn } from 'child_process';
@@ -500,6 +502,9 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
     const imageAttachmentsForEngine: Array<{ filename: string; base64: string; mimeType: string }> = [];
     // Image content blocks for coordinator — populated only when coordinatorSupportsVision.
     const imageBlocksForCoord: Array<{ type: 'image_url'; image_url: { url: string } }> = [];
+    // Exhaustive text descriptions of images produced by the sighted model for the blind model.
+    // Key = filename, value = description text. Injected after [image: filename] in fullUserMessage.
+    const imageDescriptions: Map<string, string> = new Map();
 
     if (attachment_ids && attachment_ids.length > 0) {
       // Pre-load all attachment records to check for images before processing.
@@ -507,13 +512,57 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
       const validAttachRecs = allAttachRecs.filter(Boolean) as NonNullable<typeof allAttachRecs[number]>[];
       const hasImages = validAttachRecs.some(att => att.is_image);
 
-      // Reject the turn early if images are attached but neither model supports vision.
-      // SSE headers have not been written yet at this point, so respond with a plain
-      // HTTP 400 rather than an SSE error frame.
+      // ── Case 1: Neither model supports vision — reject immediately ─────────────
+      // SSE headers have not been written yet so we can return a plain HTTP 400.
       if (hasImages && !coordinatorSupportsVision && !engineSupportsVision) {
         return reply.status(400).send({
           error: 'Neither model supports images. Attach text files only, or switch to a vision-capable model in settings.',
         });
+      }
+
+      // ── Case 2: Only SEREN (engine) has vision — SEREN describes for SAYON ────
+      // Before other processing: SEREN sees the image first and produces an exhaustive
+      // description. This description is stored and injected into SAYON's prompt after
+      // the filename reference. SAYON never receives image bytes.
+      // This runs synchronously before SSE headers so the description is available
+      // for the entire downstream pipeline including context ingestion.
+      if (hasImages && !coordinatorSupportsVision && engineSupportsVision) {
+        const imageRecs = validAttachRecs.filter(att => att.is_image);
+        for (const att of imageRecs) {
+          try {
+            const imgBuf = fs.readFileSync(att.disk_path);
+            const b64 = imgBuf.toString('base64');
+            const description = await engineStream({
+              systemPrompt:
+                'You are performing image analysis for PHOBOS. ' +
+                'Describe this image exhaustively for a text-only model that cannot see it. ' +
+                'Cover: subject matter, spatial layout, colors, text visible in the image, ' +
+                'objects and their relationships, context, mood, and any details relevant to ' +
+                'understanding the image completely. Be precise and thorough. ' +
+                'This description will be the only visual context available to the coordinator.',
+              messages: [
+                {
+                  role: 'user',
+                  content: `Describe this image (filename: ${att.filename}) exhaustively:`,
+                },
+              ],
+              maxTokens: 1024,
+              temperature: 0.1,
+              mode: 'no_think',
+              imageAttachments: [{ filename: att.filename, base64: b64, mimeType: att.mime_type }],
+              stage: 'other',
+            });
+            if (description.trim()) {
+              imageDescriptions.set(att.filename, description.trim());
+              console.log(`[messages] SEREN described ${att.filename} for SAYON (${description.length} chars)`);
+            }
+          } catch (descErr) {
+            console.warn(
+              `[messages] SEREN image description failed for ${att.filename}:`,
+              descErr instanceof Error ? descErr.message : descErr
+            );
+          }
+        }
       }
 
       const fileBlocks: string[] = [];
@@ -526,45 +575,66 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
         );
 
         if (att.is_image) {
-          // Read raw bytes for base64 encoding — readFileSync is fine here since this
-          // is a request handler and the file is small (user-attached image).
           const imgBuf = fs.readFileSync(att.disk_path);
           const b64 = imgBuf.toString('base64');
 
-          if (coordinatorSupportsVision) {
-            // SAYON receives the actual image bytes via content array.
+          if (coordinatorSupportsVision && engineSupportsVision) {
+            // ── Case 3: Both have vision — pass bytes to both, no descriptions needed ─
             imageBlocksForCoord.push({
               type: 'image_url',
               image_url: { url: `data:${att.mime_type};base64,${b64}` },
             });
-            if (!engineSupportsVision) {
-              // SAYON can see the image but SEREN cannot — instruct SAYON to describe it.
-              fileBlocks.push(
-                `[image: ${att.filename}]\n` +
-                `IMPORTANT: SEREN does not support vision. You can see this image directly. ` +
-                `When constructing SEREN's task brief, describe the image contents in complete ` +
-                `detail so SEREN has full visual context without seeing the image bytes.`
-              );
-            } else {
-              // Both have vision — SAYON gets image bytes; SEREN gets them via imageAttachmentsForEngine below.
-              fileBlocks.push(`[image: ${att.filename}]`);
-            }
-          } else {
-            // SAYON does not support vision — filename reference only.
-            fileBlocks.push(`[image: ${att.filename}]`);
-          }
-
-          if (engineSupportsVision) {
             imageAttachmentsForEngine.push({
               filename: att.filename,
               base64: b64,
               mimeType: att.mime_type,
             });
+            fileBlocks.push(`[image: ${att.filename}]`);
+
+          } else if (coordinatorSupportsVision && !engineSupportsVision) {
+            // ── Case 4: Only SAYON has vision — SAYON sees bytes, SEREN gets description
+            // SAYON receives the actual image bytes. The text instruction below tells SAYON
+            // to produce an exhaustive description in its task brief so SEREN has full
+            // visual context. SAYON does this naturally during context ingestion and task
+            // decomposition — no separate description call needed here.
+            imageBlocksForCoord.push({
+              type: 'image_url',
+              image_url: { url: `data:${att.mime_type};base64,${b64}` },
+            });
+            fileBlocks.push(
+              `[image: ${att.filename}]\n` +
+              `VISION NOTE: SEREN cannot see images. You have full visual access to this image. ` +
+              `When building SEREN's task brief and any downstream task prompts, ` +
+              `include an exhaustive description of the image contents — subject, layout, ` +
+              `colors, text, objects, relationships, and any detail relevant to the task. ` +
+              `Do not assume SEREN can infer anything from the filename alone.`
+            );
+
+          } else {
+            // ── Case 5: Only SEREN has vision (came through Case 2 path) ────────────
+            // SEREN already described the image above. Inject the description after the
+            // filename reference so SAYON has text context. SEREN gets image bytes.
+            imageAttachmentsForEngine.push({
+              filename: att.filename,
+              base64: b64,
+              mimeType: att.mime_type,
+            });
+            const description = imageDescriptions.get(att.filename);
+            if (description) {
+              fileBlocks.push(
+                `[image: ${att.filename}]\n` +
+                `<image_description filename="${att.filename}">\n` +
+                description +
+                `\n</image_description>`
+              );
+            } else {
+              fileBlocks.push(`[image: ${att.filename}]`);
+            }
           }
+
         } else {
           const fileContent = await attachmentStore.readContent(att);
           fileBlocks.push(`<file path="${att.filename}">\n${fileContent}\n</file>`);
-          // Also expose to the loop controller so the engine can reference by path
           loadedAttachmentFiles.push({ path: att.filename, content: fileContent });
         }
       }
@@ -586,6 +656,8 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
     const sendEvent = (data: Record<string, unknown>): void => {
       reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
     };
+
+    gsm.setPersonaState('sayon', 'classifying_intent');
 
     try {
       // Load context that doesn't depend on ingestion first.
@@ -649,6 +721,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
         domain: 'inferred',
         routing: intent.routing,
       });
+      gsm.setPersonaState('sayon', 'assembling_context');
 
       // ── NEEDS_CLARIFICATION at classifier level ───────────────────────
       // If SAYON itself can tell the request is too vague, ask immediately
@@ -824,6 +897,17 @@ ${info.userPrompt}`;
               }, assistantMsg.id).catch(() => {});
             }
           },
+          onExecuteResult: (result) => {
+            // Stream execute result card to frontend immediately after the run.
+            sendEvent({
+              type: 'execute_result',
+              taskIndex: result.taskIndex,
+              exitCode: result.exitCode,
+              durationMs: result.durationMs,
+              timedOut: result.timedOut,
+              stdoutPreview: result.stdoutPreview,
+            });
+          },
         });
 
         // ── Phase 1 reply pre-fill ───────────────────────────────────────────
@@ -839,6 +923,8 @@ ${info.userPrompt}`;
           : undefined;
 
         const startTime = Date.now();
+        gsm.setPersonaState('sayon', 'coordinating');
+        gsm.setPersonaState('seren', 'decomposing_tasks');
         const attempts = await loopController.run(reply, {
           userMessage: fullUserMessage,
           intentType: intent.type as IntentType,
@@ -963,6 +1049,14 @@ ${info.userPrompt}`;
             );
 
             workspace.getIndex(threadId).catch(() => {});
+
+            // Embed significant content from this task output into SYBIL's semantic
+            // memory (workspace scope). Fire-and-forget — never blocks the response.
+            embedTaskCompletion(
+              threadId,
+              assistantMsg.id,
+              strippedOutput || bestAttempt.output,
+            ).catch(() => {});
           }
         }
 
@@ -996,6 +1090,8 @@ ${info.userPrompt}`;
         message: err instanceof Error ? err.message : 'Unknown error',
       });
     } finally {
+      gsm.setPersonaState('sayon', 'idle');
+      gsm.setPersonaState('seren', 'idle');
       clearLogContext();
       reply.raw.write('data: {"type":"done"}\n\n');
       reply.raw.end();
@@ -1112,6 +1208,7 @@ async function handleDirectResponse(
   };
 
   try {
+    gsm.setPersonaState('sayon', 'reviewing_output');
     // ── IMAGE_REQUEST / VIDEO_REQUEST: SAYON enhances prompt → create workflow → start generation ──
     if (intentType === 'IMAGE_REQUEST' || intentType === 'VIDEO_REQUEST') {
       const isVideo = intentType === 'VIDEO_REQUEST';
@@ -1347,6 +1444,7 @@ async function handleDirectResponse(
       if (_dbgCount <= 3) dbg(`[handleDirect:think:${_dbgCount}] ${JSON.stringify(token.slice(0, 80))}`);
       appendToSegment(token).catch(() => {});
       sendEvent({ type: 'think_token', token, source: 'coordinator' });
+      gsm.incrementTokens('sayon');
     }, forcedOpen);
 
     // ── Delta iterator: raw fetch for phobos, OpenAI SDK for others ──
@@ -1426,6 +1524,7 @@ async function handleDirectResponse(
       if (output) {
         outputBuf += output;
         sendEvent({ type: 'output_token', token: output });
+        gsm.incrementTokens('sayon');
       }
     }
     router.flush();
@@ -1466,12 +1565,14 @@ async function handleDirectResponse(
     }
 
     sendEvent({ type: 'complete', approved: true, bestAttempt: 1 });
+    gsm.setPersonaState('sayon', 'idle');
     return msg.id;
   } catch (err) {
     // Close open segment on error so it doesn't remain NULL completed_at forever
     await closeCoordSegment().catch(() => {});
     console.error('[handleDirectResponse] Error:', err);
     sendEvent({ type: 'error', message: 'Coordinator unavailable' });
+    gsm.setPersonaState('sayon', 'idle');
     return null;
   }
 }

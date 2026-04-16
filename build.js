@@ -500,7 +500,43 @@ export async function buildForPlatform({
     log('  ✅ configs/ (bundled model configs for PyTorch)');
   }
 
-  // ── Skills library ──────────────────────────────────────────────────────────
+  // ── SYBIL bundled models ────────────────────────────────────────────────────
+  // phobos/models/ contains pre-bundled GGUFs that ship with PHOBOS and are
+  // never user-managed. Currently: nomic-embed-text-v1.5.Q4_K_M.gguf (SYBIL).
+  // Staged to dist/phobos/models/ so startSybil() resolves the path at runtime
+  // regardless of SEA vs dev mode.
+  const bundledModelsDir = path.join(__dirname, 'phobos', 'models');
+  if (fs.existsSync(bundledModelsDir)) {
+    copyDirRec(bundledModelsDir, path.join(distDir, 'phobos', 'models'));
+    const ggufFiles = fs.readdirSync(bundledModelsDir).filter(f => f.endsWith('.gguf'));
+    const totalMb   = ggufFiles.reduce((sum, f) => sum + fs.statSync(path.join(bundledModelsDir, f)).size, 0) / 1e6;
+    log(`  ✅ phobos/models/ (${ggufFiles.length} bundled GGUF${ggufFiles.length !== 1 ? 's' : ''}, ${totalMb.toFixed(0)} MB — SYBIL)`);
+  } else {
+    log('  ⚠️  phobos/models/ missing — SYBIL disabled. Run: node scripts/fetch-sybil-model.js');
+  }
+
+  // ── DuckDB VSS extension ────────────────────────────────────────────────────
+  // phobos/extensions/ contains the pre-bundled vss.duckdb_extension.
+  // DuckDB expects: {extension_directory}/v{version}/{platform}/vss.duckdb_extension
+  // We set extension_directory to dist/phobos/extensions/ in DatabaseManager,
+  // so DuckDB finds it without touching ~/.duckdb/.
+  const bundledExtDir = path.join(__dirname, 'phobos', 'extensions');
+  if (fs.existsSync(bundledExtDir)) {
+    copyDirRec(bundledExtDir, path.join(distDir, 'phobos', 'extensions'));
+    // Count extension files staged
+    let extCount = 0;
+    const countExts = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (e.isDirectory()) countExts(path.join(dir, e.name));
+        else if (e.name.endsWith('.duckdb_extension')) extCount++;
+      }
+    };
+    countExts(bundledExtDir);
+    log(`  ✅ phobos/extensions/ (${extCount} DuckDB extension${extCount !== 1 ? 's' : ''} bundled)`);
+  } else {
+    log('  ⚠️  phobos/extensions/ missing — SYBIL VSS disabled. Run: node scripts/fetch-vss-extension.js');
+  }
+
   // phobos/skills/ must ship alongside the exe so SkillManager can find it at
   // runtime via process.execPath. The directory structure is preserved exactly:
   //   dist/phobos/skills/_registry.json

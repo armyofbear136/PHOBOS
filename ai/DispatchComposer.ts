@@ -1,5 +1,5 @@
 import { coordinatorCall, coordinatorStream } from './clients.js';
-import { getInjection, getReserveCompactList } from './SkillManager.js';
+import { getInjection, getReserveCompactList, getUserSkillTriggerList, getUserSkillInstructions } from './SkillManager.js';
 import type { IntentType } from './IntentClassifier.js';
 import type { FileSummary, ProjectScope } from './ContextIngester.js';
 import type { Task } from './TaskPlanner.js';
@@ -110,7 +110,7 @@ export interface ComposeInput {
 }
 
 export class DispatchComposer {
-  private buildSystemPrompt(input: ComposeInput): string {
+  private async buildSystemPrompt(input: ComposeInput): Promise<string> {
     const parts: string[] = [];
 
     // PHOBOS directives — hardcoded, always injected first, never sourced from DB.
@@ -141,6 +141,64 @@ export class DispatchComposer {
       `</phobos_directives>`
     );
     if (input.userDirectivesMd) parts.push(`<user_directives>\n${input.userDirectivesMd}\n</user_directives>`);
+
+    // Camofox web browse — injected only when the service is running so SEREN
+    // doesn't plan browse tasks on systems where the browser isn't available.
+    {
+      const { getCamofoxStatus } = await import('../phobos/CamofoxManager.js').catch(() => ({ getCamofoxStatus: () => ({ state: 'stopped' as const }) }));
+      if (getCamofoxStatus().state === 'running') {
+        parts.push(
+          `<tool_context>\n` +
+          `PHOBOS has a live web browser (Camofox) available. You can access real-time web content\n` +
+          `during task execution using the browse operation.\n\n` +
+          `Browse operations:\n` +
+          `  { "operation": "browse", "browseUrl": "https://example.com" }\n` +
+          `    → Returns an accessibility snapshot of the page (~90% smaller than HTML)\n\n` +
+          `  { "operation": "browse", "browseMacro": "@google_search", "browseQuery": "your search terms" }\n` +
+          `    → Executes an anti-detection search and returns results\n\n` +
+          `  { "operation": "browse", "browseMacro": "@youtube_transcript", "browseUrl": "https://youtube.com/watch?v=..." }\n` +
+          `    → Fetches the full transcript of a YouTube video (no playback needed)\n\n` +
+          `Available search macros: @google_search, @youtube_search, @reddit_subreddit,\n` +
+          `@wikipedia_search, @amazon_search\n\n` +
+          `Use browse when:\n` +
+          `- You need current information beyond your training data\n` +
+          `- The user asks you to look something up, check a price, verify a fact, or read a page\n` +
+          `- A task requires real-time data (weather, news, documentation, APIs)\n` +
+          `- The user asks about a YouTube video — use @youtube_transcript to get the full transcript\n\n` +
+          `Browse results are injected into downstream tasks via outputRequiredBy automatically.\n` +
+          `</tool_context>`
+        );
+      }
+    }
+
+    // Sandbox Executor — injected only when the feature is enabled so SEREN
+    // doesn't plan execute tasks on systems where the executor isn't available.
+    {
+      let executorEnabled = false;
+      try {
+        const { getSandboxExecutorEnabled } = await import('../db/ModelPathStore.js').catch(() => ({ getSandboxExecutorEnabled: async () => false }));
+        const { DatabaseManager: DM } = await import('../db/DatabaseManager.js');
+        executorEnabled = await getSandboxExecutorEnabled(DM.getInstance());
+      } catch { /* non-fatal */ }
+      if (executorEnabled) {
+        parts.push(
+          `<tool_context>\n` +
+          `PHOBOS has a Sandbox Executor available. SEREN can run code it writes in an isolated environment.\n\n` +
+          `Execute operation:\n` +
+          `  { "operation": "execute", "runtime": "node"|"python"|"bash", "entrypoint": "filename.ts" }\n\n` +
+          `Always pair with a preceding create task that writes the script.\n` +
+          `Set retryWithFix: true if execution success is required for downstream tasks (one auto-fix cycle on failure).\n` +
+          `Set outputFiles: ["result.json"] to copy files from the sandbox back to the workspace after execution.\n` +
+          `Use outputRequiredBy to inject stdout/stderr/exit code into downstream tasks.\n\n` +
+          `Runtimes:\n` +
+          `  node   → runs via tsx (TypeScript supported natively, no compile step)\n` +
+          `  python → runs via PHOBOS venv Python (all installed packages available)\n` +
+          `  bash   → bash on Linux/macOS, cmd.exe on Windows\n\n` +
+          `Limits: timeoutSeconds max 120 (default 30), output capped at 50 KB.\n` +
+          `</tool_context>`
+        );
+      }
+    }
     if (input.projectMd) parts.push(`<project_md>\n${input.projectMd}\n</project_md>`);
     if (input.chatMd) parts.push(`<chat_md>\n${input.chatMd}\n</chat_md>`);
 
@@ -227,6 +285,8 @@ export class DispatchComposer {
         analyze: 'Analyze',
         respond: 'Respond',
         image_gen: 'Generate images for',
+        browse: 'Browse web for',
+        execute: 'Execute code for',
       };
 
       // Build SAYON's first-person handoff message for this task.
@@ -518,6 +578,17 @@ Attempt ${attemptNumber}/3. Address the issues above precisely. Do not repeat th
     if (isExecutionTask) {
       const reserveList = getReserveCompactList();
       if (reserveList) parts.push(reserveList);
+      // User skills: injected as a separate block so SEREN can distinguish them
+      // from system reserve skills and reference them by skillId during planning.
+      const userSkillList = getUserSkillTriggerList();
+      if (userSkillList) parts.push(userSkillList);
+      // If this task has a skillId that resolves to a user skill, inject its
+      // full SKILL.md content immediately — no RESERVE_SKILL_REQUEST round-trip needed.
+      const taskSkillId = input.currentTask?.skillId;
+      if (taskSkillId) {
+        const userSkillContent = getUserSkillInstructions([taskSkillId]);
+        if (userSkillContent) parts.push(userSkillContent);
+      }
     }
 
     return parts.join('\n\n');
@@ -570,7 +641,7 @@ Attempt ${attemptNumber}/3. Address the issues above precisely. Do not repeat th
   }
 
   async compose(input: ComposeInput): Promise<DispatchPackage> {
-    const systemPrompt = this.buildSystemPrompt(input);
+    const systemPrompt = await this.buildSystemPrompt(input);
 
     const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
       ...input.conversationHistory

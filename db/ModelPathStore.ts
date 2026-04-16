@@ -131,3 +131,28 @@ async function persistOverrides(db: DatabaseManager): Promise<void> {
   for (const [k, v] of _overrides) obj[k] = v;
   await upsert(db, KEY_OVERRIDES, JSON.stringify(obj));
 }
+
+// ── Sandbox Executor feature flag ─────────────────────────────────────────────
+// Persisted in the existing model_config key-value table.
+const KEY_SANDBOX_EXECUTOR = 'feature_sandbox_executor_enabled';
+
+export async function getSandboxExecutorEnabled(db: DatabaseManager): Promise<boolean> {
+  const row = await db.queryOne<{ value: string }>(
+    `SELECT value FROM model_config WHERE key = ?`, [KEY_SANDBOX_EXECUTOR]
+  );
+  return row?.value === 'true';
+}
+
+export async function setSandboxExecutorEnabled(db: DatabaseManager, enabled: boolean): Promise<void> {
+  const now = new Date().toISOString();
+  const existing = await db.queryOne<{ value: string }>(
+    `SELECT value FROM model_config WHERE key = ?`, [KEY_SANDBOX_EXECUTOR]
+  );
+  if (existing !== null) {
+    await db.run(`UPDATE model_config SET value = ?, updated_at = ? WHERE key = ?`,
+      [String(enabled), now, KEY_SANDBOX_EXECUTOR]);
+  } else {
+    await db.run(`INSERT INTO model_config (key, value, updated_at) VALUES (?, ?, ?)`,
+      [KEY_SANDBOX_EXECUTOR, String(enabled), now]);
+  }
+}

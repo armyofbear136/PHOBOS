@@ -6,6 +6,8 @@ import { CopilotMemoryStore } from '../db/CopilotMemoryStore.js';
 import { CopilotRelationshipStore } from '../db/CopilotRelationshipStore.js';
 import { CopilotIndex } from '../context/CopilotIndex.js';
 import { buildCopilotSystemPrompt, COPILOT_THREAD_IDS, type CopilotPersona } from '../ai/CopilotPersonas.js';
+import { embedCopilotExchange, embedExplicitMemory, retrieveCopilotMemory } from '../ai/MemoryWriter.js';
+import { gsm } from '../game/GameStateManager.js';
 
 /**
  * Registers all copilot routes.
@@ -18,6 +20,38 @@ import { buildCopilotSystemPrompt, COPILOT_THREAD_IDS, type CopilotPersona } fro
  * POST /api/copilot/memory   — manual memory store (optional)
  * GET  /api/copilot/memory/:persona — list memories
  */
+
+// ── Copilot streaming helpers ──────────────────────────────────────────────────
+
+/**
+ * Normalize all model-specific thinking tag variants to <think>/<\/think>.
+ * Handles: Gemma 4 channel format, Ministral bracket format.
+ * Applied per-chunk before tag-path parsing so all downstream logic uses one format.
+ */
+function normalizeCopilotThinkTags(raw: string): string {
+  return raw
+    .replace(/\[THINK\]/gi,        '<think>')
+    .replace(/\[\/THINK\]/gi,      '</think>')
+    .replace(/<\|channel>thought/g, '<think>')
+    .replace(/<channel\|>/g,       '</think>');
+}
+
+/**
+ * Strip inline directive tags from a token before emitting to the frontend.
+ * These tags are backend instructions and must never appear in the chat bubble.
+ *   [REMEMBER category:key=value]
+ *   [EMOTION <state>]
+ *   [BOND +/-n]
+ * Returns the cleaned token, or empty string if the entire token was a directive.
+ */
+function stripDirectiveTags(token: string): string {
+  return token
+    .replace(/\[REMEMBER\s+\w+:[^\]]+\]/gi, '')
+    .replace(/\[EMOTION\s+\w+\]/gi, '')
+    .replace(/\[BOND\s+[+-]?\d*\.?\d+\]/gi, '')
+    .trim();
+}
+
 export async function registerCopilotRoutes(fastify: FastifyInstance): Promise<void> {
   const db = DatabaseManager.getInstance();
   const threadStore = new ThreadStore(db);
@@ -165,12 +199,22 @@ async function handleCopilotStream(
     reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
+  gsm.setPersonaState(persona, 'copilot_active');
+
   try {
-    // Build context — fetch all three in parallel
-    const [systemOverview, memoryContext, relState] = await Promise.all([
+    // Build context — fetch all four in parallel.
+    // retrieveCopilotMemory is non-blocking: returns '' if SYBIL is offline.
+    // Use the last 80 chars of userContent as query seed when the message is short.
+    const queryText = userContent.length < 40
+      ? userContent + ' ' + (await messageStore.getByThread(threadId, false))
+          .slice(-3).map(m => m.content).join(' ')
+      : userContent;
+
+    const [systemOverview, memoryContext, relState, semanticMemory] = await Promise.all([
       copilotIndex.renderSystemOverview(),
       memoryStore.renderMemoryContext(persona),
       relStore.getState(persona),
+      retrieveCopilotMemory(persona, queryText.slice(0, 800)),
     ]);
     const daysKnown = await relStore.getDaysKnown(persona);
 
@@ -181,7 +225,12 @@ async function handleCopilotStream(
       daysKnown,
     };
 
-    const systemPrompt = buildCopilotSystemPrompt(persona, systemOverview, memoryContext, relationship);
+    // Append semantic memory block to the structured memory context if SYBIL returned results.
+    const fullMemoryContext = semanticMemory
+      ? memoryContext + '\n' + semanticMemory
+      : memoryContext;
+
+    const systemPrompt = buildCopilotSystemPrompt(persona, systemOverview, fullMemoryContext, relationship);
 
     // Load conversation history (last 15 messages for context)
     const allMessages = await messageStore.getByThread(threadId, false);
@@ -192,9 +241,9 @@ async function handleCopilotStream(
 
     // Route to the correct model
     if (persona === 'sayon') {
-      await streamSayon(systemPrompt, history, sendEvent, threadId, messageStore, memoryStore, relStore);
+      await streamSayon(systemPrompt, history, userContent, sendEvent, threadId, messageStore, memoryStore, relStore);
     } else {
-      await streamSeren(systemPrompt, history, sendEvent, threadId, messageStore, memoryStore, relStore);
+      await streamSeren(systemPrompt, history, userContent, sendEvent, threadId, messageStore, memoryStore, relStore);
     }
   } catch (err) {
     console.error(`[Copilot:${persona}] Error:`, err);
@@ -209,6 +258,7 @@ async function handleCopilotStream(
 async function streamSayon(
   systemPrompt: string,
   history: Array<{ role: 'user' | 'assistant'; content: string }>,
+  userContent: string,
   sendEvent: (data: Record<string, unknown>) => void,
   threadId: string,
   messageStore: MessageStore,
@@ -221,66 +271,61 @@ async function streamSayon(
     applyThinkingStrategy, COORDINATOR_PROVIDER,
   } = await import('../ai/clients.js');
 
+  // SAYON copilot: use no_think mode — SAYON is a fast coordinator, not a deep reasoner.
+  // Thinking tokens are suppressed entirely in the output stream. If thinking leaks through
+  // (always-think models like Nemotron), the tag-path parser below captures and emits them
+  // as copilot_thinking events rather than polluting the visible response.
+  const SAYON_MODE = 'no_think' as const;
+
   const strategy = getThinkingStrategy(COORDINATOR_PROVIDER, COORDINATOR_MODEL);
   const fullSystem = systemPrompt + strategy.systemSuffix;
 
   const { messages: stratMessages } = applyThinkingStrategy(
-    history, fullSystem, COORDINATOR_PROVIDER, COORDINATOR_MODEL, 'think'
+    history, fullSystem, COORDINATOR_PROVIDER, COORDINATOR_MODEL, SAYON_MODE
   );
 
   const coordMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
     { role: 'system', content: fullSystem },
     ...stratMessages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+    { role: 'user', content: userContent },
   ];
 
-  const extraBody = getThinkingExtraBody(COORDINATOR_PROVIDER, COORDINATOR_MODEL, 'think');
-
-  let stream: any;
-  try {
-    stream = await coordinatorClient.chat.completions.create({
-      model: COORDINATOR_MODEL,
-      messages: coordMessages,
-      max_tokens: 4096,
-      temperature: 0.4,
-      stream: true as const,
-      ...(Object.keys(extraBody).length > 0 ? { extra_body: extraBody } : {}),
-    });
-  } catch {
-    stream = await coordinatorClient.chat.completions.create({
-      model: COORDINATOR_MODEL,
-      messages: coordMessages,
-      max_tokens: 4096,
-      temperature: 0.4,
-      stream: true as const,
-    });
-  }
+  const extraBody = getThinkingExtraBody(COORDINATOR_PROVIDER, COORDINATOR_MODEL, SAYON_MODE);
+  const coordBaseURL = ((coordinatorClient as unknown as { baseURL?: string }).baseURL ?? '').replace(/\/$/, '');
+  const isPhobosCoord = /127\.0\.0\.1:163|localhost:163/.test(coordBaseURL);
 
   let outputBuf = '';
   let thinkBuf = '';
   let inThinkTag = false;
 
-  for await (const chunk of stream) {
-    const delta = chunk.choices[0]?.delta as Record<string, unknown>;
-
+  async function processDelta(delta: Record<string, unknown>): Promise<void> {
     if (strategy.thinkingPath === 'field') {
+      // Field-path: reasoning arrives in a dedicated delta field, content has the output.
+      // For SAYON no_think: reasoning_content should be empty. If it isn't (always-think
+      // model), capture it as copilot_thinking but do not emit to visible stream.
       let thinkToken = (delta.reasoning_content ?? delta.reasoning ?? delta.thinking) as string | null | undefined;
       const outToken = delta.content as string | null | undefined;
       if (thinkToken) {
         thinkToken = thinkToken.replace(/<\/?think>/g, '');
         if (thinkToken) {
           thinkBuf += thinkToken;
-          // Emit as copilot_thinking — NOT think_token / thinking_segment
           sendEvent({ type: 'copilot_thinking', token: thinkToken });
         }
       }
       if (outToken) {
-        outputBuf += outToken;
-        sendEvent({ type: 'token', token: outToken });
+        const clean = stripDirectiveTags(outToken);
+        if (clean) {
+          outputBuf += clean;
+          sendEvent({ type: 'token', token: clean });
+          gsm.incrementTokens('sayon');
+        }
       }
     } else {
+      // Tag-path: all content arrives in delta.content including any thinking tags.
+      // Normalize Gemma 4 channel format and Ministral bracket format → <think>/<\/think>.
       const rawContent = delta?.content as string | null | undefined;
       if (rawContent) {
-        let remaining = rawContent;
+        let remaining = normalizeCopilotThinkTags(rawContent);
         while (remaining.length > 0) {
           if (inThinkTag) {
             const closeIdx = remaining.indexOf('</think>');
@@ -300,14 +345,22 @@ async function streamSayon(
           } else {
             const openIdx = remaining.indexOf('<think>');
             if (openIdx === -1) {
-              outputBuf += remaining;
-              sendEvent({ type: 'token', token: remaining });
+              const clean = stripDirectiveTags(remaining);
+              if (clean) {
+                outputBuf += clean;
+                sendEvent({ type: 'token', token: clean });
+                gsm.incrementTokens('sayon');
+              }
               remaining = '';
             } else {
               const before = remaining.slice(0, openIdx);
               if (before) {
-                outputBuf += before;
-                sendEvent({ type: 'token', token: before });
+                const clean = stripDirectiveTags(before);
+                if (clean) {
+                  outputBuf += clean;
+                  sendEvent({ type: 'token', token: clean });
+                  gsm.incrementTokens('sayon');
+                }
               }
               inThinkTag = true;
               remaining = remaining.slice(openIdx + '<think>'.length);
@@ -318,11 +371,76 @@ async function streamSayon(
     }
   }
 
+  if (isPhobosCoord) {
+    // ── Phobos: raw fetch to preserve reasoning_content (needed for field-path models) ──
+    const callBody: Record<string, unknown> = {
+      model: COORDINATOR_MODEL,
+      messages: coordMessages,
+      max_tokens: 4096,
+      temperature: 0.4,
+      stream: true,
+      ...extraBody,
+    };
+    const resp = await fetch(`${coordBaseURL}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(callBody),
+    });
+    if (!resp.ok || !resp.body) throw new Error(`[Copilot:sayon] HTTP ${resp.status}`);
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const json = trimmed.slice(5).trim();
+        if (json === '[DONE]') break;
+        try {
+          const parsed = JSON.parse(json);
+          const delta = parsed?.choices?.[0]?.delta as Record<string, unknown> | undefined;
+          if (delta) await processDelta(delta);
+        } catch { /* malformed chunk */ }
+      }
+    }
+  } else {
+    // ── Non-phobos: OpenAI SDK ──
+    let stream: any;
+    try {
+      stream = await coordinatorClient.chat.completions.create({
+        model: COORDINATOR_MODEL,
+        messages: coordMessages,
+        max_tokens: 4096,
+        temperature: 0.4,
+        stream: true as const,
+        ...(Object.keys(extraBody).length > 0 ? { extra_body: extraBody } : {}),
+      });
+    } catch {
+      stream = await coordinatorClient.chat.completions.create({
+        model: COORDINATOR_MODEL,
+        messages: coordMessages,
+        max_tokens: 4096,
+        temperature: 0.4,
+        stream: true as const,
+      });
+    }
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta as Record<string, unknown>;
+      await processDelta(delta);
+    }
+  }
+
   // Persist assistant message — NO thinking_segments writes, NO thinking_trace in DB
   // Strip inline directive tags before storing — they are backend instructions, not chat content
   const finalContent = outputBuf
     .replace(/\[REMEMBER\s+\w+:[^\]]+\]/gi, '')
     .replace(/\[EMOTION\s+\w+\]/gi, '')
+    .replace(/\[BOND\s+[+-]?\d*\.?\d+\]/gi, '')
     .trim() || '(no output)';
   await messageStore.insert({
     thread_id: threadId,
@@ -335,6 +453,10 @@ async function streamSayon(
   await extractAndStoreEmotion(outputBuf, 'sayon', relStore);
   await relStore.recordExchange('sayon');
 
+  // Embed this exchange in SYBIL's semantic memory (fire-and-forget).
+  embedCopilotExchange('sayon', userContent, finalContent).catch(() => {});
+
+  gsm.setPersonaState('sayon', 'idle');
   sendEvent({ type: 'complete' });
 }
 
@@ -343,6 +465,7 @@ async function streamSayon(
 async function streamSeren(
   systemPrompt: string,
   history: Array<{ role: 'user' | 'assistant'; content: string }>,
+  userContent: string,
   sendEvent: (data: Record<string, unknown>) => void,
   threadId: string,
   messageStore: MessageStore,
@@ -365,9 +488,12 @@ async function streamSeren(
   const engineBaseURL = ((engineClient as unknown as { baseURL?: string }).baseURL ?? '').replace(/\/$/, '');
   const extraBody = getThinkingExtraBody(ENGINE_PROVIDER, ENGINE_MODEL, 'think');
 
+  // SEREN copilot: always use 'think' mode — SEREN is the deep reasoning engine.
+  // Thinking tokens are captured and emitted as copilot_thinking events below.
   const allMessages: Array<{ role: string; content: string }> = [
     { role: 'system', content: fullSystem },
     ...stratMessages.map(m => ({ role: m.role, content: m.content })),
+    { role: 'user', content: userContent },
   ];
 
   const callParams: Record<string, unknown> = {
@@ -381,6 +507,7 @@ async function streamSeren(
 
   let outputBuf = '';
   let thinkBuf = '';
+  let inThinkTagRawFetch = false;  // tag-path state for raw-fetch phobos path
 
   // Phobos provider: raw fetch to preserve reasoning_content
   if (ENGINE_PROVIDER === 'phobos') {
@@ -422,14 +549,51 @@ async function streamSeren(
               }
             }
             if (outToken) {
-              outputBuf += outToken;
-              sendEvent({ type: 'token', token: outToken });
+              const clean = stripDirectiveTags(outToken);
+              if (clean) {
+                outputBuf += clean;
+                sendEvent({ type: 'token', token: clean });
+                gsm.incrementTokens('seren');
+              }
             }
           } else {
-            const outToken = delta.content as string | null | undefined;
-            if (outToken) {
-              outputBuf += outToken;
-              sendEvent({ type: 'token', token: outToken });
+            const rawContent = delta.content as string | null | undefined;
+            if (rawContent) {
+              // Normalize all thinking tag variants before tag-path parsing
+              let remaining = normalizeCopilotThinkTags(rawContent);
+              let inThinkTagRaw = (outputBuf === '' && thinkBuf.length > 0); // carry state
+              // Use module-level inThinkTagRaw — need a closure var per-stream
+              // This raw-fetch path shares inThinkTagRaw from outer scope below
+              while (remaining.length > 0) {
+                if (inThinkTagRawFetch) {
+                  const closeIdx = remaining.indexOf('</think>');
+                  if (closeIdx === -1) {
+                    thinkBuf += remaining;
+                    sendEvent({ type: 'copilot_thinking', token: remaining });
+                    remaining = '';
+                  } else {
+                    const before = remaining.slice(0, closeIdx);
+                    if (before) { thinkBuf += before; sendEvent({ type: 'copilot_thinking', token: before }); }
+                    inThinkTagRawFetch = false;
+                    remaining = remaining.slice(closeIdx + '</think>'.length);
+                  }
+                } else {
+                  const openIdx = remaining.indexOf('<think>');
+                  if (openIdx === -1) {
+                    const clean = stripDirectiveTags(remaining);
+                    if (clean) { outputBuf += clean; sendEvent({ type: 'token', token: clean }); gsm.incrementTokens('seren'); }
+                    remaining = '';
+                  } else {
+                    const before = remaining.slice(0, openIdx);
+                    if (before) {
+                      const clean = stripDirectiveTags(before);
+                      if (clean) { outputBuf += clean; sendEvent({ type: 'token', token: clean }); gsm.incrementTokens('seren'); }
+                    }
+                    inThinkTagRawFetch = true;
+                    remaining = remaining.slice(openIdx + '<think>'.length);
+                  }
+                }
+              }
             }
           }
         } catch { /* malformed chunk */ }
@@ -464,13 +628,18 @@ async function streamSeren(
           }
         }
         if (outToken) {
-          outputBuf += outToken;
-          sendEvent({ type: 'token', token: outToken });
+          const clean = stripDirectiveTags(outToken);
+          if (clean) {
+            outputBuf += clean;
+            sendEvent({ type: 'token', token: clean });
+            gsm.incrementTokens('seren');
+          }
         }
       } else {
         const rawContent = delta?.content as string | null | undefined;
         if (rawContent) {
-          let remaining = rawContent;
+          // Normalize all thinking tag variants before parsing
+          let remaining = normalizeCopilotThinkTags(rawContent);
           while (remaining.length > 0) {
             if (inThinkTag) {
               const closeIdx = remaining.indexOf('</think>');
@@ -490,14 +659,22 @@ async function streamSeren(
             } else {
               const openIdx = remaining.indexOf('<think>');
               if (openIdx === -1) {
-                outputBuf += remaining;
-                sendEvent({ type: 'token', token: remaining });
+                const clean = stripDirectiveTags(remaining);
+                if (clean) {
+                  outputBuf += clean;
+                  sendEvent({ type: 'token', token: clean });
+                  gsm.incrementTokens('seren');
+                }
                 remaining = '';
               } else {
                 const before = remaining.slice(0, openIdx);
                 if (before) {
-                  outputBuf += before;
-                  sendEvent({ type: 'token', token: before });
+                  const clean = stripDirectiveTags(before);
+                  if (clean) {
+                    outputBuf += clean;
+                    sendEvent({ type: 'token', token: clean });
+                    gsm.incrementTokens('seren');
+                  }
                 }
                 inThinkTag = true;
                 remaining = remaining.slice(openIdx + '<think>'.length);
@@ -514,6 +691,7 @@ async function streamSeren(
   const finalContent = outputBuf
     .replace(/\[REMEMBER\s+\w+:[^\]]+\]/gi, '')
     .replace(/\[EMOTION\s+\w+\]/gi, '')
+    .replace(/\[BOND\s+[+-]?\d*\.?\d+\]/gi, '')
     .trim() || '(no output)';
   await messageStore.insert({
     thread_id: threadId,
@@ -526,6 +704,10 @@ async function streamSeren(
   await extractAndStoreEmotion(outputBuf, 'seren', relStore);
   await relStore.recordExchange('seren');
 
+  // Embed this exchange in SYBIL's semantic memory (fire-and-forget).
+  embedCopilotExchange('seren', userContent, finalContent).catch(() => {});
+
+  gsm.setPersonaState('seren', 'idle');
   sendEvent({ type: 'complete' });
 }
 
@@ -551,6 +733,8 @@ async function extractAndStoreMemories(
     try {
       await memoryStore.store(persona, category.trim(), key.trim(), value.trim());
       console.log(`[Copilot:${persona}] Stored memory: ${category}/${key}`);
+      // Also embed into SYBIL's vector store for semantic recall (fire-and-forget).
+      embedExplicitMemory(persona, category.trim(), key.trim(), value.trim()).catch(() => {});
     } catch (err) {
       console.warn(`[Copilot:${persona}] Memory store failed:`, err);
     }

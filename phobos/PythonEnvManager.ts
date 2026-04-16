@@ -676,6 +676,17 @@ async function installDiffusersStack(pyBin: string): Promise<{ ok: boolean; erro
     'gguf>=0.10.0',
     'sentencepiece',
     'protobuf',
+    // Training deps — installed here so the venv is training-ready from setup.
+    // peft/bitsandbytes/prodigyopt are only ~100 MB combined and training is
+    // a first-class feature. ensureTrainingDeps() will be a fast no-op.
+    'peft>=0.10.0',
+    'bitsandbytes>=0.43.0',
+    'prodigyopt>=1.0',
+    'torchvision',
+    'Pillow',
+    // Caption deps — Florence-2 requires timm and einops.
+    'timm',
+    'einops',
   ]);
 }
 

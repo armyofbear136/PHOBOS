@@ -36,6 +36,8 @@ import {
   startServer,
 } from '../phobos/LlamaServerManager.js';
 
+import { gsm } from '../game/GameStateManager.js';
+
 // ── Default node for a brand-new workflow ────────────────────────────────────
 // New workflows start with a single Generate node pre-populated.
 // When a model profile is available, all defaults come from the profile.
@@ -721,6 +723,7 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
       };
       runStatus.set(workflowId, status);
       _imageGenerating = true;
+      gsm.setImageGenerating(true);
 
       const pushPhase = (renderPhase: string, detail: string) => {
         for (const p of status.phases) p.done = true;
@@ -837,6 +840,7 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
           // be stuck on the generating screen.
           status.generating = false;
           _imageGenerating = false;
+          gsm.setImageGenerating(false);
           status.completedAt = Date.now();
 
           // Restart all LLM servers that were stopped (background, non-blocking)

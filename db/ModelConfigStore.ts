@@ -45,7 +45,7 @@ export const PROVIDERS: ProviderOption[] = [
   {
     id: 'phobos',
     label: 'PHOBOS Local',
-    defaultEndpoint: 'http://127.0.0.1:52626/v1',  // SAYON default; engine overrides to 52627
+    defaultEndpoint: 'http://127.0.0.1:16313/v1',  // SAYON port; engine overrides to 16314
     requiresApiKey: false,
     thinkingMode: 'system_prompt',
   },
@@ -110,15 +110,15 @@ export const COORDINATOR_MODELS = ALL_MODELS;
 export const ENGINE_MODELS = ALL_MODELS;
 
 const DEFAULT_COORDINATOR: RoleConfig = {
-  provider: 'fastflowllm',
-  endpoint: 'http://localhost:52625/v1',
-  model: 'llama3.1:8b',
+  provider: 'phobos',
+  endpoint: 'http://127.0.0.1:16313/v1',
+  model: 'gemma4-e4b-q4',
 };
 
 const DEFAULT_ENGINE: RoleConfig = {
-  provider: 'ollama',
-  endpoint: 'http://localhost:11434/v1',
-  model: 'qwen3:30b-a3b',
+  provider: 'phobos',
+  endpoint: 'http://127.0.0.1:16314/v1',
+  model: 'gemma4-26b-a4b-q4',
 };
 
 export class ModelConfigStore {
@@ -154,7 +154,12 @@ export class ModelConfigStore {
     try {
       const parsed = JSON.parse(raw) as Partial<RoleConfig>;
       if (!parsed.provider) {
-        parsed.provider = parsed.endpoint?.includes('52625') ? 'fastflowllm' : 'ollama';
+        parsed.provider = parsed.endpoint?.includes('16313') ? 'phobos' 
+                        : parsed.endpoint?.includes('52625') ? 'fastflowllm' : 'ollama';
+      }
+      // Migrate stale phobos coordinator configs saved with old port 52626
+      if (parsed.provider === 'phobos' && parsed.endpoint?.includes('52626')) {
+        parsed.endpoint = 'http://127.0.0.1:16313/v1';
       }
       return parsed as RoleConfig;
     } catch { return DEFAULT_COORDINATOR; }
@@ -168,10 +173,12 @@ export class ModelConfigStore {
       if (!parsed.provider) {
         parsed.provider = parsed.endpoint?.includes('11434') ? 'ollama' : 'fastflowllm';
       }
-      // Migrate stale phobos engine configs that were saved with the coordinator port (52626).
-      // Engine must use SEREN port 52627; coordinator uses SAYON port 52626.
-      if (parsed.provider === 'phobos' && parsed.endpoint?.includes('52626')) {
-        parsed.endpoint = parsed.endpoint.replace('52626', '52627');
+      // Migrate stale phobos engine configs saved with old port numbers.
+      // Engine must use SEREN port 16314; coordinator uses SAYON port 16313.
+      if (parsed.provider === 'phobos') {
+        if (parsed.endpoint?.includes('52626') || parsed.endpoint?.includes('52627')) {
+          parsed.endpoint = 'http://127.0.0.1:16314/v1';
+        }
       }
       return parsed as RoleConfig;
     } catch { return DEFAULT_ENGINE; }

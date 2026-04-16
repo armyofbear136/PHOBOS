@@ -70,20 +70,20 @@ function formatPromptForLog(
 }
 
 export let coordinatorClient: OpenAI = new OpenAI({
-  baseURL: 'http://localhost:52625/v1',
+  baseURL: 'http://127.0.0.1:16313/v1',
   apiKey: 'not-required',
 });
 
-export let COORDINATOR_MODEL = 'llama3.1:8b';
-export let COORDINATOR_PROVIDER = 'fastflowllm';
+export let COORDINATOR_MODEL = 'gemma4-e4b-q4';
+export let COORDINATOR_PROVIDER = 'phobos';
 
 export let engineClient: OpenAI = new OpenAI({
-  baseURL: 'http://localhost:11434/v1',
+  baseURL: 'http://127.0.0.1:16314/v1',
   apiKey: 'not-required',
 });
 
-export let ENGINE_MODEL = 'qwen3:30b-a3b';
-export let ENGINE_PROVIDER = 'ollama';
+export let ENGINE_MODEL = 'gemma4-26b-a4b-q4';
+export let ENGINE_PROVIDER = 'phobos';
 // Getters — use these in other modules instead of the bare exports to avoid
 // esbuild CJS live-binding issues (let exports are captured at import time).
 export const getEngineProvider = () => ENGINE_PROVIDER;
@@ -312,8 +312,12 @@ export function getThinkingStrategy(provider: string, model: string): ThinkingSt
         systemSuffix: '',
         thinkingPath: 'tag',
         thinkingForcedOpen: true,
-        // b8660: enable_thinking:true crashes the Jinja template renderer (upstream autoparser regression).
-        // Server is launched with --reasoning on so thinking fires by default — no per-request activation needed.
+        // b8777: The second-request jinja crash (b8665-b8724) is fixed. Nemotron still uses
+        // tag-path because its <think> tokens (IDs 12/13) are special tokens that llama-server's
+        // reasoning-format deepseek cannot parse into reasoning_content. Tags arrive as literal
+        // text in delta.content — ThinkingTokenRouter handles them on the tag path.
+        // Server runs with --reasoning on (always-think forced open by template). No per-request
+        // enable_thinking:true needed — thinking fires by default on every generation.
         extraBodyThink:   { reasoning_format: 'none' },
         extraBodyNoThink: { reasoning_format: 'none', chat_template_kwargs: { enable_thinking: false } },
       };
@@ -372,6 +376,28 @@ export function getThinkingStrategy(provider: string, model: string): ThinkingSt
       };
     }
 
+    // ── Gemma 4: TAG path, <|channel>thought / <channel|> format ────────
+    // Gemma 4 uses a completely different thinking format from Qwen3/DeepSeek.
+    // The model emits <|channel>thought ... <channel|> tags instead of <think>...</think>.
+    // These are NOT parsed by --reasoning-format deepseek into reasoning_content —
+    // they arrive verbatim in delta.content (same as Nemotron's tag path).
+    //
+    // enable_thinking:false in chat_template_kwargs does NOT suppress thinking on 26B
+    // (confirmed in testing — the 26B leaks <|channel>thought on no-think probe).
+    // Use reasoning_format:none per-request to suppress the server's deepseek parser,
+    // and let ThinkingTokenRouter normalize <|channel>thought → <think> for tag-path parsing.
+    //
+    // E4B (4B effective) appears to suppress thinking cleanly on CUDA — this may be
+    // hardware-dependent. Use the same strategy for both to be consistent.
+    if (model.startsWith('gemma4')) {
+      return {
+        systemSuffix: '',
+        thinkingPath: 'tag',
+        extraBodyThink:   { reasoning_format: 'none' },
+        extraBodyNoThink: { reasoning_format: 'none', chat_template_kwargs: { enable_thinking: false } },
+      };
+    }
+
     // ── Nanbeige4.1: FIELD path ──────────────────────────────────────────
     // Nanbeige uses Qwen2.5-based ChatML template with <think> tags.
     // reasoning_format:deepseek works — confirmed in testing.
@@ -385,8 +411,11 @@ export function getThinkingStrategy(provider: string, model: string): ThinkingSt
       return {
         systemSuffix: '',
         thinkingPath: 'field',
-        // b8660: enable_thinking:true crashes the Jinja template renderer (upstream autoparser regression).
-        // Server is launched with --reasoning on so thinking fires by default — no per-request activation needed.
+        // b8777: The second-request jinja crash (b8665-b8724) is fixed. For field-path
+        // models (Qwen3, Qwen3.5, Nanbeige, Magistral, DeepSeek-R1 Qwen distills):
+        // thinking is activated server-side by --reasoning-format deepseek. Per-request
+        // enable_thinking:true is not needed — deepseek format fires thinking by default.
+        // Sending reasoning_format:deepseek per-request is still correct and explicit.
         extraBodyThink:   { reasoning_format: 'deepseek' },
         extraBodyNoThink: { reasoning_format: 'none',     chat_template_kwargs: { enable_thinking: false } },
       };

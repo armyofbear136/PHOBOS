@@ -2,7 +2,9 @@ import fs from 'fs/promises';
 import path from 'path';
 import { coordinatorCall, coordinatorStream, engineStream } from './clients.js';
 import type { FileSummary, ProjectScope } from './ContextIngester.js';
-import { getPrimeTriggerList } from './SkillManager.js';
+import { getPrimeTriggerList, getUserSkillTriggerList } from './SkillManager.js';
+import { retrieveWorkspaceMemory } from './MemoryWriter.js';
+import { gsm } from '../game/GameStateManager.js';
 
 
 /**
@@ -39,7 +41,17 @@ export interface Task {
    * 'analyze' — read and reason, no file output
    * 'respond' — produce a text response with no file operations
    */
-  operation: 'modify' | 'create' | 'delete' | 'analyze' | 'respond' | 'image_gen';
+  operation: 'modify' | 'create' | 'delete' | 'analyze' | 'respond' | 'image_gen' | 'browse' | 'execute';
+  /** browse operation — url or macro+query params. Only set when operation === 'browse'. */
+  browseUrl?:   string;
+  browseMacro?: string;
+  browseQuery?: string;
+  /** execute operation — run a script in an isolated sandbox. Only set when operation === 'execute'. */
+  runtime?:        'node' | 'python' | 'bash';
+  entrypoint?:     string;   // filename only (no path separators) — the script to run
+  timeoutSeconds?: number;   // hard kill after N seconds, max 120, default 30
+  retryWithFix?:   boolean;  // one automatic fix cycle on non-zero exit
+  outputFiles?:    string[]; // filenames to copy from sandbox back to workspace after execution
   /**
    * The full distilled prompt sent to the engine for this task.
    * Contains: what to do, constraints, relevant extracted context.
@@ -160,6 +172,18 @@ export class TaskPlanner {
     }
 
     // ── Step 3: SEREN — Task decomposition ───────────────────────────────
+    // Augment completeContext with semantic memory from SYBIL before SEREN sees it.
+    // Fire retrieveWorkspaceMemory in the background while we set up the cache —
+    // await resolves quickly (<5ms) from the HNSW index if SYBIL is online.
+    gsm.setPersonaState('sybil', 'searching');
+    const priorMemory = await retrieveWorkspaceMemory(userMessage);
+    gsm.setPersonaState('sybil', 'idle');
+    if (priorMemory) {
+      completeContext = completeContext
+        ? completeContext + '\n\n' + priorMemory
+        : priorMemory;
+    }
+
     // Cache for clarification re-entry (messages.ts reads via getLastCompleteContext)
     this._lastCompleteContext = completeContext;
     sendStatus('SEREN planning tasks…');
@@ -531,7 +555,7 @@ export class TaskPlanner {
         `If the answer to ANY of those is no, return NEEDS_CLARIFICATION with specific questions. ` +
         `It is ALWAYS better to ask one question and get it right than to produce work the user has to redo.\n\n`;
 
-    const toolSkillsBlock = getPrimeTriggerList();
+    const toolSkillsBlock = getPrimeTriggerList() + getUserSkillTriggerList();
 
     const prompt =
       `Hi SEREN, this is SAYON. I've spoken with the user and prepared the request below for you. ` +
@@ -551,7 +575,7 @@ export class TaskPlanner {
       `    {\n` +
       `      "title": "<short action phrase>",\n` +
       `      "targetFile": "<filename or empty string if no file involved>",\n` +
-      `      "operation": "<modify|create|delete|analyze|respond|image_gen>",\n` +
+      `      "operation": "<modify|create|delete|analyze|respond|image_gen|browse|execute>",\n` +
       `      "prompt": "<full self-contained engine prompt>",\n` +
       `      "context": "<extracted constraints for this task only, max 400 words>",\n` +
       `      "assignedTo": "<seren|sayon — seren is default, assign sayon only for simple fast tasks>",\n` +
@@ -593,7 +617,26 @@ export class TaskPlanner {
       `- Set taskScope per-task: BRIEF for small focused artifacts, STANDARD for typical deliverables, ` +
       `DETAILED for substantial implementations, COMPLETE for exhaustive artifacts\n` +
       `- Default taskScope if unsure: ${defaultTaskScope}\n` +
-      `- Use outputRequiredBy when a task produces data (JSON, analysis, extracted content) that ` +
+      `- Use operation \"browse\" to fetch live web content during task execution. ` +
+      `Set \"browseUrl\" for a direct URL, or set \"browseMacro\" + \"browseQuery\" for a search. ` +
+      `Available macros: @google_search, @youtube_search, @reddit_subreddit, @wikipedia_search, @amazon_search. ` +
+      `Use browse when the task requires current information, fact-checking, or reading a specific URL. ` +
+      `Browse output is injected via outputRequiredBy into any downstream task that uses the result.\\n` +
+      `- Use operation \"browse\" with browseMacro=\"@youtube_search\" and a follow-up respond task ` +
+      `when the user asks to summarise or reference a YouTube video — the /youtube/transcript endpoint ` +
+      `returns the full transcript without playback.\\n` +
+      `- Use operation \"browse\" ONLY when Camofox web browse is available (it will be noted in system context). ` +
+      `Do not plan browse tasks if no web browse tool is listed.\\n` + +
+      `- Use operation \"execute\" to run code that PHOBOS just wrote, in an isolated sandbox. ` +
+      `Always pair with a preceding \"create\" task that writes the script file. ` +
+      `Set \"runtime\": \"node\" | \"python\" | \"bash\", \"entrypoint\": \"filename.ts\" (plain filename, no path), ` +
+      `\"timeoutSeconds\": 30 (max 120), \"retryWithFix\": true if execution success is required for downstream tasks. ` +
+      `Set \"outputFiles\" to copy specific files from the sandbox back to workspace after execution. ` +
+      `Use outputRequiredBy to inject execution output (stdout/stderr/exit code) into downstream tasks. ` +
+      `- Use operation \"execute\" ONLY when the Sandbox Executor is available (it will be noted in system context). ` +
+      `Do not plan execute tasks if no sandbox executor is listed. ` +
+      `- For TypeScript/Node scripts: write plain .ts files — the executor runs them via tsx directly. ` +
+      `- execute tasks do NOT use file tools — they run the script and capture output only.\\n` +
       `a later task needs as input. Set it to the array of task indices that depend on this output.\n` +
       `- For "analyze" and "respond" operations: always set outputRequiredBy if any later task references this task\'s results\n` +
       `\nFILE INJECTION - read carefully:\n` +
@@ -688,8 +731,9 @@ export class TaskPlanner {
 
         // ── BUILD_QUEUE (normal path) ─────────────────────────────────────
         if (Array.isArray(parsed.tasks) && parsed.tasks.length > 0) {
-          const VALID_OPS: ReadonlyArray<Task['operation']> = ['modify', 'create', 'delete', 'analyze', 'respond', 'image_gen'];
+          const VALID_OPS: ReadonlyArray<Task['operation']> = ['modify', 'create', 'delete', 'analyze', 'respond', 'image_gen', 'browse', 'execute'];
           const VALID_TASK_SCOPES = ['BRIEF', 'STANDARD', 'DETAILED', 'COMPLETE'] as const;
+          const VALID_RUNTIMES = ['node', 'python', 'bash'] as const;
           const tasks: Task[] = parsed.tasks.map((raw, i) => {
             // Cast the JSON-parsed task to a typed record — parsed tasks are
             // plain objects whose fields may be missing or wrongly typed.
@@ -698,6 +742,9 @@ export class TaskPlanner {
               prompt?: unknown; context?: unknown;
               assignedTo?: unknown; skillId?: unknown; taskScope?: unknown; outputRequiredBy?: unknown;
               sourceFiles?: unknown;
+              browseUrl?: unknown; browseMacro?: unknown; browseQuery?: unknown;
+              runtime?: unknown; entrypoint?: unknown; timeoutSeconds?: unknown;
+              retryWithFix?: unknown; outputFiles?: unknown;
             };
             const op = VALID_OPS.includes(t.operation as Task['operation'])
               ? (t.operation as Task['operation'])
@@ -707,6 +754,20 @@ export class TaskPlanner {
               (VALID_TASK_SCOPES as readonly string[]).includes(t.taskScope)
                 ? (t.taskScope as Task['taskScope'])
                 : (defaultTaskScope as Task['taskScope']);
+            // Execute-specific field extraction
+            const runtime = VALID_RUNTIMES.includes(t.runtime as typeof VALID_RUNTIMES[number])
+              ? (t.runtime as Task['runtime'])
+              : undefined;
+            const entrypoint = typeof t.entrypoint === 'string' &&
+              t.entrypoint.trim() &&
+              !t.entrypoint.includes('/') &&
+              !t.entrypoint.includes('\\') &&
+              !t.entrypoint.includes('..')
+              ? t.entrypoint.trim()
+              : undefined;
+            const timeoutSeconds = typeof t.timeoutSeconds === 'number'
+              ? Math.min(120, Math.max(1, Math.round(t.timeoutSeconds)))
+              : undefined;
             return {
               index: i + 1,
               title: String(t.title ?? `Task ${i + 1}`),
@@ -722,6 +783,18 @@ export class TaskPlanner {
                 : undefined,
               sourceFiles: Array.isArray(t.sourceFiles)
                 ? (t.sourceFiles as unknown[]).filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+                : undefined,
+              // Browse fields
+              browseUrl:   op === 'browse' && typeof t.browseUrl   === 'string' ? t.browseUrl   : undefined,
+              browseMacro: op === 'browse' && typeof t.browseMacro === 'string' ? t.browseMacro : undefined,
+              browseQuery: op === 'browse' && typeof t.browseQuery === 'string' ? t.browseQuery : undefined,
+              // Execute fields
+              runtime,
+              entrypoint,
+              timeoutSeconds,
+              retryWithFix: op === 'execute' ? (t.retryWithFix === true) : undefined,
+              outputFiles: op === 'execute' && Array.isArray(t.outputFiles)
+                ? (t.outputFiles as unknown[]).filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
                 : undefined,
             };
           });

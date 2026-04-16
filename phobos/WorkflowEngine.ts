@@ -526,6 +526,32 @@ async function* runGenerate(
   await genPromise;
 }
 
+// ── Plugin resolution ─────────────────────────────────────────────────────────
+
+import type { PluginBinding } from './PluginTypes.js';
+
+/**
+ * Reads plugin bindings from node.params.plugins and builds the trigger word
+ * prefix to prepend to the prompt.
+ *
+ * Returns empty arrays/string when no plugins are attached — zero cost.
+ */
+function resolvePlugins(node: WorkflowNode): {
+  plugins:       PluginBinding[];
+  triggerPrefix: string;
+} {
+  const raw = (node.params as Record<string, unknown>).plugins;
+  if (!Array.isArray(raw) || raw.length === 0) return { plugins: [], triggerPrefix: '' };
+
+  const plugins = raw as PluginBinding[];
+  const words   = plugins
+    .map(p => p.triggerWord?.trim())
+    .filter((w): w is string => Boolean(w));
+  const triggerPrefix = words.length > 0 ? words.join(', ') + ', ' : '';
+
+  return { plugins, triggerPrefix };
+}
+
 // ── Per-node executors ────────────────────────────────────────────────────────
 
 async function* executeGenerate(
@@ -536,14 +562,16 @@ async function* executeGenerate(
   onAbortRegister?: (killFn: () => void) => void,
 ): AsyncGenerator<WorkflowEvent> {
   const p = node.params as GenerateParams;
+  const { plugins, triggerPrefix } = resolvePlugins(node);
   yield* runGenerate(outPath, cfg, {
-    prompt:         p.prompt,
+    prompt:         triggerPrefix + (p.prompt ?? ''),
     negativePrompt: p.negativePrompt,
     steps:          p.steps,
     width:          p.width,
     height:         p.height,
     seed:           p.seed,
     sampler:        p.sampler,
+    plugins:        plugins.length > 0 ? plugins : undefined,
   }, node.index, onAbortRegister);
 }
 
@@ -556,6 +584,7 @@ async function* executeVarySeed(
   onAbortRegister?: (killFn: () => void) => void,
 ): AsyncGenerator<WorkflowEvent> {
   const p = node.params as VarySeedParams;
+  const { plugins, triggerPrefix } = resolvePlugins(node);
   // Find base seed from upstream Generate node
   let baseSeed = p.seed ?? 42;
   for (let i = node.index - 1; i >= 0; i--) {
@@ -565,13 +594,14 @@ async function* executeVarySeed(
     }
   }
   yield* runGenerate(outPath, cfg, {
-    prompt:         p.prompt,
+    prompt:         triggerPrefix + (p.prompt ?? ''),
     negativePrompt: p.negativePrompt,
     steps:          p.steps,
     width:          p.width,
     height:         p.height,
     seed:           baseSeed + (p.seedOffset ?? 1),
     sampler:        p.sampler,
+    plugins:        plugins.length > 0 ? plugins : undefined,
   }, node.index, onAbortRegister);
 }
 
@@ -603,10 +633,11 @@ async function* executeImg2imgRefine(
   onAbortRegister?: (killFn: () => void) => void,
 ): AsyncGenerator<WorkflowEvent> {
   const p = node.params as Img2imgRefineParams;
+  const { plugins, triggerPrefix } = resolvePlugins(node);
   const width  = p.width  ?? 1024;
   const height = p.height ?? 1024;
   yield* runGenerate(outPath, cfg, {
-    prompt:         p.prompt,
+    prompt:         triggerPrefix + (p.prompt ?? ''),
     negativePrompt: p.negativePrompt,
     steps:          p.steps,
     width,
@@ -615,6 +646,7 @@ async function* executeImg2imgRefine(
     sampler:        p.sampler,
     initImg:        inputPath,
     strength:       p.strength,
+    plugins:        plugins.length > 0 ? plugins : undefined,
   }, node.index, onAbortRegister);
 }
 
@@ -627,6 +659,7 @@ async function* executeFaceFix(
   onAbortRegister?: (killFn: () => void) => void,
 ): AsyncGenerator<WorkflowEvent> {
   const p = node.params as FaceFixParams;
+  const { plugins, triggerPrefix } = resolvePlugins(node);
 
   // Check mask cache: if inputPath unchanged, reuse existing mask
   const inputHash = hashFile(inputPath);
@@ -648,7 +681,7 @@ async function* executeFaceFix(
   // sd-cli crops non-square images — always pass square dimensions
   const faceSize = p.width ?? p.height ?? 1024;
   yield* runGenerate(outPath, cfg, {
-    prompt:         p.prompt,
+    prompt:         triggerPrefix + (p.prompt ?? ''),
     negativePrompt: p.negativePrompt,
     steps:          p.steps,
     width:          faceSize,
@@ -658,6 +691,7 @@ async function* executeFaceFix(
     initImg:        inputPath,
     strength:       p.strength,
     maskPath,
+    plugins:        plugins.length > 0 ? plugins : undefined,
   }, node.index, onAbortRegister);
 }
 
@@ -670,6 +704,7 @@ async function* executeHandFix(
   onAbortRegister?: (killFn: () => void) => void,
 ): AsyncGenerator<WorkflowEvent> {
   const p = node.params as HandFixParams;
+  const { plugins, triggerPrefix } = resolvePlugins(node);
 
   const inputHash = hashFile(inputPath);
   let maskPath = node.maskPath;
@@ -697,7 +732,7 @@ async function* executeHandFix(
   // sd-cli crops non-square images — always pass square dimensions
   const handSize = p.width ?? p.height ?? 1024;
   yield* runGenerate(outPath, cfg, {
-    prompt:         p.prompt,
+    prompt:         triggerPrefix + (p.prompt ?? ''),
     negativePrompt: p.negativePrompt,
     steps:          p.steps,
     width:          handSize,
@@ -707,6 +742,7 @@ async function* executeHandFix(
     initImg:        inputPath,
     strength:       p.strength,
     maskPath,
+    plugins:        plugins.length > 0 ? plugins : undefined,
   }, node.index, onAbortRegister);
 }
 

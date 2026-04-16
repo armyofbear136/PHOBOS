@@ -2,11 +2,13 @@ import { spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as net from 'net';
 import * as path from 'path';
-import { resolveLlamaServerBin, modelPath, getSpec, detectHardware, buildRecommendation, recommendContextSize, getCachedHardware } from './PhobosLocalManager.js';
+import { resolveLlamaServerBin, modelPath, mmprojPath, getSpec, detectHardware, buildRecommendation, recommendContextSize, getCachedHardware } from './PhobosLocalManager.js';
+import { gsm } from '../game/GameStateManager.js';
 
 // ── Ports — permanent wire contract ──────────────────────────────────────────
-export const SAYON_PORT   = 52626;   // coordinator
-export const SEREN_PORT = 52627;   // engine
+export const SAYON_PORT   = 16313;   // coordinator
+export const SEREN_PORT   = 16314;   // engine
+export const SYBIL_PORT   = 16315;   // information clerk — nomic-embed CPU inference
 
 export interface ServerConfig {
   modelId: string;
@@ -26,6 +28,12 @@ export interface ServerConfig {
   vulkanIndex?: number;
   /** Runner kind from GpuRunnerProfile — used for diagnostic logging */
   runnerKind?: string;
+  /**
+   * Active LoRA cartridge to load via --lora.
+   * Resolved by CartridgeManager.getActiveBinding() before startServer() is called.
+   * undefined = no cartridge, run base model only.
+   */
+  cartridgeBinding?: import('./CartridgeTypes.js').CartridgeBinding;
 }
 
 interface ManagedServer {
@@ -37,9 +45,12 @@ interface ManagedServer {
 
 // ── Singleton manager ─────────────────────────────────────────────────────────
 
-const servers: Record<'sayon' | 'seren', ManagedServer> = {
-  sayon:   { config: { modelId: '', port: SAYON_PORT,   gpuLayers: 0,  contextSize: 4096, threads: 4 }, process: null, state: 'stopped', error: null },
+// All three persona servers share the same ManagedServer shape.
+// sybil runs nomic-embed-text-v1.5 on CPU — gpuLayers=0 always.
+const servers: Record<'sayon' | 'seren' | 'sybil', ManagedServer> = {
+  sayon: { config: { modelId: '', port: SAYON_PORT, gpuLayers: 0,  contextSize: 4096, threads: 4 }, process: null, state: 'stopped', error: null },
   seren: { config: { modelId: '', port: SEREN_PORT, gpuLayers: 99, contextSize: 4096, threads: 4 }, process: null, state: 'stopped', error: null },
+  sybil: { config: { modelId: '', port: SYBIL_PORT, gpuLayers: 0,  contextSize: 512,  threads: 2 }, process: null, state: 'stopped', error: null },
 };
 
 function waitForPort(port: number, timeoutMs = 30_000): Promise<void> {
@@ -58,7 +69,7 @@ function waitForPort(port: number, timeoutMs = 30_000): Promise<void> {
   });
 }
 
-export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): Promise<void> {
+export async function startServer(role: 'sayon' | 'seren' | 'sybil', cfg: ServerConfig): Promise<void> {
   const managed = servers[role];
 
   // Stop existing process if model or device changed
@@ -137,13 +148,14 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
       spec.nemotronVariant != null ||
       spec.modelId.startsWith('phi4-mini-reasoning') ||
       spec.modelId.startsWith('ministral-') ||
-      spec.modelId.startsWith('smollm3')
+      spec.modelId.startsWith('smollm3') ||
+      spec.modelId.startsWith('gemma4')   // Gemma 4 uses <|channel>thought/<channel|> tag format
     );
     args.push('--jinja', '--reasoning-format', isTagPathModel ? 'none' : 'deepseek');
-    // b8662: enable_thinking:true per-request crashes the Jinja template renderer for
-    // models with a toggleable thinking mode (Nemotron, Qwen, Gemma, Nanbeige).
-    // Do NOT set --reasoning on for those — it overrides enable_thinking:false in
-    // the no-think request body and causes thinking bleed on coordinator calls.
+    // b8777: The second-request jinja crash (b8665-b8724) is fixed. The avoidance of
+    // --reasoning on for toggleable models is still correct — NOT because of the crash,
+    // but because server-level --reasoning on overrides per-request enable_thinking:false
+    // in the no-think body, causing thinking bleed on SAYON (coordinator) calls.
     //
     // EXCEPTION: R1-distill models that ALWAYS think (Phi-4 mini reasoning, Ministral 3
     // Reasoning, SmolLM3) have no off-switch in their templates. For these, --reasoning on
@@ -156,6 +168,27 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
     if (spec.thinkingTokens && isAlwaysThinkModel) {
       args.push('--reasoning', 'on');
     }
+  }
+
+  // Vision projector sidecar — required for image input on multimodal models.
+  // If the mmproj file is not yet downloaded, the server starts without vision
+  // capability rather than failing. A warning is logged so the user knows to
+  // run the model download flow first.
+  if (spec.mmproj) {
+    const projPath = mmprojPath(spec);
+    if (fs.existsSync(projPath)) {
+      args.push('--mmproj', projPath);
+    } else {
+      console.warn(`[LlamaServerManager] ${role}: mmproj not downloaded (${path.basename(projPath)}) — starting without vision. Download the model via the model manager to enable image input.`);
+    }
+  }
+
+  // ── LoRA cartridge (optional) ─────────────────────────────────────────────
+  // llama-server loads LoRA adapters at startup via --lora <path> <scale>.
+  // Restart is required to swap — no hot-swap in llama.cpp.
+  if (cfg.cartridgeBinding) {
+    args.push('--lora', cfg.cartridgeBinding.loraPath, String(cfg.cartridgeBinding.weight));
+    console.log(`[LlamaServerManager] ${role}: loading cartridge "${cfg.cartridgeBinding.cartridgeId}" (weight=${cfg.cartridgeBinding.weight})`);
   }
 
   // ── Build environment for GPU device targeting ──────────────────────────
@@ -266,10 +299,18 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
       env.GGML_VK_VISIBLE_DEVICES = String(vkIdx);
       // GGML_VK_VISIBLE_DEVICES filters the device list so the target becomes Vulkan0
       // in the subprocess. --device Vulkan0 explicitly pins all tensor allocation to
-      // that device, preventing the Vulkan backend from split-loading layers between
-      // device VRAM and system RAM (the 890M symptom: model half in VRAM, half in RAM).
-      // Confirmed working on b8665 — test-model-parse.ts passes all 12 models with it.
+      // that device.
+      // AMD UMA iGPU (890M, 780M) on Windows: the Vulkan driver exposes UMA memory as
+      // separate device-local / host-visible heaps. mmap causes the Vulkan allocator to
+      // spread tensors across both heaps (the visible "model half in VRAM, half in RAM"
+      // symptom). --no-mmap forces a single contiguous host allocation read into a unified
+      // Vulkan buffer, keeping all weights in the device-local pool.
+      // On Linux/RADV the driver correctly reports a single UMA heap so --no-mmap is not
+      // needed there, but it is harmless on all platforms.
       args.push('--device', 'Vulkan0');
+      if (process.platform === 'win32' && gpuRunner?.kind === 'amd-igpu') {
+        args.push('--no-mmap');
+      }
     }
   } else if (cfg.gpuLayers > 0) {
     // No specific device — let llama-server auto-select
@@ -403,7 +444,7 @@ export async function startServer(role: 'sayon' | 'seren', cfg: ServerConfig): P
   }
 }
 
-export async function stopServer(role: 'sayon' | 'seren'): Promise<void> {
+export async function stopServer(role: 'sayon' | 'seren' | 'sybil'): Promise<void> {
   const managed = servers[role];
   if (!managed.process) return;
   managed.process.kill('SIGTERM');
@@ -416,7 +457,7 @@ export async function stopServer(role: 'sayon' | 'seren'): Promise<void> {
   managed.config.modelId = '';  // clear so getServerStatus() returns '' when stopped
 }
 
-export function getServerStatus(): Record<'sayon' | 'seren', {
+export function getServerStatus(): Record<'sayon' | 'seren' | 'sybil', {
   state: string;
   modelId: string;
   port: number;
@@ -424,6 +465,8 @@ export function getServerStatus(): Record<'sayon' | 'seren', {
   deviceIndex?: number;
   gpuBackend?: string;
   gpuLayers: number;
+  contextSize: number;
+  threads: number;
 }> {
   return {
     sayon: {
@@ -434,6 +477,8 @@ export function getServerStatus(): Record<'sayon' | 'seren', {
       deviceIndex: servers.sayon.config.deviceIndex,
       gpuBackend:  servers.sayon.config.gpuBackend,
       gpuLayers:   servers.sayon.config.gpuLayers,
+      contextSize: servers.sayon.config.contextSize,
+      threads:     servers.sayon.config.threads,
     },
     seren: {
       state:       servers.seren.state,
@@ -443,12 +488,147 @@ export function getServerStatus(): Record<'sayon' | 'seren', {
       deviceIndex: servers.seren.config.deviceIndex,
       gpuBackend:  servers.seren.config.gpuBackend,
       gpuLayers:   servers.seren.config.gpuLayers,
+      contextSize: servers.seren.config.contextSize,
+      threads:     servers.seren.config.threads,
+    },
+    sybil: {
+      state:       servers.sybil.state,
+      modelId:     servers.sybil.config.modelId,
+      port:        SYBIL_PORT,
+      error:       servers.sybil.error,
+      gpuLayers:   0,
+      contextSize: servers.sybil.config.contextSize,
+      threads:     servers.sybil.config.threads,
     },
   };
 }
 
 export async function stopAllServers(): Promise<void> {
-  await Promise.all([stopServer('sayon'), stopServer('seren')]);
+  await Promise.all([stopServer('sayon'), stopServer('seren'), stopServer('sybil')]);
+}
+
+/**
+/**
+ * Start SYBIL — the embedding persona (nomic-embed-text-v1.5, CPU-only, port 16315).
+ *
+ * Called once at PHOBOS startup. Non-fatal: if the model is not yet downloaded,
+ * logs a clear message and returns without throwing. The rest of PHOBOS works
+ * normally; semantic memory is silently disabled until the model is present.
+ *
+ * SYBIL uses the llama-server --embedding flag to expose the /embedding endpoint
+ * instead of the chat completion /v1/chat/completions endpoint.
+ * Context window is 512 — sufficient for nomic-embed's 8192-token limit when
+ * called with short inputs, and minimal memory overhead on CPU.
+ */
+export async function startSybil(): Promise<void> {
+  const { isDownloaded, getSpec, modelPath, MODELS_DIR } = await import('./PhobosLocalManager.js');
+
+  const spec = getSpec('sybil-embed');
+  if (!spec) {
+    console.warn('[SYBIL] Spec not found in catalogue — semantic memory disabled.');
+    gsm.setPersonaState('sybil', 'offline');
+    return;
+  }
+
+  // ── Model path resolution ────────────────────────────────────────────────────
+  // Priority 1: bundled alongside the exe — dist/phobos/models/ (production SEA build)
+  // Priority 2: staged in dev bin directory — repo/phobos/models/ (tsx dev mode)
+  // Priority 3: user-managed ~/.phobos/models/ (downloaded via model manager — future)
+  const seaDir    = path.dirname(process.execPath);
+  const repoDir   = path.resolve(path.dirname(
+    typeof __filename !== 'undefined' ? __filename : path.join(process.cwd(), 'x')
+  ), '..');
+  const ggufName  = spec.hfFile;
+
+  const bundledPaths = [
+    path.join(seaDir, 'phobos', 'models', ggufName),          // SEA production
+    path.join(repoDir, 'phobos', 'models', ggufName),         // tsx dev
+    path.join(repoDir, 'dist', 'phobos', 'models', ggufName), // post-build dev
+    modelPath(spec),                                            // user ~/.phobos/models/ fallback
+  ];
+
+  let ggufPath: string | null = null;
+  for (const p of bundledPaths) {
+    if (fs.existsSync(p) && fs.statSync(p).size > 60_000_000) {
+      ggufPath = p;
+      break;
+    }
+  }
+
+  if (!ggufPath) {
+    console.log('[SYBIL] nomic-embed-text-v1.5 not found — semantic memory disabled.');
+    console.log('[SYBIL] Run: node scripts/fetch-sybil-model.js');
+    console.log('[SYBIL] Searched:');
+    for (const p of bundledPaths) console.log(`[SYBIL]   ${p}`);
+    gsm.setPersonaState('sybil', 'offline');
+    return;
+  }
+
+  if (servers.sybil.state === 'running' || servers.sybil.state === 'starting') return;
+
+  const bin = resolveLlamaServerBin();
+  if (process.platform !== 'win32') {
+    try { fs.chmodSync(bin, 0o755); } catch { /* ignore */ }
+  }
+
+  const cpuCount = Math.max(1, Math.floor(require('os').cpus().length / 4));
+
+  // SYBIL runs fully CPU-bound — suppress all GPU backends so no VRAM is reserved.
+  const env = {
+    ...process.env,
+    CUDA_VISIBLE_DEVICES:    '',
+    HIP_VISIBLE_DEVICES:     '',
+    ROCR_VISIBLE_DEVICES:    '',
+    GGML_VK_VISIBLE_DEVICES: '',
+    VK_ICD_FILENAMES:        '',
+  };
+
+  const args = [
+    '--model',        ggufPath,
+    '--port',         String(SYBIL_PORT),
+    '--host',         '127.0.0.1',
+    '--ctx-size',     '512',
+    '--threads',      String(cpuCount),
+    '--n-gpu-layers', '0',
+    '--device',       'none',
+    '--embedding',                  // expose /embedding endpoint, suppress chat
+    '--log-disable',
+  ];
+
+  servers.sybil.config = { modelId: spec.modelId, port: SYBIL_PORT, gpuLayers: 0, contextSize: 512, threads: cpuCount };
+  servers.sybil.state  = 'starting';
+  servers.sybil.error  = null;
+  gsm.setPersonaState('sybil', 'startup');
+
+  const binDir = path.dirname(bin);
+  const proc   = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], env, cwd: binDir });
+
+  proc.stderr?.on('data', (data: Buffer) => {
+    const line = data.toString().trim();
+    if (line) console.log(`[llama-server:sybil] ${line}`);
+  });
+  proc.on('exit', (code, signal) => {
+    console.log(`[LlamaServerManager] sybil exited code=${code} signal=${signal}`);
+    servers.sybil.process = null;
+    servers.sybil.state   = code === 0 ? 'stopped' : 'error';
+    if (code !== 0 && code !== null) servers.sybil.error = `Exited with code ${code}`;
+  });
+
+  servers.sybil.process = proc;
+
+  try {
+    await waitForPort(SYBIL_PORT, 60_000);
+    servers.sybil.state = 'running';
+    gsm.setPersonaState('sybil', 'idle');
+    console.log(`[LlamaServerManager] SYBIL ready on :${SYBIL_PORT} — ${spec.label} (${path.basename(ggufPath)})`);
+  } catch (err) {
+    servers.sybil.state = 'error';
+    servers.sybil.error = (err as Error).message;
+    proc.kill();
+    gsm.setPersonaState('sybil', 'offline');
+    // Non-fatal — log and continue. Semantic memory simply stays disabled.
+    console.warn(`[LlamaServerManager] SYBIL failed to start: ${(err as Error).message} — semantic memory disabled.`);
+  }
 }
 
 /**

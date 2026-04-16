@@ -188,10 +188,15 @@ export class ThinkingTokenRouter {
     // Normalize Ministral's bracket tags to standard angle-bracket form.
     // [THINK] and [/THINK] (case-insensitive) are aliases for <think> and </think>.
     // Done once per chunk before the parse loop so every code path handles them.
+    // Also normalize Gemma 4's channel-format thinking tags:
+    //   <|channel>thought → <think>
+    //   <channel|>        → </think>
     // Then prepend any partial tag carried over from the previous chunk.
     let remaining = this.partialTagBuf + rawContent
       .replace(/\[THINK\]/gi, '<think>')
-      .replace(/\[\/THINK\]/gi, '</think>');
+      .replace(/\[\/THINK\]/gi, '</think>')
+      .replace(/<\|channel>thought/g, '<think>')
+      .replace(/<channel\|>/g, '</think>');
     this.partialTagBuf = '';
 
     while (remaining.length > 0) {
@@ -316,6 +321,7 @@ export class ThinkingTokenRouter {
       .trim()
       .replace(/<think>[\s\S]*?<\/think>/g, '')
       .replace(/\[THINK\][\s\S]*?\[\/THINK\]/gi, '')
+      .replace(/<\|channel>thought[\s\S]*?<channel\|>/g, '')
       .trim();
   }
 

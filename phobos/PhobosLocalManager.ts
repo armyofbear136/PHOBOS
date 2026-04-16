@@ -1037,13 +1037,40 @@ export interface GGUFSpec {
    * If true, this model accepts image content in the user message content array
    * (OpenAI-compatible { type:'image_url' } blocks).
    * For phobos provider: llama-server must be started with --mmproj pointing to
-   * the vision projector sidecar. Currently no GGUF_CATALOGUE entries qualify —
-   * field is wired for future vision-capable models (LLaVA, Gemma3-Vision, etc.).
+   * the vision projector sidecar. Requires a matching mmproj entry below.
    */
   supportsVision?: boolean;
+  /**
+   * Vision projector sidecar required by llama-server for multimodal inference.
+   * When present, downloadModel() fetches this file alongside the base GGUF,
+   * and LlamaServerManager passes --mmproj <path> at server startup.
+   * The projector is stored in MODELS_DIR() alongside the base model.
+   * sizeBytes is used for download progress display and completion detection.
+   */
+  mmproj?: {
+    hfRepo: string;
+    hfFile: string;
+    sizeBytes: number;
+  };
 }
 
 export const GGUF_CATALOGUE: GGUFSpec[] = [
+  // ── SYBIL — Information Clerk (embedding model, CPU-only) ────────────────────
+  // nomic-embed-text-v1.5 Q4_K_M — ~80 MB, 768-dim embeddings, 8192-token context.
+  // Used exclusively by the semantic memory (RAG) layer. Not a chat model.
+  // role: 'sybil' is a special value understood by startSybil() in LlamaServerManager.
+  // It never appears in the SAYON/SEREN model dropdowns.
+  {
+    modelId: 'sybil-embed', label: 'nomic-embed-text-v1.5 Q4 (SYBIL)', family: 'Embedding',
+    role: 'sayon' as GGUFSpec['role'],  // placeholder — sybil is never shown in LLM UI
+    thinkingTokens: false, jinjaTemplate: false,
+    hfRepo: 'nomic-ai/nomic-embed-text-v1.5-GGUF',
+    hfFile: 'nomic-embed-text-v1.5.Q4_K_M.gguf',
+    sizeBytes: 80_000_000, ramRequiredGb: 1, contextWindow: 8192,
+    kvCacheMbPer1kTokens: 0,  // embedding model — no KV cache
+    activeParamsB: 0.14, speedClass: 'fast',
+  },
+
   // ── Llama 3 family ───────────────────────────────────────────────────────────
   // Llama 3 family — 3B and 8B only. Gemma 3 1B covers the 1B use case.
   {
@@ -1110,6 +1137,9 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     kvCacheMbPer1kTokens: 112,  // hybrid attention (GDN + sparse) — effective KV cost lower than Qwen3
     activeParamsB: 5.0, serenQuality: 2, speedClass: 'fast',  // GDN+sparse adds ~25% overhead vs Qwen3
     supportsVision: true,
+    // mmproj sourced from unsloth — bartowski Q4_K_M base + unsloth projector is a validated pairing.
+    // sizeBytes is approximate; verify against actual download if needed.
+    mmproj: { hfRepo: 'unsloth/Qwen3.5-4B-GGUF', hfFile: 'mmproj-BF16.gguf', sizeBytes: 900_000_000 },
   },
   {
     modelId: 'qwen3.5-9b-q4', label: 'Qwen3.5 9B Q4', family: 'Qwen3.5',
@@ -1120,6 +1150,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     kvCacheMbPer1kTokens: 144,  // estimated from Qwen3-8B baseline, hybrid attention reduces effective cost
     activeParamsB: 11.0, serenQuality: 4, speedClass: 'medium',  // GDN+sparse adds ~25% overhead vs Qwen3
     supportsVision: true,
+    mmproj: { hfRepo: 'unsloth/Qwen3.5-9B-GGUF', hfFile: 'mmproj-BF16.gguf', sizeBytes: 900_000_000 },
   },
   {
     modelId: 'qwen3.5-27b-q4', label: 'Qwen3.5 27B Q4', family: 'Qwen3.5',
@@ -1130,6 +1161,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     kvCacheMbPer1kTokens: 224,  // dense 27B — similar KV structure to Gemma 3 12B but more layers
     activeParamsB: 34.0, serenQuality: 5, speedClass: 'slow',  // GDN+sparse adds ~25% overhead vs dense
     supportsVision: true,
+    mmproj: { hfRepo: 'unsloth/Qwen3.5-27B-GGUF', hfFile: 'mmproj-BF16.gguf', sizeBytes: 900_000_000 },
   },
   {
     modelId: 'qwen3.5-35b-a3b-q4', label: 'Qwen3.5 35B-A3B Q4', family: 'Qwen3.5',
@@ -1140,6 +1172,22 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     kvCacheMbPer1kTokens: 96,   // MoE sparse — active params ~3B, KV cost similar to 4B
     activeParamsB: 3.8, serenQuality: 4, speedClass: 'fast',  // MoE 3B active + GDN overhead
     supportsVision: true,
+    mmproj: { hfRepo: 'unsloth/Qwen3.5-35B-A3B-GGUF', hfFile: 'mmproj-BF16.gguf', sizeBytes: 900_000_000 },
+  },
+  // ── Qwen3.5-Coder family ────────────────────────────────────────────────────
+  // Alibaba's code-specialised Qwen3.5 fine-tune. Apache 2.0.
+  // Same Jinja template and thinking mechanism as base Qwen3.5.
+  // 32B outperforms GPT-4o on most code benchmarks. Excellent for SEREN executor role.
+  {
+    modelId: 'qwen3.5-coder-32b-q4', label: 'Qwen3.5 Coder 32B Q4', family: 'Qwen3.5',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'bartowski/Qwen_Qwen3.5-Coder-32B-Instruct-GGUF',
+    hfFile: 'Qwen_Qwen3.5-Coder-32B-Instruct-Q4_K_M.gguf',
+    sizeBytes: 19_400_000_000, ramRequiredGb: 22, contextWindow: 131072,
+    kvCacheMbPer1kTokens: 224,  // 64 layers x 8 KV heads x 128 head_dim x 2 x F16
+    activeParamsB: 32.0, serenQuality: 5, speedClass: 'slow',
+    supportsVision: true,
+    mmproj: { hfRepo: 'unsloth/Qwen3.5-Coder-32B-Instruct-GGUF', hfFile: 'mmproj-BF16.gguf', sizeBytes: 900_000_000 },
   },
   // ── Qwen3 family (legacy) ───────────────────────────────────────────────────
   // Superseded by Qwen3.5. Still downloadable for users who prefer them.
@@ -1198,6 +1246,35 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     kvCacheMbPer1kTokens: 128,  // 32 layers x 8 KV heads x 128 head_dim x 2 x F16
     activeParamsB: 24.0, serenQuality: 5, speedClass: 'slow',
   },
+  // ── Llama 4 family ──────────────────────────────────────────────────────────
+  // Meta's April 2026 release. Mixture-of-Experts architecture.
+  // Scout: 17B active / 109B total MoE. 10M context window. Apache 2.0.
+  // Native iRoPE (interleaved RoPE) for infinite context extrapolation.
+  // llama.cpp: llama4 architecture type, supported from b8600+.
+  // Thinking: Scout uses early-exit MoE — does NOT produce thinking tokens.
+  // Jinja template required. reasoning_format:none (no thinking to parse).
+  {
+    modelId: 'llama4-scout-17b-q4', label: 'Llama 4 Scout 17B Q4', family: 'Llama 4',
+    role: 'seren', thinkingTokens: false, jinjaTemplate: true,
+    hfRepo: 'bartowski/meta-llama_Llama-4-Scout-17B-16E-Instruct-GGUF',
+    hfFile: 'meta-llama_Llama-4-Scout-17B-16E-Instruct-Q4_K_M.gguf',
+    sizeBytes: 60_000_000_000, ramRequiredGb: 65, contextWindow: 131072,
+    kvCacheMbPer1kTokens: 96,   // MoE: 17B active params, efficient KV footprint
+    activeParamsB: 17.0, serenQuality: 5, speedClass: 'slow',
+  },
+  // ── Trinity-Large-Thinking ───────────────────────────────────────────────────
+  // Arcee AI's reasoning model fine-tune. Apache 2.0.
+  // Based on Qwen3.5 architecture. Produces <think> tokens via deepseek format.
+  // Optimised for agentic reasoning and structured output.
+  {
+    modelId: 'trinity-large-thinking-q4', label: 'Trinity Large Thinking Q4', family: 'Trinity',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'arcee-ai/Trinity-Large-Thinking',
+    hfFile: 'Trinity-Large-Thinking-Q4_K_M.gguf',
+    sizeBytes: 16_500_000_000, ramRequiredGb: 18, contextWindow: 131072,
+    kvCacheMbPer1kTokens: 224,  // Qwen3.5-27B base — dense GQA cost
+    activeParamsB: 27.0, serenQuality: 5, speedClass: 'medium',
+  },
   // ── DeepSeek-R1 family ───────────────────────────────────────────────────────
   {
     modelId: 'deepseek-r1-8b-q4', label: 'DeepSeek-R1 8B Q4', family: 'DeepSeek-R1',
@@ -1225,6 +1302,33 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 42_520_000_000, ramRequiredGb: 48, contextWindow: 65536,
     kvCacheMbPer1kTokens: 320,  // 80 layers x 8 KV heads x 128 head_dim x 2 x F16
     activeParamsB: 70.0, serenQuality: 5, speedClass: 'slow',
+  },
+  // ── Power-user / frontier models (400B+ parameter range) ────────────────────
+  // These require 200–400+ GB of VRAM/unified memory. Practical only on multi-GPU
+  // clusters or very high-capacity unified memory machines (M4 Ultra 512GB, etc).
+  // All use Q2_K or Q3_K_M quantization to fit in available memory.
+  // DeepSeek-R1 671B — the full unquantized mixture-of-experts frontier model.
+  // 671B total / ~37B active params per token. Apache 2.0.
+  // Q2_K: ~236 GB on disk — requires 256+ GB RAM/VRAM.
+  {
+    modelId: 'deepseek-r1-671b-q2', label: 'DeepSeek-R1 671B Q2 (Power)', family: 'DeepSeek-R1',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'unsloth/DeepSeek-R1-GGUF',
+    hfFile: 'DeepSeek-R1-Q2_K.gguf',
+    sizeBytes: 236_000_000_000, ramRequiredGb: 256, contextWindow: 65536,
+    kvCacheMbPer1kTokens: 256,  // 61 layers x MoE — active KV scales with expert routing
+    activeParamsB: 37.0, serenQuality: 5, speedClass: 'slow',
+  },
+  // Llama 3.1 405B — Meta's largest dense Llama model. Apache 2.0.
+  // Q3_K_M: ~175 GB — requires 192+ GB RAM/VRAM.
+  {
+    modelId: 'llama3.1-405b-q3', label: 'Llama 3.1 405B Q3 (Power)', family: 'Llama 3',
+    role: 'seren', thinkingTokens: false, jinjaTemplate: false,
+    hfRepo: 'bartowski/Meta-Llama-3.1-405B-Instruct-GGUF',
+    hfFile: 'Meta-Llama-3.1-405B-Instruct-Q3_K_M.gguf',
+    sizeBytes: 175_000_000_000, ramRequiredGb: 192, contextWindow: 131072,
+    kvCacheMbPer1kTokens: 512,  // 126 layers x 8 KV heads x 128 head_dim x 2 x F16
+    activeParamsB: 405.0, serenQuality: 5, speedClass: 'slow',
   },
   // ── Nemotron 3 family ────────────────────────────────────────────────────────
   // Hybrid Mamba-2/MoE-Transformer architecture from NVIDIA. Requires llama.cpp b6315+
@@ -1327,6 +1431,24 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     activeParamsB: 2.5, serenQuality: 1, speedClass: 'fast',  // GDN overhead + unstable thinking at 2B
     supportsVision: true,
   },
+  // ── Qwen3-VL family ──────────────────────────────────────────────────────────
+  // Alibaba's dedicated vision-language branch of Qwen3. Separate from Qwen3.5.
+  // Ships native GGUF + mmproj from Qwen's official HF repo. Apache 2.0.
+  // Requires --mmproj at server startup — supportsVision implies this.
+  // 8B: fits in ~8 GB VRAM at Q4. Supports image + video understanding,
+  // GUI agent operation, and spatial reasoning with 256K context.
+  {
+    modelId: 'qwen3-vl-8b-q4', label: 'Qwen3-VL 8B Q4', family: 'Qwen3-VL',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'Qwen/Qwen3-VL-8B-Instruct-GGUF',
+    hfFile: 'Qwen3VL-8B-Instruct-Q4_K_M.gguf',
+    sizeBytes: 5_200_000_000, ramRequiredGb: 7, contextWindow: 262144,
+    kvCacheMbPer1kTokens: 128,  // 8B dense — standard GQA KV structure
+    activeParamsB: 8.0, serenQuality: 4, speedClass: 'medium',
+    supportsVision: true,
+    mmproj: { hfRepo: 'Qwen/Qwen3-VL-8B-Instruct-GGUF', hfFile: 'mmproj-Qwen3VL-8B-Instruct-F16.gguf', sizeBytes: 900_000_000 },
+  },
+
   // ── Gemma 4 family ───────────────────────────────────────────────────────────
   // Google DeepMind's April 2026 release. Hybrid dense/MoE, Apache 2.0.
   // Configurable thinking mode via chat_template_kwargs (same mechanism as Qwen3).
@@ -1342,6 +1464,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     kvCacheMbPer1kTokens: 96,   // MatFormer MoE E4B — 4B effective params, efficient KV
     activeParamsB: 4.0, sayonQuality: 5, speedClass: 'fast',
     supportsVision: true,
+    mmproj: { hfRepo: 'bartowski/google_gemma-4-E4B-it-GGUF', hfFile: 'mmproj-google_gemma-4-E4B-it-bf16.gguf', sizeBytes: 992_000_000 },
   },
   {
     modelId: 'gemma4-26b-a4b-q4', label: 'Gemma 4 26B-A4B Q4', family: 'Gemma 4',
@@ -1352,9 +1475,9 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     kvCacheMbPer1kTokens: 112,  // 26B total / 4B active MoE — KV cost scales with active layers
     activeParamsB: 4.0, serenQuality: 5, speedClass: 'fast',
     supportsVision: true,
+    mmproj: { hfRepo: 'bartowski/google_gemma-4-26B-A4B-it-GGUF', hfFile: 'mmproj-google_gemma-4-26B-A4B-it-bf16.gguf', sizeBytes: 1_190_000_000 },
   },
-  // ── Qwen3.5 Claude Opus reasoning distill family ─────────────────────────────
-  // Fine-tunes of Qwen3.5-27B by Jackrong trained on Claude 4.6 Opus CoT data.
+  // ── Qwen3.5 Claude Opus reasoning distill family ─────────────────────────────  // Fine-tunes of Qwen3.5-27B by Jackrong trained on Claude 4.6 Opus CoT data.
   // Optimised for concise structured reasoning and agentic tool-calling.
   // Apache 2.0. Qwen3.5 chat template, thinking via enable_thinking flag.
   // v1 (TeichAI quant — standard naming): original distill, widely validated.
@@ -3299,6 +3422,20 @@ function hfUrl(spec: GGUFSpec): string {
   return `https://huggingface.co/${spec.hfRepo}/resolve/main/${spec.hfFile}`;
 }
 
+/** Filesystem path for a model's mmproj sidecar, stored in MODELS_DIR alongside the base GGUF. */
+export function mmprojPath(spec: GGUFSpec): string {
+  if (!spec.mmproj) throw new Error(`${spec.modelId} has no mmproj defined`);
+  return path.join(MODELS_DIR(), spec.mmproj.hfFile);
+}
+
+/** Returns true if the mmproj sidecar is present and meets the minimum size threshold. */
+export function isMmprojDownloaded(spec: GGUFSpec): boolean {
+  if (!spec.mmproj) return true; // no projector needed — always satisfied
+  const p = mmprojPath(spec);
+  if (!fs.existsSync(p)) return false;
+  return fs.statSync(p).size >= spec.mmproj.sizeBytes * 0.9;
+}
+
 export async function* downloadModel(
   spec: GGUFSpec,
   phase: 'sayon' | 'seren',
@@ -3417,6 +3554,65 @@ export async function* downloadModel(
 
   try { await downloadPromise; } catch { /* error already emitted via queue */ }
   yield { modelId: spec.modelId, phase, bytesReceived, bytesTotal, done: true };
+
+  // Download mmproj sidecar if this model requires one and it isn't present yet.
+  // Runs sequentially after the base GGUF — the progress stream is already done
+  // from the caller's perspective, so this is fire-and-forget best-effort.
+  // A separate log line surfaces any failure without blocking the caller.
+  if (spec.mmproj && !isMmprojDownloaded(spec)) {
+    const mmprojDest = mmprojPath(spec);
+    const mmprojTmp  = mmprojDest + '.download';
+    const mmprojUrl  = `https://huggingface.co/${spec.mmproj.hfRepo}/resolve/main/${spec.mmproj.hfFile}`;
+    const existingMmprojBytes = fs.existsSync(mmprojTmp) ? fs.statSync(mmprojTmp).size : 0;
+    const mmprojHeaders: Record<string, string> = {};
+    if (existingMmprojBytes > 0) mmprojHeaders['Range'] = `bytes=${existingMmprojBytes}-`;
+
+    console.log(`[downloadModel] Fetching mmproj sidecar: ${spec.mmproj.hfFile} (~${(spec.mmproj.sizeBytes / 1e9).toFixed(2)} GB)`);
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const follow = (targetUrl: string, redirects = 0) => {
+          if (redirects > 5) { reject(new Error('Too many redirects (mmproj)')); return; }
+          const parsed = new URL(targetUrl);
+          const req = https.get(
+            { hostname: parsed.hostname, path: parsed.pathname + parsed.search, headers: mmprojHeaders },
+            (res) => {
+              if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) {
+                follow(res.headers.location!, redirects + 1); return;
+              }
+              if (res.statusCode !== 200 && res.statusCode !== 206) {
+                reject(new Error(`HTTP ${res.statusCode} fetching mmproj from ${targetUrl}`)); return;
+              }
+              const fd = fs.createWriteStream(mmprojTmp, { flags: existingMmprojBytes > 0 ? 'a' : 'w' });
+              res.on('data', (chunk: Buffer) => fd.write(chunk));
+              res.on('end', () => {
+                fd.end(async () => {
+                  try {
+                    await fsPromises.rename(mmprojTmp, mmprojDest);
+                    console.log(`[downloadModel] mmproj ready: ${path.basename(mmprojDest)}`);
+                    resolve();
+                  } catch {
+                    try {
+                      await fsPromises.copyFile(mmprojTmp, mmprojDest);
+                      await fsPromises.unlink(mmprojTmp);
+                      console.log(`[downloadModel] mmproj ready: ${path.basename(mmprojDest)}`);
+                      resolve();
+                    } catch (copyErr) { reject(copyErr); }
+                  }
+                });
+              });
+              res.on('error', reject);
+            },
+          );
+          req.on('error', reject);
+        };
+        follow(mmprojUrl);
+      });
+    } catch (mmprojErr) {
+      console.error(`[downloadModel] mmproj download failed for ${spec.modelId}: ${(mmprojErr as Error).message}`);
+      console.error(`[downloadModel] Vision will not work until mmproj is present. Re-trigger model download to retry.`);
+    }
+  }
 }
 
 // ── FLUX download ─────────────────────────────────────────────────────────────

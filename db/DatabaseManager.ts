@@ -1,6 +1,37 @@
 import Database from 'duckdb-async';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
+
+// ── Resolve bundled DuckDB extension directory ─────────────────────────────────
+// DuckDB looks for extensions at: {extension_directory}/v{version}/{platform}/
+// We bundle vss.duckdb_extension in phobos/extensions/ staged alongside the exe.
+// Priority:
+//   1. exe dir — dist/phobos/extensions/ (SEA production)
+//   2. repo phobos/extensions/ (tsx dev)
+//   3. dist/phobos/extensions/ relative to cwd (post-build dev)
+//   4. null — extension not bundled, LOAD vss will fail (non-fatal, caught by MemoryStore)
+function resolveBundledExtensionDir(): string | null {
+  const seaDir  = path.dirname(process.execPath);
+  const repoDir = path.resolve(path.dirname(
+    // ESM: import.meta.url available; CJS SEA bundle: __dirname global
+    typeof __filename !== 'undefined' ? __filename : process.cwd()
+  ), '..');
+
+  const candidates = [
+    path.join(seaDir, 'phobos', 'extensions'),
+    path.join(repoDir, 'phobos', 'extensions'),
+    path.join(repoDir, 'dist', 'phobos', 'extensions'),
+    path.join(process.cwd(), 'phobos', 'extensions'),
+  ];
+
+  for (const dir of candidates) {
+    if (fs.existsSync(dir)) return dir;
+  }
+  return null;
+}
+
+export const BUNDLED_EXTENSION_DIR = resolveBundledExtensionDir();
 
 const SCHEMA = `
 -- Threads
@@ -241,9 +272,20 @@ export class DatabaseManager {
   }
 
   async initialize(): Promise<void> {
-    this.db = await Database.Database.create(this.dbPath);
+    // Pass the bundled extension directory so DuckDB finds vss.duckdb_extension
+    // without touching ~/.duckdb/. If the directory doesn't exist (e.g. first run
+    // before fetch-vss-extension.js), DuckDB falls back to default behaviour —
+    // MemoryStore.ensureTable() catches the LOAD vss failure non-fatally.
+    const dbConfig = BUNDLED_EXTENSION_DIR
+      ? { extension_directory: BUNDLED_EXTENSION_DIR }
+      : {};
+
+    this.db = await Database.Database.create(this.dbPath, dbConfig as any);
     await this.db.exec(SCHEMA);
     await this.migrateDocuments();
+    if (BUNDLED_EXTENSION_DIR) {
+      console.log(`[DB] Extension dir: ${BUNDLED_EXTENSION_DIR}`);
+    }
     console.log(`[DB] Initialized at ${this.dbPath}`);
   }
 
@@ -328,5 +370,20 @@ export class DatabaseManager {
 
   async close(): Promise<void> {
     await this.db.close();
+  }
+
+  /**
+   * Force a WAL checkpoint — flushes all WAL entries into the main .duckdb file.
+   * After this call, the .wal file can be deleted without data loss.
+   * Call after migrations and periodically during long sessions to guard
+   * against hard kills (Windows console close, power loss, crashes).
+   */
+  async checkpoint(): Promise<void> {
+    const conn = await this.db.connect();
+    try {
+      await conn.exec('CHECKPOINT');
+    } finally {
+      await conn.close();
+    }
   }
 }

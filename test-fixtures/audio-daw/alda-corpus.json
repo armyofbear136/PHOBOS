@@ -1,0 +1,175 @@
+{
+  "$comment": "ALDA fixture corpus. Each entry has ALDA source text plus expected results — event count, specific event sanity checks, and the full expected event list for a few canonical cases. The test harness asserts each. Ticks-per-beat is 480 (see AldaMidiEmitter.ts).",
+  "fixtures": [
+    {
+      "name": "single-note-c",
+      "source": "piano: c",
+      "expect": {
+        "eventCount": 1,
+        "events": [
+          { "instrument": "piano", "midiNote": 60, "velocity": 100, "startTicks": 0, "durationTicks": 480, "channel": 0 }
+        ]
+      }
+    },
+    {
+      "name": "scale-ascending",
+      "source": "piano: c d e f g a b > c",
+      "expect": {
+        "eventCount": 8,
+        "firstMidi": 60,
+        "lastMidi":  72,
+        "allDurationTicks": 480
+      }
+    },
+    {
+      "name": "note-durations",
+      "source": "piano: c4 c8 c2 c1",
+      "expect": {
+        "eventCount": 4,
+        "durationsTicks": [480, 240, 960, 1920]
+      }
+    },
+    {
+      "name": "dotted-note",
+      "source": "piano: c4.",
+      "expect": {
+        "eventCount": 1,
+        "durationsTicks": [720]
+      }
+    },
+    {
+      "name": "sharp-and-flat",
+      "source": "piano: c+ d-",
+      "expect": {
+        "eventCount": 2,
+        "midiNotes": [61, 61]
+      }
+    },
+    {
+      "name": "octave-set",
+      "source": "piano: o3 c",
+      "expect": {
+        "eventCount": 1,
+        "midiNotes": [48]
+      }
+    },
+    {
+      "name": "octave-up-down",
+      "source": "piano: c > c < c",
+      "expect": {
+        "eventCount": 3,
+        "midiNotes": [60, 72, 60]
+      }
+    },
+    {
+      "name": "chord-cmaj",
+      "source": "piano: c/e/g",
+      "expect": {
+        "eventCount": 3,
+        "midiNotes": [60, 64, 67],
+        "allStartTicks": 0,
+        "allDurationTicks": 480
+      }
+    },
+    {
+      "name": "chord-with-duration",
+      "source": "piano: c8/e/g",
+      "expect": {
+        "eventCount": 3,
+        "allDurationTicks": 240
+      }
+    },
+    {
+      "name": "rest-advances-cursor",
+      "source": "piano: c r c",
+      "expect": {
+        "eventCount": 2,
+        "startTicks": [0, 960]
+      }
+    },
+    {
+      "name": "rest-with-duration",
+      "source": "piano: c r8 c",
+      "expect": {
+        "eventCount": 2,
+        "startTicks": [0, 720]
+      }
+    },
+    {
+      "name": "barlines-ignored",
+      "source": "piano: c | d | e | f",
+      "expect": {
+        "eventCount": 4,
+        "midiNotes": [60, 62, 64, 65]
+      }
+    },
+    {
+      "name": "tempo-attribute",
+      "source": "(tempo 90) piano: c",
+      "expect": {
+        "eventCount": 1,
+        "tempoBpm": 90
+      }
+    },
+    {
+      "name": "volume-attribute",
+      "source": "piano: (volume 50) c",
+      "expect": {
+        "eventCount": 1,
+        "velocityApprox": 64
+      }
+    },
+    {
+      "name": "multi-instrument",
+      "source": "piano: c\nviolin: g",
+      "expect": {
+        "eventCount": 2,
+        "channels": [0, 1],
+        "midiNotes": [60, 67]
+      }
+    },
+    {
+      "name": "voice-declaration",
+      "source": "piano: V1: c d e V2: g a b",
+      "expect": {
+        "eventCount": 6,
+        "voiceOneStartsAt": 0,
+        "voiceTwoStartsAt": 0,
+        "notesOverlap": true
+      }
+    },
+    {
+      "name": "duration-inheritance",
+      "source": "piano: c8 d e f",
+      "expect": {
+        "eventCount": 4,
+        "allDurationTicks": 240
+      }
+    },
+    {
+      "name": "comment-ignored",
+      "source": "piano: c # this is a comment\nd e",
+      "expect": {
+        "eventCount": 3,
+        "midiNotes": [60, 62, 64]
+      }
+    },
+    {
+      "name": "cello-identifier",
+      "source": "cello: c",
+      "expect": {
+        "eventCount": 1,
+        "instruments": ["cello"]
+      }
+    },
+    {
+      "name": "mixed-chord-and-melody",
+      "source": "piano: c/e/g c d e",
+      "expect": {
+        "eventCount": 6,
+        "midiNotes": [60, 64, 67, 60, 62, 64],
+        "startTicks": [0, 0, 0, 480, 960, 1440]
+      }
+    }
+  ]
+}

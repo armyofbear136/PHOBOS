@@ -30,15 +30,26 @@ import { registerGameRoutes } from './routes/game.js';
 import { GameStore } from './db/GameStore.js';
 import { gsm } from './game/GameStateManager.js';
 import { registerServiceRoutes } from './routes/services.js';
+import { registerAudioRoutes } from './routes/audio.js';
 import { ServiceStore } from './db/ServiceStore.js';
-import { stopPhotoprism } from './services/PhotoPrismManager.js';
+import { stopPiGallery } from './services/PiGalleryManager.js';
 import { stopPolaris, startPolaris, isBinaryPresent as isPolarisBinaryPresent } from './services/PolarisManager.js';
+import {
+  stopJellyfin,
+  startJellyfin,
+  isBinaryPresent as isJellyfinBinaryPresent,
+} from './services/JellyfinManager.js';
+import { stopCarla } from './phobos/CarlaManager.js';
 import { registerToolsRoutes } from './routes/toolsRoute.js';
 import { stopBroadway, startBroadway } from './phobos/BroadwayManager.js';
 import { registerCartridgeRoutes } from './routes/cartridgeRoutes.js';
 import { CartridgeStore } from './db/CartridgeStore.js';
 import { initCartridgeManager, reconcileCartridgeSlots } from './phobos/CartridgeManager.js';
 import { startCamofox, stopCamofox, isCamofoxInstalled } from './phobos/CamofoxManager.js';
+import { ArchiveStore } from './db/ArchiveStore.js';
+import { registerArchiveRoutes } from './routes/archiveRoutes.js';
+import { registerMpvRoutes } from './routes/mpv.js';
+import { registerIptvRoutes } from './routes/iptv.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -110,8 +121,12 @@ async function buildServer() {
   await registerSchedulerRoutes(fastify);
   await registerGameRoutes(fastify);
   await registerServiceRoutes(fastify);
+  await registerAudioRoutes(fastify);
   await registerToolsRoutes(fastify);
   await registerCartridgeRoutes(fastify);
+  await registerArchiveRoutes(fastify);
+  await registerMpvRoutes(fastify);
+  await registerIptvRoutes(fastify);
 
   fastify.get('/health', async () => ({ ok: true, ts: Date.now() }));
 
@@ -152,7 +167,23 @@ async function main() {
 
   // Earliest start point for 
   // ── SYBIL ─────────────────────────────────────────────────────────────────
-  startSybil().catch(err => console.warn('[SYBIL] Startup error (non-fatal):', err));
+  const archiveHasContent = ArchiveStore.hasAnyContent();
+ 
+  if (archiveHasContent) {
+    // Archive content exists — SYBIL is required. Wait for startup to settle.
+    try {
+      await startSybil();
+    } catch (err) {
+      console.error('[PHOBOS] Archive content exists but SYBIL failed to start:', err);
+      console.error('[PHOBOS] Archive search will be disabled until SYBIL is running.');
+      // archiveEnabled flag — read by /api/archive/status to surface warning banner.
+      process.env.ARCHIVE_SYBIL_FAILED = '1';
+    }
+  } else {
+    // No archive content — SYBIL startup is non-fatal (Phase 1 behaviour).
+    startSybil().catch(err => console.warn('[SYBIL] Startup error (non-fatal):', err));
+  }
+ 
 
   await loadRegistry();
   await scanUserSkills();
@@ -189,17 +220,12 @@ async function main() {
   const serviceStore = new ServiceStore(db);
   await serviceStore.ensureTable();
 
-  const ppRecord = await serviceStore.get('photoprism');
-  if (ppRecord.enabled && ppRecord.libraryPath) {
-    const { startPhotoprism, isBinaryPresent } = await import('./services/PhotoPrismManager.js');
-    if (isBinaryPresent()) {
-      startPhotoprism({
-        originalsPath:         ppRecord.libraryPath,
-        adminPassword:         ppRecord.settings.adminPassword as string,
-        disableFaces:          Boolean(ppRecord.settings.disableFaces),
-        disableClassification: Boolean(ppRecord.settings.disableClassification),
-        workers:               Number(ppRecord.settings.workers ?? 0),
-      }).catch(err => console.warn('[MediaHub] PhotoPrism auto-start failed:', err.message));
+  const pgRecord = await serviceStore.get('pigallery2');
+  if (pgRecord.enabled && pgRecord.libraryPath) {
+    const { startPiGallery, isBinaryPresent: isPiGalleryBinaryPresent } = await import('./services/PiGalleryManager.js');
+    if (isPiGalleryBinaryPresent()) {
+      startPiGallery({ libraryPath: pgRecord.libraryPath })
+        .catch(err => console.warn('[MediaHub] PiGallery2 auto-start failed:', err.message));
     }
   }
 
@@ -211,6 +237,22 @@ async function main() {
         libraryPath:   polarisRecord.libraryPath,
         mountName:     (polarisRecord.settings.mountName as string) || 'Music',
       }).catch(err => console.warn('[MediaHub] Polaris auto-start failed:', err.message));
+    }
+  }
+
+  const jellyfinRecord = await serviceStore.get('jellyfin');
+  if (jellyfinRecord.enabled) {
+    if (isJellyfinBinaryPresent()) {
+      const adminPassword = (jellyfinRecord.settings.adminPassword as string) || '';
+      if (adminPassword) {
+        startJellyfin(
+          {
+            libraryPath:   jellyfinRecord.libraryPath,
+            hardwareAccel: (jellyfinRecord.settings.hardwareAccel as string) || '',
+          },
+          adminPassword,
+        ).catch(err => console.warn('[MediaHub] Jellyfin auto-start failed:', err.message));
+      }
     }
   }
 
@@ -253,7 +295,7 @@ async function main() {
 
   // ── Graceful shutdown ─────────────────────────────────────────────────────
   // CRITICAL: db.close() runs FIRST. The database WAL must be flushed before
-  // anything else. LLM servers, PhotoPrism, Polaris, etc. are stateless
+  // anything else. LLM servers, PiGallery2, Polaris, etc. are stateless
   // subprocesses — they can be killed dirty with no data loss. DuckDB cannot.
   //
   // On Windows, closing the console window sends CTRL_CLOSE_EVENT which gives
@@ -282,8 +324,10 @@ async function main() {
     // ── PHASE 3: Subprocesses (can fail without data loss) ────────────────
     await stopBroadway().catch(() => {});
     await stopCamofox().catch(() => {});
-    await stopPhotoprism().catch(() => {});
+    await stopPiGallery().catch(() => {});
     await stopPolaris().catch(() => {});
+    await stopJellyfin().catch(() => {});
+    await stopCarla().catch(() => {});
     await stopAllServers().catch(() => {});
     await fastify.close().catch(() => {});
 

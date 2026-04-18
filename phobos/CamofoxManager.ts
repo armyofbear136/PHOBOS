@@ -1,5 +1,4 @@
 import * as path from 'path';
-import { fileURLToPath } from 'url';
 import * as fs from 'fs';
 import { execSync } from 'child_process';
 import {
@@ -19,14 +18,20 @@ export const CAMOFOX_PORT = 9377;
 // Resolved path to the camofox-browser bin installed as a normal npm dependency.
 // `camofox-browser` is listed in package.json — bin/camofox-browser.js is the
 // entry point that starts the server.
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// entry point that starts the server.
-const SERVER_BIN = path.resolve(
-  __dirname,
-  '../node_modules/camofox-browser/bin/camofox-browser.js'
-);
+//
+// Path resolution must work in two environments:
+//   1. esbuild CJS bundle (production server) — __dirname is provided natively.
+//   2. tsx ESM dev/test                       — __dirname is undefined.
+// We guard __dirname behind a typeof check; in ESM we fall back to the
+// node_modules folder relative to cwd, which is correct when running from
+// the repo root.
+function resolveServerBin(): string {
+  if (typeof __dirname !== 'undefined') {
+    return path.resolve(__dirname, '../node_modules/camofox-browser/bin/camofox-browser.js');
+  }
+  return path.resolve(process.cwd(), 'node_modules/camofox-browser/bin/camofox-browser.js');
+}
+const SERVER_BIN = resolveServerBin();
 // State ───────────────────────────────────────────────────────────────────────
 
 let _proc: ManagedProcess = makeManagedProcess({

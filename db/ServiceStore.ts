@@ -14,7 +14,7 @@ import crypto from 'node:crypto';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type ServiceName = 'jellyfin' | 'polaris' | 'kavita' | 'photoprism';
+export type ServiceName = 'jellyfin' | 'polaris' | 'kavita' | 'pigallery2';
 
 export interface ServiceRecord {
   name:          ServiceName;
@@ -30,8 +30,9 @@ export interface ServiceRecord {
 // Per-service defaults applied when a row is first created.
 const SERVICE_DEFAULTS: Record<ServiceName, Record<string, unknown>> = {
   jellyfin: {
-    hardwareAccel: false,
+    hardwareAccel: '',       // empty string = CPU only; else 'vaapi' | 'qsv' | 'nvenc' | 'videotoolbox'
     remoteAccess:  false,
+    adminPassword: '',       // generated on first creation
   },
   polaris: {
     authEnabled:   true,
@@ -39,13 +40,7 @@ const SERVICE_DEFAULTS: Record<ServiceName, Record<string, unknown>> = {
   kavita: {
     port: 5000,
   },
-  photoprism: {
-    // Password is generated once and stored here — never shown in logs.
-    adminPassword:        '',
-    disableFaces:         false,
-    disableClassification: false,
-    workers:              0,   // 0 = auto
-  },
+  pigallery2: {},
 };
 
 const SCHEMA = `
@@ -65,6 +60,10 @@ export class ServiceStore {
 
   async ensureTable(): Promise<void> {
     await this.db.run(SCHEMA);
+    // One-time migration: rename legacy photoprism row to pigallery2.
+    await this.db.run(
+      `UPDATE media_services SET name = 'pigallery2' WHERE name = 'photoprism'`
+    );
   }
 
   /** Returns the record for a service, creating it with defaults if absent. */
@@ -83,8 +82,8 @@ export class ServiceStore {
 
     // First-time creation — insert defaults.
     const defaults = { ...SERVICE_DEFAULTS[name] };
-    // PhotoPrism needs a generated password on first creation.
-    if (name === 'photoprism' && !defaults.adminPassword) {
+
+    if (name === 'jellyfin' && !defaults.adminPassword) {
       defaults.adminPassword = crypto.randomBytes(24).toString('base64url');
     }
 
@@ -137,7 +136,7 @@ export class ServiceStore {
 
   /** Returns all four service records, creating defaults for any not yet persisted. */
   async getAll(): Promise<Record<ServiceName, ServiceRecord>> {
-    const names: ServiceName[] = ['jellyfin', 'polaris', 'kavita', 'photoprism'];
+    const names: ServiceName[] = ['jellyfin', 'polaris', 'kavita', 'pigallery2'];
     const records = await Promise.all(names.map(n => this.get(n)));
     return Object.fromEntries(records.map(r => [r.name, r])) as Record<ServiceName, ServiceRecord>;
   }

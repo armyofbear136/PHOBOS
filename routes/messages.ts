@@ -898,7 +898,7 @@ ${info.userPrompt}`;
             }
           },
           onExecuteResult: (result) => {
-            // Stream execute result card to frontend immediately after the run.
+            // Stream execute/simulate result card to frontend immediately after the run.
             sendEvent({
               type: 'execute_result',
               taskIndex: result.taskIndex,
@@ -906,6 +906,7 @@ ${info.userPrompt}`;
               durationMs: result.durationMs,
               timedOut: result.timedOut,
               stdoutPreview: result.stdoutPreview,
+              mode: result.mode,
             });
           },
         });

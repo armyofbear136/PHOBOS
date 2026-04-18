@@ -33,10 +33,15 @@ export async function runInSandbox(spec: ExecuteSpec): Promise<ExecuteResult> {
   const restrictedEnv: NodeJS.ProcessEnv = {
     PATH: process.env.PATH ?? '',
     HOME: process.env.HOME ?? '',
-    // Windows needs SYSTEMROOT for basic commands (cmd, node, python)
-    ...(process.platform === 'win32' && process.env.SYSTEMROOT
-      ? { SYSTEMROOT: process.env.SYSTEMROOT }
-      : {}),
+    // Windows requires these for .cmd shims (tsx, node, python launchers) to resolve
+    ...(process.platform === 'win32' ? {
+      SYSTEMROOT:  process.env.SYSTEMROOT  ?? 'C:\\Windows',
+      COMSPEC:     process.env.COMSPEC     ?? 'C:\\Windows\\system32\\cmd.exe',
+      PATHEXT:     process.env.PATHEXT     ?? '.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC',
+      USERPROFILE: process.env.USERPROFILE ?? process.env.HOME ?? '',
+      TEMP:        process.env.TEMP        ?? process.env.TMP  ?? '',
+      TMP:         process.env.TMP         ?? process.env.TEMP ?? '',
+    } : {}),
   };
 
   const started = Date.now();

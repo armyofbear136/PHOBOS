@@ -184,16 +184,24 @@ export class DispatchComposer {
         parts.push(
           `<tool_context>\n` +
           `PHOBOS has a Sandbox Executor available. SEREN can run code it writes in an isolated environment.\n\n` +
-          `Execute operation:\n` +
-          `  { "operation": "execute", "runtime": "node"|"python"|"bash", "entrypoint": "filename.ts" }\n\n` +
-          `Always pair with a preceding create task that writes the script.\n` +
-          `Set retryWithFix: true if execution success is required for downstream tasks (one auto-fix cycle on failure).\n` +
-          `Set outputFiles: ["result.json"] to copy files from the sandbox back to the workspace after execution.\n` +
-          `Use outputRequiredBy to inject stdout/stderr/exit code into downstream tasks.\n\n` +
-          `Runtimes:\n` +
-          `  node   → runs via tsx (TypeScript supported natively, no compile step)\n` +
-          `  python → runs via PHOBOS venv Python (all installed packages available)\n` +
-          `  bash   → bash on Linux/macOS, cmd.exe on Windows\n\n` +
+          `TWO sandbox operations are available:\n\n` +
+          `execute — verify code behavior (test runner, migration check, build step):\n` +
+          `  { "operation": "execute", "runtime": "node"|"python"|"bash", "entrypoint": "filename.ts" }\n` +
+          `  Output format: EXIT CODE + STDOUT + STDERR (diagnostic, injected into downstream tasks)\n\n` +
+          `simulate — compute a result as the deliverable (math, modeling, data generation):\n` +
+          `  { "operation": "simulate", "runtime": "node"|"python"|"bash", "entrypoint": "filename.py" }\n` +
+          `  Output format: raw stdout only (the answer itself, injected into downstream analyze/respond)\n\n` +
+          `CHOOSING THE RIGHT OPERATION:\n` +
+          `  Use simulate when: user asks for a calculation, Monte Carlo sim, numerical integration,\n` +
+          `    graph traversal, data transform, or any result that only code can produce.\n` +
+          `  Use execute when: verifying that code PHOBOS just wrote works (tests, migrations, scripts).\n\n` +
+          `Example simulation pipeline:\n` +
+          `  Task 1 create simulation.py → Task 2 simulate (outputRequiredBy [3]) →\n` +
+          `  Task 3 analyze results (outputRequiredBy [4]) → Task 4 respond with findings\n\n` +
+          `For both operations: always pair with a preceding create task that writes the script.\n` +
+          `Set retryWithFix: true on execute tasks if success is required for downstream work.\n` +
+          `Set outputFiles: ["result.json"] to copy files from sandbox to workspace after run.\n` +
+          `Runtimes: node (tsx, TypeScript native) · python (PHOBOS venv) · bash (Linux/macOS)\n` +
           `Limits: timeoutSeconds max 120 (default 30), output capped at 50 KB.\n` +
           `</tool_context>`
         );
@@ -287,6 +295,7 @@ export class DispatchComposer {
         image_gen: 'Generate images for',
         browse: 'Browse web for',
         execute: 'Execute code for',
+        simulate: 'Run simulation for',
       };
 
       // Build SAYON's first-person handoff message for this task.
@@ -329,6 +338,14 @@ export class DispatchComposer {
             `Produce the analysis content directly in your response.\n`
           : t.operation === 'image_gen'
           ? `Plan and emit image generation commands using the <generate_images> format below.\n`
+          : t.operation === 'execute'
+          ? `This task runs code in a sandbox to verify behavior. Do NOT write any response text — ` +
+            `the sandbox runner will execute the file automatically. Your only job here is ` +
+            `to confirm you understand the task. Write nothing.\n`
+          : t.operation === 'simulate'
+          ? `This task runs code in a sandbox to compute a result. Do NOT write any response text — ` +
+            `the sandbox runner will execute the file automatically. Your only job here is ` +
+            `to confirm you understand the task. Write nothing.\n`
           : `For file changes: use the appropriate file tool (write_file, append_file, insert_lines, replace_lines) and emit the result directly. Do not describe what to do — do it.\n`) +
         `</current_task>`
       );
@@ -410,7 +427,7 @@ export class DispatchComposer {
     // respond and analyze tasks must not see file tools — prevents spurious write_file calls.
     const taskNeedsFileTools =
       input.intentType !== 'QUESTION' &&
-      (!input.currentTask || !['respond', 'analyze', 'image_gen'].includes(input.currentTask.operation));
+      (!input.currentTask || !['respond', 'analyze', 'image_gen', 'execute', 'simulate'].includes(input.currentTask.operation));
 
     // image_gen tasks get a specialized tool block instead of file tools
     const isImageGenTask = input.currentTask?.operation === 'image_gen';

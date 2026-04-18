@@ -4,6 +4,10 @@ import { coordinatorCall, coordinatorStream, engineStream } from './clients.js';
 import type { FileSummary, ProjectScope } from './ContextIngester.js';
 import { getPrimeTriggerList, getUserSkillTriggerList } from './SkillManager.js';
 import { retrieveWorkspaceMemory } from './MemoryWriter.js';
+import { ArchiveIntentClassifier } from './ArchiveIntentClassifier.js';
+import { search as archiveSearch } from './ArchiveClient.js';
+ 
+const _archiveClassifier = new ArchiveIntentClassifier();
 import { gsm } from '../game/GameStateManager.js';
 
 
@@ -41,12 +45,13 @@ export interface Task {
    * 'analyze' — read and reason, no file output
    * 'respond' — produce a text response with no file operations
    */
-  operation: 'modify' | 'create' | 'delete' | 'analyze' | 'respond' | 'image_gen' | 'browse' | 'execute';
+  operation: 'modify' | 'create' | 'delete' | 'analyze' | 'respond' | 'image_gen' | 'browse' | 'execute' | 'simulate';
   /** browse operation — url or macro+query params. Only set when operation === 'browse'. */
   browseUrl?:   string;
   browseMacro?: string;
   browseQuery?: string;
-  /** execute operation — run a script in an isolated sandbox. Only set when operation === 'execute'. */
+  /** execute operation — run a script to verify or validate code in an isolated sandbox. */
+  /** simulate operation — run a script to compute results, produce data, or model a system. */
   runtime?:        'node' | 'python' | 'bash';
   entrypoint?:     string;   // filename only (no path separators) — the script to run
   timeoutSeconds?: number;   // hard kill after N seconds, max 120, default 30
@@ -172,16 +177,36 @@ export class TaskPlanner {
     }
 
     // ── Step 3: SEREN — Task decomposition ───────────────────────────────
-    // Augment completeContext with semantic memory from SYBIL before SEREN sees it.
-    // Fire retrieveWorkspaceMemory in the background while we set up the cache —
-    // await resolves quickly (<5ms) from the HNSW index if SYBIL is online.
+    // Retrieve workspace memory (Phase 1) and Archive context (Phase 2) in
+    // parallel. Both are read-only HNSW queries — safe to run concurrently.
     gsm.setPersonaState('sybil', 'searching');
-    const priorMemory = await retrieveWorkspaceMemory(userMessage);
+ 
+    const hasActiveProject = this.workspaceDir !== process.cwd();
+ 
+    const [priorMemory, archiveContext] = await Promise.all([
+      retrieveWorkspaceMemory(userMessage),
+      _archiveClassifier
+        .classify({ userMessage, hasActiveProject, pinnedDomains: [], isCopilot: false })
+        .then(routing =>
+          routing.useArchive
+            ? archiveSearch({ query: routing.queryText, domains: routing.domains, k: routing.k })
+            : ''
+        )
+        .catch(() => ''),  // Archive errors are always non-fatal
+    ]);
+ 
     gsm.setPersonaState('sybil', 'idle');
+ 
     if (priorMemory) {
       completeContext = completeContext
         ? completeContext + '\n\n' + priorMemory
         : priorMemory;
+    }
+ 
+    if (archiveContext) {
+      completeContext = completeContext
+        ? completeContext + '\n\n' + archiveContext
+        : archiveContext;
     }
 
     // Cache for clarification re-entry (messages.ts reads via getLastCompleteContext)
@@ -575,7 +600,7 @@ export class TaskPlanner {
       `    {\n` +
       `      "title": "<short action phrase>",\n` +
       `      "targetFile": "<filename or empty string if no file involved>",\n` +
-      `      "operation": "<modify|create|delete|analyze|respond|image_gen|browse|execute>",\n` +
+      `      "operation": "<modify|create|delete|analyze|respond|image_gen|browse|execute|simulate>",\n` +
       `      "prompt": "<full self-contained engine prompt>",\n` +
       `      "context": "<extracted constraints for this task only, max 400 words>",\n` +
       `      "assignedTo": "<seren|sayon — seren is default, assign sayon only for simple fast tasks>",\n` +
@@ -637,6 +662,14 @@ export class TaskPlanner {
       `Do not plan execute tasks if no sandbox executor is listed. ` +
       `- For TypeScript/Node scripts: write plain .ts files — the executor runs them via tsx directly. ` +
       `- execute tasks do NOT use file tools — they run the script and capture output only.\\n` +
+      `- Use operation \"simulate\" (NOT \"execute\") when the goal is to compute a result, model a system, ` +
+      `or produce structured data as the primary deliverable — not to verify application code. ` +
+      `Simulate runs identically to execute but stdout is the answer: computed values, model output, ` +
+      `or structured data that downstream analyze/respond tasks will interpret and present. ` +
+      `Use simulate when: user asks for a calculation, Monte Carlo sim, numerical integration, ` +
+      `data transform, or any code-produced result. ` +
+      `Use execute when verifying code PHOBOS just wrote (test runner, migration check, build step). ` +
+      `Both require the Sandbox Executor to be available.\\n` +
       `a later task needs as input. Set it to the array of task indices that depend on this output.\n` +
       `- For "analyze" and "respond" operations: always set outputRequiredBy if any later task references this task\'s results\n` +
       `\nFILE INJECTION - read carefully:\n` +
@@ -731,7 +764,7 @@ export class TaskPlanner {
 
         // ── BUILD_QUEUE (normal path) ─────────────────────────────────────
         if (Array.isArray(parsed.tasks) && parsed.tasks.length > 0) {
-          const VALID_OPS: ReadonlyArray<Task['operation']> = ['modify', 'create', 'delete', 'analyze', 'respond', 'image_gen', 'browse', 'execute'];
+          const VALID_OPS: ReadonlyArray<Task['operation']> = ['modify', 'create', 'delete', 'analyze', 'respond', 'image_gen', 'browse', 'execute', 'simulate'];
           const VALID_TASK_SCOPES = ['BRIEF', 'STANDARD', 'DETAILED', 'COMPLETE'] as const;
           const VALID_RUNTIMES = ['node', 'python', 'bash'] as const;
           const tasks: Task[] = parsed.tasks.map((raw, i) => {
@@ -745,7 +778,7 @@ export class TaskPlanner {
               browseUrl?: unknown; browseMacro?: unknown; browseQuery?: unknown;
               runtime?: unknown; entrypoint?: unknown; timeoutSeconds?: unknown;
               retryWithFix?: unknown; outputFiles?: unknown;
-            };
+            }; // execute | simulate share the same fields
             const op = VALID_OPS.includes(t.operation as Task['operation'])
               ? (t.operation as Task['operation'])
               : 'modify';

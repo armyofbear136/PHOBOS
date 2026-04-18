@@ -167,8 +167,8 @@ export interface LoopOptions {
   onOutputChunk?: (content: string, messageId?: string) => Promise<void>;
   /** Called during image generation phases — wire to SSE for frontend status updates */
   onImageStatus?: (status: import('../phobos/ImageGenerationHandler.js').ImageGenStatus) => void;
-  /** Called when an execute task completes — wire to SSE for frontend result card */
-  onExecuteResult?: (result: { taskIndex: number; exitCode: number; durationMs: number; timedOut: boolean; stdoutPreview: string }) => void;
+  /** Called when an execute or simulate task completes — wire to SSE for frontend result card */
+  onExecuteResult?: (result: { taskIndex: number; exitCode: number; durationMs: number; timedOut: boolean; stdoutPreview: string; mode: 'execute' | 'simulate' }) => void;
   /**
    * Called just before each task is dispatched to SEREN/SAYON for execution.
    * Receives the full system prompt + user message so it can be logged for export/debugging.
@@ -220,7 +220,7 @@ export type SSEEvent =
   | { type: 'task_start'; taskIndex: number; total: number; title: string }
   | { type: 'task_complete'; taskIndex: number; total: number; title: string }
   | { type: 'task_failed'; taskIndex: number; total: number; title: string; reason: string }
-  | { type: 'execute_result'; taskIndex: number; exitCode: number; durationMs: number; timedOut: boolean; stdoutPreview: string }
+  | { type: 'execute_result'; taskIndex: number; exitCode: number; durationMs: number; timedOut: boolean; stdoutPreview: string; mode: 'execute' | 'simulate' }
   | { type: 'complete'; approved: boolean; bestAttempt: number }
   | { type: 'thinking_retry'; attempt: number }
   | { type: 'clarification_needed'; questions: string[] }
@@ -908,8 +908,16 @@ export class LoopController {
           break;
         }
 
-        // ── execute operation: run code in an isolated sandbox ────────────────
-        if (task.operation === 'execute') {
+        // ── execute / simulate operations: run code in an isolated sandbox ─────
+        // execute  = verify code PHOBOS wrote (tests, migrations, build checks).
+        //            Output formatted as diagnostic: exit code + stdout + stderr.
+        // simulate = produce computed results as the deliverable (math, modeling,
+        //            data generation). Output formatted as result data: stdout leads,
+        //            exit code is secondary, stderr only shown on failure.
+        // Both share identical sandboxing infrastructure; only output framing differs.
+        if (task.operation === 'execute' || task.operation === 'simulate') {
+          const isSimulate = task.operation === 'simulate';
+
           // Gate on feature flag — degrade gracefully if executor is disabled.
           let executorEnabled = false;
           try {
@@ -921,27 +929,27 @@ export class LoopController {
           if (!executorEnabled) {
             const desc = task.entrypoint ?? task.title;
             const fallback =
-              `[Sandbox Executor is disabled. Cannot run: ${desc}. ` +
-              `Enable it in the PHOBOS Command Center to allow code execution.]`;
+              `[Sandbox Executor is disabled. Cannot ${isSimulate ? 'simulate' : 'execute'}: ${desc}. ` +
+              `Enable it in the PHOBOS Command Center.]`;
             attemptResult.output = fallback;
             task.completedOutput = fallback;
             taskApproved = true;
             break;
           }
 
-          const runtime   = task.runtime   ?? 'node';
+          const runtime    = task.runtime ?? 'node';
           const entrypoint = task.entrypoint;
           const timeoutMs  = Math.min(120_000, (task.timeoutSeconds ?? 30) * 1_000);
 
           if (!entrypoint) {
-            const errMsg = `[Execute task missing entrypoint — cannot run]`;
+            const errMsg = `[${isSimulate ? 'Simulate' : 'Execute'} task missing entrypoint — cannot run]`;
             attemptResult.output = errMsg;
             task.completedOutput = errMsg;
             taskApproved = true;
             break;
           }
 
-          let executeOutput: string;
+          let sandboxOutput: string;
           try {
             const { createSandbox, validateEntrypoint } = await import('../execution/SandboxManager.js');
             const { runInSandbox } = await import('../execution/SandboxExecutor.js');
@@ -956,32 +964,27 @@ export class LoopController {
 
             let execResult;
             try {
-              // Copy any files created by prior create tasks into the sandbox.
-              // These live in the workspace root after simulateAll committed them.
-              // We re-use the sourceFiles mechanism — they were already declared.
               if (!validateEntrypoint(entrypoint, sandbox.sandboxDir)) {
-                // Entrypoint not in sandbox yet — check workspace and copy it in.
                 const srcPath = `${projectRoot}/${entrypoint}`;
                 const { copyFile } = await import('fs/promises');
                 try {
                   await copyFile(srcPath, `${sandbox.sandboxDir}/${entrypoint}`);
                 } catch {
-                  executeOutput =
-                    `[Execute error: entrypoint "${entrypoint}" not found in sandbox or workspace. ` +
-                    `Ensure a preceding create task writes this file before execute runs.]`;
+                  sandboxOutput =
+                    `[${isSimulate ? 'Simulate' : 'Execute'} error: entrypoint "${entrypoint}" not found. ` +
+                    `Ensure a preceding create task writes this file.]`;
                   await sandbox.cleanup();
-                  attemptResult.output = executeOutput;
-                  task.completedOutput = executeOutput;
+                  attemptResult.output = sandboxOutput;
+                  task.completedOutput = sandboxOutput;
                   taskApproved = true;
                   break;
                 }
               }
 
               agentState.transition('executing', entrypoint, task.index, total);
-              sendStatus(`[${task.index}/${total}] Running ${entrypoint}…`);
+              sendStatus(`[${task.index}/${total}] ${isSimulate ? 'Simulating' : 'Running'} ${entrypoint}…`);
               execResult = await runInSandbox({ runtime: runtime as 'node' | 'python' | 'bash', entrypoint, sandboxDir: sandbox.sandboxDir, timeoutMs });
 
-              // Copy declared output files back to workspace
               if (task.outputFiles?.length) {
                 await sandbox.collectOutputs(task.outputFiles);
               }
@@ -989,7 +992,7 @@ export class LoopController {
               await sandbox.cleanup();
             }
 
-            // Emit execute_result SSE event for frontend result card
+            // Emit SSE event for frontend result card
             const stdoutPreview = execResult.stdout.split('\n')[0]?.slice(0, 120) ?? '';
             this.sendEvent(reply, {
               type: 'execute_result',
@@ -998,6 +1001,7 @@ export class LoopController {
               durationMs: execResult.durationMs,
               timedOut: execResult.timedOut,
               stdoutPreview,
+              mode: isSimulate ? 'simulate' : 'execute',
             });
             this.options.onExecuteResult?.({
               taskIndex: task.index,
@@ -1005,37 +1009,59 @@ export class LoopController {
               durationMs: execResult.durationMs,
               timedOut: execResult.timedOut,
               stdoutPreview,
+              mode: isSimulate ? 'simulate' : 'execute',
             });
 
-            // Format output for outputRequiredBy injection
-            const exitLabel = execResult.timedOut ? `TIMED OUT after ${timeoutMs / 1000}s` : `EXIT CODE: ${execResult.exitCode}`;
-            executeOutput =
-              `${exitLabel}\nDURATION: ${(execResult.durationMs / 1000).toFixed(1)}s\n\n` +
-              (execResult.stdout ? `STDOUT:\n${execResult.stdout}\n` : 'STDOUT:\n(empty)\n') +
-              (execResult.stderr ? `\nSTDERR:\n${execResult.stderr}` : '');
+            if (isSimulate) {
+              // ── Simulate: stdout IS the answer — lead with the data ──────────
+              // Downstream analyze/respond tasks receive this as structured result
+              // output. Exit code and stderr are secondary context.
+              if (execResult.timedOut) {
+                sandboxOutput =
+                  `[SIMULATION TIMED OUT after ${timeoutMs / 1000}s]\n` +
+                  (execResult.stdout ? `Partial output:\n${execResult.stdout}` : '');
+              } else if (execResult.exitCode !== 0) {
+                sandboxOutput =
+                  `[SIMULATION ERROR — exit ${execResult.exitCode}]\n` +
+                  (execResult.stderr ? `Error:\n${execResult.stderr}\n` : '') +
+                  (execResult.stdout ? `Partial output:\n${execResult.stdout}` : '');
+              } else {
+                // Success: pure output, no diagnostic noise
+                sandboxOutput =
+                  (execResult.stdout || '[Simulation produced no output]') +
+                  (execResult.stderr ? `\n\n[warnings]\n${execResult.stderr}` : '');
+              }
+            } else {
+              // ── Execute: diagnostic format — exit code + full streams ────────
+              const exitLabel = execResult.timedOut ? `TIMED OUT after ${timeoutMs / 1000}s` : `EXIT CODE: ${execResult.exitCode}`;
+              sandboxOutput =
+                `${exitLabel}\nDURATION: ${(execResult.durationMs / 1000).toFixed(1)}s\n\n` +
+                (execResult.stdout ? `STDOUT:\n${execResult.stdout}\n` : 'STDOUT:\n(empty)\n') +
+                (execResult.stderr ? `\nSTDERR:\n${execResult.stderr}` : '');
 
-            // ── Single automatic fix cycle on non-zero exit ─────────────────
-            if (execResult.exitCode !== 0 && task.retryWithFix && attempt < maxAttempts) {
-              sendStatus(`[${task.index}/${total}] Execution failed — requesting fix…`);
-              const fixInjection =
-                `\n\n<prior_task_output task="${task.title}" operation="execute">\n` +
-                executeOutput.slice(0, 8_000) +
-                `\n</prior_task_output>\n\n` +
-                `The script exited with a non-zero code. Fix the error in ${entrypoint} and rewrite it completely.`;
-              retryContext = {
-                attemptNumber: attempt,
-                priorThinking: attemptResult.thinking,
-                errorOutput: fixInjection,
-              };
-              taskFailReason = `Execute failed: exit ${execResult.exitCode}`;
-              continue;
+              // Single automatic fix cycle on non-zero exit
+              if (execResult.exitCode !== 0 && task.retryWithFix && attempt < maxAttempts) {
+                sendStatus(`[${task.index}/${total}] Execution failed — requesting fix…`);
+                const fixInjection =
+                  `\n\n<prior_task_output task="${task.title}" operation="execute">\n` +
+                  sandboxOutput.slice(0, 8_000) +
+                  `\n</prior_task_output>\n\n` +
+                  `The script exited with a non-zero code. Fix the error in ${entrypoint} and rewrite it completely.`;
+                retryContext = {
+                  attemptNumber: attempt,
+                  priorThinking: attemptResult.thinking,
+                  errorOutput: fixInjection,
+                };
+                taskFailReason = `Execute failed: exit ${execResult.exitCode}`;
+                continue;
+              }
             }
           } catch (execErr) {
-            executeOutput = `[Execute error: ${(execErr as Error).message}]`;
+            sandboxOutput = `[${isSimulate ? 'Simulate' : 'Execute'} error: ${(execErr as Error).message}]`;
           }
 
-          attemptResult.output = executeOutput;
-          task.completedOutput = executeOutput;
+          attemptResult.output = sandboxOutput!;
+          task.completedOutput = sandboxOutput!;
           taskApproved = true;
           break;
         }

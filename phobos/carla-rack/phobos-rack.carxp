@@ -1,0 +1,72 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE CARLA-PROJECT>
+<!--
+  PHOBOS Default Carla Rack Project
+  ==================================
+  This file defines the persistent plugin rack loaded by CarlaManager.ts.
+
+  Plugin index contract (PERMANENT — see PHOBOS-DAW-Implementation-Plan.md §3.1):
+    0  = Helm                 (VST3 synth — primary)
+    1  = Surge XT             (VST3 synth — Phase 4; empty placeholder until then)
+    2  = PHOBOS Crystal DSP   (VST3 effect — loaded when built artifact is present)
+
+  <Binary> paths use the __PLUGINS_DIR__ placeholder that CarlaManager rewrites
+  at runtime to an absolute path. This keeps the project file portable and
+  platform-agnostic.
+
+  Do not reorder plugins. Do not remove the empty placeholder at index 1 until
+  Surge XT is formally integrated — reordering breaks the wire contract with
+  EffectRackStore presets that reference plugin indices.
+-->
+<CARLA-PROJECT VERSION='2.0'>
+
+ <EngineSettings>
+  <ForceStereo>true</ForceStereo>
+  <PreferPluginBridges>false</PreferPluginBridges>
+  <PreferUiBridges>false</PreferUiBridges>
+  <UIsAlwaysOnTop>false</UIsAlwaysOnTop>
+  <MaxParameters>200</MaxParameters>
+  <UIBridgesTimeout>4000</UIBridgesTimeout>
+ </EngineSettings>
+
+ <Transport>
+  <BeatsPerMinute>120</BeatsPerMinute>
+ </Transport>
+
+ <!-- Plugin 0: Helm -->
+ <Plugin>
+  <Info>
+   <Type>VST3</Type>
+   <Name>Helm</Name>
+   <Binary>__PLUGINS_DIR__/Helm.vst3</Binary>
+   <UniqueID>0</UniqueID>
+  </Info>
+  <Data>
+   <Active>Yes</Active>
+   <ControlChannel>1</ControlChannel>
+   <Options>0x1e9</Options>
+  </Data>
+ </Plugin>
+
+ <!--
+  Plugin 1: Surge XT (Phase 4)
+  Intentionally empty so plugin indices remain stable. CarlaManager appends
+  Surge XT here via OSC when the binary is present.
+ -->
+
+ <!-- Plugin 2: PHOBOS Crystal DSP -->
+ <Plugin>
+  <Info>
+   <Type>VST3</Type>
+   <Name>PhobosCrystal</Name>
+   <Binary>__PLUGINS_DIR__/PhobosCrystal.vst3</Binary>
+   <UniqueID>0</UniqueID>
+  </Info>
+  <Data>
+   <Active>Yes</Active>
+   <ControlChannel>1</ControlChannel>
+   <Options>0x1e9</Options>
+  </Data>
+ </Plugin>
+
+</CARLA-PROJECT>

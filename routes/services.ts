@@ -7,10 +7,9 @@
  * GET    /api/services/all              — all four services at once (for hub panel load)
  * PATCH  /api/services/:name/config     — update libraryPath and/or settings fields
  *
- * ── PhotoPrism-specific ──────────────────────────────────────────────────────
- * POST   /api/services/photoprism/scan  — trigger library index pass
- * ANY    /api/services/photoprism/proxy/* — transparent reverse proxy to PhotoPrism
- *                                          REST API (auth token injected server-side)
+ * ── PiGallery2-specific ──────────────────────────────────────────────────────
+ * POST   /api/services/pigallery2/scan  — trigger library reindex
+ * ANY    /api/services/pigallery2/proxy/* — transparent reverse proxy to PiGallery2
  *
  * Jellyfin, Polaris, and Kavita are managed by their own managers (not in this
  * session — stubs added so the hub panel can render all four cards consistently).
@@ -20,14 +19,14 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 import { ServiceStore, type ServiceName } from '../db/ServiceStore.js';
 import {
-  startPhotoprism,
-  stopPhotoprism,
-  getPhotoPrismStatus,
-  triggerLibraryScan,
-  photoPrismApiRequest,
-  isBinaryPresent as isPhotoPrismBinaryPresent,
-  PHOTOPRISM_PORT,
-} from '../services/PhotoPrismManager.js';
+  startPiGallery,
+  stopPiGallery,
+  getPiGalleryStatus,
+  triggerIndexing,
+  piGalleryApiRequest,
+  isBinaryPresent as isPiGalleryBinaryPresent,
+  PIGALLERY_PORT,
+} from '../services/PiGalleryManager.js';
 import {
   startPolaris,
   stopPolaris,
@@ -37,6 +36,15 @@ import {
   isBinaryPresent  as isPolarisBinaryPresent,
   POLARIS_PORT,
 } from '../services/PolarisManager.js';
+import {
+  startJellyfin,
+  stopJellyfin,
+  getJellyfinStatus,
+  triggerScan      as triggerJellyfinScan,
+  jellyfinApiRequest,
+  isBinaryPresent  as isJellyfinBinaryPresent,
+  JELLYFIN_PORT,
+} from '../services/JellyfinManager.js';
 
 // ── Stub status shape for services whose managers aren't implemented yet ──────
 // Jellyfin, Polaris, and Kavita managers follow in a later session.
@@ -67,21 +75,36 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
   fastify.get('/api/services/all', async (_req, reply) => {
     const all = await store.getAll();
 
-    const ppStatus   = getPhotoPrismStatus();
-    const ppRecord   = all.photoprism;
+    const pgStatus   = getPiGalleryStatus();
+    const pgRecord   = all.pigallery2;
 
     return reply.send({
-      photoprism: {
-        name:          'photoprism',
-        state:         ppStatus.state,
-        port:          ppStatus.port,
-        error:         ppStatus.error,
-        binaryPresent: ppStatus.binaryPresent,
-        libraryPath:   ppRecord.libraryPath,
-        settings:      ppRecord.settings,
-        enabled:       ppRecord.enabled,
+      pigallery2: {
+        name:             'pigallery2',
+        state:            pgStatus.state,
+        port:             pgStatus.port,
+        error:            pgStatus.error,
+        binaryPresent:    pgStatus.binaryPresent,
+        installedVersion: pgStatus.installedVersion,
+        libraryPath:      pgRecord.libraryPath,
+        settings:         pgRecord.settings,
+        enabled:          pgRecord.enabled,
       },
-      jellyfin: stubStatus('jellyfin', all.jellyfin),
+      jellyfin: (() => {
+        const s = getJellyfinStatus();
+        const r = all.jellyfin;
+        return {
+          name:          'jellyfin',
+          state:         s.state,
+          port:          s.port,
+          error:         s.error,
+          binaryPresent: s.binaryPresent,
+          ffmpegPresent: s.ffmpegPresent,
+          libraryPath:   r.libraryPath,
+          settings:      r.settings,
+          enabled:       r.enabled,
+        };
+      })(),
       polaris: (() => {
         const s = getPolarisStatus();
         const r = all.polaris;
@@ -100,14 +123,19 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
       const name = req.params.name as ServiceName;
       const record = await store.get(name);
 
-      if (name === 'photoprism') {
-        const s = getPhotoPrismStatus();
+      if (name === 'pigallery2') {
+        const s = getPiGalleryStatus();
         return reply.send({ ...s, settings: record.settings, enabled: record.enabled });
       }
 
       if (name === 'polaris') {
         const s = getPolarisStatus();
         return reply.send({ ...s, name: 'polaris', settings: record.settings, enabled: record.enabled });
+      }
+
+      if (name === 'jellyfin') {
+        const s = getJellyfinStatus();
+        return reply.send({ ...s, name: 'jellyfin', settings: record.settings, enabled: record.enabled });
       }
 
       return reply.send({ ...stubStatus(name, record), settings: record.settings });
@@ -121,29 +149,19 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
       const name = req.params.name as ServiceName;
       const record = await store.setEnabled(name, true);
 
-      if (name === 'photoprism') {
-        if (!isPhotoPrismBinaryPresent()) {
+      if (name === 'pigallery2') {
+        if (!isPiGalleryBinaryPresent()) {
           return reply.status(400).send({
-            error: 'PhotoPrism binary not found. Run: node scripts/fetch-photoprism.js',
+            error: 'PiGallery2 not installed. Run: node scripts/fetch-pigallery2.js',
             binaryPresent: false,
           });
         }
         if (!record.libraryPath) {
-          return reply.status(400).send({ error: 'Set a library path before enabling PhotoPrism.' });
-        }
-        const adminPassword = (record.settings.adminPassword as string) || '';
-        if (!adminPassword) {
-          return reply.status(500).send({ error: 'No admin password in settings — check ServiceStore.' });
+          return reply.status(400).send({ error: 'Set a library path before enabling PiGallery2.' });
         }
         // Non-blocking spawn — client polls /status.
-        startPhotoprism({
-          originalsPath:         record.libraryPath,
-          adminPassword,
-          disableFaces:          Boolean(record.settings.disableFaces),
-          disableClassification: Boolean(record.settings.disableClassification),
-          workers:               Number(record.settings.workers ?? 0),
-        }).catch(err => {
-          console.error('[services] PhotoPrism start failed:', err.message);
+        startPiGallery({ libraryPath: record.libraryPath }).catch(err => {
+          console.error('[services] PiGallery2 start failed:', err.message);
         });
         return reply.send({ ok: true, state: 'starting' });
       }
@@ -172,6 +190,29 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
         return reply.send({ ok: true, state: 'starting' });
       }
 
+      if (name === 'jellyfin') {
+        if (!isJellyfinBinaryPresent()) {
+          return reply.status(400).send({
+            error: 'Jellyfin binary not found. Run: node scripts/fetch-jellyfin.js',
+            binaryPresent: false,
+          });
+        }
+        const adminPassword = (record.settings.adminPassword as string) || '';
+        if (!adminPassword) {
+          return reply.status(500).send({ error: 'No admin password in settings — check ServiceStore.' });
+        }
+        startJellyfin(
+          {
+            libraryPath:   record.libraryPath,
+            hardwareAccel: (record.settings.hardwareAccel as string) || '',
+          },
+          adminPassword,
+        ).catch(err => {
+          console.error('[services] Jellyfin start failed:', err.message);
+        });
+        return reply.send({ ok: true, state: 'starting' });
+      }
+
       // Jellyfin / Kavita — managers not yet implemented.
       return reply.status(501).send({ error: `${name} manager not yet implemented.` });
     }
@@ -184,13 +225,18 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
       const name = req.params.name as ServiceName;
       await store.setEnabled(name, false);
 
-      if (name === 'photoprism') {
-        await stopPhotoprism();
+      if (name === 'pigallery2') {
+        await stopPiGallery();
         return reply.send({ ok: true, state: 'stopped' });
       }
 
       if (name === 'polaris') {
         await stopPolaris();
+        return reply.send({ ok: true, state: 'stopped' });
+      }
+
+      if (name === 'jellyfin') {
+        await stopJellyfin();
         return reply.send({ ok: true, state: 'stopped' });
       }
 
@@ -219,18 +265,13 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
         record = await store.patchSettings(name, safePatch);
       }
 
-      // If PhotoPrism is running and the config changed, restart it.
-      if (name === 'photoprism' && record.enabled) {
-        const status = getPhotoPrismStatus();
+      // If PiGallery2 is running and the library path changed, restart it.
+      if (name === 'pigallery2' && record.enabled) {
+        const status = getPiGalleryStatus();
         if (status.state === 'running' && record.libraryPath) {
-          stopPhotoprism().then(() => {
-            startPhotoprism({
-              originalsPath:         record.libraryPath!,
-              adminPassword:         record.settings.adminPassword as string,
-              disableFaces:          Boolean(record.settings.disableFaces),
-              disableClassification: Boolean(record.settings.disableClassification),
-              workers:               Number(record.settings.workers ?? 0),
-            }).catch(err => console.error('[services] PhotoPrism restart failed:', err.message));
+          stopPiGallery().then(() => {
+            startPiGallery({ libraryPath: record.libraryPath! })
+              .catch(err => console.error('[services] PiGallery2 restart failed:', err.message));
           });
         }
       }
@@ -249,45 +290,61 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
         }
       }
 
+      // If Jellyfin is running and the config changed, restart it.
+      if (name === 'jellyfin' && record.enabled) {
+        const status = getJellyfinStatus();
+        if (status.state === 'running') {
+          const adminPassword = record.settings.adminPassword as string;
+          stopJellyfin().then(() => {
+            startJellyfin(
+              {
+                libraryPath:   record.libraryPath,
+                hardwareAccel: (record.settings.hardwareAccel as string) || '',
+              },
+              adminPassword,
+            ).catch(err => console.error('[services] Jellyfin restart failed:', err.message));
+          });
+        }
+      }
+
       return reply.send({ ok: true, record });
     }
   );
 
-  // ── PhotoPrism: scan ─────────────────────────────────────────────────────
-  fastify.post<{ Body?: { rescan?: boolean } }>('/api/services/photoprism/scan', async (req, reply) => {
+  // ── PiGallery2: reindex ──────────────────────────────────────────────────
+  fastify.post('/api/services/pigallery2/scan', async (_req, reply) => {
     try {
-      await triggerLibraryScan(Boolean(req.body?.rescan));
+      await triggerIndexing();
       return reply.send({ ok: true });
     } catch (err) {
       return reply.status(503).send({ error: (err as Error).message });
     }
   });
 
-  // ── PhotoPrism: REST API reverse proxy ───────────────────────────────────
-  // Forwards any /api/v1/* call to the local PhotoPrism instance with the
-  // admin session token injected. The frontend never holds credentials.
+  // ── PiGallery2: reverse proxy ────────────────────────────────────────────
+  // Forwards any request to the local PiGallery2 instance. No auth token
+  // injection needed — PiGallery2 runs localhost-only without authentication
+  // in PHOBOS's default configuration.
   // Media bytes (thumbnails, full images) are streamed through to avoid
   // buffering entire files in Node.js.
   fastify.all<{
     Params: { '*': string };
     Querystring: Record<string, string>;
   }>(
-    '/api/services/photoprism/proxy/*',
+    '/api/services/pigallery2/proxy/*',
     { config: { rawBody: false } } as any,
     async (req: FastifyRequest, reply: FastifyReply) => {
-      const status = getPhotoPrismStatus();
+      const status = getPiGalleryStatus();
       if (status.state !== 'running') {
-        return reply.status(503).send({ error: 'PhotoPrism is not running' });
+        return reply.status(503).send({ error: 'PiGallery2 is not running' });
       }
 
-      const wildcard   = (req.params as any)['*'] as string;
-      const upstream   = `/api/v1/${wildcard}`;
-      const query      = new URLSearchParams(req.query as Record<string, string>).toString();
+      const wildcard = (req.params as any)['*'] as string;
+      const query    = new URLSearchParams(req.query as Record<string, string>).toString();
 
-      // Stream the upstream response directly to the client without buffering.
-      const upstreamRes = await photoPrismApiRequest(
+      const upstreamRes = await piGalleryApiRequest(
         req.method,
-        upstream + (query ? '?' + query : ''),
+        '/' + wildcard + (query ? '?' + query : ''),
         req.method !== 'GET' && req.method !== 'HEAD' ? (req.body ?? undefined) : undefined,
       );
 
@@ -295,7 +352,6 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
         'Content-Type': upstreamRes.headers.get('content-type') ?? 'application/json',
       });
 
-      // If the body is binary (image/jpeg, image/webp etc.) pipe it through.
       if (upstreamRes.body) {
         const reader = upstreamRes.body.getReader();
         const pump = async (): Promise<void> => {
@@ -377,10 +433,11 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
     const { execFile } = await import('child_process');
     const { promisify } = await import('util');
     const path = await import('path');
-    const { fileURLToPath } = await import('url');
     const execFileAsync = promisify(execFile);
-    const _dirname = typeof __dirname !== 'undefined' ? __dirname : path.dirname(fileURLToPath(import.meta.url));
-    const scriptsDir = path.join(_dirname, '..', 'scripts');
+    // __dirname is provided natively by the CJS bundle target (esbuild format:'cjs').
+    // Do NOT use fileURLToPath(import.meta.url) — it emits an empty-import-meta
+    // warning at bundle time.
+    const scriptsDir = path.join(__dirname, '..', 'scripts');
     try {
       await execFileAsync('node', [path.join(scriptsDir, 'fetch-polaris.js')], {
         env: { ...process.env },
@@ -398,6 +455,107 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
     const path = await import('path');
     const os   = await import('os');
     const dir  = path.join(os.homedir(), '.phobos', 'services', 'polaris');
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  // ── Jellyfin: scan ────────────────────────────────────────────────────────
+  fastify.post('/api/services/jellyfin/scan', async (_req, reply) => {
+    try {
+      await triggerJellyfinScan();
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(503).send({ error: (err as Error).message });
+    }
+  });
+
+  // ── Jellyfin: stats ───────────────────────────────────────────────────────
+  fastify.get('/api/services/jellyfin/stats', async (_req, reply) => {
+    const { getStats } = await import('../services/JellyfinManager.js');
+    try {
+      const stats = await getStats();
+      return reply.send(stats);
+    } catch (err) {
+      return reply.status(503).send({ error: (err as Error).message });
+    }
+  });
+
+  // ── Jellyfin: REST API reverse proxy ──────────────────────────────────────
+  // Forwards any Jellyfin API call with MediaBrowser auth header injected
+  // server-side. Streams transcoded video/audio through without buffering.
+  fastify.all<{
+    Params: { '*': string };
+    Querystring: Record<string, string>;
+  }>(
+    '/api/services/jellyfin/proxy/*',
+    { config: { rawBody: false } } as any,
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const status = getJellyfinStatus();
+      if (status.state !== 'running') {
+        return reply.status(503).send({ error: 'Jellyfin is not running' });
+      }
+
+      const wildcard = (req.params as any)['*'] as string;
+      const rawQuery = (req.raw.url ?? '').split('?')[1] ?? '';
+      const endpoint = `/${wildcard}` + (rawQuery ? '?' + rawQuery : '');
+
+      const upstreamRes = await jellyfinApiRequest(
+        req.method,
+        endpoint,
+        req.method !== 'GET' && req.method !== 'HEAD' ? (req.body ?? undefined) : undefined,
+      );
+
+      reply.raw.writeHead(upstreamRes.status, {
+        'Content-Type': upstreamRes.headers.get('content-type') ?? 'application/json',
+      });
+
+      if (upstreamRes.body) {
+        const reader = upstreamRes.body.getReader();
+        const pump = async (): Promise<void> => {
+          const { done, value } = await reader.read();
+          if (done) { reply.raw.end(); return; }
+          if (!reply.raw.write(value)) {
+            await new Promise(r => reply.raw.once('drain', r));
+          }
+          return pump();
+        };
+        await pump();
+      } else {
+        reply.raw.end();
+      }
+    }
+  );
+
+  // ── Jellyfin: fetch binary (server-side download + extract) ───────────────
+  // Longer timeout (15 min) — downloads both the Jellyfin server and FFmpeg.
+  fastify.post('/api/services/jellyfin/fetch-binary', async (_req, reply) => {
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const path = await import('path');
+    const execFileAsync = promisify(execFile);
+    // __dirname is provided natively by the CJS bundle target.
+    const scriptsDir = path.join(__dirname, '..', 'scripts');
+    try {
+      await execFileAsync('node', [path.join(scriptsDir, 'fetch-jellyfin.js')], {
+        env:     { ...process.env },
+        timeout: 15 * 60 * 1000, // 15 min — server + ffmpeg
+      });
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  // ── Jellyfin: uninstall ───────────────────────────────────────────────────
+  fastify.post('/api/services/jellyfin/uninstall', async (_req, reply) => {
+    const fs   = await import('fs');
+    const path = await import('path');
+    const os   = await import('os');
+    const dir  = path.join(os.homedir(), '.phobos', 'services', 'jellyfin');
     try {
       fs.rmSync(dir, { recursive: true, force: true });
       return reply.send({ ok: true });

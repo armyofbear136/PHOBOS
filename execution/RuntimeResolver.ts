@@ -48,7 +48,9 @@ export async function resolveRuntime(runtime: SupportedRuntime): Promise<Resolve
     case 'node': {
       const tsx = await detectTsx();
       if (tsx) return { cmd: tsx, prefixArgs: [] };
-      return { cmd: 'node', prefixArgs: ['--no-warnings'] };
+      // process.execPath is the absolute path to the current Node binary —
+      // guaranteed to work inside the sandbox's restricted environment.
+      return { cmd: process.execPath, prefixArgs: ['--no-warnings'] };
     }
 
     case 'python': {

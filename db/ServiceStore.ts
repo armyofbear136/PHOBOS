@@ -14,7 +14,7 @@ import crypto from 'node:crypto';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type ServiceName = 'jellyfin' | 'polaris' | 'kavita' | 'pigallery2';
+export type ServiceName = 'jellyfin' | 'polaris' | 'kavita' | 'meridian';
 
 export interface ServiceRecord {
   name:          ServiceName;
@@ -40,7 +40,7 @@ const SERVICE_DEFAULTS: Record<ServiceName, Record<string, unknown>> = {
   kavita: {
     port: 5000,
   },
-  pigallery2: {},
+  meridian: {},
 };
 
 const SCHEMA = `
@@ -60,9 +60,9 @@ export class ServiceStore {
 
   async ensureTable(): Promise<void> {
     await this.db.run(SCHEMA);
-    // One-time migration: rename legacy photoprism row to pigallery2.
+    // One-time migration: rename legacy photoprism row to meridian.
     await this.db.run(
-      `UPDATE media_services SET name = 'pigallery2' WHERE name = 'photoprism'`
+      `UPDATE media_services SET name = 'meridian' WHERE name IN ('photoprism', 'pigallery2')`
     );
   }
 
@@ -136,7 +136,7 @@ export class ServiceStore {
 
   /** Returns all four service records, creating defaults for any not yet persisted. */
   async getAll(): Promise<Record<ServiceName, ServiceRecord>> {
-    const names: ServiceName[] = ['jellyfin', 'polaris', 'kavita', 'pigallery2'];
+    const names: ServiceName[] = ['jellyfin', 'polaris', 'kavita', 'meridian'];
     const records = await Promise.all(names.map(n => this.get(n)));
     return Object.fromEntries(records.map(r => [r.name, r])) as Record<ServiceName, ServiceRecord>;
   }

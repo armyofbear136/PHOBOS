@@ -34,9 +34,14 @@ const SUPPORTED_EXTENSIONS = new Set([
 
 export { SUPPORTED_EXTENSIONS };
 
-const CHUNK_TARGET_CHARS  = 2_000;   // ~512 tokens at 4 chars/token
-const CHUNK_MAX_CHARS     = 3_000;   // hard ceiling before forced split
-const CHUNK_OVERLAP_CHARS = 250;     // tail of previous chunk prepended for continuity
+// SYBIL runs with --ctx-size 512 and --batch-size 512.
+// nomic-embed tokenizes at 2–4 chars/token depending on content density.
+// Legal/technical PDFs can hit 2 chars/token. Using 512 * 1.9 = ~970 chars as
+// the safe embed ceiling regardless of content type.
+const CHUNK_TARGET_CHARS  = 800;    // ~300 tokens — well within batch limit
+const CHUNK_MAX_CHARS     = 1_000;  // hard ceiling before forced split
+const CHUNK_OVERLAP_CHARS = 80;     // tail of previous chunk for retrieval continuity
+const EMBED_INPUT_MAX     = 950;    // hard cap sent to embed() — safe for any tokenizer density
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -106,7 +111,8 @@ export async function ingestSource(
 
     for (let i = 0; i < chunks.length; i++) {
       const c   = chunks[i];
-      const vec = await embed(`${c.breadcrumb}\n\n${c.text}`);
+      const embedInput = `${c.breadcrumb}\n\n${c.text}`.slice(0, EMBED_INPUT_MAX);
+      const vec = await embed(embedInput);
       if (!vec) {
         // SYBIL unavailable — abort rather than write zero-vector garbage.
         throw new Error('SYBIL embedding server unavailable. Ensure SYBIL is running.');
@@ -258,26 +264,58 @@ async function normalizeUrl(url: string): Promise<NormalizedInput> {
 // ── PDF extraction (pdfjs-dist, pure JS) ──────────────────────────────────────
 
 async function extractPdf(filePath: string): Promise<string> {
-  // Dynamic import — pdfjs-dist is an optional dep. If absent, throw with install hint.
-  let pdfjsLib: typeof import('pdfjs-dist');
-  try {
-    pdfjsLib = await import('pdfjs-dist');
-  } catch {
-    throw new Error(
-      'PDF extraction requires pdfjs-dist. Run: npm install pdfjs-dist'
-    );
+  // pdfjs-dist v5 restructured its entry points. We try each known path in order.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let pdfjsLib: any;
+  const candidates = [
+    'pdfjs-dist/build/pdf.node.mjs',     // v5 dedicated Node build (no worker needed)
+    'pdfjs-dist/legacy/build/pdf.mjs',   // v4 legacy Node path
+    'pdfjs-dist/legacy/build/pdf.js',    // v3 legacy path
+    'pdfjs-dist',                         // fallback main entry
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      pdfjsLib = await import(candidate);
+      break;
+    } catch { /* try next */ }
+  }
+
+  if (!pdfjsLib) {
+    throw new Error('PDF extraction requires pdfjs-dist. Run: npm install pdfjs-dist');
+  }
+
+  // In pdfjs v5, GlobalWorkerOptions.workerSrc must be set to a non-empty string
+  // even when running in Node.js without an actual worker. We point it at the
+  // worker bundle path resolved from the installed package location.
+  // If that fails, we set a placeholder — pdfjs will use its synchronous fallback.
+  if (pdfjsLib.GlobalWorkerOptions) {
+    try {
+      const workerUrl = import.meta.resolve('pdfjs-dist/build/pdf.worker.min.mjs');
+      pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+    } catch {
+      try {
+        const workerUrl = import.meta.resolve('pdfjs-dist/build/pdf.worker.mjs');
+        pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+      } catch {
+        // Last resort — any non-empty string suppresses the workerSrc check.
+        // pdfjs will still use its synchronous text-extraction path.
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'noop';
+      }
+    }
   }
 
   const data    = new Uint8Array(fs.readFileSync(filePath));
-  const loadDoc = pdfjsLib.getDocument({ data, verbosity: 0 });
+  const loadDoc = pdfjsLib.getDocument({ data, verbosity: 0, isEvalSupported: false });
   const pdf     = await loadDoc.promise;
 
   const pages: string[] = [];
   for (let i = 1; i <= pdf.numPages; i++) {
     const page    = await pdf.getPage(i);
     const content = await page.getTextContent();
-    const pageText = content.items
-      .map((item) => ('str' in item ? item.str : ''))
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pageText = (content.items as any[])
+      .map((item) => item.str ?? '')
       .join(' ');
     if (pageText.trim()) {
       pages.push(`[Page ${i}]\n${pageText}`);

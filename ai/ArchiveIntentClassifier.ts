@@ -165,16 +165,29 @@ export class ArchiveIntentClassifier {
       if (ctx.hasActiveProject) domainSet.add('projects');
     }
 
-    // Filter to only domains that actually have content on disk.
-    const available = await ArchiveStore.listDomains();
-    const availableNames = new Set(available.map(d => d.domain));
-    const domains = Array.from(domainSet).filter(d => availableNames.has(d));
+    // Filter to only domains whose files exist on disk.
+    // We check file existence only (not open the DB) — non-existent domains
+    // simply return zero results at retrieval time, which is correct behaviour.
+    // Filtering here prevents spurious "useArchive=true" when the archive is
+    // entirely empty, but allows queries against built-in domains that haven't
+    // been created yet to pass through (they'll return empty results).
+    const { ARCHIVE_DIR: archiveDir } = await import('../db/ArchiveStore.js');
+    const fsMod = await import('fs');
+    const pathMod = await import('path');
+    const domains = Array.from(domainSet).filter(d =>
+      fsMod.existsSync(pathMod.join(archiveDir, `${d}.duckdb`))
+    );
 
-    if (domains.length === 0) return noMatch;
+    // If no matching domain files exist but we detected signals, still report
+    // useArchive=true with the candidate domains — ArchiveClient returns [] for
+    // missing files rather than throwing, so this is safe and gives better UX
+    // (the archive UI can show "no content in this domain yet").
+    const finalDomains = domains.length > 0 ? domains : Array.from(domainSet);
+    if (finalDomains.length === 0) return noMatch;
 
     return {
       useArchive: true,
-      domains,
+      domains:    finalDomains,
       k:          8,
       queryText:  msg,
     };

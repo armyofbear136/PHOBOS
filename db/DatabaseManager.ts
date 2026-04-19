@@ -57,15 +57,16 @@ CREATE TABLE IF NOT EXISTS projects (
 
 -- Messages
 CREATE TABLE IF NOT EXISTS messages (
-  id             VARCHAR PRIMARY KEY,
-  thread_id      VARCHAR NOT NULL REFERENCES threads(id),
-  role           VARCHAR NOT NULL CHECK (role IN ('user','assistant','coordinator','status')),
-  content        TEXT NOT NULL,
-  thinking_trace TEXT,
-  dispatch_id    VARCHAR,
-  attempt_number INTEGER,
-  review_score   DOUBLE,
-  created_at     TIMESTAMP NOT NULL DEFAULT now()
+  id                VARCHAR PRIMARY KEY,
+  thread_id         VARCHAR NOT NULL REFERENCES threads(id),
+  role              VARCHAR NOT NULL CHECK (role IN ('user','assistant','coordinator','status')),
+  content           TEXT NOT NULL,
+  distilled_content TEXT,
+  thinking_trace    TEXT,
+  dispatch_id       VARCHAR,
+  attempt_number    INTEGER,
+  review_score      DOUBLE,
+  created_at        TIMESTAMP NOT NULL DEFAULT now()
 );
 
 -- Files (uploaded attachments, not workspace files)
@@ -283,10 +284,32 @@ export class DatabaseManager {
     this.db = await Database.Database.create(this.dbPath, dbConfig as any);
     await this.db.exec(SCHEMA);
     await this.migrateDocuments();
+    await this.ensureDistilledColumn();
     if (BUNDLED_EXTENSION_DIR) {
       console.log(`[DB] Extension dir: ${BUNDLED_EXTENSION_DIR}`);
     }
     console.log(`[DB] Initialized at ${this.dbPath}`);
+  }
+
+  /**
+   * Adds distilled_content column to existing messages tables that predate it.
+   * New DBs get the column from SCHEMA directly. This is a no-op for those.
+   */
+  private async ensureDistilledColumn(): Promise<void> {
+    try {
+      await this.db!.exec(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS distilled_content TEXT`);
+    } catch {
+      // Older DuckDB without IF NOT EXISTS — check existence before giving up
+      try {
+        await this.db!.exec(`SELECT distilled_content FROM messages LIMIT 0`);
+      } catch {
+        try {
+          await this.db!.exec(`ALTER TABLE messages ADD COLUMN distilled_content TEXT`);
+        } catch (err) {
+          console.warn('[DB] ensureDistilledColumn failed (non-fatal):', err);
+        }
+      }
+    }
   }
 
   /**

@@ -7,6 +7,9 @@ import { CopilotRelationshipStore } from '../db/CopilotRelationshipStore.js';
 import { CopilotIndex } from '../context/CopilotIndex.js';
 import { buildCopilotSystemPrompt, COPILOT_THREAD_IDS, type CopilotPersona } from '../ai/CopilotPersonas.js';
 import { embedCopilotExchange, embedExplicitMemory, retrieveCopilotMemory } from '../ai/MemoryWriter.js';
+import { distillAssistantContent, buildEmbedInput } from '../ai/distillAssistantContent.js';
+import { writeTurn } from '../db/ConversationStore.js';
+import { embed } from '../ai/EmbedClient.js';
 import { gsm } from '../game/GameStateManager.js';
 
 /**
@@ -232,12 +235,13 @@ async function handleCopilotStream(
 
     const systemPrompt = buildCopilotSystemPrompt(persona, systemOverview, fullMemoryContext, relationship);
 
-    // Load conversation history (last 15 messages for context)
-    const allMessages = await messageStore.getByThread(threadId, false);
-    const history = allMessages
-      .filter(m => m.role === 'user' || m.role === 'assistant')
-      .slice(-15)
-      .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+    // Load conversation history via AUTO context packing — uses distilled content,
+    // fits as many pairs as the budget allows (same logic as main thread pipeline).
+    const { history: rawHistory } = await messageStore.getContextHistory(threadId);
+    const history = rawHistory.map(m => ({
+      role: m.role as 'user' | 'assistant',
+      content: m.content,
+    }));
 
     // Route to the correct model
     if (persona === 'sayon') {
@@ -442,16 +446,27 @@ async function streamSayon(
     .replace(/\[EMOTION\s+\w+\]/gi, '')
     .replace(/\[BOND\s+[+-]?\d*\.?\d+\]/gi, '')
     .trim() || '(no output)';
-  await messageStore.insert({
+
+  const savedMsg = await messageStore.insert({
     thread_id: threadId,
     role: 'assistant',
     content: finalContent,
+    distilled_content: distillAssistantContent(finalContent),
   });
 
   // Extract inline memory and emotion tags from raw output, then record the exchange
   await extractAndStoreMemories(outputBuf, 'sayon', memoryStore);
   await extractAndStoreEmotion(outputBuf, 'sayon', relStore);
   await relStore.recordExchange('sayon');
+
+  // Index this turn in the conversation VSS store. Fire-and-forget.
+  const copilotDistilled = savedMsg.distilled_content ?? distillAssistantContent(finalContent);
+  (async () => {
+    try {
+      const vec = await embed(buildEmbedInput(userContent, copilotDistilled));
+      if (vec) await writeTurn(threadId, savedMsg.id, userContent, copilotDistilled, vec, []);
+    } catch { /* SYBIL unavailable */ }
+  })().catch(() => {});
 
   // Embed this exchange in SYBIL's semantic memory (fire-and-forget).
   embedCopilotExchange('sayon', userContent, finalContent).catch(() => {});
@@ -693,16 +708,27 @@ async function streamSeren(
     .replace(/\[EMOTION\s+\w+\]/gi, '')
     .replace(/\[BOND\s+[+-]?\d*\.?\d+\]/gi, '')
     .trim() || '(no output)';
-  await messageStore.insert({
+
+  const serenSavedMsg = await messageStore.insert({
     thread_id: threadId,
     role: 'assistant',
     content: finalContent,
+    distilled_content: distillAssistantContent(finalContent),
   });
 
   // Extract from raw output before stripping, then record the exchange
   await extractAndStoreMemories(outputBuf, 'seren', memoryStore);
   await extractAndStoreEmotion(outputBuf, 'seren', relStore);
   await relStore.recordExchange('seren');
+
+  // Index this turn in the conversation VSS store. Fire-and-forget.
+  const serenDistilled = serenSavedMsg.distilled_content ?? distillAssistantContent(finalContent);
+  (async () => {
+    try {
+      const vec = await embed(buildEmbedInput(userContent, serenDistilled));
+      if (vec) await writeTurn(threadId, serenSavedMsg.id, userContent, serenDistilled, vec, []);
+    } catch { /* SYBIL unavailable */ }
+  })().catch(() => {});
 
   // Embed this exchange in SYBIL's semantic memory (fire-and-forget).
   embedCopilotExchange('seren', userContent, finalContent).catch(() => {});

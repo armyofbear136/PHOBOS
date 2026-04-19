@@ -7,6 +7,7 @@ export interface Message {
   thread_id: string;
   role: 'user' | 'assistant' | 'coordinator' | 'status';
   content: string;
+  distilled_content: string | null;  // stripped prose; null until backfilled
   thinking_trace: string | null;
   dispatch_id: string | null;
   attempt_number: number | null;
@@ -18,14 +19,46 @@ export interface CreateMessageInput {
   thread_id: string;
   role: Message['role'];
   content: string;
+  distilled_content?: string | null;
   thinking_trace?: string | null;
   dispatch_id?: string | null;
   attempt_number?: number | null;
   review_score?: number | null;
 }
 
+/**
+ * Result of getContextHistory.
+ * ctxMessageCount is the number of full distilled prior-turn pairs that fit —
+ * sent back to the client as a ctx_computed SSE event so the CTX pill
+ * always reflects what actually made it into the window.
+ */
+export interface ContextHistoryResult {
+  history: Array<{ role: string; content: string }>;
+  /** Number of complete user→assistant pairs that fit the context budget */
+  ctxMessageCount: number;
+}
+
 export class MessageStore {
   constructor(private db: DatabaseManager) {}
+
+  /**
+   * Ensure the distilled_content column exists on an existing messages table.
+   * Called once at startup — safe to call multiple times.
+   */
+  async ensureDistilledColumn(): Promise<void> {
+    try {
+      await this.db.run(
+        `ALTER TABLE messages ADD COLUMN IF NOT EXISTS distilled_content TEXT`
+      );
+    } catch {
+      // Older DuckDB without IF NOT EXISTS — verify existence before re-throwing.
+      try {
+        await this.db.run(`SELECT distilled_content FROM messages LIMIT 0`);
+      } catch {
+        await this.db.run(`ALTER TABLE messages ADD COLUMN distilled_content TEXT`);
+      }
+    }
+  }
 
   async getByThread(
     threadId: string,
@@ -33,7 +66,7 @@ export class MessageStore {
   ): Promise<Message[]> {
     const cols = includeThinking
       ? '*'
-      : 'id, thread_id, role, content, NULL as thinking_trace, dispatch_id, attempt_number, review_score, created_at';
+      : 'id, thread_id, role, content, distilled_content, NULL as thinking_trace, dispatch_id, attempt_number, review_score, created_at';
     return this.db.query<Message>(
       `SELECT ${cols} FROM messages WHERE thread_id = ? ORDER BY created_at ASC`,
       [threadId]
@@ -45,13 +78,14 @@ export class MessageStore {
     const now = new Date().toISOString();
     await this.db.run(
       `INSERT INTO messages
-         (id, thread_id, role, content, thinking_trace, dispatch_id, attempt_number, review_score, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, thread_id, role, content, distilled_content, thinking_trace, dispatch_id, attempt_number, review_score, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.thread_id,
         input.role,
         input.content,
+        input.distilled_content ?? null,
         input.thinking_trace ?? null,
         input.dispatch_id ?? null,
         input.attempt_number ?? null,
@@ -62,11 +96,16 @@ export class MessageStore {
     return (await this.getById(id))!;
   }
 
-  async update(id: string, fields: { content?: string; thinking_trace?: string | null }): Promise<void> {
+  async update(id: string, fields: {
+    content?: string;
+    distilled_content?: string | null;
+    thinking_trace?: string | null;
+  }): Promise<void> {
     const sets: string[] = [];
     const vals: unknown[] = [];
-    if (fields.content !== undefined)        { sets.push('content = ?');        vals.push(fields.content); }
-    if (fields.thinking_trace !== undefined) { sets.push('thinking_trace = ?'); vals.push(fields.thinking_trace); }
+    if (fields.content !== undefined)           { sets.push('content = ?');           vals.push(fields.content); }
+    if (fields.distilled_content !== undefined) { sets.push('distilled_content = ?'); vals.push(fields.distilled_content); }
+    if (fields.thinking_trace !== undefined)    { sets.push('thinking_trace = ?');    vals.push(fields.thinking_trace); }
     if (sets.length === 0) return;
     vals.push(id);
     await this.db.run(`UPDATE messages SET ${sets.join(', ')} WHERE id = ?`, vals);
@@ -80,34 +119,51 @@ export class MessageStore {
   }
 
   /**
-   * Returns context history for an AI dispatch.
+   * Returns context history for an AI dispatch, plus the AUTO-computed
+   * message count so the frontend CTX display stays accurate.
    *
-   * Strategy: summary-first hybrid
-   *   1. Load the rolling chat summary if one exists.
-   *   2. Take up to MAX_RECENT_MESSAGES from the tail of the raw history.
-   *   3. Fit as many recent messages as possible within the char budget
-   *      (leaves room for the summary + the current user message + system prompt).
-   *   4. If a summary exists, prepend it as a synthetic user/assistant pair
-   *      so the model sees structured prior context without blowing the window.
+   * AUTO mode (maxRecent absent):
+   *   - Packs as many full distilled pairs as fit CHAR_BUDGET, up to AUTO_MAX.
+   *   - ctxMessageCount tells the client how many pairs made it in.
    *
-   * Budget: coordinator context window * 4 chars/token * 0.35 safety factor,
-   * capped so the summary + messages never take more than ~35% of total context.
+   * Manual override (maxRecent set by user):
+   *   - Behaves as before — takes up to maxRecent, trims to budget.
+   *   - ctxMessageCount still reflects actual fitted count.
+   *
+   * Assistant rows use distilled_content when available, falling back to
+   * content for rows predating this column. User rows use content as-is
+   * (already clean — attachment blobs are never persisted there).
+   *
+   * CHAR_BUDGET = 35% of 32k-token context at 4 chars/token, leaving
+   * headroom for system prompt + current message + file context + RAG block.
    */
   async getContextHistory(
     threadId: string,
     summaryStore?: ChatSummaryStore,
     maxRecent?: number
-  ): Promise<Array<{ role: string; content: string }>> {
-    const MAX_RECENT = maxRecent != null ? Math.max(1, Math.min(20, maxRecent)) : 6;
-    const CHAR_BUDGET = 24_000; // ~6k tokens at 4 chars/token, safe for any supported model
+  ): Promise<ContextHistoryResult> {
+    const AUTO_MAX   = 20;
+    const CHAR_BUDGET = 24_000;
 
     const messages = await this.getByThread(threadId, false);
+
     const rawHistory = messages
       .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .map((m) => ({ role: m.role, content: m.content }));
+      .map((m) => ({
+        role:    m.role as string,
+        // User content is already clean; assistant uses distilled when present
+        content: m.role === 'assistant'
+          ? (m.distilled_content ?? m.content)
+          : m.content,
+      }));
 
-    // Take the tail, then trim to char budget
-    const recent = rawHistory.slice(-MAX_RECENT);
+    const candidateMax = maxRecent != null
+      ? Math.max(1, Math.min(20, maxRecent))
+      : AUTO_MAX;
+
+    const recent = rawHistory.slice(-candidateMax);
+
+    // Walk backward fitting messages into the char budget
     const fitted: Array<{ role: string; content: string }> = [];
     let used = 0;
     for (let i = recent.length - 1; i >= 0; i--) {
@@ -117,19 +173,24 @@ export class MessageStore {
       used += len;
     }
 
-    // Prepend summary if available
+    // Count full pairs (user turns) that fit — drives CTX pill display
+    const ctxMessageCount = fitted.filter(m => m.role === 'user').length;
+
     if (summaryStore) {
       const saved = await summaryStore.get(threadId);
       if (saved?.summary) {
-        return [
-          { role: 'user',      content: '<conversation_summary>' },
-          { role: 'assistant', content: saved.summary + '\n</conversation_summary>' },
-          ...fitted,
-        ];
+        return {
+          history: [
+            { role: 'user',      content: '<conversation_summary>' },
+            { role: 'assistant', content: saved.summary + '\n</conversation_summary>' },
+            ...fitted,
+          ],
+          ctxMessageCount,
+        };
       }
     }
 
-    return fitted;
+    return { history: fitted, ctxMessageCount };
   }
 
   async updateScore(id: string, score: number): Promise<void> {

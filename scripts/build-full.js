@@ -258,6 +258,19 @@ if (!usedMaster) {
   }
   report.fetched = true;
 
+  // Portable node binary -- required by CamofoxManager and MeridianManager.
+  // In production, process.execPath is the PHOBOS SEA binary; these managers
+  // need a real node binary to spawn camofox-browser and meridian/server.js.
+  console.log('\n  Fetching portable node runtime binary...');
+  try {
+    run('node scripts/fetch-node.js');
+  } catch (e) {
+    console.warn('\n  fetch-node.js failed (non-fatal):', e.message?.split('\n')[0] ?? e);
+    console.warn('   Camofox and Meridian will not work in production until this is resolved.');
+    console.warn('   Run manually: node scripts/fetch-node.js');
+  }
+
+
   // Fallback: copy any missing critical files from bin-master/ if available
   if (hasMaster) {
     const critical = CRITICAL[target] ?? [];

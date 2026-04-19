@@ -7,9 +7,9 @@
  * GET    /api/services/all              — all four services at once (for hub panel load)
  * PATCH  /api/services/:name/config     — update libraryPath and/or settings fields
  *
- * ── PiGallery2-specific ──────────────────────────────────────────────────────
- * POST   /api/services/pigallery2/scan  — trigger library reindex
- * ANY    /api/services/pigallery2/proxy/* — transparent reverse proxy to PiGallery2
+ * ── Meridian-specific ───────────────────────────────────────────────────────
+ * POST   /api/services/meridian/scan  — trigger library reindex
+ * ANY    /api/services/meridian/proxy/* — transparent reverse proxy to Meridian
  *
  * Jellyfin, Polaris, and Kavita are managed by their own managers (not in this
  * session — stubs added so the hub panel can render all four cards consistently).
@@ -19,14 +19,12 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 import { ServiceStore, type ServiceName } from '../db/ServiceStore.js';
 import {
-  startPiGallery,
-  stopPiGallery,
-  getPiGalleryStatus,
-  triggerIndexing,
-  piGalleryApiRequest,
-  isBinaryPresent as isPiGalleryBinaryPresent,
-  PIGALLERY_PORT,
-} from '../services/PiGalleryManager.js';
+  startMeridian,
+  stopMeridian,
+  getMeridianStatus,
+  meridianApiRequest,
+  MERIDIAN_PORT,
+} from '../services/MeridianManager.js';
 import {
   startPolaris,
   stopPolaris,
@@ -75,20 +73,19 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
   fastify.get('/api/services/all', async (_req, reply) => {
     const all = await store.getAll();
 
-    const pgStatus   = getPiGalleryStatus();
-    const pgRecord   = all.pigallery2;
+    const meridianStatus   = getMeridianStatus();
+    const meridianRecord   = all.meridian;
 
     return reply.send({
-      pigallery2: {
-        name:             'pigallery2',
-        state:            pgStatus.state,
-        port:             pgStatus.port,
-        error:            pgStatus.error,
-        binaryPresent:    pgStatus.binaryPresent,
-        installedVersion: pgStatus.installedVersion,
-        libraryPath:      pgRecord.libraryPath,
-        settings:         pgRecord.settings,
-        enabled:          pgRecord.enabled,
+      meridian: {
+        name:         'meridian',
+        state:        meridianStatus.state,
+        port:         meridianStatus.port,
+        error:        meridianStatus.error,
+        binaryPresent: true,              // first-party — always present
+        libraryPath:  meridianRecord.libraryPath,
+        settings:     meridianRecord.settings,
+        enabled:      meridianRecord.enabled,
       },
       jellyfin: (() => {
         const s = getJellyfinStatus();
@@ -123,8 +120,8 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
       const name = req.params.name as ServiceName;
       const record = await store.get(name);
 
-      if (name === 'pigallery2') {
-        const s = getPiGalleryStatus();
+      if (name === 'meridian') {
+        const s = getMeridianStatus();
         return reply.send({ ...s, settings: record.settings, enabled: record.enabled });
       }
 
@@ -149,19 +146,16 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
       const name = req.params.name as ServiceName;
       const record = await store.setEnabled(name, true);
 
-      if (name === 'pigallery2') {
-        if (!isPiGalleryBinaryPresent()) {
-          return reply.status(400).send({
-            error: 'PiGallery2 not installed. Run: node scripts/fetch-pigallery2.js',
-            binaryPresent: false,
-          });
-        }
+      if (name === 'meridian') {
         if (!record.libraryPath) {
-          return reply.status(400).send({ error: 'Set a library path before enabling PiGallery2.' });
+          return reply.status(400).send({ error: 'Set a library path before enabling Meridian.' });
         }
         // Non-blocking spawn — client polls /status.
-        startPiGallery({ libraryPath: record.libraryPath }).catch(err => {
-          console.error('[services] PiGallery2 start failed:', err.message);
+        startMeridian({
+          libraryPath:  record.libraryPath,
+          idleEnabled:  Boolean(record.settings.idleClassifier ?? true),
+        }).catch(err => {
+          console.error('[services] Meridian start failed:', err.message);
         });
         return reply.send({ ok: true, state: 'starting' });
       }
@@ -225,8 +219,8 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
       const name = req.params.name as ServiceName;
       await store.setEnabled(name, false);
 
-      if (name === 'pigallery2') {
-        await stopPiGallery();
+      if (name === 'meridian') {
+        await stopMeridian();
         return reply.send({ ok: true, state: 'stopped' });
       }
 
@@ -265,13 +259,15 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
         record = await store.patchSettings(name, safePatch);
       }
 
-      // If PiGallery2 is running and the library path changed, restart it.
-      if (name === 'pigallery2' && record.enabled) {
-        const status = getPiGalleryStatus();
+      // If Meridian is running and the library path changed, restart it.
+      if (name === 'meridian' && record.enabled) {
+        const status = getMeridianStatus();
         if (status.state === 'running' && record.libraryPath) {
-          stopPiGallery().then(() => {
-            startPiGallery({ libraryPath: record.libraryPath! })
-              .catch(err => console.error('[services] PiGallery2 restart failed:', err.message));
+          stopMeridian().then(() => {
+            startMeridian({
+              libraryPath:  record.libraryPath!,
+              idleEnabled:  Boolean(record.settings.idleClassifier ?? true),
+            }).catch(err => console.error('[services] Meridian restart failed:', err.message));
           });
         }
       }
@@ -311,19 +307,25 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
     }
   );
 
-  // ── PiGallery2: reindex ──────────────────────────────────────────────────
-  fastify.post('/api/services/pigallery2/scan', async (_req, reply) => {
+  // ── Meridian: reindex ──────────────────────────────────────────────────
+  fastify.post('/api/services/meridian/scan', async (_req, reply) => {
     try {
-      await triggerIndexing();
+      // Trigger scan via Meridian's own API (gets real library ids from its DB)
+      const res = await meridianApiRequest('GET', '/api/libraries');
+      if (!res.ok) throw new Error(`Meridian API error: HTTP ${res.status}`);
+      const { libraries } = await res.json() as { libraries: Array<{ id: string }> };
+      await Promise.all(
+        libraries.map(lib => meridianApiRequest('POST', `/api/libraries/${lib.id}/scan`))
+      );
       return reply.send({ ok: true });
     } catch (err) {
       return reply.status(503).send({ error: (err as Error).message });
     }
   });
 
-  // ── PiGallery2: reverse proxy ────────────────────────────────────────────
-  // Forwards any request to the local PiGallery2 instance. No auth token
-  // injection needed — PiGallery2 runs localhost-only without authentication
+  // ── Meridian: reverse proxy ────────────────────────────────────────────
+  // Forwards any request to the local Meridian instance. No auth token
+  // injection needed — Meridian runs localhost-only.
   // in PHOBOS's default configuration.
   // Media bytes (thumbnails, full images) are streamed through to avoid
   // buffering entire files in Node.js.
@@ -331,18 +333,18 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
     Params: { '*': string };
     Querystring: Record<string, string>;
   }>(
-    '/api/services/pigallery2/proxy/*',
+    '/api/services/meridian/proxy/*',
     { config: { rawBody: false } } as any,
     async (req: FastifyRequest, reply: FastifyReply) => {
-      const status = getPiGalleryStatus();
+      const status = getMeridianStatus();
       if (status.state !== 'running') {
-        return reply.status(503).send({ error: 'PiGallery2 is not running' });
+        return reply.status(503).send({ error: 'Meridian is not running' });
       }
 
       const wildcard = (req.params as any)['*'] as string;
       const query    = new URLSearchParams(req.query as Record<string, string>).toString();
 
-      const upstreamRes = await piGalleryApiRequest(
+      const upstreamRes = await meridianApiRequest(
         req.method,
         '/' + wildcard + (query ? '?' + query : ''),
         req.method !== 'GET' && req.method !== 'HEAD' ? (req.body ?? undefined) : undefined,

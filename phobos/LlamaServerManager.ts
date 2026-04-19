@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as net from 'net';
+import * as os from 'os';
 import * as path from 'path';
 import { resolveLlamaServerBin, modelPath, mmprojPath, getSpec, detectHardware, buildRecommendation, recommendContextSize, getCachedHardware } from './PhobosLocalManager.js';
 import { gsm } from '../game/GameStateManager.js';
@@ -108,7 +109,7 @@ export async function startServer(role: 'sayon' | 'seren' | 'sybil', cfg: Server
   managed.state  = 'starting';
   managed.error  = null;
 
-  const cpuCount  = Math.max(1, Math.floor(require('os').cpus().length / 2));
+  const cpuCount  = Math.max(1, Math.floor(os.cpus().length / 2));
   const threads   = cfg.threads > 0 ? cfg.threads : cpuCount;
 
   const args = [
@@ -541,10 +542,12 @@ export async function startSybil(): Promise<void> {
   const ggufName  = spec.hfFile;
 
   const bundledPaths = [
-    path.join(seaDir, 'phobos', 'models', ggufName),          // SEA production
-    path.join(repoDir, 'phobos', 'models', ggufName),         // tsx dev
-    path.join(repoDir, 'dist', 'phobos', 'models', ggufName), // post-build dev
-    modelPath(spec),                                            // user ~/.phobos/models/ fallback
+    path.join(seaDir, 'phobos', 'models', ggufName),               // SEA production
+    path.join(repoDir, 'phobos', 'models', ggufName),              // tsx dev (via __filename)
+    path.join(repoDir, 'dist', 'phobos', 'models', ggufName),      // post-build dev
+    path.join(process.cwd(), 'dist', 'phobos', 'models', ggufName), // tsx standalone (cwd = project root)
+    path.join(process.cwd(), 'phobos', 'models', ggufName),        // tsx dev alt
+    modelPath(spec),                                                 // user ~/.phobos/models/ fallback
   ];
 
   let ggufPath: string | null = null;
@@ -571,7 +574,7 @@ export async function startSybil(): Promise<void> {
     try { fs.chmodSync(bin, 0o755); } catch { /* ignore */ }
   }
 
-  const cpuCount = Math.max(1, Math.floor(require('os').cpus().length / 4));
+  const cpuCount = Math.max(1, Math.floor(os.cpus().length / 4));
 
   // SYBIL runs fully CPU-bound — suppress all GPU backends so no VRAM is reserved.
   const env = {

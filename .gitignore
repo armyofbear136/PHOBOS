@@ -12,6 +12,7 @@ node_modules/
 # License generation output
 output/
 test-outputs/
+godot-docs/
 
 # Environment secrets
 .env

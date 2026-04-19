@@ -21,6 +21,10 @@ import type { IntentType } from '../ai/IntentClassifier.js';
 import type { ClassificationContext } from '../ai/IntentClassifier.js';
 import { ENGINE_MODEL, COORDINATOR_MODEL as COORD_MODEL_REF, COORDINATOR_PROVIDER, getThinkingStrategy, setLogContext, clearLogContext, getModelVisionCapability, coordinatorCall, engineStream } from '../ai/clients.js';
 import { embedTaskCompletion, retrieveWorkspaceMemory } from '../ai/MemoryWriter.js';
+import { runConversationRAG } from '../ai/ConversationRAGClient.js';
+import { distillAssistantContent, buildEmbedInput } from '../ai/distillAssistantContent.js';
+import { writeTurn } from '../db/ConversationStore.js';
+import { embed } from '../ai/EmbedClient.js';
 import { gsm } from '../game/GameStateManager.js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -743,8 +747,20 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
         return;
       }
 
-      const history = await messageStore.getContextHistory(threadId, summaryStore, context_history_depth);
+      const { history, ctxMessageCount } = await messageStore.getContextHistory(threadId, summaryStore, context_history_depth);
       const priorHistory = history.slice(0, -1);
+
+      // Emit AUTO-computed context window count so the frontend CTX pill updates.
+      // Fires whether the user set a manual depth or we computed it automatically.
+      sendEvent({ type: 'ctx_computed', count: ctxMessageCount });
+
+      // Conversation history RAG — runs when the message contains memory-retrieval
+      // signals ("remember when", "look back to when", "when we worked on", etc.).
+      // Non-blocking on failure — a RAG miss is never fatal.
+      const ragResult = await runConversationRAG(threadId, content, workspaceDir).catch(() => null);
+      if (ragResult?.contextBlock) {
+        fullUserMessage = fullUserMessage + '\n\n' + ragResult.contextBlock;
+      }
 
       // Collect all status events so we can persist them as a single activity event after the turn
       const activityLog: string[] = [];
@@ -1025,12 +1041,16 @@ ${info.userPrompt}`;
 
           if (bestAttempt) {
             const strippedOutput = stripper.strip(bestAttempt.output).output;
-            // Update the pre-created assistant message with final content
+            const finalContent = strippedOutput || bestAttempt.output;
+            const distilled = distillAssistantContent(finalContent);
+
+            // Update the pre-created assistant message with final content + distilled prose
             await db.run(
-              `UPDATE messages SET content = ?, thinking_trace = ?, attempt_number = ?, review_score = ?
+              `UPDATE messages SET content = ?, distilled_content = ?, thinking_trace = ?, attempt_number = ?, review_score = ?
                WHERE id = ?`,
               [
-                strippedOutput || bestAttempt.output,
+                finalContent,
+                distilled,
                 bestAttempt.thinking || null,
                 bestAttempt.attemptNumber,
                 bestAttempt.reviewScore,
@@ -1051,12 +1071,39 @@ ${info.userPrompt}`;
 
             workspace.getIndex(threadId).catch(() => {});
 
+            // Collect workspace-relative paths of files produced this turn from
+            // the file_panel events LoopController persisted. These become the
+            // file linkages for conversation RAG retrieval.
+            const producedFilePaths: string[] = [];
+            try {
+              const turnEvents = await eventStore.getByMessage(assistantMsg.id);
+              for (const evt of turnEvents) {
+                if (evt.event_type === 'file_panel') {
+                  const payload = JSON.parse(evt.payload) as { filename?: string };
+                  if (payload.filename) producedFilePaths.push(payload.filename);
+                }
+              }
+            } catch { /* non-fatal — missing file links degrade gracefully */ }
+
+            // Index this turn in the conversation VSS store. Fire-and-forget.
+            // Embeds distilled text (prose only) so vectors capture conversation
+            // content, not code noise.
+            (async () => {
+              try {
+                const embedInput = buildEmbedInput(content, distilled);
+                const vec = await embed(embedInput);
+                if (vec) {
+                  await writeTurn(threadId, assistantMsg.id, content, distilled, vec, producedFilePaths);
+                }
+              } catch { /* SYBIL unavailable — index miss, never fatal */ }
+            })().catch(() => {});
+
             // Embed significant content from this task output into SYBIL's semantic
             // memory (workspace scope). Fire-and-forget — never blocks the response.
             embedTaskCompletion(
               threadId,
               assistantMsg.id,
-              strippedOutput || bestAttempt.output,
+              finalContent,
             ).catch(() => {});
           }
         }
@@ -1554,11 +1601,24 @@ async function handleDirectResponse(
     // Close and timestamp the coordinator segment
     await closeCoordSegment();
 
-    // Update the pre-created message row with final content
+    // Update the pre-created message row with final content + distilled prose
+    const directDistilled = distillAssistantContent(cleanOutput || '(no output)');
     await messageStore.update(msg.id, {
       content: cleanOutput || '(no output)',
+      distilled_content: directDistilled,
       thinking_trace: thinkingBuf || null,
     });
+
+    // Index this direct-answer turn in the conversation VSS store. Fire-and-forget.
+    (async () => {
+      try {
+        const embedInput = buildEmbedInput(userMessage, directDistilled);
+        const vec = await embed(embedInput);
+        if (vec) {
+          await writeTurn(threadId, msg.id, userMessage, directDistilled, vec, []);
+        }
+      } catch { /* SYBIL unavailable — index miss, never fatal */ }
+    })().catch(() => {});
 
     if (thinkingBuf) {
       sendEvent({ type: 'thinking_complete', content: thinkingBuf, source: 'coordinator' });

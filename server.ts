@@ -32,7 +32,7 @@ import { gsm } from './game/GameStateManager.js';
 import { registerServiceRoutes } from './routes/services.js';
 import { registerAudioRoutes } from './routes/audio.js';
 import { ServiceStore } from './db/ServiceStore.js';
-import { stopPiGallery } from './services/PiGalleryManager.js';
+import { stopMeridian, startMeridian, getMeridianStatus } from './services/MeridianManager.js';
 import { stopPolaris, startPolaris, isBinaryPresent as isPolarisBinaryPresent } from './services/PolarisManager.js';
 import {
   stopJellyfin,
@@ -220,13 +220,12 @@ async function main() {
   const serviceStore = new ServiceStore(db);
   await serviceStore.ensureTable();
 
-  const pgRecord = await serviceStore.get('pigallery2');
-  if (pgRecord.enabled && pgRecord.libraryPath) {
-    const { startPiGallery, isBinaryPresent: isPiGalleryBinaryPresent } = await import('./services/PiGalleryManager.js');
-    if (isPiGalleryBinaryPresent()) {
-      startPiGallery({ libraryPath: pgRecord.libraryPath })
-        .catch(err => console.warn('[MediaHub] PiGallery2 auto-start failed:', err.message));
-    }
+  const merRecord = await serviceStore.get('meridian');
+  if (merRecord.enabled && merRecord.libraryPath) {
+    startMeridian({
+      libraryPath:  merRecord.libraryPath,
+      idleEnabled:  Boolean(merRecord.settings.idleClassifier ?? true),
+    }).catch(err => console.warn('[MediaHub] Meridian auto-start failed:', err.message));
   }
 
   const polarisRecord = await serviceStore.get('polaris');
@@ -295,7 +294,7 @@ async function main() {
 
   // ── Graceful shutdown ─────────────────────────────────────────────────────
   // CRITICAL: db.close() runs FIRST. The database WAL must be flushed before
-  // anything else. LLM servers, PiGallery2, Polaris, etc. are stateless
+  // anything else. LLM servers, Meridian, Polaris, etc. are stateless
   // subprocesses — they can be killed dirty with no data loss. DuckDB cannot.
   //
   // On Windows, closing the console window sends CTRL_CLOSE_EVENT which gives
@@ -324,7 +323,7 @@ async function main() {
     // ── PHASE 3: Subprocesses (can fail without data loss) ────────────────
     await stopBroadway().catch(() => {});
     await stopCamofox().catch(() => {});
-    await stopPiGallery().catch(() => {});
+    await stopMeridian().catch(() => {});
     await stopPolaris().catch(() => {});
     await stopJellyfin().catch(() => {});
     await stopCarla().catch(() => {});

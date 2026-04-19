@@ -15,27 +15,40 @@ import {
 // range (16313–16399) but treated as a known permanent fixture.
 export const CAMOFOX_PORT = 9377;
 
-// Resolved path to the camofox-browser bin installed as a normal npm dependency.
-// `camofox-browser` is listed in package.json — bin/camofox-browser.js is the
-// entry point that starts the server.
-//
-// Path resolution must work in two environments:
-//   1. esbuild CJS bundle (production server) — __dirname is provided natively.
-//   2. tsx ESM dev/test                       — __dirname is undefined.
-// We guard __dirname behind a typeof check; in ESM we fall back to the
-// node_modules folder relative to cwd, which is correct when running from
-// the repo root.
+// ── Node binary resolution ────────────────────────────────────────────────────
+// In production, process.execPath is phobos.exe (Node SEA) — a sealed binary
+// that cannot execute arbitrary .js scripts. We stage a portable node binary
+// alongside the exe (scripts/fetch-node.js → build.js → dist/).
+// In dev, process.execPath is already a real Node binary.
+function resolveNodeBin(): string {
+  const nodeName = process.platform === 'win32'
+    ? `node-${process.platform}-${process.arch}.exe`
+    : `node-${process.platform}-${process.arch}`;
+
+  const stagedNode = path.join(path.dirname(process.execPath), nodeName);
+  if (fs.existsSync(stagedNode)) return stagedNode;
+
+  return process.execPath; // dev fallback
+}
+
+// ── camofox-browser entry point ───────────────────────────────────────────────
+// esbuild outputs CJS — __dirname is always defined. Keep the cwd fallback for
+// tsx ESM dev runs where __dirname may be undefined.
 function resolveServerBin(): string {
   if (typeof __dirname !== 'undefined') {
     return path.resolve(__dirname, '../node_modules/camofox-browser/bin/camofox-browser.js');
   }
   return path.resolve(process.cwd(), 'node_modules/camofox-browser/bin/camofox-browser.js');
 }
+
 const SERVER_BIN = resolveServerBin();
-// State ───────────────────────────────────────────────────────────────────────
+
+// ── State ─────────────────────────────────────────────────────────────────────
+// cmd is set to a placeholder here; resolveNodeBin() is called at start time
+// so a first-run fetch that places the binary after module load is handled.
 
 let _proc: ManagedProcess = makeManagedProcess({
-  cmd:            process.execPath,   // node
+  cmd:            process.execPath, // overwritten in startCamofox()
   args:           [SERVER_BIN],
   port:           CAMOFOX_PORT,
   readyTimeoutMs: 30_000,
@@ -65,6 +78,9 @@ export async function startCamofox(): Promise<void> {
     console.error('[CamofoxManager]', _proc.error);
     return;
   }
+
+  // Resolve at call time — handles first-run fetch placing the binary after module load.
+  _proc.config.cmd = resolveNodeBin();
 
   // On Windows, kill any orphaned camofox node processes from a prior crash.
   // SIGKILL does not traverse the Windows process tree — use taskkill.

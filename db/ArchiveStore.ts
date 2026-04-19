@@ -146,7 +146,8 @@ export interface DomainInfo {
   sizeBytes:    number;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+
+// ── Private helpers ─────────────────────────────────────────────────────────
 
 function domainFilePath(domain: ArchiveDomain): string {
   return path.join(ARCHIVE_DIR, `${domain}.duckdb`);
@@ -156,14 +157,40 @@ function ensureArchiveDir(): void {
   fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
 }
 
+
+/** Escape single quotes for SQL string literals. */
+function _esc(s: string): string {
+  return s.replace(/'/g, "''");
+}
+
+// ── Domain DB singleton cache ─────────────────────────────────────────────────
+//
+// DuckDB on Windows holds an exclusive file lock that is not released until
+// the WAL is fully flushed — even after db.close() returns. Opening the same
+// file twice in quick succession (listDomains → writeChunks) causes
+// "file in use by another process" errors.
+//
+// Fix: one Database instance per domain file, kept open for the lifetime of
+// the process. Connections are per-call (connect/close); the underlying file
+// handle stays open, eliminating the lock race entirely.
+
+interface CachedDomain {
+  db:           Database.Database;
+  ftsAvailable: boolean;
+}
+
+const _domainCache = new Map<string, CachedDomain>();
+
 /**
- * Open a DuckDB database at filePath, load vss (required for HNSW),
- * and attempt to load fts (non-fatal if unavailable).
- * Returns { db, ftsAvailable }.
+ * Return (or create) the cached Database for a domain file path.
+ * Never closes the returned db — callers open/close Connections only.
  */
-async function openDomainDb(
+async function getDomainDb(
   filePath: string,
 ): Promise<{ db: Database.Database; ftsAvailable: boolean }> {
+  const cached = _domainCache.get(filePath);
+  if (cached) return cached;
+
   const dbConfig = BUNDLED_EXTENSION_DIR
     ? { extension_directory: BUNDLED_EXTENSION_DIR }
     : {};
@@ -171,45 +198,71 @@ async function openDomainDb(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = await Database.Database.create(filePath, dbConfig as any);
 
-  // Set extension directory explicitly before LOAD so DuckDB finds the
-  // bundled extension without writing to ~/.duckdb/.
-  if (BUNDLED_EXTENSION_DIR) {
-    const escaped = BUNDLED_EXTENSION_DIR.replace(/\\/g, '/');
-    const conn = await db.connect();
-    try {
-      await conn.exec(`SET extension_directory='${escaped}'`);
-    } finally {
-      await conn.close();
-    }
-  }
-
-  // vss is required — HNSW index creation depends on it.
+  // Single setup connection: set extension dir, load vss, try fts.
   const conn = await db.connect();
+  let ftsAvailable = false;
   try {
+    if (BUNDLED_EXTENSION_DIR) {
+      const escaped = BUNDLED_EXTENSION_DIR.replace(/\\/g, '/');
+      await conn.exec(`SET extension_directory='${escaped}'`);
+    }
     await conn.exec(`LOAD vss`);
+    try {
+      await conn.exec(`LOAD fts`);
+      ftsAvailable = true;
+    } catch {
+      // FTS unavailable — semantic search only.
+    }
   } finally {
     await conn.close();
   }
 
-  // fts is additive — log but continue if unavailable.
-  let ftsAvailable = false;
-  const ftsConn = await db.connect();
-  try {
-    await ftsConn.exec(`LOAD fts`);
-    ftsAvailable = true;
-  } catch {
-    // FTS extension not available in this DuckDB build — semantic search only.
-  } finally {
-    await ftsConn.close();
-  }
-
-  return { db, ftsAvailable };
+  const entry: CachedDomain = { db, ftsAvailable };
+  _domainCache.set(filePath, entry);
+  return entry;
 }
 
 /**
- * Run schema DDL and seed meta table on a freshly opened domain DB.
- * Safe to call on an existing domain — all statements use IF NOT EXISTS / OR IGNORE.
+ * Evict a domain from the cache and close its Database.
+ * Called only when deleting a domain — after this, the file can be removed.
  */
+async function evictDomainDb(filePath: string): Promise<void> {
+  const cached = _domainCache.get(filePath);
+  if (!cached) return;
+  _domainCache.delete(filePath);
+  // CHECKPOINT flushes the WAL into the main file and releases the WAL handle.
+  // On Windows this must complete before db.close() or the OS keeps the lock.
+  try {
+    const conn = await cached.db.connect();
+    try { await conn.exec('CHECKPOINT'); } finally { await conn.close(); }
+  } catch { /* non-fatal */ }
+  try { await cached.db.close(); } catch { /* ignore */ }
+  // Brief pause — Windows releases file handles asynchronously after db.close().
+  await new Promise(r => setTimeout(r, 150));
+}
+
+/**
+ * Delete a file if it exists, retrying on EBUSY with exponential backoff.
+ * Silently succeeds if the file is already gone.
+ */
+async function deleteWithRetry(filePath: string): Promise<void> {
+  if (!fs.existsSync(filePath)) return;
+  const delays = [100, 200, 400, 800, 1_500];
+  for (let i = 0; i <= delays.length; i++) {
+    if (i > 0) await new Promise(r => setTimeout(r, delays[i - 1]));
+    try {
+      fs.rmSync(filePath, { force: true });
+      return;
+    } catch (err) {
+      if (i === delays.length) throw err;
+      // EBUSY or EPERM — still locked, back off and retry
+    }
+  }
+}
+
+//  * Run schema DDL and seed meta table on a freshly opened domain DB.
+//  * Safe to call on an existing domain — all statements use IF NOT EXISTS / OR IGNORE.
+//  */
 async function initDomainSchema(
   db: Database.Database,
   domain: ArchiveDomain,
@@ -272,12 +325,11 @@ export class ArchiveStore {
   static async ensureDomain(domain: ArchiveDomain): Promise<void> {
     ensureArchiveDir();
     const filePath = domainFilePath(domain);
-    const { db, ftsAvailable } = await openDomainDb(filePath);
+    const { db, ftsAvailable } = await getDomainDb(filePath);
     try {
       await initDomainSchema(db, domain, ftsAvailable);
       console.log(`[ArchiveStore] Domain ready: ${domain} (fts=${ftsAvailable})`);
     } finally {
-      await db.close();
     }
   }
 
@@ -287,12 +339,13 @@ export class ArchiveStore {
    */
   static async deleteDomain(domain: ArchiveDomain): Promise<void> {
     const filePath = domainFilePath(domain);
-    if (fs.existsSync(filePath)) {
-      fs.rmSync(filePath, { force: true });
-      // Remove WAL file if present.
-      const wal = filePath + '.wal';
-      if (fs.existsSync(wal)) fs.rmSync(wal, { force: true });
-    }
+    // Evict from cache — runs CHECKPOINT then closes the Database handle.
+    await evictDomainDb(filePath);
+
+    // Delete each file independently with retry. On Windows the WAL is the
+    // last handle released — deleting it before the main file often unblocks both.
+    await deleteWithRetry(filePath + '.wal');
+    await deleteWithRetry(filePath);
     console.log(`[ArchiveStore] Domain deleted: ${domain}`);
   }
 
@@ -325,29 +378,22 @@ export class ArchiveStore {
       let lastIngest: string | null = null;
 
       try {
-        const { db } = await openDomainDb(filePath);
+        // getDomainDb reuses cached instance — no file lock race.
+        const { db } = await getDomainDb(filePath);
+        const conn = await db.connect();
         try {
-          const conn = await db.connect();
-          try {
-            const rows = await conn.all(`SELECT COUNT(*) AS n FROM archive_chunks`);
-            chunkCount = Number((rows[0] as { n: bigint | number }).n);
-
-            const sRows = await conn.all(`SELECT COUNT(*) AS n FROM archive_sources`);
-            sourceCount = Number((sRows[0] as { n: bigint | number }).n);
-
-            const mRows = await conn.all(
-              `SELECT MAX(ingest_at)::VARCHAR AS last FROM archive_sources`
-            );
-            lastIngest = (mRows[0] as { last: string | null }).last ?? null;
-          } finally {
-            await conn.close();
-          }
+          const rows  = await conn.all(`SELECT COUNT(*) AS n FROM archive_chunks`);
+          chunkCount  = Number((rows[0] as { n: bigint | number }).n);
+          const sRows = await conn.all(`SELECT COUNT(*) AS n FROM archive_sources`);
+          sourceCount = Number((sRows[0] as { n: bigint | number }).n);
+          const mRows = await conn.all(
+            `SELECT MAX(ingest_at)::VARCHAR AS last FROM archive_sources`
+          );
+          lastIngest = (mRows[0] as { last: string | null }).last ?? null;
         } finally {
-          await db.close();
+          await conn.close();
         }
-      } catch {
-        // Domain file exists but is unreadable — report it with zero counts.
-      }
+      } catch { /* unreadable — report zeros */ }
 
       results.push({ domain, filePath, exists: true, chunkCount, sourceCount, lastIngest, sizeBytes });
     }
@@ -355,7 +401,7 @@ export class ArchiveStore {
     return results;
   }
 
-  // ── Source management ──────────────────────────────────────────────────────
+    // ── Source management ──────────────────────────────────────────────────────
 
   /**
    * Look up a source record by path within a domain.
@@ -368,7 +414,7 @@ export class ArchiveStore {
     const filePath = domainFilePath(domain);
     if (!fs.existsSync(filePath)) return null;
 
-    const { db } = await openDomainDb(filePath);
+    const { db } = await getDomainDb(filePath);
     try {
       const conn = await db.connect();
       try {
@@ -397,7 +443,6 @@ export class ArchiveStore {
         await conn.close();
       }
     } finally {
-      await db.close();
     }
   }
 
@@ -408,7 +453,7 @@ export class ArchiveStore {
     const filePath = domainFilePath(domain);
     if (!fs.existsSync(filePath)) return [];
 
-    const { db } = await openDomainDb(filePath);
+    const { db } = await getDomainDb(filePath);
     try {
       const conn = await db.connect();
       try {
@@ -437,7 +482,6 @@ export class ArchiveStore {
         await conn.close();
       }
     } finally {
-      await db.close();
     }
   }
 
@@ -474,7 +518,7 @@ export class ArchiveStore {
   ): Promise<void> {
     ensureArchiveDir();
     const filePath = domainFilePath(domain);
-    const { db, ftsAvailable } = await openDomainDb(filePath);
+    const { db, ftsAvailable } = await getDomainDb(filePath);
 
     try {
       // Ensure schema exists (safe on first write to a new domain).
@@ -535,7 +579,6 @@ export class ArchiveStore {
         await conn.close();
       }
     } finally {
-      await db.close();
     }
   }
 
@@ -547,7 +590,7 @@ export class ArchiveStore {
     const filePath = domainFilePath(domain);
     if (!fs.existsSync(filePath)) return;
 
-    const { db, ftsAvailable } = await openDomainDb(filePath);
+    const { db, ftsAvailable } = await getDomainDb(filePath);
     try {
       const conn = await db.connect();
       try {
@@ -570,7 +613,6 @@ export class ArchiveStore {
         await conn.close();
       }
     } finally {
-      await db.close();
     }
   }
 
@@ -582,7 +624,7 @@ export class ArchiveStore {
     const filePath = domainFilePath(domain);
     if (!fs.existsSync(filePath)) return;
 
-    const { db, ftsAvailable } = await openDomainDb(filePath);
+    const { db, ftsAvailable } = await getDomainDb(filePath);
     try {
       const conn = await db.connect();
       try {
@@ -605,7 +647,6 @@ export class ArchiveStore {
         await conn.close();
       }
     } finally {
-      await db.close();
     }
   }
 
@@ -625,7 +666,7 @@ export class ArchiveStore {
     const filePath = domainFilePath(domain);
     if (!fs.existsSync(filePath)) return [];
 
-    const { db } = await openDomainDb(filePath);
+    const { db } = await getDomainDb(filePath);
     try {
       const conn = await db.connect();
       try {
@@ -654,7 +695,6 @@ export class ArchiveStore {
         await conn.close();
       }
     } finally {
-      await db.close();
     }
   }
 
@@ -671,9 +711,8 @@ export class ArchiveStore {
     const filePath = domainFilePath(domain);
     if (!fs.existsSync(filePath)) return [];
 
-    const { db, ftsAvailable } = await openDomainDb(filePath);
+    const { db, ftsAvailable } = await getDomainDb(filePath);
     if (!ftsAvailable) {
-      await db.close();
       return [];
     }
 
@@ -703,7 +742,6 @@ export class ArchiveStore {
         await conn.close();
       }
     } finally {
-      await db.close();
     }
   }
 
@@ -782,9 +820,3 @@ export interface SemanticSearchRow {
   score:       number;
 }
 
-// ── Private helpers ───────────────────────────────────────────────────────────
-
-/** Escape single quotes for SQL string literals. */
-function _esc(s: string): string {
-  return s.replace(/'/g, "''");
-}

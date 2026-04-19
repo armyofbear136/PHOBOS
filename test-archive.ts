@@ -2,7 +2,7 @@
  * test-archive.ts — PHOBOS Archive end-to-end test
  *
  * Starts SYBIL itself — PHOBOS core does NOT need to be running.
- * Reads documents from ./test-output/extractor/ (or creates a synthetic file).
+ * Reads documents from ./test-outputs/extractor/ (or creates a synthetic file).
  *
  * Usage:
  *   npx tsx test-archive.ts             — normal run
@@ -67,19 +67,50 @@ function findTestFiles(dir: string): string[] {
 
 // ── SYBIL management ──────────────────────────────────────────────────────────
 
+/** Poll the embed endpoint until it returns a valid vector or we time out. */
+async function waitForSybilReady(timeoutMs = 30_000): Promise<boolean> {
+  const { embed } = await import('./ai/EmbedClient.js');
+  const deadline = Date.now() + timeoutMs;
+  let attempt = 0;
+  while (Date.now() < deadline) {
+    attempt++;
+    const vec = await embed('warmup').catch(() => null);
+    if (vec !== null && vec.length === 768) return true;
+    // Exponential backoff: 200ms, 400ms, 800ms, then 1s intervals
+    const delay = Math.min(200 * Math.pow(2, attempt - 1), 1_000);
+    await new Promise(r => setTimeout(r, delay));
+  }
+  return false;
+}
+
 async function startSybilForTest(): Promise<boolean> {
   console.log('  Starting SYBIL (nomic-embed-text-v1.5)…');
+  console.log(`  Searching in: ${path.join(process.cwd(), 'dist', 'phobos', 'models')}`);
   console.log('  This may take 10–30 seconds on first load.');
   try {
     const { startSybil, getServerStatus } = await import('./phobos/LlamaServerManager.js');
     await startSybil();
+
+    // waitForPort (inside startSybil) confirms TCP connection, but the model
+    // may still be loading into memory. Poll the actual /embedding endpoint
+    // until it returns a valid vector before proceeding with any tests.
+    process.stdout.write('  Waiting for embedding endpoint to warm up');
+    const ready = await waitForSybilReady(45_000);
+    process.stdout.write('\n');
+
+
     const status = getServerStatus();
-    if (status.sybil.state === 'running') {
-      pass('SYBIL started', `port=${status.sybil.port}`);
+    if (ready && status.sybil.state === 'running') {
+      pass('SYBIL started and ready', `port=${status.sybil.port}`);
       return true;
     } else {
-      warn('SYBIL did not reach running state', `state=${status.sybil.state}, error=${status.sybil.error ?? 'none'}`);
-      console.log('  Is the nomic-embed model downloaded? Run: node scripts/fetch-sybil-model.js');
+      warn('SYBIL did not become ready', `state=${status.sybil.state}, error=${status.sybil.error ?? 'none'}`);
+      console.log('');
+      console.log('  Model not found. Ensure it is in one of:');
+      console.log(`    ${path.join(process.cwd(), 'dist', 'phobos', 'models', 'nomic-embed-text-v1.5.Q4_K_M.gguf')}`);
+      console.log(`    ${path.join(process.env.HOME ?? process.env.USERPROFILE ?? '~', '.phobos', 'models', 'nomic-embed-text-v1.5.Q4_K_M.gguf')}`);
+      console.log('  Or download it: node scripts/fetch-sybil-model.js');
+      console.log('');
       return false;
     }
   } catch (err) {
@@ -98,8 +129,13 @@ async function stopSybilAfterTest(): Promise<void> {
 
 async function checkSybilAlreadyRunning(): Promise<boolean> {
   const { embed } = await import('./ai/EmbedClient.js');
-  const vec = await embed('test');
-  return vec !== null && vec.length === 768;
+  // Try twice — first attempt may fail if the server is mid-request
+  for (let i = 0; i < 2; i++) {
+    const vec = await embed('readiness-check').catch(() => null);
+    if (vec !== null && vec.length === 768) return true;
+    if (i === 0) await new Promise(r => setTimeout(r, 200));
+  }
+  return false;
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -111,7 +147,7 @@ async function main() {
   console.log(`\n  Archive dir: ${path.join(process.env.HOME ?? process.env.USERPROFILE ?? '~', '.phobos', 'archive')}`);
 
   const TEST_DOMAIN = `custom-test-${Date.now()}` as const;
-  const INPUT_DIR   = path.join(__dirname, 'test-output', 'extractor');
+  const INPUT_DIR   = path.join(__dirname, 'test-outputs', 'extractor');
 
   // ── 1. SYBIL ─────────────────────────────────────────────────────────────
   section('1. SYBIL Embedding Server');
@@ -394,8 +430,17 @@ async function cleanup(
   try {
     await store.deleteDomain(domain);
     console.log('  Test domain cleaned up.\n');
-  } catch {
-    console.warn('  Cleanup failed — delete manually via DELETE /api/archive/domains/' + domain + '\n');
+  } catch (err) {
+    // Windows sometimes needs an extra moment after SYBIL stops for DuckDB to 
+    // release all file handles. Retry once with a longer delay.
+    await new Promise(r => setTimeout(r, 1_000));
+    try {
+      await store.deleteDomain(domain);
+      console.log('  Test domain cleaned up (after retry).\n');
+    } catch (err2) {
+      console.warn(`  Cleanup failed: ${(err2 as Error).message}`);
+      console.warn('  Delete manually: DELETE /api/archive/domains/' + domain + '\n');
+    }
   }
 }
 

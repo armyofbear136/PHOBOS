@@ -24,7 +24,14 @@ import { BUNDLED_EXTENSION_DIR } from './DatabaseManager.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-export const CONVERSATION_DB_PATH = path.join(os.homedir(), '.phobos', 'conversations.duckdb');
+// Respect PHOBOS_DATA_DIR if set (dev mode uses project root, production uses ~/.phobos).
+// Must be computed lazily so the env var set by server.ts at startup is visible.
+function resolveConversationDbPath(): string {
+  const dataDir = process.env.PHOBOS_DATA_DIR ?? path.join(os.homedir(), '.phobos');
+  return path.join(dataDir, 'conversations.duckdb');
+}
+
+export const CONVERSATION_DB_PATH = resolveConversationDbPath();
 
 const EMBED_DIM = 768;
 

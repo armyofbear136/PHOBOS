@@ -448,6 +448,36 @@ export async function buildForPlatform({
     log('  ✅ .env (generated from CI environment)');
   }
 
+  // ── Portable node binary ─────────────────────────────────────────────────
+  // Fetch node-{platform}-{arch}[.exe] into bin/ if missing, then it gets
+  // staged alongside everything else in the bin/ loop below.
+  // CamofoxManager and MeridianManager require this at runtime — process.execPath
+  // in production is the SEA binary and cannot execute .js scripts.
+  (function ensureNodeBinary() {
+    const nodeName = process.platform === 'win32'
+      ? 'node-' + process.platform + '-' + process.arch + '.exe'
+      : 'node-' + process.platform + '-' + process.arch;
+    const binNode    = path.join(__dirname, 'bin', nodeName);
+    const fetchScript = path.join(__dirname, 'scripts', 'fetch-node.js');
+    if (fs.existsSync(binNode)) {
+      log('  ✅ ' + nodeName + ' (already in bin/)');
+      return;
+    }
+    if (!fs.existsSync(fetchScript)) {
+      log('  ⚠️  scripts/fetch-node.js missing — Camofox/Meridian will not work in production');
+      return;
+    }
+    log('  Fetching portable node binary for ' + process.platform + '-' + process.arch + '...');
+    try {
+      execSync('node ' + JSON.stringify(fetchScript), { stdio: verbose ? 'inherit' : 'pipe' });
+      log('  ✅ ' + nodeName + ' fetched');
+    } catch (e) {
+      log('  ⚠️  fetch-node.js failed: ' + (e.message?.split('\n')[0] ?? e));
+      log('     Camofox and Meridian will not work until resolved.');
+      log('     Run manually: node scripts/fetch-node.js');
+    }
+  })();
+
   // llama-server + sd-cli — stage all platform binaries present in bin/ into dist/
   // Copies everything recursively: binaries, dylibs, DLLs, and subdirectories
   // (sd-cuda/, sd-vulkan/, sd-cpu/ for Windows sd-cli isolation).

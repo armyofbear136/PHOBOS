@@ -43,6 +43,11 @@ import {
   isBinaryPresent  as isJellyfinBinaryPresent,
   JELLYFIN_PORT,
 } from '../services/JellyfinManager.js';
+import {
+  getKavitaStatus,
+  isBinaryPresent as isKavitaBinaryPresent,
+  KAVITA_PORT,
+} from '../services/KavitaManager.js';
 
 // ── Stub status shape for services whose managers aren't implemented yet ──────
 // Jellyfin, Polaris, and Kavita managers follow in a later session.
@@ -109,7 +114,19 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
                  binaryPresent: s.binaryPresent, libraryPath: r.libraryPath,
                  settings: r.settings, enabled: r.enabled };
       })(),
-      kavita:   stubStatus('kavita',   all.kavita),
+      kavita: (() => {
+        const ks = getKavitaStatus();
+        return {
+          name:          'kavita',
+          state:         ks.state,
+          port:          KAVITA_PORT,
+          error:         ks.error,
+          binaryPresent: ks.binaryPresent,
+          libraryPath:   ks.docsPath,
+          enabled:       true,  // kavita is always-on; enabled is implicit
+          settings:      all.kavita.settings,
+        };
+      })(),
     });
   });
 

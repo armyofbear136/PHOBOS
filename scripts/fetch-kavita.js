@@ -18,18 +18,20 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ── Release version ───────────────────────────────────────────────────────────
-// MUST match KAVITA_RELEASE_TAG in KavitaManager.ts (not yet written)
+// MUST match KAVITA_RELEASE in KavitaManager.ts
 // Check https://github.com/Kareadita/Kavita/releases for latest
 const KAVITA_VERSION = '0.8.9.1';
 
 // ── Platform → asset mapping ──────────────────────────────────────────────────
-// Kavita ships self-contained .NET executables — no runtime required.
+// All Kavita releases ship as .tar.gz — including Windows.
+// Kavita.exe on Windows is a 193 KB launcher stub; the real runtime is API.dll.
+// We probe API.dll for the size check (same pattern as JellyfinManager for jellyfin.dll).
 const PLATFORM_ASSETS = {
-  'linux-x64':    { file: `kavita-linux-x64.tar.gz`,   binary: 'Kavita',     extract: 'tar', minBytes: 85_000_000  },
-  'linux-arm64':  { file: `kavita-linux-arm64.tar.gz`, binary: 'Kavita',     extract: 'tar', minBytes: 80_000_000  },
-  'win32-x64':    { file: `kavita-win-x64.zip`,        binary: 'Kavita.exe', extract: 'zip', minBytes: 90_000_000  },
-  'darwin-x64':   { file: `kavita-osx-x64.tar.gz`,     binary: 'Kavita',     extract: 'tar', minBytes: 85_000_000  },
-  'darwin-arm64': { file: `kavita-osx-arm64.tar.gz`,   binary: 'Kavita',     extract: 'tar', minBytes: 80_000_000  },
+  'linux-x64':    { file: `kavita-linux-x64.tar.gz`,   binary: 'Kavita',     probe: null,      minBytes: 80_000_000 },
+  'linux-arm64':  { file: `kavita-linux-arm64.tar.gz`, binary: 'Kavita',     probe: null,      minBytes: 75_000_000 },
+  'win32-x64':    { file: `kavita-win-x64.tar.gz`,     binary: 'Kavita.exe', probe: 'API.dll', minBytes: 8_000_000  },
+  'darwin-x64':   { file: `kavita-osx-x64.tar.gz`,     binary: 'Kavita',     probe: null,      minBytes: 80_000_000 },
+  'darwin-arm64': { file: `kavita-osx-arm64.tar.gz`,   binary: 'Kavita',     probe: null,      minBytes: 75_000_000 },
 };
 
 const GITHUB_BASE = `https://github.com/Kareadita/Kavita/releases/download/v${KAVITA_VERSION}`;
@@ -75,18 +77,12 @@ async function sha256File(filePath) {
   });
 }
 
+// All platforms use tar — Windows 10+ ships tar.exe natively and handles .tar.gz fine.
+// This replaces the previous Expand-Archive approach which only handled .zip.
 async function extractTar(archivePath, destDir) {
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
   await promisify(execFile)('tar', ['-xzf', archivePath, '-C', destDir]);
-}
-
-async function extractZip(archivePath, destDir) {
-  const { execFile } = await import('node:child_process');
-  const { promisify } = await import('node:util');
-  await promisify(execFile)('powershell', [
-    '-Command', `Expand-Archive -Path '${archivePath}' -DestinationPath '${destDir}' -Force`,
-  ]);
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -107,6 +103,7 @@ if (!asset) {
 }
 
 const DEST_BINARY   = path.join(DEST_DIR, asset.binary);
+const PROBE_FILE    = asset.probe ? path.join(DEST_DIR, asset.probe) : DEST_BINARY;
 const ARCHIVE_TMP   = path.join(DEST_DIR, asset.file + '.download');
 const ARCHIVE_FINAL = path.join(DEST_DIR, asset.file);
 
@@ -114,9 +111,9 @@ fs.mkdirSync(DEST_DIR, { recursive: true });
 // Create config directory that PHOBOS will write appsettings.json into
 fs.mkdirSync(path.join(DEST_DIR, 'config'), { recursive: true });
 
-// Fast-path: binary already present and large enough
-if (fs.existsSync(DEST_BINARY) && fs.statSync(DEST_BINARY).size >= asset.minBytes) {
-  console.log(`✅ Already present (${(fs.statSync(DEST_BINARY).size / 1e6).toFixed(1)} MB) — nothing to do.`);
+// Fast-path: probe file already present and large enough
+if (fs.existsSync(PROBE_FILE) && fs.statSync(PROBE_FILE).size >= asset.minBytes) {
+  console.log(`✅ Already present (${(fs.statSync(PROBE_FILE).size / 1e6).toFixed(1)} MB) — nothing to do.`);
   process.exit(0);
 }
 
@@ -174,11 +171,7 @@ fs.renameSync(ARCHIVE_TMP, ARCHIVE_FINAL);
 console.log('\n📦 Extracting…');
 
 try {
-  if (asset.extract === 'zip') {
-    await extractZip(ARCHIVE_FINAL, DEST_DIR);
-  } else {
-    await extractTar(ARCHIVE_FINAL, DEST_DIR);
-  }
+  await extractTar(ARCHIVE_FINAL, DEST_DIR);
 } catch (err) {
   console.error(`❌ Extraction failed: ${err.message}`);
   process.exit(1);
@@ -205,7 +198,7 @@ if (!fs.existsSync(DEST_BINARY)) {
 }
 
 // Remove the bundled appsettings-init.json — PHOBOS writes its own appsettings.json
-// with the correct port and TokenKey. The init file would override ours.
+// with the correct port and TokenKey. The init file would override ours on first boot.
 const initFile = path.join(DEST_DIR, 'config', 'appsettings-init.json');
 if (fs.existsSync(initFile)) {
   fs.unlinkSync(initFile);
@@ -218,9 +211,10 @@ if (!fs.existsSync(DEST_BINARY)) {
   process.exit(1);
 }
 
-const finalSize = fs.statSync(DEST_BINARY).size;
-if (finalSize < asset.minBytes) {
-  console.error(`❌ Binary too small (${(finalSize / 1e6).toFixed(1)} MB) — may be corrupt.`);
+// Size probe: on Windows check API.dll (the real runtime), not Kavita.exe (193 KB launcher stub).
+const probeSize = fs.statSync(PROBE_FILE).size;
+if (probeSize < asset.minBytes) {
+  console.error(`❌ ${path.basename(PROBE_FILE)} too small (${(probeSize / 1e6).toFixed(1)} MB) — extraction may be incomplete.`);
   process.exit(1);
 }
 
@@ -242,7 +236,10 @@ if (process.platform === 'darwin') {
 
 const sha = await sha256File(DEST_BINARY);
 console.log(`\n✅ ${asset.binary}`);
-console.log(`   Size:   ${(finalSize / 1e6).toFixed(1)} MB`);
+console.log(`   Size:   ${(fs.statSync(DEST_BINARY).size / 1e6).toFixed(1)} MB (launcher)`);
+if (asset.probe) {
+  console.log(`   Runtime: ${asset.probe} — ${(probeSize / 1e6).toFixed(1)} MB`);
+}
 console.log(`   SHA256: ${sha}`);
 console.log(`   Path:   ${DEST_BINARY}`);
-console.log(`\n✅ Kavita ready. Enable it in PHOBOS → Media Hub → Books.\n`);
+console.log(`\n✅ Kavita ready. PHOBOS will start it automatically on next launch.\n`);

@@ -50,6 +50,13 @@ import { ArchiveStore } from './db/ArchiveStore.js';
 import { registerArchiveRoutes } from './routes/archiveRoutes.js';
 import { registerMpvRoutes } from './routes/mpv.js';
 import { registerIptvRoutes } from './routes/iptv.js';
+import {
+  startKavita,
+  stopKavita,
+  isBinaryPresent as isKavitaBinaryPresent,
+  defaultDocsPath,
+} from './services/KavitaManager.js';
+import { registerKavitaIngestRoutes } from './routes/kavitaIngestRoutes.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -125,6 +132,7 @@ async function buildServer() {
   await registerToolsRoutes(fastify);
   await registerCartridgeRoutes(fastify);
   await registerArchiveRoutes(fastify);
+  await registerKavitaIngestRoutes(fastify);
   await registerMpvRoutes(fastify);
   await registerIptvRoutes(fastify);
 
@@ -255,6 +263,54 @@ async function main() {
     }
   }
 
+  // ── Kavita — core service, always starts if binary is present ────────────
+  // Unlike Polaris/Jellyfin, Kavita is not gated on user enable/disable.
+  // It starts unconditionally at PHOBOS launch. The phobosDocs library is
+  // created on first boot at ~/.phobos/media/kavita/phobosdocs (or the
+  // user-configured path stored in ServiceStore).
+  if (isKavitaBinaryPresent()) {
+    let kavitaRecord = await serviceStore.get('kavita');
+
+    // Generate credentials if the row was created by an older ServiceStore
+    // that didn't include tokenKey/adminPassword in kavita defaults.
+    let tokenKey      = (kavitaRecord.settings.tokenKey      as string) || '';
+    let adminPassword = (kavitaRecord.settings.adminPassword as string) || '';
+
+    if (!tokenKey || !adminPassword) {
+      const { randomBytes } = await import('node:crypto');
+      const patch: Record<string, string> = {};
+      if (!tokenKey)      patch.tokenKey      = randomBytes(256).toString('base64');
+      if (!adminPassword) patch.adminPassword = randomBytes(24).toString('base64url');
+      kavitaRecord  = await serviceStore.patchSettings('kavita', patch);
+      tokenKey      = kavitaRecord.settings.tokenKey      as string;
+      adminPassword = kavitaRecord.settings.adminPassword as string;
+      console.log('[KavitaManager] Generated missing credentials — first boot.');
+    }
+
+    const authKey  = (kavitaRecord.settings.refreshToken as string) || '';
+    const docsPath = kavitaRecord.libraryPath ?? defaultDocsPath();
+
+    const firstBoot = !authKey;
+    startKavita({
+      tokenKey,
+      adminPassword,
+      refreshToken: authKey,
+      docsPath,
+      firstBoot,
+    }).then(async ({ refreshToken: newToken }) => {
+      // Persist the refresh token if it changed (first boot or re-auth).
+      if (newToken !== authKey) {
+        await serviceStore.patchSettings('kavita', { refreshToken: newToken });
+      }
+      // Ensure libraryPath row reflects the active docs path.
+      if (!kavitaRecord.libraryPath) {
+        await serviceStore.setLibraryPath('kavita', docsPath);
+      }
+    }).catch(err => console.warn('[MediaHub] Kavita auto-start failed:', err.message));
+  } else {
+    console.log('[KavitaManager] Binary not present — skipping. Run: node scripts/fetch-kavita.js');
+  }
+
   // ── Flush WAL after all migrations ────────────────────────────────────────
   // ensureTable() runs ALTER TABLE ADD COLUMN IF NOT EXISTS on every boot.
   // Even though they're no-ops when columns exist, DuckDB writes them to the
@@ -326,6 +382,7 @@ async function main() {
     await stopMeridian().catch(() => {});
     await stopPolaris().catch(() => {});
     await stopJellyfin().catch(() => {});
+    await stopKavita().catch(() => {});
     await stopCarla().catch(() => {});
     await stopAllServers().catch(() => {});
     await fastify.close().catch(() => {});

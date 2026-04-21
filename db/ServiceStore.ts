@@ -38,7 +38,10 @@ const SERVICE_DEFAULTS: Record<ServiceName, Record<string, unknown>> = {
     authEnabled:   true,
   },
   kavita: {
-    port: 5000,
+    port:          18000,
+    tokenKey:      '',   // generated on first KavitaManager init, stored here
+    authKey:       '',   // permanent x-api-key created after first boot
+    adminPassword: '',   // generated on first creation
   },
   meridian: {},
 };
@@ -85,6 +88,11 @@ export class ServiceStore {
 
     if (name === 'jellyfin' && !defaults.adminPassword) {
       defaults.adminPassword = crypto.randomBytes(24).toString('base64url');
+    }
+
+    if (name === 'kavita' && !defaults.adminPassword) {
+      defaults.adminPassword = crypto.randomBytes(24).toString('base64url');
+      defaults.tokenKey      = crypto.randomBytes(256).toString('base64');
     }
 
     await this.db.run(

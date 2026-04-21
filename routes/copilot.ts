@@ -48,11 +48,14 @@ function normalizeCopilotThinkTags(raw: string): string {
  * Returns the cleaned token, or empty string if the entire token was a directive.
  */
 function stripDirectiveTags(token: string): string {
+  // Do NOT trim the result — inter-token whitespace is load-bearing for word
+  // boundaries in streamed output. Trimming here caused adjacent tokens to
+  // concatenate without spaces, producing garbled single-string output.
+  // The only characters we remove are the directive tags themselves.
   return token
     .replace(/\[REMEMBER\s+\w+:[^\]]+\]/gi, '')
     .replace(/\[EMOTION\s+\w+\]/gi, '')
-    .replace(/\[BOND\s+[+-]?\d*\.?\d+\]/gi, '')
-    .trim();
+    .replace(/\[BOND\s+[+-]?\d*\.?\d+\]/gi, '');
 }
 
 export async function registerCopilotRoutes(fastify: FastifyInstance): Promise<void> {

@@ -757,6 +757,22 @@ export async function reconcilePhobosServers(config: {
     }
   }
 
+  // ── Test-mode context size overrides ─────────────────────────────────────
+  // PHOBOS_TEST_SAYON_CTX / PHOBOS_TEST_SEREN_CTX let the ai-test-suite
+  // override the hardware-computed context size without changing the detection
+  // or device assignment logic. Values that fail parseInt are silently ignored
+  // so normal production launches are never affected.
+  const testSayonCtx = parseInt(process.env.PHOBOS_TEST_SAYON_CTX ?? '', 10);
+  const testSerenCtx = parseInt(process.env.PHOBOS_TEST_SEREN_CTX ?? '', 10);
+  if (sayonOnPhobos && !isNaN(testSayonCtx) && testSayonCtx > 0) {
+    console.log(`[reconcile] SAYON ctx override: ${sayonContextSize / 1024}K → ${testSayonCtx / 1024}K (PHOBOS_TEST_SAYON_CTX)`);
+    sayonContextSize = testSayonCtx;
+  }
+  if (serenOnPhobos && !isNaN(testSerenCtx) && testSerenCtx > 0) {
+    console.log(`[reconcile] SEREN ctx override: ${serenContextSize / 1024}K → ${testSerenCtx / 1024}K (PHOBOS_TEST_SEREN_CTX)`);
+    serenContextSize = testSerenCtx;
+  }
+
   if (sayonOnPhobos && serenOnPhobos) {
     const pool = sameGpu ? 'shared GPU' : bothOnCpu ? 'shared RAM' : 'separate devices';
     console.log(

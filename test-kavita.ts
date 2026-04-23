@@ -36,7 +36,6 @@ import {
   startKavita,
   stopKavita,
   getKavitaStatus,
-  getKavitaAuthKey,
   getKavitaJwt,
   listLibraries,
   createLibrary,
@@ -91,9 +90,9 @@ async function kavitaApi(
   endpoint: string,
   body?: unknown,
 ): Promise<{ ok: boolean; status: number; data: unknown }> {
-  const key = getKavitaAuthKey();
+  const jwt = getKavitaJwt();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (key) headers['x-api-key'] = key;
+  if (jwt) headers['Authorization'] = `Bearer ${jwt}`;
 
   const res = await fetch(`${BASE_URL}/api${endpoint}`, {
     method,
@@ -153,6 +152,21 @@ if (bookCount === 0) {
 // ── [ 4 ] Start ───────────────────────────────────────────────────────────────
 
 if (!SKIP_START) {
+  // Wipe kavita.db before each standalone test run so we always start from a
+  // clean account. Without this, a previous test run leaves an account with
+  // TEST_PASSWORD in the DB, which causes a 401 when the real server next starts
+  // with its ServiceStore-generated password.
+  const kavitaDb = path.join(resolveConfigDir(), 'kavita.db');
+  if (fs.existsSync(kavitaDb)) {
+    fs.rmSync(kavitaDb, { force: true });
+    // Kavita also writes a WAL and SHM file alongside the DB.
+    for (const suffix of ['-wal', '-shm']) {
+      const f = kavitaDb + suffix;
+      if (fs.existsSync(f)) fs.rmSync(f, { force: true });
+    }
+    console.log('\n   ℹ️  Wiped kavita.db for clean test run.');
+  }
+
   console.log('\n[ 4/10 ] Starting Kavita (first boot: up to 2 min for DB migration)...');
   const t0 = Date.now();
   try {
@@ -219,12 +233,12 @@ try {
     console.log(`   ID:      ${phobosDocs.id}`);
     console.log(`   Type:    ${phobosDocs.type} (books)`);
     console.log(`   Folders: ${phobosDocs.folders.join(', ')}`);
-    console.log(`   Series:  ${phobosDocs.series}`);
+    console.log(`   Series:  ${phobosDocs.seriesCount ?? phobosDocs.series ?? 0}`);
     ok('phobosDocs folder exists on disk', phobosDocs.folders.some(f => fs.existsSync(f)));
   }
   console.log(`\n   All libraries (${libs.length} total):`);
   for (const lib of libs) {
-    console.log(`   · [${lib.id}] ${lib.name} — type ${lib.type} — ${lib.series} series — ${lib.folders[0] ?? '?'}`);
+    console.log(`   · [${lib.id}] ${lib.name} — type ${lib.type} — ${lib.seriesCount ?? lib.series ?? 0} series — ${lib.folders[0] ?? '?'}`);
   }
 } catch (err) {
   ok('Library list succeeded', false);
@@ -290,7 +304,7 @@ if (bookCount > 0) {
   while (Date.now() < deadline) {
     try {
       const libs = await listLibraries();
-      seriesCount = libs.reduce((n, l) => n + l.series, 0);
+      seriesCount = libs.reduce((n, l) => n + (l.seriesCount ?? l.series ?? 0), 0);
       if (seriesCount > 0) break;
     } catch { /* still scanning */ }
     process.stdout.write('.');

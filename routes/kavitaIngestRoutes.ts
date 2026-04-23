@@ -23,6 +23,7 @@ import {
   getKavitaJwt,
   defaultDocsPath,
   KAVITA_LIB_TYPE,
+  KAVITA_PORT,
   PHOBOSDOCS_LIB_NAME,
 } from '../services/KavitaManager.js';
 import { buildIngestQueue, copyToLibrary, type IngestQueueItem } from '../ai/KavitaIngestor.js';
@@ -281,5 +282,63 @@ export async function registerKavitaIngestRoutes(fastify: FastifyInstance): Prom
   // Returns the library type constants for the UI.
   fastify.get('/api/kavita/lib-types', async (_req, reply) => {
     return reply.send({ types: KAVITA_LIB_TYPE, phobosdocsName: PHOBOSDOCS_LIB_NAME });
+  });
+
+  // ── POST /api/kavita/series/list ───────────────────────────────────────────
+  // Proxy to Kavita's series list endpoint. Body: { libraryId, pageSize, pageNumber }
+  fastify.post<{ Body: { libraryId?: number; pageSize?: number; pageNumber?: number } }>(
+    '/api/kavita/series/list',
+    async (req, reply) => {
+      if (!kavitaRunning()) return reply.status(503).send({ error: 'Kavita not running' });
+      const { libraryId, pageSize = 100, pageNumber = 1 } = req.body ?? {};
+      try {
+        const jwt = getKavitaJwt()!;
+        const params = new URLSearchParams({
+          pageSize:   String(pageSize),
+          pageNumber: String(pageNumber),
+        });
+        if (libraryId != null) params.set('libraryId', String(libraryId));
+        const r = await fetch(
+          `http://127.0.0.1:${KAVITA_PORT}/api/series/all?${params}`,
+          { headers: { 'Authorization': `Bearer ${jwt}`, 'Content-Type': 'application/json' } },
+        );
+        if (!r.ok) return reply.status(r.status).send({ error: `Kavita: ${r.status}` });
+        // GET /api/series/all returns the series array directly (no wrapper)
+        const data = await r.json();
+        return reply.send({ result: Array.isArray(data) ? data : [] });
+      } catch (err) {
+        return reply.status(500).send({ error: (err as Error).message });
+      }
+    },
+  );
+
+  // ── GET /api/kavita/in-progress ────────────────────────────────────────────
+  // Returns series with reading progress for the In Progress drawer tab.
+  fastify.get('/api/kavita/in-progress', async (_req, reply) => {
+    if (!kavitaRunning()) return reply.status(503).send([]);
+    try {
+      const jwt = getKavitaJwt()!;
+      // Kavita: GET /api/series/on-deck?pageSize=25&pageNumber=1
+      const r = await fetch(
+        `http://127.0.0.1:${KAVITA_PORT}/api/series/on-deck?pageSize=25&pageNumber=1`,
+        { headers: { 'Authorization': `Bearer ${jwt}` } },
+      );
+      if (!r.ok || r.status === 204) return reply.send([]);
+      const data = await r.json() as Array<{
+        id: number; name: string; libraryId: number;
+        pages: number; pagesRead?: number; latestChapter?: { id: number };
+      }>;
+      const mapped = (Array.isArray(data) ? data : []).map(s => ({
+        seriesId:   s.id,
+        seriesName: s.name,
+        libraryId:  s.libraryId,
+        pages:      s.pages ?? 0,
+        pagesRead:  s.pagesRead ?? 0,
+        chapterId:  s.latestChapter?.id ?? null,
+      }));
+      return reply.send(mapped);
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
   });
 }

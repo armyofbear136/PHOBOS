@@ -377,10 +377,29 @@ export async function buildForPlatform({
     }, null, 2));
 
     // ── Step 3: stage imgly's own onnxruntime-node (1.17.x) + CPU patch ───
-    // DO NOT share with the top-level staged onnxruntime-node (1.14.0) —
-    // imgly's ONNX models require ops added in 1.17.x; using 1.14.0 crashes.
-    const imglyOnnxSrc = path.join(imglySrc, 'node_modules', 'onnxruntime-node');
-    if (fs.existsSync(imglyOnnxSrc)) {
+    // imgly requires onnxruntime-node 1.17.x — its ONNX models use ops absent in 1.14.x.
+    // Prefer the nested copy; fall back to the hoisted top-level if version is 1.17.x.
+    // npm 7+ hoists onnxruntime-node when the top-level version matches what imgly wants.
+    // Fall back to the hoisted copy only when it's 1.17.x — 1.14.0 lacks required ops.
+    const imglyOnnxNested  = path.join(imglySrc, 'node_modules', 'onnxruntime-node');
+    const imglyOnnxHoisted = path.join(__dirname, 'node_modules', 'onnxruntime-node');
+    let imglyOnnxSrc = imglyOnnxNested;
+    if (!fs.existsSync(imglyOnnxNested) && fs.existsSync(imglyOnnxHoisted)) {
+      try {
+        const hoistedPkg = JSON.parse(fs.readFileSync(path.join(imglyOnnxHoisted, 'package.json'), 'utf8'));
+        const hoistedVer = hoistedPkg.version ?? '';
+        if (hoistedVer.startsWith('1.17.')) {
+          imglyOnnxSrc = imglyOnnxHoisted;
+          log('  ℹ️  onnxruntime-node hoisted to top-level (v' + hoistedVer + ') — using for imgly staging');
+        } else {
+          imglyOnnxSrc = '';
+          log('  ⚠️  imgly nested onnxruntime-node not found; hoisted copy is v' + hoistedVer + ' (need 1.17.x) — RemoveBg may fail');
+        }
+      } catch {
+        imglyOnnxSrc = '';
+      }
+    }
+    if (imglyOnnxSrc && fs.existsSync(imglyOnnxSrc)) {
       const onnxDest = path.join(imglyPkgDir, 'node_modules', 'onnxruntime-node');
       copyDir(imglyOnnxSrc, onnxDest);
 
@@ -424,12 +443,17 @@ export async function buildForPlatform({
     // to onnxruntime-node, NOT nested inside it. Node resolution walks up from
     // onnxruntime-node and finds it at the imgly node_modules level before it could
     // fall through to the top-level 1.14.0 (wrong version — would crash inference).
-    const imglyOrtCommonSrc = path.join(imglySrc, 'node_modules', 'onnxruntime-common');
-    if (fs.existsSync(imglyOrtCommonSrc)) {
+    const imglyOrtCommonNested  = path.join(imglySrc, 'node_modules', 'onnxruntime-common');
+    const imglyOrtCommonHoisted = path.join(__dirname, 'node_modules', 'onnxruntime-common');
+    const imglyOrtCommonSrc = fs.existsSync(imglyOrtCommonNested)  ? imglyOrtCommonNested
+                            : fs.existsSync(imglyOrtCommonHoisted) ? imglyOrtCommonHoisted
+                            : '';
+    if (imglyOrtCommonSrc) {
       copyDir(imglyOrtCommonSrc, path.join(imglyPkgDir, 'node_modules', 'onnxruntime-common'));
-      log('  ✅ onnxruntime-common 1.17.x (imgly dep, sibling to onnxruntime-node)');
+      const ortCommonOrigin = imglyOrtCommonSrc === imglyOrtCommonNested ? 'nested' : 'hoisted';
+      log('  ✅ onnxruntime-common (staged from ' + ortCommonOrigin + ')');
     } else {
-      log('  ⚠️  imgly nested onnxruntime-common not found — inference may fail');
+      log('  ⚠️  onnxruntime-common not found (nested or hoisted) — inference may fail');
     }
   } else {
     log('  ⚠️  @imgly/background-removal-node not installed — RemoveBg node unavailable');

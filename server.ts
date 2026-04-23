@@ -46,6 +46,7 @@ import { registerCartridgeRoutes } from './routes/cartridgeRoutes.js';
 import { CartridgeStore } from './db/CartridgeStore.js';
 import { initCartridgeManager, reconcileCartridgeSlots } from './phobos/CartridgeManager.js';
 import { startCamofox, stopCamofox, isCamofoxInstalled } from './phobos/CamofoxManager.js';
+import { stopStirling }   from './services/StirlingManager.js';
 import { ArchiveStore } from './db/ArchiveStore.js';
 import { registerArchiveRoutes } from './routes/archiveRoutes.js';
 import { registerMpvRoutes } from './routes/mpv.js';
@@ -306,7 +307,12 @@ async function main() {
       if (!kavitaRecord.libraryPath) {
         await serviceStore.setLibraryPath('kavita', docsPath);
       }
-    }).catch(err => console.warn('[MediaHub] Kavita auto-start failed:', err.message));
+    }).catch(async (err: Error) => {
+      console.warn('[MediaHub] Kavita auto-start failed:', err.message);
+      // If startup failed, clear the stored refresh token so the next boot
+      // triggers fresh registration rather than re-using a stale token.
+      await serviceStore.patchSettings('kavita', { refreshToken: '' }).catch(() => {});
+    });
   } else {
     console.log('[KavitaManager] Binary not present — skipping. Run: node scripts/fetch-kavita.js');
   }
@@ -379,6 +385,7 @@ async function main() {
     // ── PHASE 3: Subprocesses (can fail without data loss) ────────────────
     await stopBroadway().catch(() => {});
     await stopCamofox().catch(() => {});
+    await stopStirling().catch(() => {});
     await stopMeridian().catch(() => {});
     await stopPolaris().catch(() => {});
     await stopJellyfin().catch(() => {});

@@ -47,6 +47,12 @@ export const KAVITA_LIB_TYPE = {
   lightnovels: 5,
 } as const;
 
+// FileTypeGroup integer values for CreateLibraryDto.fileGroupTypes.
+// LibraryFileTypeGroup is 1-based: Image=1, Archive=2, Epub=3, Pdf=4.
+// Send all four so no file type is filtered out — same as selecting all in the UI.
+// NOTE: 0 is not a valid value and throws ArgumentOutOfRangeException in GetRegex().
+const ALL_FILE_GROUPS = [1, 2, 3, 4];
+
 export type KavitaLibType = keyof typeof KAVITA_LIB_TYPE;
 
 const BINARY_MIN_BYTES: Record<string, number> = {
@@ -221,6 +227,36 @@ async function loginAndStore(adminPassword: string): Promise<string> {
     method: 'POST',
     body: { username: KAVITA_ADMIN_USER, password: adminPassword },
   });
+
+  if (login.status === 401) {
+    // 401 means the account doesn't exist or the password is wrong.
+    // This happens when kavita.db was wiped (e.g. after running test-kavita.ts
+    // which creates its own account with TEST_PASSWORD). Attempt re-registration
+    // with the stored password — if the DB is fresh, this will create the account.
+    console.log('[KavitaManager] Login returned 401 — attempting account re-registration (DB may have been reset).');
+    const reg = await kavitaFetch('/Account/register', {
+      method: 'POST',
+      body: { username: KAVITA_ADMIN_USER, password: adminPassword, email: 'phobos@localhost' },
+    });
+    if (!reg.ok && reg.status !== 400) {
+      throw new Error(`Kavita login failed (401) and re-registration failed (HTTP ${reg.status}). Delete kavita.db and restart.`);
+    }
+    // Retry login with the same password.
+    const retry = await kavitaFetch('/Account/login', {
+      method: 'POST',
+      body: { username: KAVITA_ADMIN_USER, password: adminPassword },
+    });
+    if (!retry.ok) {
+      throw new Error(`Kavita login failed after re-registration: HTTP ${retry.status}. Delete ~/.phobos/services/kavita/config/kavita.db and restart.`);
+    }
+    const retryResp = retry.data as Record<string, string>;
+    if (!retryResp.token) throw new Error('Kavita re-registration login response missing token field');
+    service.jwt          = retryResp.token;
+    service.refreshToken = retryResp.refreshToken ?? null;
+    scheduleJwtRefresh(adminPassword);
+    return service.refreshToken ?? '';
+  }
+
   if (!login.ok) throw new Error(`Kavita login failed: HTTP ${login.status}`);
 
   const resp = login.data as Record<string, string>;
@@ -291,6 +327,8 @@ async function ensurePhobosDocsLibrary(docsPath: string): Promise<void> {
       name:                       PHOBOSDOCS_LIB_NAME,
       type:                       KAVITA_LIB_TYPE.books,
       folders:                    [docsPath],
+      fileGroupTypes:             ALL_FILE_GROUPS,
+      excludePatterns:            [],
       folderWatching:             true,
       includeInDashboard:         true,
       includeInRecommended:       true,
@@ -424,11 +462,13 @@ export function getKavitaAuthKey(): string | null {
 // ── Library management (called from routes) ───────────────────────────────────
 
 export interface KavitaLibrary {
-  id:      number;
-  name:    string;
-  type:    number;
-  folders: string[];
-  series:  number;
+  id:           number;
+  name:         string;
+  type:         number;
+  folders:      string[];
+  /** Returned as seriesCount in newer Kavita responses; may also appear as series. */
+  seriesCount?: number;
+  series?:      number;
 }
 
 export async function listLibraries(): Promise<KavitaLibrary[]> {
@@ -448,7 +488,11 @@ export async function createLibrary(
   const res = await kavitaFetch('/Library/create', {
     method: 'POST',
     body: {
-      name, type, folders,
+      name,
+      type,
+      folders,
+      fileGroupTypes:              ALL_FILE_GROUPS,
+      excludePatterns:             [],
       folderWatching:              true,
       includeInDashboard:          true,
       includeInRecommended:        true,
@@ -461,7 +505,12 @@ export async function createLibrary(
       ? JSON.stringify(res.data) : String(res.data);
     throw new Error(`Kavita library create failed: HTTP ${res.status} — ${detail}`);
   }
-  return res.data as KavitaLibrary;
+  // POST /api/library/create returns 200 with null body in 0.8.9.x.
+  // Re-fetch the library list and find the one we just created.
+  const all = await listLibraries();
+  const created = all.find(l => l.name === name);
+  if (!created) throw new Error(`Kavita library created but not found in list: ${name}`);
+  return created;
 }
 
 export async function updateLibraryFolders(
@@ -486,6 +535,6 @@ export async function triggerScan(): Promise<void> {
 
 export async function getStats(): Promise<{ totalSeries: number; libraryCount: number }> {
   const libs = await listLibraries();
-  const totalSeries  = libs.reduce((n, l) => n + (l.series ?? 0), 0);
+  const totalSeries  = libs.reduce((n, l) => n + (l.seriesCount ?? l.series ?? 0), 0);
   return { totalSeries, libraryCount: libs.length };
 }

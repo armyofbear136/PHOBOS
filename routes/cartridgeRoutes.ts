@@ -33,7 +33,7 @@ function store(): CartridgeStore {
   return new CartridgeStore(DatabaseManager.getInstance());
 }
 
-function deser(r: CartridgeRecord): unknown {
+function deser(r: CartridgeRecord): Omit<CartridgeRecord, 'compatible_models' | 'tags'> & { compatible_models: string[]; tags: string[] } {
   return {
     ...r,
     compatible_models: tryJson(r.compatible_models, [] as string[]),

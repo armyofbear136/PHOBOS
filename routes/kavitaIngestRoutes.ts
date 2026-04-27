@@ -11,6 +11,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import fs   from 'fs';
+import os   from 'os';
 import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -22,6 +23,7 @@ import {
   getStats,
   getKavitaJwt,
   defaultDocsPath,
+  KAVITA_ADMIN_USER,
   KAVITA_LIB_TYPE,
   KAVITA_PORT,
   PHOBOSDOCS_LIB_NAME,
@@ -46,24 +48,35 @@ export async function registerKavitaIngestRoutes(fastify: FastifyInstance): Prom
   fastify.post<{ Body: { files: string[] } }>(
     '/api/kavita/ingest/classify',
     async (req, reply) => {
-      const { files } = req.body ?? {};
+      // Trim whitespace/CR from paths (PowerShell stdout can include trailing \r).
+      const files = (req.body?.files ?? []).map((f: string) => f.trim()).filter(Boolean);
       if (!Array.isArray(files) || files.length === 0) {
         return reply.status(400).send({ error: 'files array is required' });
       }
 
       // Validate paths exist.
-      const valid = files.filter(f => typeof f === 'string' && fs.existsSync(f));
+      const valid = files.filter((f: string) => typeof f === 'string' && fs.existsSync(f));
       if (valid.length === 0) {
-        return reply.status(400).send({ error: 'No valid file paths found' });
+        return reply.status(400).send({ error: `No valid file paths found. Received: ${files.slice(0, 3).join(', ')}` });
       }
 
+      reply.hijack();
       reply.raw.writeHead(200, {
-        'Content-Type':  'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection':    'keep-alive',
+        'Content-Type':                'text/event-stream',
+        'Cache-Control':               'no-cache',
+        'Connection':                  'keep-alive',
+        'Access-Control-Allow-Origin': req.headers.origin ?? '*',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       });
 
-      const send = (data: object) => reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+      const send = (data: object) => {
+        reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+        // Flush the socket immediately — without this, Node may buffer small
+        // frames and the client won't receive them until the connection closes.
+        if (typeof (reply.raw.socket as any)?.flush === 'function') {
+          (reply.raw.socket as any).flush();
+        }
+      };
 
       try {
         const queue = await buildIngestQueue(valid, (item, index, total) => {
@@ -107,9 +120,12 @@ export async function registerKavitaIngestRoutes(fastify: FastifyInstance): Prom
     }
 
     const results: Array<{ source: string; dest: string; ok: boolean; error?: string }> = [];
+    let needsScan = false;
 
     for (const item of items) {
-      const folder = libraryFolders[item.suggestion];
+      // phobosdocs falls back to defaultDocsPath() if the frontend didn't supply it.
+      const folder = libraryFolders[item.suggestion]
+        ?? (item.suggestion === 'phobosdocs' ? defaultDocsPath() : undefined);
       if (!folder) {
         results.push({ source: item.sourcePath, dest: '', ok: false, error: `No library folder mapped for type: ${item.suggestion}` });
         continue;
@@ -125,13 +141,16 @@ export async function registerKavitaIngestRoutes(fastify: FastifyInstance): Prom
         };
         const dest = copyToLibrary(queueItem, folder);
         results.push({ source: item.sourcePath, dest, ok: true });
+        if (item.suggestion !== 'phobosdocs') needsScan = true;
       } catch (err) {
         results.push({ source: item.sourcePath, dest: '', ok: false, error: (err as Error).message });
       }
     }
 
-    // Trigger Kavita scan so new files appear immediately.
-    try { await triggerScan(); } catch { /* non-fatal */ }
+    // Only trigger Kavita scan if reader-native files were committed.
+    if (needsScan) {
+      try { await triggerScan(); } catch { /* non-fatal */ }
+    }
 
     return reply.send({ ok: true, results });
   });
@@ -298,9 +317,15 @@ export async function registerKavitaIngestRoutes(fastify: FastifyInstance): Prom
           pageNumber: String(pageNumber),
         });
         if (libraryId != null) params.set('libraryId', String(libraryId));
+        const body: Record<string, unknown> = { pageSize, pageNumber };
+        if (libraryId != null) body.libraryId = libraryId;
         const r = await fetch(
-          `http://127.0.0.1:${KAVITA_PORT}/api/series/all?${params}`,
-          { headers: { 'Authorization': `Bearer ${jwt}`, 'Content-Type': 'application/json' } },
+          `http://127.0.0.1:${KAVITA_PORT}/api/series/all`,
+          {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${jwt}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          },
         );
         if (!r.ok) return reply.status(r.status).send({ error: `Kavita: ${r.status}` });
         // GET /api/series/all returns the series array directly (no wrapper)
@@ -321,7 +346,11 @@ export async function registerKavitaIngestRoutes(fastify: FastifyInstance): Prom
       // Kavita: GET /api/series/on-deck?pageSize=25&pageNumber=1
       const r = await fetch(
         `http://127.0.0.1:${KAVITA_PORT}/api/series/on-deck?pageSize=25&pageNumber=1`,
-        { headers: { 'Authorization': `Bearer ${jwt}` } },
+        {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${jwt}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pageSize: 25, pageNumber: 1 }),
+        },
       );
       if (!r.ok || r.status === 204) return reply.send([]);
       const data = await r.json() as Array<{
@@ -341,4 +370,198 @@ export async function registerKavitaIngestRoutes(fastify: FastifyInstance): Prom
       return reply.status(500).send({ error: (err as Error).message });
     }
   });
+
+  // ── GET /api/kavita/token ────────────────────────────────────────────────────
+  fastify.get('/api/kavita/token', async (_req, reply) => {
+    if (!kavitaRunning()) return reply.status(503).send({ error: 'Kavita not running' });
+    const token = getKavitaJwt();
+    if (!token) return reply.status(503).send({ error: 'No JWT available' });
+    return reply.send({ token, username: 'phobos' });
+  });
+
+  // ── GET /api/kavita/browse ───────────────────────────────────────────────────
+  // Lists files and subdirectories at a given absolute path within a known
+  // Kavita library folder. Validates the path is inside a registered library.
+  fastify.get<{ Querystring: { dir: string } }>('/api/kavita/browse', async (req, reply) => {
+    if (!kavitaRunning()) return reply.status(503).send({ error: 'Kavita not running' });
+    const dir = req.query.dir;
+    if (!dir) return reply.status(400).send({ error: 'dir required' });
+
+    // Security: path must be inside a known library folder
+    const libs = await listLibraries();
+    const allowed = libs.flatMap(l => l.folders);
+    const normalized = path.resolve(dir);
+    const safe = allowed.some(f => normalized.startsWith(path.resolve(f)));
+    if (!safe) return reply.status(403).send({ error: 'Path outside library' });
+
+    try {
+      const entries = fs.readdirSync(normalized, { withFileTypes: true });
+      const result = entries.map(e => ({
+        name:  e.name,
+        isDir: e.isDirectory(),
+        path:  path.join(normalized, e.name),
+        ext:   e.isFile() ? path.extname(e.name).toLowerCase() : '',
+      }));
+      return reply.send(result);
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  // ── POST /api/kavita/ingest/scan-folder ────────────────────────────────────
+  // Body: { folderPath: string }
+  // Recursively walks folderPath and returns all Kavita-compatible files found.
+  // Used by the ingest UI after the user picks a folder via the OS folder dialog.
+  fastify.post<{ Body: { folderPath: string } }>(
+    '/api/kavita/ingest/scan-folder',
+    async (req, reply) => {
+      const { folderPath } = req.body ?? {};
+      if (!folderPath || typeof folderPath !== 'string') {
+        return reply.status(400).send({ error: 'folderPath is required' });
+      }
+
+      const normalized = path.resolve(folderPath);
+      if (!fs.existsSync(normalized) || !fs.statSync(normalized).isDirectory()) {
+        return reply.status(400).send({ error: 'Path does not exist or is not a directory' });
+      }
+
+      // All files are accepted — the ingestor classifier determines the destination.
+      // Kavita-native formats go to a library; everything else lands in phobosDocs.
+      const found: string[] = [];
+      const walk = (dir: string) => {
+        let entries: fs.Dirent[];
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+        for (const entry of entries) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            walk(full);
+          } else if (entry.isFile()) {
+            found.push(full);
+          }
+        }
+      };
+
+      walk(normalized);
+      return reply.send({ files: found });
+    }
+  );
+
+  // ── POST /api/kavita/ingest/open-file-dialog ────────────────────────────────
+  // Opens a native OS file picker (any file type) for ingest.
+  // Returns { path: string | null }.
+  fastify.post('/api/kavita/ingest/open-file-dialog', async (_req, reply) => {
+    const execFileAsync = promisify(execFile);
+    let selectedPath = '';
+    try {
+      if (process.platform === 'win32') {
+        const tmpPs1 = path.join(os.tmpdir(), `phobos-ingest-file-${Date.now()}.ps1`);
+        const ps1 = [
+          'Add-Type -AssemblyName System.Windows.Forms',
+          '[System.Windows.Forms.Application]::EnableVisualStyles()',
+          '$f = New-Object System.Windows.Forms.Form',
+          '$f.TopMost = $true; $f.ShowInTaskbar = $false',
+          '$f.WindowState = [System.Windows.Forms.FormWindowState]::Minimized',
+          '$f.Show(); $f.Hide()',
+          '$d = New-Object System.Windows.Forms.OpenFileDialog',
+          '$d.Filter = "All files (*.*)|*.*"',
+          '$d.Title = "Select file to ingest"',
+          '$d.Multiselect = $false',
+          'if ($d.ShowDialog($f) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.FileName }',
+          '$f.Dispose()',
+        ].join('\r\n');
+        try {
+          fs.writeFileSync(tmpPs1, ps1, 'utf-8');
+          const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', tmpPs1]);
+          selectedPath = stdout.trim();
+        } finally { try { fs.unlinkSync(tmpPs1); } catch { /* ignore */ } }
+      } else if (process.platform === 'darwin') {
+        const { stdout } = await execFileAsync('osascript', ['-e', 'POSIX path of (choose file with prompt "Select file to ingest")']);
+        selectedPath = stdout.trim();
+      } else {
+        const tryExec = async (cmd: string, args: string[]) => { try { const { stdout } = await execFileAsync(cmd, args); return stdout.trim() || null; } catch { return null; } };
+        selectedPath = await tryExec('zenity', ['--file-selection', '--title=Select file to ingest']) ?? await tryExec('kdialog', ['--getopenfilename', os.homedir(), '*']) ?? '';
+      }
+    } catch { /* user cancelled */ }
+    return reply.send({ path: selectedPath || null });
+  });
+
+  // ── POST /api/kavita/ingest/open-folder-dialog ──────────────────────────────
+  // Opens a native OS folder picker for ingest.
+  // Returns { path: string | null }.
+  fastify.post('/api/kavita/ingest/open-folder-dialog', async (_req, reply) => {
+    const execFileAsync = promisify(execFile);
+    let selectedPath = '';
+    try {
+      if (process.platform === 'win32') {
+        const tmpPs1 = path.join(os.tmpdir(), `phobos-ingest-folder-${Date.now()}.ps1`);
+        const ps1 = [
+          'Add-Type -AssemblyName System.Windows.Forms',
+          '[System.Windows.Forms.Application]::EnableVisualStyles()',
+          '$f = New-Object System.Windows.Forms.Form',
+          '$f.TopMost = $true; $f.ShowInTaskbar = $false',
+          '$f.WindowState = [System.Windows.Forms.FormWindowState]::Minimized',
+          '$f.Show(); $f.Hide()',
+          '$d = New-Object System.Windows.Forms.FolderBrowserDialog',
+          '$d.Description = "Select folder to ingest"',
+          '$d.UseDescriptionForTitle = $true',
+          'if ($d.ShowDialog($f) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.SelectedPath }',
+          '$f.Dispose()',
+        ].join('\r\n');
+        try {
+          fs.writeFileSync(tmpPs1, ps1, 'utf-8');
+          const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', tmpPs1]);
+          selectedPath = stdout.trim();
+        } finally { try { fs.unlinkSync(tmpPs1); } catch { /* ignore */ } }
+      } else if (process.platform === 'darwin') {
+        const { stdout } = await execFileAsync('osascript', ['-e', 'POSIX path of (choose folder with prompt "Select folder to ingest")']);
+        selectedPath = stdout.trim().replace(/\/$/, '');
+      } else {
+        const tryExec = async (cmd: string, args: string[]) => { try { const { stdout } = await execFileAsync(cmd, args); return stdout.trim() || null; } catch { return null; } };
+        selectedPath = await tryExec('zenity', ['--file-selection', '--directory', '--title=Select folder to ingest']) ?? await tryExec('kdialog', ['--getexistingdirectory', os.homedir()]) ?? '';
+      }
+    } catch { /* user cancelled */ }
+    return reply.send({ path: selectedPath || null });
+  });
+
+  // ── GET /api/kavita/file-content ────────────────────────────────────────────
+  // Validates path is inside a registered library folder.
+  // Text files  → { content: string,        filename, ext, binary: false }
+  // Binary docs → { content: base64 string, filename, ext, binary: true  }
+  fastify.get<{ Querystring: { path: string } }>('/api/kavita/file-content', async (req, reply) => {
+    if (!kavitaRunning()) return reply.status(503).send({ error: 'Kavita not running' });
+    const filePath = req.query.path;
+    if (!filePath) return reply.status(400).send({ error: 'path required' });
+
+    const libs = await listLibraries();
+    const allowed = libs.flatMap(l => l.folders);
+    const normalized = path.resolve(filePath);
+    const safe = allowed.some(f => normalized.startsWith(path.resolve(f)));
+    if (!safe) return reply.status(403).send({ error: 'Path outside library' });
+
+    const ext = path.extname(normalized).toLowerCase();
+    const TEXT_EXTS   = new Set(['.md', '.txt', '.json', '.yaml', '.yml', '.toml', '.csv', '.html', '.htm', '.xml', '.ts', '.js', '.py']);
+    const BINARY_EXTS = new Set(['.docx', '.doc', '.rtf', '.odt']);
+
+    if (!TEXT_EXTS.has(ext) && !BINARY_EXTS.has(ext)) {
+      return reply.status(415).send({ error: 'Unsupported file type' });
+    }
+
+    try {
+      if (BINARY_EXTS.has(ext)) {
+        const buf = fs.readFileSync(normalized);
+        return reply.send({
+          content:  buf.toString('base64'),
+          filename: path.basename(normalized),
+          ext,
+          binary:   true,
+        });
+      }
+      const content = fs.readFileSync(normalized, 'utf8');
+      return reply.send({ content, filename: path.basename(normalized), ext, binary: false });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+
 }

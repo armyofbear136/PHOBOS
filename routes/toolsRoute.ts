@@ -321,8 +321,16 @@ export async function registerToolsRoutes(fastify: FastifyInstance): Promise<voi
           headers: { ...req.headers, host: `127.0.0.1:${STIRLING_PORT}` } },
         (upstream) => {
           reply.status(upstream.statusCode ?? 200);
+          // Hop-by-hop headers must not be forwarded — they are connection-specific
+          // and cause issues when Fastify re-encodes the response body.
+          const HOP_BY_HOP = new Set([
+            'transfer-encoding', 'connection', 'keep-alive',
+            'proxy-authenticate', 'proxy-authorization', 'te', 'trailers', 'upgrade',
+          ]);
           for (const [k, v] of Object.entries(upstream.headers)) {
-            if (v !== undefined) reply.header(k, v as string);
+            if (v !== undefined && !HOP_BY_HOP.has(k.toLowerCase())) {
+              reply.header(k, v as string);
+            }
           }
           const chunks: Buffer[] = [];
           upstream.on('data', (c: Buffer) => chunks.push(c));

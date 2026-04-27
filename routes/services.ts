@@ -445,42 +445,6 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
     }
   );
 
-  // ── Polaris: fetch binary (server-side download + extract) ────────────────
-  // Called by the MediaHub first-time setup flow. Runs fetch-polaris.js as a
-  // child process and streams progress back. For now returns 200 when done.
-  fastify.post('/api/services/polaris/fetch-binary', async (_req, reply) => {
-    const { execFile } = await import('child_process');
-    const { promisify } = await import('util');
-    const path = await import('path');
-    const execFileAsync = promisify(execFile);
-    // __dirname is provided natively by the CJS bundle target (esbuild format:'cjs').
-    // Do NOT use fileURLToPath(import.meta.url) — it emits an empty-import-meta
-    // warning at bundle time.
-    const scriptsDir = path.join(__dirname, '..', 'scripts');
-    try {
-      await execFileAsync('node', [path.join(scriptsDir, 'fetch-polaris.js')], {
-        env: { ...process.env },
-        timeout: 10 * 60 * 1000, // 10 min
-      });
-      return reply.send({ ok: true });
-    } catch (err) {
-      return reply.status(500).send({ error: (err as Error).message });
-    }
-  });
-
-  // ── Polaris: uninstall ─────────────────────────────────────────────────────
-  fastify.post('/api/services/polaris/uninstall', async (_req, reply) => {
-    const fs   = await import('fs');
-    const path = await import('path');
-    const os   = await import('os');
-    const dir  = path.join(os.homedir(), '.phobos', 'services', 'polaris');
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-      return reply.send({ ok: true });
-    } catch (err) {
-      return reply.status(500).send({ error: (err as Error).message });
-    }
-  });
 
   // ── Jellyfin: scan ────────────────────────────────────────────────────────
   fastify.post('/api/services/jellyfin/scan', async (_req, reply) => {
@@ -549,37 +513,4 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
     }
   );
 
-  // ── Jellyfin: fetch binary (server-side download + extract) ───────────────
-  // Longer timeout (15 min) — downloads both the Jellyfin server and FFmpeg.
-  fastify.post('/api/services/jellyfin/fetch-binary', async (_req, reply) => {
-    const { execFile } = await import('child_process');
-    const { promisify } = await import('util');
-    const path = await import('path');
-    const execFileAsync = promisify(execFile);
-    // __dirname is provided natively by the CJS bundle target.
-    const scriptsDir = path.join(__dirname, '..', 'scripts');
-    try {
-      await execFileAsync('node', [path.join(scriptsDir, 'fetch-jellyfin.js')], {
-        env:     { ...process.env },
-        timeout: 15 * 60 * 1000, // 15 min — server + ffmpeg
-      });
-      return reply.send({ ok: true });
-    } catch (err) {
-      return reply.status(500).send({ error: (err as Error).message });
-    }
-  });
-
-  // ── Jellyfin: uninstall ───────────────────────────────────────────────────
-  fastify.post('/api/services/jellyfin/uninstall', async (_req, reply) => {
-    const fs   = await import('fs');
-    const path = await import('path');
-    const os   = await import('os');
-    const dir  = path.join(os.homedir(), '.phobos', 'services', 'jellyfin');
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-      return reply.send({ ok: true });
-    } catch (err) {
-      return reply.status(500).send({ error: (err as Error).message });
-    }
-  });
 }

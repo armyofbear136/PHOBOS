@@ -118,6 +118,11 @@ export function resolveConfigDir(): string {
   return path.join(resolveServiceDir(), 'config');
 }
 
+/** ~/.phobos/media/jellyfin/phobosVideos — the mandatory default library for user-created content. */
+export function defaultMediaPath(): string {
+  return path.join(os.homedir(), '.phobos', 'media', 'jellyfin', 'phobosVideos');
+}
+
 // ── Binary presence check ─────────────────────────────────────────────────────
 
 export function isBinaryPresent(): boolean {
@@ -448,6 +453,12 @@ export async function startJellyfin(cfg: JellyfinConfig, adminPassword: string):
 
     service.state = 'running';
     console.log(`[JellyfinManager] ready on :${JELLYFIN_PORT}`);
+
+    // ensurePhobosLibrary runs after state = 'running' so the addLibrary guard passes.
+    // Non-fatal — a library creation failure must not prevent Jellyfin from being usable.
+    await ensurePhobosLibrary().catch(err =>
+      console.warn('[JellyfinManager] ensurePhobosLibrary failed (non-fatal):', err.message)
+    );
   } catch (err) {
     service.state = 'error';
     service.error = (err as Error).message;
@@ -553,6 +564,43 @@ export async function getStats(): Promise<JellyfinStats> {
     episodeCount: data.EpisodeCount ?? 0,
     songCount:    data.SongCount    ?? 0,
   };
+}
+
+// ── List libraries ────────────────────────────────────────────────────────────
+
+export interface JellyfinLibrary {
+  Name:           string;
+  CollectionType: string;
+  Locations:      string[];
+  ItemId:         string;
+}
+
+export async function listLibraries(): Promise<JellyfinLibrary[]> {
+  // Uses a direct fetch so it can be called during startup (state = 'starting')
+  // as well as at runtime (state = 'running').
+  if (!service.accessToken) throw new Error('Jellyfin not authenticated');
+  const res = await fetch(`http://127.0.0.1:${JELLYFIN_PORT}/Library/VirtualFolders`, {
+    headers: { 'Authorization': `${DEVICE_HEADER}, Token="${service.accessToken}"` },
+  });
+  if (!res.ok) throw new Error(`List libraries failed: HTTP ${res.status}`);
+  return res.json() as Promise<JellyfinLibrary[]>;
+}
+
+// ── Ensure default Phobos library ─────────────────────────────────────────────
+// Creates ~/.phobos/media/jellyfin/phobos/ as a 'homevideos' library named
+// 'Phobos' if it does not already exist. This is the mandatory local storage
+// directory for user-created content — always required, never removed.
+
+async function ensurePhobosLibrary(): Promise<void> {
+  const mediaPath = defaultMediaPath();
+  fs.mkdirSync(mediaPath, { recursive: true });
+
+  const libs = await listLibraries().catch(() => [] as JellyfinLibrary[]);
+  const exists = libs.some(l => l.Locations.includes(mediaPath));
+  if (exists) return;
+
+  await addLibrary('Phobos', mediaPath, 'homevideos');
+  console.log(`[JellyfinManager] Phobos library created at ${mediaPath}`);
 }
 
 /**

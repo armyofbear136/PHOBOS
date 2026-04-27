@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // scripts/fetch-stirling.js — Download Stirling PDF server jar for PHOBOS.
 //
-// Downloads Stirling-PDF-server.jar — the headless Spring Boot server that
+// Downloads Stirling-PDF.jar — the headless Spring Boot server that
 // PHOBOS embeds via iframe. The server jar runs on all platforms (Windows,
 // Linux, macOS) with Java 21+ on PATH.
 //
@@ -12,7 +12,7 @@
 //   node scripts/fetch-stirling.js --check   (check only, no download)
 //
 // Requires: Java 21+ on PATH (https://adoptium.net)
-// Destination: ~/.phobos/services/stirling/Stirling-PDF-server.jar
+// Destination: ~/.phobos/services/stirling/Stirling-PDF.jar
 
 import fs    from 'node:fs';
 import https from 'node:https';
@@ -33,10 +33,10 @@ const STIRLING_VERSION = '2.9.2';
 const GH_BASE = `https://github.com/Stirling-Tools/Stirling-PDF/releases/download/v${STIRLING_VERSION}`;
 
 // ── Asset ─────────────────────────────────────────────────────────────────────
-// Stirling-PDF-server.jar — headless Spring Boot server, works on all platforms.
+// Stirling-PDF.jar — headless Spring Boot server, works on all platforms.
 // ~100 MB. Requires Java 21+.
-const SERVER_JAR_URL  = `${GH_BASE}/Stirling-PDF-server.jar`;
-const SERVER_JAR_FILE = 'Stirling-PDF-server.jar';
+const SERVER_JAR_URL  = `${GH_BASE}/Stirling-PDF.jar`;
+const SERVER_JAR_FILE = 'Stirling-PDF.jar';
 const SERVER_JAR_MIN_BYTES = 50_000_000; // sanity floor; real jar is ~100 MB
 
 // ── Destination ───────────────────────────────────────────────────────────────
@@ -163,10 +163,10 @@ if (java.ok) {
 if (checkOnly) {
   const present = fs.existsSync(DEST_PATH) && fs.statSync(DEST_PATH).size >= SERVER_JAR_MIN_BYTES;
   if (present) {
-    console.log(`\n✅ Stirling-PDF-server.jar is present (${(fs.statSync(DEST_PATH).size / 1e6).toFixed(1)} MB)`);
+    console.log(`\n✅ Stirling-PDF.jar is present (${(fs.statSync(DEST_PATH).size / 1e6).toFixed(1)} MB)`);
     if (!java.ok) console.log(`   ⚠️  Java 21+ not found — required to run.`);
   } else {
-    console.log(`\n❌ Stirling-PDF-server.jar not found.`);
+    console.log(`\n❌ Stirling-PDF.jar not found.`);
     console.log(`   Run: node scripts/fetch-stirling.js`);
   }
   process.exit(present ? 0 : 1);
@@ -175,7 +175,7 @@ if (checkOnly) {
 // Fast path — already present and valid size
 if (fs.existsSync(DEST_PATH) && fs.statSync(DEST_PATH).size >= SERVER_JAR_MIN_BYTES) {
   const size = fs.statSync(DEST_PATH).size;
-  console.log(`\n✅ Stirling-PDF-server.jar already present (${(size / 1e6).toFixed(1)} MB)`);
+  console.log(`\n✅ Stirling-PDF.jar already present (${(size / 1e6).toFixed(1)} MB)`);
   if (!java.ok) {
     console.log(`\n⚠️  Java 21+ not found on PATH.`);
     console.log(`   Install from: https://adoptium.net`);

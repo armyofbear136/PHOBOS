@@ -28,8 +28,12 @@ export interface IngestQueueItem {
   sourcePath:  string;
   /** Display filename. */
   filename:    string;
-  /** Suggested Kavita library type. */
-  suggestion:  KavitaLibType;
+  /**
+   * Suggested destination:
+   *   'manga' | 'comics' | 'books' | 'lightnovels' → Kavita library (reader-native)
+   *   'phobosdocs' → raw copy into phobosDocs folder (non-reader formats)
+   */
+  suggestion:  KavitaLibType | 'phobosdocs';
   /** Human-readable reason for the suggestion. */
   reason:      string;
   /** Whether the suggestion came from LLM (true) or heuristics (false). */
@@ -40,13 +44,10 @@ export interface IngestQueueItem {
 
 export type IngestQueueCallback = (item: IngestQueueItem, index: number, total: number) => void;
 
-// Kavita-supported file extensions
-const KAVITA_EXTENSIONS = new Set([
-  // Archives (comics/manga)
+// Extensions Kavita can natively parse and present in its reader.
+const KAVITA_READER_EXTENSIONS = new Set([
   '.cbz', '.cbr', '.cb7', '.zip', '.rar',
-  // Ebooks
   '.epub',
-  // Documents
   '.pdf',
 ]);
 
@@ -80,8 +81,9 @@ export async function buildIngestQueue(
 }
 
 /**
- * Copy a confirmed ingest queue item into the target Kavita library folder.
- * Destination: libraryFolder / filename (flat, no subdirectory).
+ * Copy a confirmed ingest queue item into the target folder.
+ * For Kavita libraries: libraryFolder is the library root.
+ * For phobosDocs: libraryFolder is the phobosDocs path.
  * Never overwrites — appends a numeric suffix if the filename already exists.
  */
 export function copyToLibrary(item: IngestQueueItem, libraryFolder: string): string {
@@ -107,6 +109,16 @@ export function copyToLibrary(item: IngestQueueItem, libraryFolder: string): str
 async function classifyFile(filePath: string, llmPort: number | null): Promise<IngestQueueItem> {
   const filename = path.basename(filePath);
   const ext      = path.extname(filePath).toLowerCase();
+
+  // Non-reader format: copy raw into phobosDocs, no Kavita library classification needed.
+  if (!KAVITA_READER_EXTENSIONS.has(ext)) {
+    return {
+      sourcePath: filePath, filename, suggestion: 'phobosdocs',
+      reason: `${ext || 'unknown'} is not a Kavita reader format — will be stored in phobosDocs`,
+      llmClassified: false,
+      sample: '',
+    };
+  }
 
   // Extract a readable sample for classification.
   const { sample, readable } = await extractSample(filePath, ext);
@@ -140,7 +152,7 @@ async function classifyFile(filePath: string, llmPort: number | null): Promise<I
 
 // ── LLM classification ────────────────────────────────────────────────────────
 
-const CLASSIFY_SYSTEM = `You classify documents into Kavita library types.
+const CLASSIFY_SYSTEM = `You classify reader-native documents into Kavita library types.
 Output ONLY a JSON object with two fields: "type" and "reason".
 type must be exactly one of: manga | comics | books | lightnovels
 reason is one sentence max explaining the classification.

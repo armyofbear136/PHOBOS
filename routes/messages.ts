@@ -112,6 +112,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
         id: m.id,
         role: m.role,
         content: m.content,
+        distilled_content: m.distilled_content ?? undefined,
         timestamp: m.created_at,
         thinking: m.thinking_trace ?? undefined,
         ...(attachments.length > 0 ? { attachments } : {}),
@@ -136,6 +137,23 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
         createdAt: e.created_at,
       }));
       return reply.send(mapped);
+    }
+  );
+
+  // GET /api/threads/:id/summary
+  // Returns the rolling chat summary for this thread, or null if none exists yet.
+  // Queries through the server's live DatabaseManager connection so the result
+  // is always consistent — no WAL visibility lag for external readers.
+  fastify.get<{ Params: { id: string } }>(
+    '/api/threads/:id/summary',
+    async (req, reply) => {
+      const row = await summaryStore.get(req.params.id);
+      if (!row) return reply.send(null);
+      return reply.send({
+        summary:              row.summary,
+        message_count:        row.message_count_at_update,
+        updated_at:           row.updated_at,
+      });
     }
   );
 

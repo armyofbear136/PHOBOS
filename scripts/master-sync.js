@@ -242,7 +242,6 @@ async function syncPlatform(platform, manifest, updateMode) {
     } catch (err) {
       console.warn(`  ⚠️  Could not resolve sd.cpp tag: ${err.message}`);
     }
-
     try {
       // Step A: wipe bin/ to prevent cross-platform contamination between fetches
       const binDir = path.join(ROOT, 'bin');
@@ -272,6 +271,7 @@ async function syncPlatform(platform, manifest, updateMode) {
             e.isDirectory() ? copyDir(ss,dd) : fs.copyFileSync(ss,dd);
           }
         };
+        if (fs.existsSync(masterPlatDir)) fs.rmSync(masterPlatDir, { recursive: true, force: true });
         copyDir(binDir, masterPlatDir);
         console.log(`  ✅ Copied bin/ → bin-master/${platform}/`);
       }

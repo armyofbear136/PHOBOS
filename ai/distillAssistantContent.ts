@@ -82,6 +82,14 @@ export function distillAssistantContent(rawContent: string): string {
   // Collapse whitespace
   text = text.replace(MULTI_BLANK_RE, '\n\n').trim();
 
+  // If everything was stripped (e.g. model responded with only a code block and
+  // no surrounding prose), return a sentinel rather than an empty string.
+  // An empty distilled_content would produce a zero-length embedding and break
+  // context budget calculations that assume length > 0.
+  if (text.length === 0) {
+    return '[Code generated]';
+  }
+
   return text;
 }
 

@@ -2,12 +2,16 @@ import { DatabaseManager } from './DatabaseManager.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+export type TaskType = 'conversation' | 'background';
+
 export interface ScheduledTask {
   id:               string;
   name:             string;
   description:      string | null;
   cron_expression:  string;
   prompt:           string;
+  task_type:        TaskType;
+  handler:          string | null;
   enabled:          boolean;
   last_run_at:      string | null;
   last_run_status:  'success' | 'error' | 'pending' | null;
@@ -56,6 +60,16 @@ export class ScheduledTaskStore {
     `);
 
     await this.db.run(`
+      ALTER TABLE scheduled_tasks
+      ADD COLUMN IF NOT EXISTS task_type VARCHAR DEFAULT 'conversation'
+    `);
+
+    await this.db.run(`
+      ALTER TABLE scheduled_tasks
+      ADD COLUMN IF NOT EXISTS handler VARCHAR
+    `);
+
+    await this.db.run(`
       CREATE TABLE IF NOT EXISTS scheduled_task_runs (
         id             VARCHAR PRIMARY KEY,
         task_id        VARCHAR NOT NULL,
@@ -70,10 +84,9 @@ export class ScheduledTaskStore {
   }
 
   async getAll(): Promise<ScheduledTask[]> {
-    const rows = await this.db.query<ScheduledTask>(
+    return this.db.query<ScheduledTask>(
       `SELECT * FROM scheduled_tasks ORDER BY created_at DESC`
     );
-    return rows;
   }
 
   async getById(id: string): Promise<ScheduledTask | null> {
@@ -91,17 +104,34 @@ export class ScheduledTaskStore {
     );
   }
 
+  /** Returns the earliest next_run_at across all enabled tasks, or null. */
+  async getEarliestNextRun(): Promise<Date | null> {
+    const rows = await this.db.query<{ next_run_at: string }>(
+      `SELECT MIN(next_run_at) AS next_run_at
+       FROM scheduled_tasks
+       WHERE enabled = true AND next_run_at IS NOT NULL`
+    );
+    const val = rows[0]?.next_run_at;
+    return val ? new Date(val) : null;
+  }
+
   async create(
-    fields: Omit<ScheduledTask, 'id' | 'created_at' | 'updated_at' | 'last_run_at' | 'last_run_status' | 'last_run_error'>
+    fields: Omit<ScheduledTask, 'id' | 'created_at' | 'updated_at' | 'last_run_at' | 'last_run_status' | 'last_run_error' | 'task_type' | 'handler'>
+      & { task_type?: TaskType; handler?: string | null }
   ): Promise<ScheduledTask> {
-    const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    const id  = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
     const now = new Date().toISOString();
     await this.db.run(
       `INSERT INTO scheduled_tasks
-         (id, name, description, cron_expression, prompt, enabled, next_run_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, fields.name, fields.description ?? null, fields.cron_expression, fields.prompt,
-       fields.enabled, fields.next_run_at ?? null, now, now]
+         (id, name, description, cron_expression, prompt, task_type, handler,
+          enabled, next_run_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id, fields.name, fields.description ?? null,
+        fields.cron_expression, fields.prompt,
+        fields.task_type ?? 'conversation', fields.handler ?? null,
+        fields.enabled, fields.next_run_at ?? null, now, now,
+      ]
     );
     return (await this.getById(id))!;
   }
@@ -115,6 +145,8 @@ export class ScheduledTaskStore {
     const description     = fields.description     !== undefined ? fields.description     : task.description;
     const cron_expression = fields.cron_expression ?? task.cron_expression;
     const prompt          = fields.prompt          ?? task.prompt;
+    const task_type       = fields.task_type       ?? task.task_type;
+    const handler         = fields.handler         !== undefined ? fields.handler         : task.handler;
     const enabled         = fields.enabled         !== undefined ? fields.enabled         : task.enabled;
     const last_run_at     = fields.last_run_at     !== undefined ? fields.last_run_at     : task.last_run_at;
     const last_run_status = fields.last_run_status !== undefined ? fields.last_run_status : task.last_run_status;
@@ -123,11 +155,17 @@ export class ScheduledTaskStore {
 
     await this.db.run(
       `UPDATE scheduled_tasks SET
-         name = ?, description = ?, cron_expression = ?, prompt = ?, enabled = ?,
-         last_run_at = ?, last_run_status = ?, last_run_error = ?, next_run_at = ?, updated_at = ?
+         name = ?, description = ?, cron_expression = ?, prompt = ?,
+         task_type = ?, handler = ?, enabled = ?,
+         last_run_at = ?, last_run_status = ?, last_run_error = ?,
+         next_run_at = ?, updated_at = ?
        WHERE id = ?`,
-      [name, description, cron_expression, prompt, enabled,
-       last_run_at, last_run_status, last_run_error, next_run_at, now, id]
+      [
+        name, description, cron_expression, prompt,
+        task_type, handler, enabled,
+        last_run_at, last_run_status, last_run_error,
+        next_run_at, now, id,
+      ]
     );
   }
 
@@ -136,8 +174,8 @@ export class ScheduledTaskStore {
     await this.db.run(`DELETE FROM scheduled_tasks WHERE id = ?`, [id]);
   }
 
-  async recordRunStart(taskId: string, threadId: string): Promise<string> {
-    const id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  async recordRunStart(taskId: string, threadId: string | null): Promise<string> {
+    const id  = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
     const now = new Date().toISOString();
     await this.db.run(
       `INSERT INTO scheduled_task_runs (id, task_id, started_at, status, thread_id)

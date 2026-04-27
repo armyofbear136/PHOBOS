@@ -854,7 +854,9 @@ export class TaskPlanner {
         index: 1,
         title: 'Execute request',
         targetFile: '',
-        operation: 'modify',
+        // 'respond' not 'modify' — no targetFile means SEREN has nothing to read/overwrite.
+        // 'respond' keeps SEREN in prose-generation mode which always produces output.
+        operation: 'respond',
         prompt: userMessage,
         context: completeContext.slice(0, MAX_TASK_CONTEXT_CHARS),
         taskScope: defaultTaskScope as Task['taskScope'],

@@ -148,6 +148,32 @@ export class OscClient {
   }
 
   /**
+   * Show/hide the plugin's native (custom) UI:
+   * /Carla/0/<pluginIdx>/show_custom_ui i (1 = show, 0 = hide)
+   */
+  showCustomUi(pluginIdx: number, show: boolean): void {
+    if (this.closed) return;
+    let cursor = 0;
+    cursor = this.writeStringPadded(cursor, `/Carla/0/${pluginIdx}/show_custom_ui`);
+    cursor = this.writeStringPadded(cursor, ',i');
+    cursor = this.writeInt32(cursor, show ? 1 : 0);
+    this.flush(cursor);
+  }
+
+  /**
+   * Activate/bypass a plugin:
+   * /Carla/0/<pluginIdx>/set_active i (1 = active, 0 = bypassed)
+   */
+  setActive(pluginIdx: number, active: boolean): void {
+    if (this.closed) return;
+    let cursor = 0;
+    cursor = this.writeStringPadded(cursor, `/Carla/0/${pluginIdx}/set_active`);
+    cursor = this.writeStringPadded(cursor, ',i');
+    cursor = this.writeInt32(cursor, active ? 1 : 0);
+    this.flush(cursor);
+  }
+
+  /**
    * Load project: /Carla/0/load_project s
    */
   loadProject(path: string): void {

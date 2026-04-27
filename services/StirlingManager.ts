@@ -5,8 +5,8 @@
  * iframe — no postMessage protocol required. Every PDF operation happens
  * inside Stirling's own UI; exports land in the browser's download folder.
  *
- * Binary: Stirling-PDF-server.jar (all platforms — requires Java 21+)
- *   ~/.phobos/services/stirling/Stirling-PDF-server.jar
+ * Binary: Stirling-PDF.jar (all platforms — requires Java 21+)
+ *   ~/.phobos/services/stirling/Stirling-PDF.jar
  *
  * The server jar is the correct choice for PHOBOS's headless iframe use case.
  * The platform-native .msi/.dmg desktop apps are GUI applications that cannot
@@ -39,7 +39,7 @@ export function resolveServiceDir(): string {
 }
 
 export function resolveJarPath(): string {
-  return path.join(resolveServiceDir(), 'Stirling-PDF-server.jar');
+  return path.join(resolveServiceDir(), 'Stirling-PDF.jar');
 }
 
 export function isBinaryPresent(): boolean {
@@ -104,7 +104,7 @@ export async function startStirling(): Promise<void> {
 
   if (!isBinaryPresent()) {
     service.state = 'error';
-    service.error = 'Stirling-PDF-server.jar not found. Run: node scripts/fetch-stirling.js';
+    service.error = 'Stirling-PDF.jar not found. Run: node scripts/fetch-stirling.js';
     throw new Error(service.error);
   }
 
@@ -125,14 +125,19 @@ export async function startStirling(): Promise<void> {
     ...process.env,
     SECURITY_ENABLELOGIN:    'false',
     STIRLING_PDF_DESKTOP_UI: 'false',
+    // Spring Boot reads SERVER_PORT env var — belt-and-suspenders alongside the JVM arg
+    SERVER_PORT: String(STIRLING_PORT),
   };
 
   try {
     const proc = spawn('java', [
-      '-jar', jar,
+      // JVM system property — must come BEFORE -jar
       `-Dserver.port=${STIRLING_PORT}`,
       '-Djava.awt.headless=true',
       '-Dspring.main.web-application-type=servlet',
+      '-jar', jar,
+      // Spring Boot program argument — overrides application.properties
+      `--server.port=${STIRLING_PORT}`,
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
       cwd:   dir,

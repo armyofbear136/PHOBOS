@@ -96,7 +96,6 @@ export async function startServer(role: 'sayon' | 'seren' | 'sybil', cfg: Server
 
   const ggufPath = modelPath(spec);
 
-  // Resolve the llama-server binary (single binary, loads backend DLLs dynamically)
   const bin = resolveLlamaServerBin();
 
   // Ensure the binary is executable — tar extraction on some systems (Termux, WinRAR)
@@ -677,10 +676,13 @@ export async function reconcilePhobosServers(config: {
     : config.coordinator.deviceIndex
       ?? (runningSayon && runningSayon.modelId === config.coordinator.model ? runningSayon.deviceIndex : undefined)
       ?? (rec ? (rec.sayonDevice === 'cpu' ? undefined : rec.sayonDevice) : undefined);
+  // hw.backend is authoritative — if it disagrees with the running backend (e.g. ROCm
+  // binary just became available), the running value is stale and must be superseded.
+  const sayonHwBackend   = sayonDeviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === sayonDeviceIndex)?.backend : undefined;
   const sayonGpuBackend  = explicitCpuSayon ? undefined
     : config.coordinator.gpuBackend
-      ?? (runningSayon && runningSayon.modelId === config.coordinator.model ? runningSayon.gpuBackend : undefined)
-      ?? (sayonDeviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === sayonDeviceIndex)?.backend : undefined);
+      ?? (runningSayon && runningSayon.modelId === config.coordinator.model && runningSayon.gpuBackend === sayonHwBackend ? runningSayon.gpuBackend : undefined)
+      ?? sayonHwBackend;
   const sayonGpuLayers   = explicitCpuSayon ? 0
     : config.coordinator.gpuLayers ?? (sayonDeviceIndex !== undefined ? 99 : 0);
 
@@ -689,10 +691,12 @@ export async function reconcilePhobosServers(config: {
     : config.engine.deviceIndex
       ?? (runningSeren && runningSeren.modelId === config.engine.model ? runningSeren.deviceIndex : undefined)
       ?? (rec ? (rec.serenDevice === 'cpu' ? undefined : rec.serenDevice) : undefined);
+  // Same stale-backend guard as sayon above.
+  const serenHwBackend   = serenDeviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === serenDeviceIndex)?.backend : undefined;
   const serenGpuBackend  = explicitCpuSeren ? undefined
     : config.engine.gpuBackend
-      ?? (runningSeren && runningSeren.modelId === config.engine.model ? runningSeren.gpuBackend : undefined)
-      ?? (serenDeviceIndex !== undefined && hw ? hw.gpus.find(g => g.index === serenDeviceIndex)?.backend : undefined);
+      ?? (runningSeren && runningSeren.modelId === config.engine.model && runningSeren.gpuBackend === serenHwBackend ? runningSeren.gpuBackend : undefined)
+      ?? serenHwBackend;
   const serenGpuLayers   = explicitCpuSeren ? 0
     : config.engine.gpuLayers ?? (serenDeviceIndex !== undefined ? 99 : 0);
 

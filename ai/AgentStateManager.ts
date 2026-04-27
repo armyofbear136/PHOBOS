@@ -55,8 +55,8 @@ function trimDetail(raw: string): string {
 
 // Transitions that are expected in normal operation — used to detect bugs.
 const EXPECTED_TRANSITIONS = new Set<string>([
-  'idle→reading', 'idle→planning', 'idle→thinking', 'idle→error',
-  'reading→planning', 'reading→thinking', 'reading→idle',
+  'idle→reading', 'idle→planning', 'idle→thinking', 'idle→error', 'idle→idle',
+  'reading→planning', 'reading→thinking', 'reading→idle', 'reading→reading',
   'planning→thinking', 'planning→idle',
   'thinking→executing', 'thinking→reviewing', 'thinking→delivering', 'thinking→idle', 'thinking→thinking',
   'executing→reviewing', 'executing→building', 'executing→thinking', 'executing→idle',

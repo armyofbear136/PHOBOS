@@ -80,3 +80,4 @@ await fetchBinaries(
     },
   ],
 );
+

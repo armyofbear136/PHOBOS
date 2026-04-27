@@ -1281,7 +1281,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/deepseek-ai_DeepSeek-R1-0528-Qwen3-8B-GGUF',
     hfFile: 'deepseek-ai_DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf',
-    sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 32768,
+    sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 131072,
     kvCacheMbPer1kTokens: 144,  // 36 layers x 8 KV heads x 128 head_dim x 2 x F16
     activeParamsB: 8.0, serenQuality: 3, speedClass: 'medium',
   },
@@ -1290,7 +1290,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF',
     hfFile: 'DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf',
-    sizeBytes: 9_050_000_000, ramRequiredGb: 11, contextWindow: 65536,
+    sizeBytes: 9_050_000_000, ramRequiredGb: 11, contextWindow: 131072,
     kvCacheMbPer1kTokens: 192,  // 48 layers x 8 KV heads x 128 head_dim x 2 x F16
     activeParamsB: 14.0, serenQuality: 4, speedClass: 'slow',
   },
@@ -1299,7 +1299,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'seren', thinkingTokens: true, jinjaTemplate: false,
     hfRepo: 'bartowski/DeepSeek-R1-Distill-Llama-70B-GGUF',
     hfFile: 'DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf',
-    sizeBytes: 42_520_000_000, ramRequiredGb: 48, contextWindow: 65536,
+    sizeBytes: 42_520_000_000, ramRequiredGb: 48, contextWindow: 131072,
     kvCacheMbPer1kTokens: 320,  // 80 layers x 8 KV heads x 128 head_dim x 2 x F16
     activeParamsB: 70.0, serenQuality: 5, speedClass: 'slow',
   },
@@ -1315,7 +1315,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'unsloth/DeepSeek-R1-GGUF',
     hfFile: 'DeepSeek-R1-Q2_K.gguf',
-    sizeBytes: 236_000_000_000, ramRequiredGb: 256, contextWindow: 65536,
+    sizeBytes: 236_000_000_000, ramRequiredGb: 256, contextWindow: 131072,
     kvCacheMbPer1kTokens: 256,  // 61 layers x MoE — active KV scales with expert routing
     activeParamsB: 37.0, serenQuality: 5, speedClass: 'slow',
   },
@@ -1340,7 +1340,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'sayon', thinkingTokens: true, jinjaTemplate: true, nemotronVariant: 'mamba',
     hfRepo: 'unsloth/NVIDIA-Nemotron-3-Nano-4B-GGUF',
     hfFile: 'NVIDIA-Nemotron-3-Nano-4B-Q4_K_M.gguf',
-    sizeBytes: 2_600_000_000, ramRequiredGb: 4, contextWindow: 32768,
+    sizeBytes: 2_600_000_000, ramRequiredGb: 4, contextWindow: 262144,
     kvCacheMbPer1kTokens: 96,   // Mamba-2 hybrid (21 Mamba, 4 attn, 17 MLP layers) — pruned from 9B v2
     activeParamsB: 4.0, sayonQuality: 4, speedClass: 'fast',
   },
@@ -1349,7 +1349,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'seren', thinkingTokens: true, jinjaTemplate: true, nemotronVariant: 'mamba',
     hfRepo: 'bartowski/nvidia_NVIDIA-Nemotron-Nano-9B-v2-GGUF',
     hfFile: 'nvidia_NVIDIA-Nemotron-Nano-9B-v2-Q4_K_M.gguf',
-    sizeBytes: 5_700_000_000, ramRequiredGb: 6, contextWindow: 32768,
+    sizeBytes: 5_700_000_000, ramRequiredGb: 6, contextWindow: 262144,
     kvCacheMbPer1kTokens: 96,   // Nemotron-H Mamba-2 hybrid (Mamba-2 + 4 attn layers) — Nemotron Nano 2
     activeParamsB: 9.0, serenQuality: 3, speedClass: 'medium',
   },
@@ -1358,7 +1358,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'seren', thinkingTokens: true, jinjaTemplate: true, nemotronVariant: 'mamba',
     hfRepo: 'unsloth/Nemotron-3-Nano-30B-A3B-GGUF',
     hfFile: 'Nemotron-3-Nano-30B-A3B-UD-Q4_K_XL.gguf',
-    sizeBytes: 22_800_000_000, ramRequiredGb: 25, contextWindow: 32768,
+    sizeBytes: 22_800_000_000, ramRequiredGb: 25, contextWindow: 262144,
     kvCacheMbPer1kTokens: 96,   // Mamba-2/MoE hybrid — ~3B active params, reasoning via chat_template_kwargs
     activeParamsB: 3.2, serenQuality: 4, speedClass: 'fast',
   },
@@ -1372,7 +1372,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'mradermacher/Nanbeige4.1-3B-GGUF',
     hfFile: 'Nanbeige4.1-3B.Q4_K_M.gguf',
-    sizeBytes: 2_440_000_000, ramRequiredGb: 3, contextWindow: 32768,
+    sizeBytes: 2_440_000_000, ramRequiredGb: 3, contextWindow: 262144,
     kvCacheMbPer1kTokens: 112,  // Qwen2.5 architecture — 28 layers, standard GQA
     activeParamsB: 3.0, serenQuality: 3, speedClass: 'fast',  // standard attn = fast on weak hardware
   },
@@ -1386,7 +1386,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/HuggingFaceTB_SmolLM3-3B-GGUF',
     hfFile: 'HuggingFaceTB_SmolLM3-3B-Q4_K_M.gguf',
-    sizeBytes: 1_920_000_000, ramRequiredGb: 3, contextWindow: 131072,
+    sizeBytes: 1_920_000_000, ramRequiredGb: 3, contextWindow: 65536,
     kvCacheMbPer1kTokens: 96,   // GQA + NoPE — lightweight KV cache
     activeParamsB: 3.0, serenQuality: 3, speedClass: 'fast',  // standard attn, competitive with 4B models
   },
@@ -3863,11 +3863,6 @@ export function resolveLlamaServerBin(): string {
   );
 }
 
-/**
- * Resolves the sd-server binary for the current platform.
- * Windows preference: CUDA (best) -> Vulkan (primary GPU) -> CPU AVX2 (last resort)
- * Linux/macOS: single binary, fetched as Vulkan/Metal build by fetch-sd-cpp.js
- */
 /**
  * Resolves the sd-cli binary path based on the runner profile's sdBinary field.
  *

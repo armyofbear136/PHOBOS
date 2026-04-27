@@ -121,6 +121,8 @@ export async function buildForPlatform({
       '@xenova/transformers',
       '@imgly/background-removal-node',
       'sharp',
+      'tree-sitter-javascript',
+      'tree-sitter-typescript',
     ],
   });
   log('✅ Bundle complete');
@@ -213,6 +215,30 @@ export async function buildForPlatform({
     copyDir(tsSrc, dest);
     writeFake(dest, 'node-gyp-build', FAKE_NODE_GYP_BUILD);
     log(`  ✅ tree-sitter/`);
+  }
+
+  // package-lock.json — copied into dist/ so DependencyAuditor finds it in SEA context
+  const lockSrc = path.join(__dirname, 'package-lock.json');
+  if (fs.existsSync(lockSrc)) {
+    fs.copyFileSync(lockSrc, path.join(distDir, 'package-lock.json'));
+    log('  ✅ package-lock.json (staged for dependency audit)');
+  } else {
+    log('  ⚠️  package-lock.json not found — run npm install before building');
+  }
+
+  // tree-sitter grammar packages — staged to dist/node_modules/ so CodeAuditor's
+  // dynamic import('tree-sitter-javascript') resolves via the globalPaths banner.
+  for (const grammarPkg of ['tree-sitter-javascript', 'tree-sitter-typescript']) {
+    const grammarSrc = path.join(__dirname, 'node_modules', grammarPkg);
+    if (fs.existsSync(grammarSrc)) {
+      const dest = path.join(distDir, 'node_modules', grammarPkg);
+      copyDir(grammarSrc, dest);
+      // Each grammar package needs node-gyp-build to load its .node binary at runtime
+      writeFake(dest, 'node-gyp-build', FAKE_NODE_GYP_BUILD);
+      log(`  ✅ ${grammarPkg}/`);
+    } else {
+      log(`  ⚠️  ${grammarPkg} not installed — code audit will degrade gracefully`);
+    }
   }
 
   // onnxruntime-node — native ONNX runtime (VisionProcessor face/hand/depth detection)

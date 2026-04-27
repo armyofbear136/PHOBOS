@@ -103,6 +103,28 @@ export function resolveConfigPath(): string {
   return path.join(resolveConfigDir(), 'appsettings.json');
 }
 
+export function resolveWwwRootDir(): string {
+  return path.join(resolveServiceDir(), 'wwwroot');
+}
+
+export function writeAutoLoginPage(): void {
+    const wwwroot = resolveWwwRootDir();
+    fs.mkdirSync(wwwroot, { recursive: true });
+    fs.writeFileSync(path.join(wwwroot, 'autologin.html'), `<!DOCTYPE html>
+  <html><head><meta charset="utf-8"></head><body><script>
+  (function () {
+    var p = new URLSearchParams(location.search);
+    var token = p.get('token');
+    var username = p.get('username') || 'phobos';
+    var dest = p.get('dest') || '/';
+    if (token) {
+      localStorage.setItem('kavita-user', JSON.stringify({ username: username, token: token, refreshToken: '' }));
+    }
+    location.replace(dest);
+  })();
+  </script></body></html>`, 'utf8');
+  }
+
 export function defaultDocsPath(): string {
   return path.join(os.homedir(), '.phobos', 'media', 'kavita', 'phobosdocs');
 }
@@ -372,6 +394,7 @@ export async function startKavita(cfg: KavitaStartConfig): Promise<{ refreshToke
 
   try {
     writeConfig(cfg.tokenKey);
+    writeAutoLoginPage();
 
     const bin = resolveBinaryPath();
     if (process.platform !== 'win32') {

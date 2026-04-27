@@ -18,6 +18,9 @@ import { registerCopilotRoutes } from './routes/copilot.js';
 import { registerPluginRoutes } from './routes/pluginRoutes.js';
 import { registerUserSkillRoutes } from './routes/userSkillRoutes.js';
 import { registerSchedulerRoutes } from './routes/scheduler.js';
+import { registerSecurityRoutes } from './routes/securityRoutes.js';
+import { SecurityStore }          from './db/SecurityStore.js';
+import { syncScheduledTasks, registerSecurityHandlers } from './security/SecurityScanManager.js';
 import { initScheduler } from './scheduling/Scheduler.js';
 import { ScheduledTaskStore } from './db/ScheduledTaskStore.js';
 import { scanOnStartup as scanUserSkills } from './db/UserSkillManager.js';
@@ -46,7 +49,7 @@ import { registerCartridgeRoutes } from './routes/cartridgeRoutes.js';
 import { CartridgeStore } from './db/CartridgeStore.js';
 import { initCartridgeManager, reconcileCartridgeSlots } from './phobos/CartridgeManager.js';
 import { startCamofox, stopCamofox, isCamofoxInstalled } from './phobos/CamofoxManager.js';
-import { stopStirling }   from './services/StirlingManager.js';
+import { stopStirling, startStirling, isBinaryPresent as isStirlingBinaryPresent } from './services/StirlingManager.js';
 import { ArchiveStore } from './db/ArchiveStore.js';
 import { registerArchiveRoutes } from './routes/archiveRoutes.js';
 import { registerMpvRoutes } from './routes/mpv.js';
@@ -58,6 +61,7 @@ import {
   defaultDocsPath,
 } from './services/KavitaManager.js';
 import { registerKavitaIngestRoutes } from './routes/kavitaIngestRoutes.js';
+import { registerJellyfinIngestRoutes } from './routes/jellyfinIngestRoutes.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -127,6 +131,7 @@ async function buildServer() {
   await registerPluginRoutes(fastify);
   await registerUserSkillRoutes(fastify);
   await registerSchedulerRoutes(fastify);
+  await registerSecurityRoutes(fastify);
   await registerGameRoutes(fastify);
   await registerServiceRoutes(fastify);
   await registerAudioRoutes(fastify);
@@ -134,6 +139,7 @@ async function buildServer() {
   await registerCartridgeRoutes(fastify);
   await registerArchiveRoutes(fastify);
   await registerKavitaIngestRoutes(fastify);
+  await registerJellyfinIngestRoutes(fastify);
   await registerMpvRoutes(fastify);
   await registerIptvRoutes(fastify);
 
@@ -200,6 +206,13 @@ async function main() {
   const taskStore = new ScheduledTaskStore(db);
   await taskStore.ensureTable();
   const scheduler = initScheduler(db);
+
+  const securityStore = new SecurityStore(db);
+  await securityStore.ensureTable();
+  await securityStore.closeOrphanedRuns();
+  registerSecurityHandlers(scheduler, securityStore, PORT);
+  await syncScheduledTasks(securityStore, taskStore);
+
   scheduler.start();
 
   // ── PHOBOS World game state ───────────────────────────────────────────────
@@ -225,43 +238,96 @@ async function main() {
     console.warn('[Camofox] camofox-browser not found in node_modules — run: npm install');
   }
 
+  // ── Stirling PDF — persistent startup ────────────────────────────────────
+  // Stirling is started at server boot so opening the PDF editor is instant.
+  // Non-fatal: if the jar is not present yet, the UI shows an install prompt.
+  if (isStirlingBinaryPresent()) {
+    startStirling().catch(err =>
+      console.warn('[Stirling] Auto-start failed (non-fatal):', (err as Error).message)
+    );
+  }
+
   // ── Media Hub ─────────────────────────────────────────────────────────────
   const serviceStore = new ServiceStore(db);
   await serviceStore.ensureTable();
 
-  const merRecord = await serviceStore.get('meridian');
-  if (merRecord.enabled && merRecord.libraryPath) {
+  // ── Meridian — core service, always starts (first-party, no binary gate) ───
+  {
+    let merRecord = await serviceStore.get('meridian');
+    if (!merRecord.enabled) {
+      await serviceStore.setEnabled('meridian', true);
+      merRecord = await serviceStore.get('meridian');
+    }
+    // Seed default library path if never configured
+    if (!merRecord.libraryPath) {
+      const defaultPath = path.join(os.homedir(), '.phobos', 'media', 'meridian', 'phobosPictures');
+      mkdirSync(defaultPath, { recursive: true });
+      await serviceStore.setLibraryPath('meridian', defaultPath);
+      merRecord = await serviceStore.get('meridian');
+      console.log('[MediaHub] Meridian: seeded default library path:', defaultPath);
+    }
     startMeridian({
-      libraryPath:  merRecord.libraryPath,
+      libraryPath:  merRecord.libraryPath!,
       idleEnabled:  Boolean(merRecord.settings.idleClassifier ?? true),
     }).catch(err => console.warn('[MediaHub] Meridian auto-start failed:', err.message));
   }
 
-  const polarisRecord = await serviceStore.get('polaris');
-  if (polarisRecord.enabled && polarisRecord.libraryPath) {
-    if (isPolarisBinaryPresent()) {
-      startPolaris({
-        adminPassword: polarisRecord.settings.adminPassword as string,
-        libraryPath:   polarisRecord.libraryPath,
-        mountName:     (polarisRecord.settings.mountName as string) || 'Music',
-      }).catch(err => console.warn('[MediaHub] Polaris auto-start failed:', err.message));
+  // ── Polaris — core service, always starts if binary is present ────────
+  if (isPolarisBinaryPresent()) {
+    let polarisRecord = await serviceStore.get('polaris');
+    if (!polarisRecord.enabled) {
+      await serviceStore.setEnabled('polaris', true);
+      polarisRecord = await serviceStore.get('polaris');
     }
+    // Seed default library path if never configured
+    if (!polarisRecord.libraryPath) {
+      const defaultPath = path.join(os.homedir(), '.phobos', 'media', 'polaris', 'phobosMusic');
+      mkdirSync(defaultPath, { recursive: true });
+      await serviceStore.setLibraryPath('polaris', defaultPath);
+      polarisRecord = await serviceStore.get('polaris');
+      console.log('[MediaHub] Polaris: seeded default library path:', defaultPath);
+    }
+    startPolaris({
+      adminPassword: polarisRecord.settings.adminPassword as string,
+      libraryPath:   polarisRecord.libraryPath!,
+      mountName:     (polarisRecord.settings.mountName as string) || 'Music',
+    }).catch(err => console.warn('[MediaHub] Polaris auto-start failed:', err.message));
   }
 
-  const jellyfinRecord = await serviceStore.get('jellyfin');
-  if (jellyfinRecord.enabled) {
-    if (isJellyfinBinaryPresent()) {
-      const adminPassword = (jellyfinRecord.settings.adminPassword as string) || '';
-      if (adminPassword) {
-        startJellyfin(
-          {
-            libraryPath:   jellyfinRecord.libraryPath,
-            hardwareAccel: (jellyfinRecord.settings.hardwareAccel as string) || '',
-          },
-          adminPassword,
-        ).catch(err => console.warn('[MediaHub] Jellyfin auto-start failed:', err.message));
-      }
+  // ── Jellyfin — core service, always starts if binary is present ────────
+  // Like Kavita, Jellyfin is not gated on user enable/disable. It starts
+  // unconditionally at PHOBOS launch whenever the binary is present.
+  // setEnabled is called here so the DB reflects reality and the UI shows
+  // RUNNING without requiring any manual enable step.
+  if (isJellyfinBinaryPresent()) {
+    let jellyfinRecord = await serviceStore.get('jellyfin');
+    if (!jellyfinRecord.enabled) {
+      await serviceStore.setEnabled('jellyfin', true);
+      jellyfinRecord = await serviceStore.get('jellyfin');
     }
+    // If the row was created before password generation was added, patch it now.
+    let adminPassword = (jellyfinRecord.settings.adminPassword as string) || '';
+    if (!adminPassword) {
+      const { randomBytes } = await import('node:crypto');
+      adminPassword = randomBytes(24).toString('base64url');
+      jellyfinRecord = await serviceStore.patchSettings('jellyfin', { adminPassword });
+      console.log('[MediaHub] Generated missing Jellyfin adminPassword and persisted to DB.');
+    }
+    // Seed default library path if never configured
+    if (!jellyfinRecord.libraryPath) {
+      const defaultPath = path.join(os.homedir(), '.phobos', 'media', 'jellyfin', 'phobosVideos');
+      mkdirSync(defaultPath, { recursive: true });
+      await serviceStore.setLibraryPath('jellyfin', defaultPath);
+      jellyfinRecord = await serviceStore.get('jellyfin');
+      console.log('[MediaHub] Jellyfin: seeded default library path:', defaultPath);
+    }
+    startJellyfin(
+      {
+        libraryPath:   jellyfinRecord.libraryPath,
+        hardwareAccel: (jellyfinRecord.settings.hardwareAccel as string) || '',
+      },
+      adminPassword,
+    ).catch(err => console.warn('[MediaHub] Jellyfin auto-start failed:', err.message));
   }
 
   // ── Kavita — core service, always starts if binary is present ────────────

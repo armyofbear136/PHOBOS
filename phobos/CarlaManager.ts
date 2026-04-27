@@ -436,6 +436,23 @@ export function setProgram(pluginIdx: number, programIdx: number): void {
 }
 
 /**
+ * Show or hide the plugin's native custom UI. Carla opens the plugin's editor
+ * window as a separate OS-level window. Only meaningful for plugins that
+ * expose a custom UI (Crystal, Surge XT do; Helm does).
+ */
+export function showPluginUi(pluginIdx: number, show: boolean): void {
+  requireOsc().showCustomUi(pluginIdx, show);
+}
+
+/**
+ * Bypass/activate a plugin in the rack. When active = false the plugin is
+ * bypassed (audio passes through untouched); when true it processes audio.
+ */
+export function setPluginActive(pluginIdx: number, active: boolean): void {
+  requireOsc().setActive(pluginIdx, active);
+}
+
+/**
  * Activate an effect preset by id. Diffs against the currently-active preset
  * and sends OSC only for changed parameters. Stores the activated preset as
  * the new baseline.

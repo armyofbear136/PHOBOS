@@ -1107,8 +1107,9 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
   // POST /api/phobos/models/open-folder-dialog
   // Opens a native OS folder picker and returns the selected path.
   // Body: { initialPath?: string } — opens the dialog at this location if provided.
-  fastify.post<{ Body: { initialPath?: string } }>('/api/phobos/models/open-folder-dialog', async (req, reply) => {
+  fastify.post<{ Body: { initialPath?: string; title?: string } }>('/api/phobos/models/open-folder-dialog', async (req, reply) => {
     const initialPath = req.body?.initialPath ?? '';
+    const title       = req.body?.title ?? 'Select a folder';
     try {
       const { execFile: execFileCb } = await import('child_process');
       const { promisify } = await import('util');
@@ -1140,7 +1141,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
           '  public static string Show(string title, string initial, IntPtr hwnd) {',
           '    var dlg = (IFileOpenDialog)new FileOpenDialogCOM();',
           '    try {',
-          '      dlg.SetOptions(0x00000020 | 0x00000800 | 0x00040000);',  // FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_OKBUTTONNEEDSINTERACTION removed, just pick+fs+nochange
+          '      dlg.SetOptions(0x00000020 | 0x00000800);',  // FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM
           '      dlg.SetTitle(title);',
           '      if (!string.IsNullOrEmpty(initial) && System.IO.Directory.Exists(initial)) {',
           '        IShellItem folder;',
@@ -1211,7 +1212,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
           '$f.Show()',
           '$f.Hide()',
           '',
-          `$result = [FolderPicker]::Show("Select models folder", '${escapedInitial}', $f.Handle)`,
+          `$result = [FolderPicker]::Show("${title}", '${escapedInitial}', $f.Handle)`,
           '$f.Dispose()',
           'if ($result) { Write-Output $result }',
         ].join("\r\n");
@@ -1227,7 +1228,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       } else if (process.platform === 'darwin') {
         const defaultClause = initialPath ? `default location POSIX file "${initialPath}"` : '';
         const { stdout } = await execFileP('osascript', [
-          '-e', `POSIX path of (choose folder with prompt "Select models folder" ${defaultClause})`,
+          '-e', `POSIX path of (choose folder with prompt "${title}" ${defaultClause})`,
         ]);
         selectedPath = stdout.trim().replace(/\/$/, '');
       } else {
@@ -1242,9 +1243,9 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
           } catch { return null; }
         };
         selectedPath =
-          await tryExec('zenity', ['--file-selection', '--directory', '--title=Select models folder', `--filename=${filenameArg}/`])
+          await tryExec('zenity', ['--file-selection', '--directory', `--title=${title}`, `--filename=${filenameArg}/`])
           ?? await tryExec('kdialog', ['--getexistingdirectory', filenameArg])
-          ?? await tryExec('yad', ['--file', '--directory', '--title=Select models folder', `--filename=${filenameArg}/`])
+          ?? await tryExec('yad', ['--file', '--directory', `--title=${title}`, `--filename=${filenameArg}/`])
           ?? '';
       }
 

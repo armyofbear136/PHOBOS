@@ -263,6 +263,16 @@ export class ContextIngester {
           fileSummaries.map(f => `  ${f.filename}: ${f.summary}`).join('\n')
         );
       }
+      // Inline code blocks the user pasted are extracted before this check runs.
+      // Show SAYON a summary of each extracted block so it can judge whether the
+      // request is clear without seeing the original paste — preventing a false
+      // CLARIFY when the user provided code inline and asked a specific question.
+      if (extractedFiles.length > 0) {
+        contextSummaryForClarity.push(
+          `Inline content extracted from user message (${extractedFiles.length} block(s)):\n` +
+          extractedFiles.map(ef => `  ${ef.path}: ${ef.content.slice(0, 120).replace(/\n/g, ' ')}${ef.content.length > 120 ? '…' : ''}`).join('\n')
+        );
+      }
 
       const clarityCheckPrompt =
         `You are SAYON. You have read the user's request and all available workspace context. ` +

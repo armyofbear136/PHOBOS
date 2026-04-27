@@ -114,19 +114,23 @@ export async function reconfigureClients(): Promise<void> {
 
   // Start/stop llama-server if either role is on the phobos provider.
   // Thread device assignment from ModelConfigStore through to LlamaServerManager.
+  // gpuBackend is intentionally omitted for phobos providers: hardware detection
+  // in reconcilePhobosServers owns backend selection (ROCm vs Vulkan vs CUDA).
+  // Passing a stale stored value would prevent promotion to ROCm when the binary
+  // becomes available, since config.*.gpuBackend is the highest-priority override.
   reconcilePhobosServers({
     coordinator: {
       provider:    coordinator.provider,
       model:       coordinator.model,
       deviceIndex: coordinator.deviceIndex,
-      gpuBackend:  coordinator.gpuBackend,
+      gpuBackend:  coordinator.provider === 'phobos' ? undefined : coordinator.gpuBackend,
       gpuLayers:   coordinator.gpuLayers,
     },
     engine: {
       provider:    engine.provider,
       model:       engine.model,
       deviceIndex: engine.deviceIndex,
-      gpuBackend:  engine.gpuBackend,
+      gpuBackend:  engine.provider === 'phobos' ? undefined : engine.gpuBackend,
       gpuLayers:   engine.gpuLayers,
     },
   }).catch(err => {

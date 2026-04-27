@@ -138,10 +138,21 @@ export class IntentClassifier {
 
       if (!parsed?.type) throw new Error(`No valid classification in: ${raw.slice(0, 80)}`);
 
-      // Derive routing if the model didn't return it (backward compat)
-      const routing = (['ANSWER_DIRECTLY', 'NEEDS_SEREN', 'NEEDS_CLARIFICATION'].includes(parsed.routing ?? '')
-        ? parsed.routing as ClassifiedIntent['routing']
-        : this.deriveRouting(parsed.type));
+      // Routing resolution:
+      // Some intent types have invariant routing that must not be overridden by the
+      // model — DOCUMENT_EDIT, IMAGE_REQUEST, and VIDEO_REQUEST always resolve to
+      // ANSWER_DIRECTLY regardless of what the model returned. This prevents the
+      // classifier from misrouting these to NEEDS_SEREN when the model hallucinates.
+      const FORCED_ROUTING: Partial<Record<IntentType, ClassifiedIntent['routing']>> = {
+        DOCUMENT_EDIT: 'ANSWER_DIRECTLY',
+        IMAGE_REQUEST:  'ANSWER_DIRECTLY',
+        VIDEO_REQUEST:  'ANSWER_DIRECTLY',
+      };
+      const routing: ClassifiedIntent['routing'] =
+        FORCED_ROUTING[parsed.type] ??
+        (['ANSWER_DIRECTLY', 'NEEDS_SEREN', 'NEEDS_CLARIFICATION'].includes(parsed.routing ?? '')
+          ? (parsed.routing as ClassifiedIntent['routing'])
+          : this.deriveRouting(parsed.type));
 
       console.log(
         `[IntentClassifier] ${parsed.type} routing=${routing} (${latency}ms, confidence=${parsed.confidence})`

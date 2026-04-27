@@ -60,11 +60,24 @@ export async function reconcileCartridgeSlots(): Promise<void> {
 
 // ── Compatibility check ───────────────────────────────────────────────────────
 
+// export async function checkCompatibility( //old function saved while testing
+//   cartridgeId: string,
+//   persona: Persona,
+// ): Promise<CompatibilityResult> {
+//   const record = await store().get(cartridgeId);
+//   if (!record) {
+//     return { compatible: false, reason: 'family_mismatch', activeModelId: '', activeFamily: '' };
+//   }
+
+// ── Compatibility check ───────────────────────────────────────────────────────
+
 export async function checkCompatibility(
-  cartridgeId: string,
+  cartridgeOrId: string | any,
   persona: Persona,
 ): Promise<CompatibilityResult> {
-  const record = await store().get(cartridgeId);
+  const record = typeof cartridgeOrId === 'string' 
+    ? await store().get(cartridgeOrId) 
+    : cartridgeOrId;
   if (!record) {
     return { compatible: false, reason: 'family_mismatch', activeModelId: '', activeFamily: '' };
   }

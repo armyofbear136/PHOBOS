@@ -1447,6 +1447,20 @@ export class LoopController {
       bestAttempt: bestAttempt.attemptNumber,
     });
 
+    // ── Stage 6: Commit staged files to workspace ──────────────────────────────
+    // simulateAll wrote to temp staging dirs for validation. Now that the loop
+    // has completed, write every approved file to its real workspace path.
+    // This is the only place a file touches disk in the actual workspace.
+    for (const [relPath, content] of stagedContents) {
+      try {
+        const absPath = path.join(projectRoot, relPath);
+        await fs.mkdir(path.dirname(absPath), { recursive: true });
+        await fs.writeFile(absPath, content, 'utf-8');
+      } catch (err) {
+        console.warn(`[LoopController] commit failed for ${relPath}:`, err);
+      }
+    }
+
     // Clean up temp staging directories created by simulateAll
     for (const dir of stagingDirsToClean) {
       fs.rm(dir, { recursive: true, force: true }).catch(() => {});

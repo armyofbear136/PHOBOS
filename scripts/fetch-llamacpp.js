@@ -331,7 +331,7 @@ async function extractFromZip(archivePath, targetName, destPath) {
   });
 }
 
-async function extractSingleFile(archivePath, targetName, destPath) {
+export async function extractSingleFile(archivePath, targetName, destPath) {
   if (archivePath.endsWith('.tar.gz')) {
     await extractFromTarGz(archivePath, targetName, destPath);
   } else {

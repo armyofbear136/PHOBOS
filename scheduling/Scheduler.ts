@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { ScheduledTaskStore, type ScheduledTask } from '../db/ScheduledTaskStore.js';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 
@@ -12,8 +13,8 @@ function matchField(field: string, value: number, min: number, max: number): boo
     if (part.includes('/')) {
       const [rangeStr, stepStr] = part.split('/');
       const step = parseInt(stepStr, 10);
-      const lo = rangeStr === '*' ? min : parseInt(rangeStr.split('-')[0], 10);
-      const hi = rangeStr === '*' ? max : (rangeStr.includes('-') ? parseInt(rangeStr.split('-')[1], 10) : lo);
+      const lo   = rangeStr === '*' ? min : parseInt(rangeStr.split('-')[0], 10);
+      const hi   = rangeStr === '*' ? max : (rangeStr.includes('-') ? parseInt(rangeStr.split('-')[1], 10) : lo);
       for (let v = lo; v <= hi; v += step) {
         if (v === value) return true;
       }
@@ -32,11 +33,11 @@ function cronMatches(expr: string, date: Date): boolean {
   if (parts.length !== 5) return false;
   const [mField, hField, domField, monField, dowField] = parts;
   return (
-    matchField(mField,   date.getMinutes(),  0, 59) &&
-    matchField(hField,   date.getHours(),    0, 23) &&
-    matchField(domField, date.getDate(),     1, 31) &&
-    matchField(monField, date.getMonth() + 1, 1, 12) &&
-    matchField(dowField, date.getDay(),      0, 6)
+    matchField(mField,   date.getMinutes(),    0, 59) &&
+    matchField(hField,   date.getHours(),      0, 23) &&
+    matchField(domField, date.getDate(),       1, 31) &&
+    matchField(monField, date.getMonth() + 1,  1, 12) &&
+    matchField(dowField, date.getDay(),        0,  6)
   );
 }
 
@@ -57,8 +58,8 @@ export function computeNextRun(expr: string, after: Date = new Date()): Date | n
 }
 
 // ── Pending-fire state ────────────────────────────────────────────────────────
-// When a task fires but the frontend is busy, we hold it here.
-// The frontend polls /api/scheduler/pending and fires when it's ready.
+// Conversation tasks signal here. Frontend polls /api/scheduler/pending,
+// opens a thread, and confirms back via /api/scheduler/pending/confirm.
 
 export interface PendingFire {
   taskId:   string;
@@ -70,40 +71,67 @@ export interface PendingFire {
 let _pending: PendingFire | null = null;
 
 export function getPendingFire(): PendingFire | null { return _pending; }
-export function clearPendingFire(): void { _pending = null; }
+export function clearPendingFire(): void             { _pending = null; }
+
+// ── Handler registry ──────────────────────────────────────────────────────────
+
+export type BackgroundHandler = () => Promise<void>;
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
 
-export class Scheduler {
-  private store:   ScheduledTaskStore;
-  private ticker:  ReturnType<typeof setInterval> | null = null;
-  private firing:  Set<string> = new Set(); // task IDs currently being processed
+// Cap on how far in the future a single setTimeout can be set.
+// Node's setTimeout max is ~24.8 days before it wraps to 1ms.
+// We cap at 12 hours; scheduleNextWake re-arms itself automatically.
+const MAX_WAKE_MS = 12 * 60 * 60 * 1000;
+
+export class Scheduler extends EventEmitter {
+  private store:    ScheduledTaskStore;
+  private handlers: Map<string, BackgroundHandler> = new Map();
+  private firing:   Set<string>                    = new Set();
+  private wakeTimer: ReturnType<typeof setTimeout> | null = null;
+  private running   = false;
 
   constructor(db: DatabaseManager) {
+    super();
     this.store = new ScheduledTaskStore(db);
   }
 
+  // ── Lifecycle ───────────────────────────────────────────────────────────────
+
   start(): void {
-    this.ticker = setInterval(() => { this.tick().catch(console.error); }, 60_000);
-    // Fire immediately to catch any tasks that were due while server was offline.
-    // Delay 5s so DB and routes finish initialising first.
-    setTimeout(() => { this.tick().catch(console.error); }, 5_000);
-    console.log('[Scheduler] Started — 60s tick');
+    this.running = true;
+    // Arm immediately — catches anything that was due while the server was down.
+    this.wake().catch(console.error);
+    console.log('[Scheduler] Started — event-driven');
   }
 
   stop(): void {
-    if (this.ticker) {
-      clearInterval(this.ticker);
-      this.ticker = null;
+    this.running = false;
+    if (this.wakeTimer) {
+      clearTimeout(this.wakeTimer);
+      this.wakeTimer = null;
     }
     console.log('[Scheduler] Stopped');
   }
+
+  // ── Handler registration ────────────────────────────────────────────────────
+
+  registerHandler(key: string, fn: BackgroundHandler): void {
+    this.handlers.set(key, fn);
+  }
+
+  // ── Public trigger ──────────────────────────────────────────────────────────
 
   /** Called by the route when the frontend manually triggers a task. */
   async triggerNow(taskId: string): Promise<{ ok: boolean; error?: string }> {
     const task = await this.store.getById(taskId);
     if (!task) return { ok: false, error: 'Task not found' };
-    this.signalPending(task);
+
+    if (task.task_type === 'background') {
+      setImmediate(() => { this.runBackground(task).catch(console.error); });
+    } else {
+      this.signalPending(task);
+    }
     return { ok: true };
   }
 
@@ -118,7 +146,7 @@ export class Scheduler {
   /** Called by the route when the frontend confirms it has dispatched the task. */
   async confirmDispatched(taskId: string, threadId: string): Promise<void> {
     _pending = null;
-    const now = new Date();
+    const now  = new Date();
     const task = await this.store.getById(taskId);
     if (!task) return;
     const next = computeNextRun(task.cron_expression, now);
@@ -129,28 +157,74 @@ export class Scheduler {
       next_run_at:     next?.toISOString() ?? null,
     });
     await this.store.recordRunStart(taskId, threadId);
+    // Re-arm for the next due task now that this one is rescheduled.
+    this.scheduleNextWake().catch(console.error);
+  }
+
+  // ── Wake signal ─────────────────────────────────────────────────────────────
+
+  /**
+   * External callers (syncScheduledTasks, routes) call wake() after any
+   * mutation that changes next_run_at so the timer re-arms without delay.
+   */
+  async wake(): Promise<void> {
+    if (!this.running) return;
+    await this.tick();
+    await this.scheduleNextWake();
+  }
+
+  // ── Internal ────────────────────────────────────────────────────────────────
+
+  private async scheduleNextWake(): Promise<void> {
+    if (this.wakeTimer) {
+      clearTimeout(this.wakeTimer);
+      this.wakeTimer = null;
+    }
+
+    const earliest = await this.store.getEarliestNextRun();
+    if (!earliest) return; // no enabled tasks with a future run
+
+    const delayMs = Math.max(0, earliest.getTime() - Date.now());
+    const clampedMs = Math.min(delayMs, MAX_WAKE_MS);
+
+    this.wakeTimer = setTimeout(() => {
+      this.wakeTimer = null;
+      this.wake().catch(console.error);
+    }, clampedMs);
+
+    // Allow the process to exit cleanly even if only this timer is live.
+    this.wakeTimer.unref();
   }
 
   private async tick(): Promise<void> {
-    // If something is already pending, don't add more — one at a time.
-    if (_pending) return;
-
     try {
       const due = await this.store.getDue(new Date());
+
       for (const task of due) {
         if (this.firing.has(task.id)) continue;
         this.firing.add(task.id);
-        try {
-          this.signalPending(task);
-          // Advance next_run_at immediately so the same task doesn't re-fire on
-          // the next tick if the frontend hasn't confirmed dispatch yet.
-          const next = computeNextRun(task.cron_expression, new Date());
-          await this.store.update(task.id, {
-            next_run_at: next?.toISOString() ?? null,
+
+        // Advance next_run_at immediately — prevents re-fire on the next wake
+        // if execution or confirmation is slow.
+        const next = computeNextRun(task.cron_expression, new Date());
+        await this.store.update(task.id, {
+          next_run_at: next?.toISOString() ?? null,
+        });
+
+        if (task.task_type === 'background') {
+          // Fire all background tasks concurrently — no frontend gate.
+          setImmediate(() => {
+            this.runBackground(task)
+              .catch(console.error)
+              .finally(() => { this.firing.delete(task.id); });
           });
-          break; // only one pending at a time
-        } finally {
+        } else {
+          // Conversation tasks: one pending at a time.
+          if (!_pending) {
+            this.signalPending(task);
+          }
           this.firing.delete(task.id);
+          // Do not break — remaining background tasks in the same batch still fire.
         }
       }
     } catch (err) {
@@ -165,7 +239,45 @@ export class Scheduler {
       prompt:   task.prompt,
       firedAt:  new Date().toISOString(),
     };
-    console.log(`[Scheduler] Task pending: "${task.name}" (${task.id})`);
+    console.log(`[Scheduler] Conversation task pending: "${task.name}" (${task.id})`);
+  }
+
+  private async runBackground(task: ScheduledTask): Promise<void> {
+    const handler = this.handlers.get(task.handler ?? '');
+
+    if (!handler) {
+      const msg = `No handler registered for key: "${task.handler}"`;
+      console.error(`[Scheduler] ${msg} (task: ${task.name})`);
+      await this.store.update(task.id, {
+        last_run_at:     new Date().toISOString(),
+        last_run_status: 'error',
+        last_run_error:  msg,
+      });
+      return;
+    }
+
+    console.log(`[Scheduler] Background task start: "${task.name}"`);
+    const runId = await this.store.recordRunStart(task.id, null);
+
+    try {
+      await handler();
+      await this.store.update(task.id, {
+        last_run_at:     new Date().toISOString(),
+        last_run_status: 'success',
+        last_run_error:  null,
+      });
+      await this.store.recordRunComplete(runId, 'success', null, null);
+      console.log(`[Scheduler] Background task done: "${task.name}"`);
+    } catch (err) {
+      const msg = (err as Error).message;
+      console.error(`[Scheduler] Background task error: "${task.name}": ${msg}`);
+      await this.store.update(task.id, {
+        last_run_at:     new Date().toISOString(),
+        last_run_status: 'error',
+        last_run_error:  msg,
+      });
+      await this.store.recordRunComplete(runId, 'error', null, msg);
+    }
   }
 }
 

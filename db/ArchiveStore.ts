@@ -453,8 +453,11 @@ export class ArchiveStore {
     const filePath = domainFilePath(domain);
     if (!fs.existsSync(filePath)) return [];
 
-    const { db } = await getDomainDb(filePath);
     try {
+      const { db, ftsAvailable } = await getDomainDb(filePath);
+      // Ensure schema is current — idempotent DDL migrates stale domain files
+      // that predate archive_sources or any other table added after initial creation.
+      await initDomainSchema(db, domain, ftsAvailable);
       const conn = await db.connect();
       try {
         const rows = await conn.all(`
@@ -481,7 +484,9 @@ export class ArchiveStore {
       } finally {
         await conn.close();
       }
-    } finally {
+    } catch (err) {
+      console.error(`[ArchiveStore] listSources failed for domain ${domain}:`, err);
+      return [];
     }
   }
 

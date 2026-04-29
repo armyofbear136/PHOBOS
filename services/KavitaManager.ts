@@ -546,7 +546,19 @@ export async function updateLibraryFolders(
   for (const f of folders) fs.mkdirSync(f, { recursive: true });
   const res = await kavitaFetch('/Library/update', {
     method: 'POST',
-    body: { id, name, type, folders },
+    body: {
+      id,
+      name,
+      type,
+      folders,
+      fileGroupTypes:              [1, 2, 3, 4],
+      excludePatterns:             [],
+      folderWatching:              true,
+      includeInDashboard:          true,
+      includeInRecommended:        true,
+      manageCollections:           true,
+      collapseSeriesRelationships: false,
+    },
   });
   if (!res.ok) throw new Error(`Kavita library update failed: HTTP ${res.status}`);
 }

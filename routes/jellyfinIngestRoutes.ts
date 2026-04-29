@@ -5,6 +5,7 @@
 // POST /api/jellyfin/libraries/:name/move    — relocate a library's folder path
 // POST /api/jellyfin/scan                    — trigger full library scan
 // GET  /api/jellyfin/stats                   — movie/series/episode counts
+// GET  /api/jellyfin/items                   — browse movies or series (userId injected server-side)
 // POST /api/jellyfin/open-folder             — open folder in OS file explorer
 // POST /api/jellyfin/ingest/open-file-dialog — native OS file picker
 // POST /api/jellyfin/ingest/open-folder-dialog — native OS folder picker
@@ -24,6 +25,10 @@ import {
   triggerScan,
   getStats,
   getJellyfinStatus,
+  getJellyfinAccessToken,
+  getJellyfinUserId,
+  getJellyfinServerId,
+  JELLYFIN_PORT,
   defaultMediaPath,
   resolveFFmpegPath,
   jellyfinApiRequest,
@@ -49,6 +54,58 @@ function resolveFfprobePath(): string | null {
   return fs.existsSync(probe) ? probe : null;
 }
 
+
+/**
+ * True when src and dest refer to the same filesystem path.
+ * On Windows NTFS, path comparison is case-insensitive.
+ */
+function isSamePath(a: string, b: string): boolean {
+  const ra = path.resolve(a);
+  const rb = path.resolve(b);
+  return process.platform === 'win32'
+    ? ra.toLowerCase() === rb.toLowerCase()
+    : ra === rb;
+}
+
+/**
+ * Recursively copy all content from src into dest, then remove originals.
+ * Handles case-only renames on Windows by routing through a temp directory
+ * so NTFS does not treat the source and destination as the same path.
+ */
+function moveTree(src: string, dest: string): void {
+  const srcResolved  = path.resolve(src);
+  const destResolved = path.resolve(dest);
+  const caseRename   = process.platform === 'win32'
+    && srcResolved.toLowerCase() === destResolved.toLowerCase()
+    && srcResolved !== destResolved;
+
+  if (caseRename) {
+    const tmp = srcResolved + `.__phobos_tmp_${Date.now()}__`;
+    fs.renameSync(srcResolved, tmp);
+    fs.mkdirSync(destResolved, { recursive: true });
+    walkCopy(tmp, destResolved);
+    try { fs.rmdirSync(tmp, { recursive: true }); } catch { /* non-fatal */ }
+  } else {
+    walkCopy(srcResolved, destResolved);
+  }
+}
+
+function walkCopy(src: string, dest: string): void {
+  const entries = fs.readdirSync(src, { withFileTypes: true });
+  for (const e of entries) {
+    const srcPath  = path.join(src, e.name);
+    const rel      = path.relative(src, srcPath);
+    const destPath = path.join(dest, rel);
+    if (e.isDirectory()) {
+      fs.mkdirSync(destPath, { recursive: true });
+      walkCopy(srcPath, destPath);
+    } else {
+      fs.copyFileSync(srcPath, destPath);
+      fs.unlinkSync(srcPath);
+    }
+  }
+  try { fs.rmdirSync(src, { recursive: true }); } catch { /* non-fatal */ }
+}
 // ── Route registration ────────────────────────────────────────────────────────
 
 export async function registerJellyfinIngestRoutes(fastify: FastifyInstance): Promise<void> {
@@ -121,26 +178,10 @@ export async function registerJellyfinIngestRoutes(fastify: FastifyInstance): Pr
 
     fs.mkdirSync(newFolder, { recursive: true });
 
-    // Content migration.
+    // Content migration — recursive tree copy + delete, case-rename safe.
     if (moveContent && oldFolder && fs.existsSync(oldFolder)) {
       try {
-        const walk = (dir: string) => {
-          const entries = fs.readdirSync(dir, { withFileTypes: true });
-          for (const e of entries) {
-            const src  = path.join(dir, e.name);
-            const rel  = path.relative(oldFolder!, src);
-            const dest = path.join(newFolder, rel);
-            if (e.isDirectory()) {
-              fs.mkdirSync(dest, { recursive: true });
-              walk(src);
-            } else {
-              fs.copyFileSync(src, dest);
-              fs.unlinkSync(src);
-            }
-          }
-        };
-        walk(oldFolder);
-        try { fs.rmdirSync(oldFolder, { recursive: true }); } catch { /* non-fatal */ }
+        moveTree(oldFolder, newFolder);
       } catch (err) {
         return reply.status(500).send({ error: `Content migration failed: ${(err as Error).message}` });
       }
@@ -186,6 +227,71 @@ export async function registerJellyfinIngestRoutes(fastify: FastifyInstance): Pr
     } catch (err) {
       return reply.status(503).send({ error: (err as Error).message });
     }
+  });
+
+  // ── GET /api/jellyfin/items ──────────────────────────────────────────────────
+  // Browse movies or series. Injects auth server-side via jellyfinApiRequest
+  // so the frontend never holds Jellyfin credentials.
+  // Query: type=Movie|Series  search=<string>  limit=<number>
+  fastify.get<{ Querystring: { type?: string; search?: string; limit?: string } }>(
+    '/api/jellyfin/items',
+    async (req, reply) => {
+      if (!jellyfinRunning()) return reply.status(503).send({ error: 'Jellyfin is not running' });
+
+      const type   = req.query.type   ?? 'Movie';
+      const limit  = req.query.limit  ?? '100';
+      const search = req.query.search ?? '';
+
+      const qs = new URLSearchParams({
+        IncludeItemTypes: type,
+        Recursive:        'true',
+        Limit:            limit,
+        Fields:           'BasicSyncInfo',
+        ...(search ? { SearchTerm: search } : {}),
+      });
+
+      try {
+        const res = await jellyfinApiRequest('GET', `/Items?${qs.toString()}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        return reply.send(data);
+      } catch (err) {
+        return reply.status(503).send({ error: (err as Error).message });
+      }
+    }
+  );
+
+  // ── GET /api/jellyfin/auth-info ──────────────────────────────────────────────
+  // Returns the Jellyfin admin username + password so auth-inject.html can call
+  // AuthenticateByName directly from the browser, getting a browser-owned session
+  // token that Jellyfin will not rotate. CORS header allows cross-origin fetch
+  // from localhost:18096 where auth-inject.html is served.
+  fastify.get('/api/jellyfin/auth-info', async (_req, reply) => {
+    const CORS = `http://localhost:${JELLYFIN_PORT}`;
+    const status = getJellyfinStatus();
+    if (status.state !== 'running') {
+      return reply.status(503).header('Access-Control-Allow-Origin', CORS)
+        .send({ error: 'Jellyfin is not running' });
+    }
+    let serverId = getJellyfinServerId();
+    if (!serverId) {
+      try {
+        const r = await jellyfinApiRequest('GET', '/System/Info');
+        if (r.ok) { const d = await r.json() as { Id?: string }; serverId = d.Id ?? null; }
+      } catch { /* non-fatal */ }
+    }
+    const db       = DatabaseManager.getInstance();
+    const store    = new ServiceStore(db);
+    const record   = await store.get('jellyfin');
+    const password = (record.settings.adminPassword as string) ?? '';
+    return reply
+      .header('Access-Control-Allow-Origin', CORS)
+      .send({
+        username: 'phobos',
+        password,
+        serverId: serverId ?? 'phobos-local',
+        port:     JELLYFIN_PORT,
+      });
   });
 
   // ── POST /api/jellyfin/open-folder ──────────────────────────────────────────
@@ -317,6 +423,49 @@ export async function registerJellyfinIngestRoutes(fastify: FastifyInstance): Pr
       return reply.send({ files: found });
     }
   );
+
+    // ── GET /api/jellyfin/browse ─────────────────────────────────────────────────
+  // Single-level directory listing for JellyfinBrowser folder tree.
+  // Security: path must be inside the configured phobosVideos library path
+  // (or any registered Jellyfin virtual folder location).
+  // Returns: Array<{ name, isDir, path, ext }>
+  fastify.get<{ Querystring: { dir: string } }>('/api/jellyfin/browse', async (req, reply) => {
+    const { dir } = req.query;
+    if (!dir) return reply.status(400).send({ error: 'dir required' });
+ 
+    const normalized = path.resolve(dir);
+ 
+    // Security: path must be inside a registered Jellyfin library folder.
+    const libs = await listLibraries();
+    const allowed = libs.flatMap(l => l.Locations as string[] ?? []);
+    // Also allow the configured default library path from the DB.
+    const db     = DatabaseManager.getInstance();
+    const store  = new ServiceStore(db);
+    const record = await store.get('jellyfin');
+    if (record.libraryPath) allowed.push(record.libraryPath);
+ 
+    const safe = allowed.some(f => normalized.startsWith(path.resolve(f)));
+    if (!safe) return reply.status(403).send({ error: 'Path is outside a registered library' });
+ 
+    if (!fs.existsSync(normalized) || !fs.statSync(normalized).isDirectory()) {
+      return reply.status(400).send({ error: 'Path does not exist or is not a directory' });
+    }
+ 
+    try {
+      const entries = fs.readdirSync(normalized, { withFileTypes: true });
+      return reply.send(
+        entries.map(e => ({
+          name:  e.name,
+          isDir: e.isDirectory(),
+          path:  path.join(normalized, e.name),
+          ext:   e.isFile() ? path.extname(e.name).toLowerCase() : '',
+        }))
+      );
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+ 
 
   // ── POST /api/jellyfin/ingest/classify (SSE) ────────────────────────────────
   // Body: { files: string[] }
@@ -461,19 +610,9 @@ export async function registerJellyfinIngestRoutes(fastify: FastifyInstance): Pr
       // Create new directory
       fs.mkdirSync(newPath, { recursive: true });
 
-      // Optionally move content
+      // Optionally move content — recursive tree copy + delete, case-rename safe.
       if (moveContent && oldPath && fs.existsSync(oldPath)) {
-        const entries = fs.readdirSync(oldPath, { withFileTypes: true });
-        for (const entry of entries) {
-          const src  = path.join(oldPath, entry.name);
-          const dest = path.join(newPath, entry.name);
-          if (entry.isDirectory()) {
-            fs.mkdirSync(dest, { recursive: true });
-          } else {
-            fs.copyFileSync(src, dest);
-            fs.unlinkSync(src);
-          }
-        }
+        moveTree(oldPath, newPath);
       }
 
       // Remove old virtual folder from Jellyfin and add new one

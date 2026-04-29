@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { findUncensoredVariants } from '../phobos/UncensoredFinder.js';
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
@@ -12,6 +13,8 @@ import {
   listDownloaded,
   isDownloaded,
   downloadModel,
+  downloadVariantModel,
+  modelPath,
   getSpec,
   deleteModel,
   deleteFluxModel,
@@ -377,6 +380,69 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         return reply.status(500).send({ error: err instanceof Error ? err.message : String(err) });
       }
     }
+  );
+
+  // GET /api/phobos/models/:modelId/uncensored
+  // Returns a list of publicly-available uncensored GGUF variants for a given
+  // catalogue model, sourced from HuggingFace Hub search. No auth required.
+  fastify.get<{ Params: { modelId: string } }>(
+    '/api/phobos/models/:modelId/uncensored',
+    async (req, reply) => {
+      const spec = getSpec(req.params.modelId);
+      if (!spec) return reply.status(404).send({ error: 'Unknown model ID' });
+      const variants = findUncensoredVariants(spec.modelId);
+      return reply.send({ variants });
+    },
+  );
+
+  // GET /api/phobos/models/:modelId/download-variant-sse?repoId=...&fileName=...
+  // SSE stream — downloads a specific HF variant, writing it to the
+  // original model's on-disk path (replacing it in-place).
+  fastify.get<{
+    Params: { modelId: string };
+    Querystring: { repoId: string; fileName: string };
+  }>(
+    '/api/phobos/models/:modelId/download-variant-sse',
+    async (req, reply) => {
+      const { modelId } = req.params;
+      const { repoId, fileName } = req.query;
+
+      if (!repoId || !fileName) {
+        return reply.status(400).send({ error: 'repoId and fileName required' });
+      }
+
+      const spec = getSpec(modelId);
+      if (!spec) return reply.status(404).send({ error: 'Unknown model ID' });
+
+      const variantUrl = `https://huggingface.co/${repoId}/resolve/main/${fileName}`;
+      const destPath   = modelPath(spec);
+      // sizeBytes unknown at this point — pass 0, downloadVariantModel will
+      // use the Content-Length header from the response once connected.
+      const sizeBytes  = 0;
+
+      reply.raw.writeHead(200, {
+        'Content-Type':                'text/event-stream',
+        'Cache-Control':               'no-cache',
+        'Connection':                  'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+      });
+
+      const send = (data: object) => {
+        reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+
+      try {
+        for await (const progress of downloadVariantModel(modelId, variantUrl, destPath, sizeBytes)) {
+          send(progress);
+          if (progress.done || progress.error) break;
+        }
+      } catch (err) {
+        send({ modelId, phase: 'seren', bytesReceived: 0, bytesTotal: sizeBytes, done: false,
+          error: err instanceof Error ? err.message : String(err) });
+      } finally {
+        reply.raw.end();
+      }
+    },
   );
 
   // POST /api/phobos/cleanup

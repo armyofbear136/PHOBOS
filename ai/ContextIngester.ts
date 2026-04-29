@@ -4,6 +4,25 @@ import { coordinatorCall, coordinatorStream } from './clients.js';
 import type { AgentStateManager } from './AgentStateManager.js';
 import { getInjection } from './SkillManager.js';
 
+/**
+ * System prompt used for all SAYON coordinator calls during ingestion.
+ * Small models (Llama 3.1 8B, Nemotron 4B, etc.) have no reasoning and no
+ * prior knowledge of this system — this grounds them on every call so they
+ * never refuse, hedge, or ask unnecessary questions based on assumed limitations.
+ */
+const SAYON_SYSTEM = `You are SAYON, the coordinator AI inside PHOBOS. Your job is to prepare tasks for SEREN, the execution engine.
+
+SEREN capabilities (all always available):
+- Create, read, modify, delete any file or code
+- Run, execute, test, and build code in a secure sandbox
+- Scan files for security vulnerabilities using a static AST engine
+- Browse the internet and fetch live web content
+- Search the web for any current information
+- Generate images using built-in hardware (Stable Diffusion / FLUX)
+- Perform multi-step plans across any number of tasks
+
+You always respond with the exact JSON format requested. You never refuse, hedge, or ask the user questions unless the instructions explicitly require it. Your output is always valid JSON and nothing else.`;
+
 
 
 /**
@@ -201,7 +220,7 @@ export class ContextIngester {
 
         try {
           const raw = await coordinatorCall({
-            systemPrompt: '',
+            systemPrompt: SAYON_SYSTEM,
             messages: [{ role: 'user', content: summaryPrompt }],
             maxTokens: 1024,
             temperature: 0.1,
@@ -283,10 +302,15 @@ export class ContextIngester {
         `- If files are involved, do I know which ones and what changes to make?\n` +
         `- If no files are involved, do I know the format, scope, and content expected?\n` +
         `- Is there any ambiguity that would force the executor to guess at intent?\n\n` +
+        `PROCEED bias: lean strongly toward PROCEED. Only choose CLARIFY when you genuinely ` +
+        `cannot produce a useful result without more information — not because you want ` +
+        `to confirm details SEREN can infer, and not because the request uses informal language. ` +
+        `If the intent is reasonably clear, PROCEED.\n\n` +
         `If YES to all: respond {"decision":"PROCEED"}.\n` +
         `If any answer is NO: respond {"decision":"CLARIFY","questions":["<q1>","<q2>"]}.\n` +
         `Maximum 2 questions. Only ask what you genuinely cannot infer from the request and context.\n` +
-        `Do NOT ask about files if the request clearly does not involve files.\n\n` +
+        `Do NOT ask about files if the request clearly does not involve files.\n` +
+        `Do NOT ask about things SEREN can determine at execution time (file format, language style, etc).\n\n` +
         `USER REQUEST: ${effectiveUserMessage}` +
         (contextSummaryForClarity.length > 0
           ? `\n\nAVAILABLE CONTEXT:\n${contextSummaryForClarity.join('\n\n')}`
@@ -296,7 +320,7 @@ export class ContextIngester {
       try {
         sendStatus('SAYON reviewing request clarity…');
         const raw = await coordinatorCall({
-          systemPrompt: '',
+          systemPrompt: SAYON_SYSTEM,
           messages: [{ role: 'user', content: clarityCheckPrompt }],
           maxTokens: 256,
           temperature: 0.1,
@@ -511,7 +535,7 @@ export class ContextIngester {
 
     try {
       const stripped = await coordinatorStream({
-        systemPrompt: '',
+        systemPrompt: SAYON_SYSTEM,
         messages: [{ role: 'user', content: rewritePrompt }],
         maxTokens: 768,
         temperature: 0.2,
@@ -551,7 +575,7 @@ export class ContextIngester {
         `Respond with ONLY one word: MINIMAL, STANDARD, COMPREHENSIVE, or EXHAUSTIVE. Nothing else.`;
       try {
         const scopeRaw = await coordinatorCall({
-          systemPrompt: '',
+          systemPrompt: SAYON_SYSTEM,
           messages: [{ role: 'user', content: scopePrompt }],
           maxTokens: 8,
           temperature: 0.0,

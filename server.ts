@@ -62,6 +62,8 @@ import {
 } from './services/KavitaManager.js';
 import { registerKavitaIngestRoutes } from './routes/kavitaIngestRoutes.js';
 import { registerJellyfinIngestRoutes } from './routes/jellyfinIngestRoutes.js';
+import { registerPolarisIngestRoutes } from './routes/polarisIngestRoutes.js';
+import { registerMeridianIngestRoutes } from './routes/meridianIngestRoutes.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -140,6 +142,8 @@ async function buildServer() {
   await registerArchiveRoutes(fastify);
   await registerKavitaIngestRoutes(fastify);
   await registerJellyfinIngestRoutes(fastify);
+  await registerPolarisIngestRoutes(fastify);
+  await registerMeridianIngestRoutes(fastify);
   await registerMpvRoutes(fastify);
   await registerIptvRoutes(fastify);
 

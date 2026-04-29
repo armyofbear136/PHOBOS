@@ -64,6 +64,8 @@ interface ManagedService {
   userId:      string | null;
   /** Session access token — valid until explicit logout. */
   accessToken: string | null;
+  /** Server instance ID — obtained from /System/Info after startup. */
+  serverId:    string | null;
 }
 
 const service: ManagedService = {
@@ -73,12 +75,18 @@ const service: ManagedService = {
   error:       null,
   userId:      null,
   accessToken: null,
+  serverId:    null,
 };
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
 export function resolveServiceDir(): string {
   return path.join(os.homedir(), '.phobos', 'services', 'jellyfin');
+}
+
+/** Path to the bundled jellyfin-web directory served by Jellyfin. */
+export function resolveWebDir(): string {
+  return path.join(resolveServiceDir(), 'jellyfin-web');
 }
 
 export function resolveBinaryPath(): string {
@@ -251,6 +259,87 @@ async function runWizard(adminPassword: string): Promise<void> {
 
 // ── Session authentication ────────────────────────────────────────────────────
 
+/**
+ * Writes auth-inject.html into jellyfin-web/ once at startup.
+ * When opened (served at localhost:18096/web/auth-inject.html), the page
+ * fetches a live token from phobos-core via /api/jellyfin/fresh-token,
+ * writes jellyfin_credentials to localStorage, then redirects to the web UI.
+ * Fetching at open-time guarantees the token is never stale.
+ */
+function writeAuthInjector(): void {
+  const webDir = resolveWebDir();
+  if (!fs.existsSync(webDir)) {
+    console.warn('[JellyfinManager] writeAuthInjector — jellyfin-web dir not found, skipping');
+    return;
+  }
+
+  const ENGINE_PORT = 3001;
+  const baseUrl     = `http://localhost:${JELLYFIN_PORT}`;
+
+  const html = `<!DOCTYPE html>
+<html style="margin:0;padding:0;width:100%;height:100%;">
+<head><title>Jellyfin</title></head>
+<body style="margin:0;padding:0;width:100%;height:100%;">
+<iframe id="jf" src="${baseUrl}/web/index.html"
+  style="width:100%;height:100%;border:none;display:block;"
+  allowfullscreen></iframe>
+<script>
+(function() {
+  var user = '', pass = '';
+
+  // Clear any stale credentials with null tokens before the iframe reads localStorage
+  try {
+    var stored = JSON.parse(localStorage.getItem('jellyfin_credentials') || '{}');
+    if (stored.Servers && stored.Servers[0] && !stored.Servers[0].AccessToken) {
+      localStorage.removeItem('jellyfin_credentials');
+    }
+  } catch(e) {}
+
+  fetch('http://localhost:${ENGINE_PORT}/api/jellyfin/auth-info')
+    .then(function(r) { return r.json(); })
+    .then(function(info) { user = info.username || ''; pass = info.password || ''; })
+    .catch(function() {});
+
+  var iframe = document.getElementById('jf');
+  var attempts = 0;
+  var maxAttempts = 40;
+
+  function tryFill() {
+    if (!user || attempts++ > maxAttempts) return;
+    try {
+      var doc = iframe.contentDocument || iframe.contentWindow.document;
+      var win = iframe.contentWindow;
+      var userInput = doc.querySelector('#txtManualName, input[name="Username"], input[autocomplete="username"]');
+      var passInput = doc.querySelector('#txtManualPassword, input[name="Password"], input[type="password"]');
+      if (!userInput || !passInput) { setTimeout(tryFill, 250); return; }
+      var setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value').set;
+      setter.call(userInput, user);
+      userInput.dispatchEvent(new win.Event('input', { bubbles: true }));
+      userInput.dispatchEvent(new win.Event('change', { bubbles: true }));
+      setter.call(passInput, pass);
+      passInput.dispatchEvent(new win.Event('input', { bubbles: true }));
+      passInput.dispatchEvent(new win.Event('change', { bubbles: true }));
+      setTimeout(function() {
+        var btn = doc.querySelector('.raised.button-submit, button[type="submit"], .emby-button.button-submit');
+        if (btn) btn.click();
+      }, 300);
+    } catch(e) { setTimeout(tryFill, 250); }
+  }
+
+  iframe.addEventListener('load', function() { attempts = 0; setTimeout(tryFill, 500); });
+})();
+</script>
+</body>
+</html>`;
+
+  try {
+    fs.writeFileSync(path.join(webDir, 'auth-inject.html'), html, 'utf8');
+    console.log('[JellyfinManager] auth-inject.html written to ' + webDir);
+  } catch (err) {
+    console.warn('[JellyfinManager] Could not write auth-inject.html:', (err as Error).message);
+  }
+}
+
 async function authenticate(adminPassword: string): Promise<void> {
   const res = await fetch(`http://127.0.0.1:${JELLYFIN_PORT}/Users/AuthenticateByName`, {
     method:  'POST',
@@ -267,10 +356,24 @@ async function authenticate(adminPassword: string): Promise<void> {
     throw new Error(`Jellyfin auth failed: ${detail}`);
   }
 
-  const data = await res.json() as { AccessToken: string; User: { Id: string } };
+  const data = await res.json() as { AccessToken: string; User: { Id: string }; ServerId?: string };
   service.accessToken = data.AccessToken;
   service.userId      = data.User.Id;
-  console.log(`[JellyfinManager] Authenticated. UserId=${service.userId}`);
+  if (data.ServerId) service.serverId = data.ServerId;
+  console.log(`[JellyfinManager] Authenticated. UserId=${service.userId} ServerId=${service.serverId}`);
+
+  // Fallback: fetch server ID from /System/Info if not in auth response
+  if (!service.serverId) {
+    try {
+      const infoRes = await jellyfinApiRequest('GET', '/System/Info');
+      if (infoRes.ok) {
+        const info = await infoRes.json() as { Id?: string };
+        if (info.Id) service.serverId = info.Id;
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  writeAuthInjector();
 }
 
 // ── Detect wizard state and authenticate ──────────────────────────────────────
@@ -381,7 +484,6 @@ function spawnJellyfin(): void {
   // --ffmpeg, --nowebclient, --webdir, --published-server-url.
   // NOTE: --port does NOT exist — port is set exclusively via network.xml.
   const args = [
-    '--nowebclient',
     '--datadir',    dataDir,
     '--cachedir',   cacheDir,
     '--configdir',  configDir,
@@ -509,6 +611,21 @@ export function getJellyfinStatus(): JellyfinStatus {
   };
 }
 
+/** Returns the current session access token, or null if not authenticated. */
+export function getJellyfinAccessToken(): string | null {
+  return service.accessToken;
+}
+
+/** Returns the authenticated user ID, or null if not authenticated. */
+export function getJellyfinUserId(): string | null {
+  return service.userId;
+}
+
+/** Returns the server instance ID, or null if not yet fetched. */
+export function getJellyfinServerId(): string | null {
+  return service.serverId;
+}
+
 // ── Authenticated API request ─────────────────────────────────────────────────
 
 export async function jellyfinApiRequest(
@@ -599,7 +716,7 @@ async function ensurePhobosLibrary(): Promise<void> {
   const exists = libs.some(l => l.Locations.includes(mediaPath));
   if (exists) return;
 
-  await addLibrary('Phobos', mediaPath, 'homevideos');
+  await addLibrary('Phobos', mediaPath, 'movies');
   console.log(`[JellyfinManager] Phobos library created at ${mediaPath}`);
 }
 

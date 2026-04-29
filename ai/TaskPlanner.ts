@@ -45,7 +45,7 @@ export interface Task {
    * 'analyze' — read and reason, no file output
    * 'respond' — produce a text response with no file operations
    */
-  operation: 'modify' | 'create' | 'delete' | 'analyze' | 'respond' | 'image_gen' | 'browse' | 'execute' | 'simulate';
+  operation: 'modify' | 'create' | 'delete' | 'analyze' | 'respond' | 'image_gen' | 'browse' | 'execute' | 'simulate' | 'audit';
   /** browse operation — url or macro+query params. Only set when operation === 'browse'. */
   browseUrl?:   string;
   browseMacro?: string;
@@ -57,6 +57,8 @@ export interface Task {
   timeoutSeconds?: number;   // hard kill after N seconds, max 120, default 30
   retryWithFix?:   boolean;  // one automatic fix cycle on non-zero exit
   outputFiles?:    string[]; // filenames to copy from sandbox back to workspace after execution
+  /** audit operation — workspace-relative path (file or directory) to run the AST security scan against. */
+  targetPath?:     string;
   /**
    * The full distilled prompt sent to the engine for this task.
    * Contains: what to do, constraints, relevant extracted context.
@@ -600,7 +602,7 @@ export class TaskPlanner {
       `    {\n` +
       `      "title": "<short action phrase>",\n` +
       `      "targetFile": "<filename or empty string if no file involved>",\n` +
-      `      "operation": "<modify|create|delete|analyze|respond|image_gen|browse|execute|simulate>",\n` +
+      `      "operation": "<modify|create|delete|analyze|respond|image_gen|browse|execute|simulate|audit>",\n` +
       `      "prompt": "<full self-contained engine prompt>",\n` +
       `      "context": "<extracted constraints for this task only, max 400 words>",\n` +
       `      "assignedTo": "<seren|sayon — seren is default, assign sayon only for simple fast tasks>",\n` +
@@ -627,7 +629,7 @@ export class TaskPlanner {
       `- Consolidate multiple changes to the same file into one task\n` +
       `- Create as many tasks as the scope requires — do not artificially limit the count\n` +
       `- Use operation "respond" for tasks that produce text output with no file changes\n` +
-      `- Use operation "analyze" for tasks that read files but produce no output file\n` +
+      `- Use operation "analyze" for tasks that read files but produce no output file. Do NOT use analyze for security scanning — use audit instead.\n` +
       `- Use operation "image_gen" ONLY when you want PHOBOS to literally generate image files ` +
       `using its built-in image synthesis engine (Stable Diffusion / FLUX / Chroma). ` +
       `This is NOT for creating React components, UI elements, or placeholder tags — ` +
@@ -670,6 +672,13 @@ export class TaskPlanner {
       `data transform, or any code-produced result. ` +
       `Use execute when verifying code PHOBOS just wrote (test runner, migration check, build step). ` +
       `Both require the Sandbox Executor to be available.\\n` +
+      `- Use operation \"audit\" to run a static AST security scan against a target file or directory. ` +
+      `Set \"targetPath\" to the workspace-relative path to scan (e.g. \"src/utils.ts\" or \"src/\"). ` +
+      `Do NOT set entrypoint or runtime. Audit invokes the code analysis engine directly with no sandbox. ` +
+      `Use outputRequiredBy if any downstream task needs the findings. ` +
+      `Use audit when the user asks to scan for vulnerabilities, security issues, or pen test code. ` +
+      `NEVER use analyze or respond for security scanning — only audit invokes the actual AST scan engine. ` +
+      `Audit is always available regardless of Sandbox Executor state.\\n` +
       `a later task needs as input. Set it to the array of task indices that depend on this output.\n` +
       `- For "analyze" and "respond" operations: always set outputRequiredBy if any later task references this task\'s results\n` +
       `\nFILE INJECTION - read carefully:\n` +
@@ -764,7 +773,7 @@ export class TaskPlanner {
 
         // ── BUILD_QUEUE (normal path) ─────────────────────────────────────
         if (Array.isArray(parsed.tasks) && parsed.tasks.length > 0) {
-          const VALID_OPS: ReadonlyArray<Task['operation']> = ['modify', 'create', 'delete', 'analyze', 'respond', 'image_gen', 'browse', 'execute', 'simulate'];
+          const VALID_OPS: ReadonlyArray<Task['operation']> = ['modify', 'create', 'delete', 'analyze', 'respond', 'image_gen', 'browse', 'execute', 'simulate', 'audit'];
           const VALID_TASK_SCOPES = ['BRIEF', 'STANDARD', 'DETAILED', 'COMPLETE'] as const;
           const VALID_RUNTIMES = ['node', 'python', 'bash'] as const;
           const tasks: Task[] = parsed.tasks.map((raw, i) => {
@@ -778,6 +787,7 @@ export class TaskPlanner {
               browseUrl?: unknown; browseMacro?: unknown; browseQuery?: unknown;
               runtime?: unknown; entrypoint?: unknown; timeoutSeconds?: unknown;
               retryWithFix?: unknown; outputFiles?: unknown;
+              targetPath?: unknown;
             }; // execute | simulate share the same fields
             const op = VALID_OPS.includes(t.operation as Task['operation'])
               ? (t.operation as Task['operation'])
@@ -828,6 +838,10 @@ export class TaskPlanner {
               retryWithFix: op === 'execute' ? (t.retryWithFix === true) : undefined,
               outputFiles: op === 'execute' && Array.isArray(t.outputFiles)
                 ? (t.outputFiles as unknown[]).filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+                : undefined,
+              // Audit field
+              targetPath: op === 'audit' && typeof t.targetPath === 'string' && t.targetPath.trim()
+                ? t.targetPath.trim()
                 : undefined,
             };
           });

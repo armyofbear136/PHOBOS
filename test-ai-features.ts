@@ -287,7 +287,7 @@ interface Assertion { label: string; passed: boolean; detail?: string; }
 interface TestResult {
   id:          string;
   name:        string;
-  tier:        'short' | 'medium' | 'long' | 'copilot' | 'edge';
+  tier:        'short' | 'medium' | 'long' | 'xl' | 'copilot' | 'edge';
   status:      TestStatus;
   duration_ms: number;
   assertions:  Assertion[];
@@ -828,6 +828,15 @@ async function stopServer(): Promise<void> {
     setTimeout(resolve, 5000);
   });
   serverProc = null;
+  // taskkill /F /T force-kills llama-server before it can release its Vulkan
+  // device allocation. On Windows the AMD iGPU Vulkan driver retains the
+  // device-local heap for several seconds after the process handle closes.
+  // Without this delay the next startServer races the driver cleanup and
+  // SEREN hits ErrorOutOfDeviceMemory on every run after the first.
+  // Not needed on Linux/macOS where SIGTERM gives llama-server time to clean up.
+  if (process.platform === 'win32') {
+    await new Promise<void>(resolve => setTimeout(resolve, 5000));
+  }
 }
 
 // ── Environment setup ─────────────────────────────────────────────────────────
@@ -1476,6 +1485,87 @@ async function testM08_fileReadCycle(): Promise<void> {
   endTest();
 }
 
+async function testM09_codeAuditOperation(): Promise<void> {
+  startTest('M09', 'Code audit: SEREN routes audit task, scan runs, findings delivered in response', 'medium');
+  const tid  = randomUUID();
+  const wsDir = path.join(WORKSPACES_ROOT, tid);
+
+  // Pre-plant vulnerable.ts in the workspace — deterministically triggers 6 findings
+  // across 4 distinct CodeAuditor rules (js/eval-call, js/hardcoded-secret,
+  // js/exec-concat, js/sql-concat, js/innerHTML-assign, js/prototype-pollution).
+  const VULNERABLE_SRC = [
+    `// vulnerable.ts — audit test fixture`,
+    `import { execSync } from 'child_process';`,
+    ``,
+    `// js/hardcoded-secret (high)`,
+    `const apiKey   = 'sk-prod-abc123secretvalue';`,
+    `const password = 'hunter2';`,
+    ``,
+    `// js/eval-call (high)`,
+    `function runUserScript(userInput: string): unknown {`,
+    `  return eval(userInput);`,
+    `}`,
+    ``,
+    `// js/exec-concat (high)`,
+    `function listDirectory(dir: string): string {`,
+    `  return execSync('ls ' + dir).toString();`,
+    `}`,
+    ``,
+    `// js/sql-concat (high)`,
+    `function getUser(db: any, userId: string): unknown {`,
+    `  return db.query('SELECT * FROM users WHERE id = ' + userId);`,
+    `}`,
+    ``,
+    `// js/innerHTML-assign (medium)`,
+    `function renderContent(el: HTMLElement, content: string): void {`,
+    `  el.innerHTML = content;`,
+    `}`,
+    ``,
+    `// js/prototype-pollution (medium)`,
+    `function merge(target: any, key: string, value: unknown): void {`,
+    `  target.__proto__[key] = value;`,
+    `}`,
+  ].join('\n');
+
+  mkdirSync(wsDir, { recursive: true });
+  writeFileSync(path.join(wsDir, 'vulnerable.ts'), VULNERABLE_SRC, 'utf-8');
+
+  const s = await sendMessageAndCapture(
+    tid, 'Scan vulnerable.ts with the security scanner and show me all the vulnerabilities it finds', {}, t(180_000)
+  );
+
+  assert('turn complete',      s.complete,              `elapsed ${s.durationMs}ms`);
+  assert('task dispatched',    s.taskStarts.length >= 1, `task_start count: ${s.taskStarts.length}`);
+
+  const execResultEvents = s.byType.get('execute_result') ?? [];
+  const auditEvent       = execResultEvents.find((e: any) => e.mode === 'audit') as any | undefined;
+
+  // If execute_result events are present but mode is wrong, SEREN routed to the
+  // wrong operation (likely 'respond' or 'analyze'). Ensure TaskPlanner.ts is
+  // deployed — the planner prompt changes that add 'audit' routing must be built
+  // and running before this assertion can pass.
+  assert('execute_result with mode=audit emitted', auditEvent != null,
+    execResultEvents.length === 0
+      ? 'No execute_result events — SEREN may have used respond/analyze. Ensure TaskPlanner.ts is deployed.'
+      : `execute_result present but mode is not audit: modes=[${execResultEvents.map((e: any) => e.mode).join(', ')}]`);
+
+  if (auditEvent) {
+    // exitCode 0 = clean, exitCode 1 = findings present — both mean the engine ran without error.
+    // A thrown error produces exitCode 2+ or is caught and surfaced in output instead.
+    assert('audit ran without error', auditEvent.exitCode === 0 || auditEvent.exitCode === 1,
+      `exitCode: ${auditEvent.exitCode}`);
+  }
+
+  // Delivery must contain audit content — at least one rule ID or the word "finding"
+  const coordText     = (s.byType.get('coordinator') ?? []).map((e: any) => e.content ?? '').join(' ');
+  const auditKeywords = ['js/', 'finding', 'Finding', 'vulnerabilit', 'eval', 'hardcoded', 'injection', 'secret'];
+  const responseHasAuditContent = auditKeywords.some(kw => coordText.includes(kw));
+  assert('response contains audit findings', responseHasAuditContent,
+    `response preview: ${coordText.slice(0, 200)}`);
+
+  endTest();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ── LONG TESTS ────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1647,6 +1737,252 @@ async function testL05_exhaustiveWebsite(): Promise<void> {
   } catch (e) {
     assert('conversation_turn_files readable', false, (e as Error).message);
   }
+  endTest();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ── PRIMAL ONLINE TESTS — Real-world compendium read + write
+//
+//  Fixture files expected in:  test-outputs/primal/
+//    L06 requires:  Primal_Extraction_Refining_Compendium_v1.md
+//                   Player_Item.gd
+//    XL01 requires: all of the above PLUS
+//                   Primal_Taxonomy_Materials_Compendium_v1.md
+//                   Primal_Crafting_Compendium_v1.md
+//                   Primal_Material_Lore_Skills_Compendium_v1.md
+//
+//  These tests use the PRIMAL workspace directly (not a scratch copy) so the
+//  written output persists for inspection after the run.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PRIMAL_DIR = path.join(__dirname, 'test-outputs', 'primal');
+
+async function testL06_singleCompendiumReadWrite(): Promise<void> {
+  startTest('L06', 'Primal: single compendium read + targeted ExtractionProperties write into Player_Item.gd', 'long');
+
+  const compendiumPath = path.join(PRIMAL_DIR, 'Primal_Extraction_Refining_Compendium_v1.md');
+  const itemFilePath   = path.join(PRIMAL_DIR, 'Player_Item.gd');
+
+  if (!existsSync(compendiumPath) || !existsSync(itemFilePath)) {
+    warnAssert('L06 fixture files present',
+      false,
+      `Missing files in test-outputs/primal/ — need Primal_Extraction_Refining_Compendium_v1.md and Player_Item.gd`);
+    endTest();
+    return;
+  }
+
+  // Spot-check: Aegirinite has a known extraction table — Grand Levigator + Sphene Powder → Alumen 2850
+  // After the test, this value must appear in the written ExtractionProperties block.
+  const KNOWN_ORE      = 'Aegirinite';
+  const KNOWN_OUTPUT   = 'Alumen';
+  const KNOWN_YIELD    = '2,850';  // as written in the compendium table
+  const KNOWN_MACHINE  = 'Grand Levigator';
+
+  const statBefore = await fs.stat(itemFilePath);
+  const sizeBefore = statBefore.size;
+
+  const tid = randomUUID();
+  // Pre-load the workspace with the fixture files as attachments so SEREN
+  // can read them. The compendium is large (~47KB) — SEREN will handle it
+  // as a direct read given Qwen3's 128K context.
+  const compendiumContent = await fs.readFile(compendiumPath, 'utf-8');
+  const itemFileContent   = await fs.readFile(itemFilePath, 'utf-8');
+  const compId   = await uploadAttachment(tid, 'Primal_Extraction_Refining_Compendium_v1.md', compendiumContent);
+  const itemId   = await uploadAttachment(tid, 'Player_Item.gd', itemFileContent);
+
+  assert('compendium attached', compId != null, `id: ${compId}`);
+  assert('Player_Item attached', itemId != null, `id: ${itemId}`);
+
+  const s = await sendMessageAndCapture(
+    tid,
+    'Read Primal_Extraction_Refining_Compendium_v1.md and add ExtractionProperties to every ore entry in Player_Item.gd. ' +
+    'ExtractionProperties should list each valid machine+catalyst combination with the exact output yields from the compendium tables. ' +
+    'Do not modify any existing properties — only add the new ExtractionProperties block to each ore entry.',
+    { attachmentIds: [compId!, itemId!] },
+    t(600_000)  // 10 minutes — single large compendium, multi-task write
+  );
+
+  assert('turn complete',        s.complete,                s.timedOut ? 'TIMED OUT' : `elapsed ${s.durationMs}ms`);
+  assert('NEEDS_SEREN routing',  s.routing === 'NEEDS_SEREN', `got: ${s.routing}`);
+  assert('tasks dispatched',     s.taskStarts.length >= 1,  `task_starts: ${s.taskStarts.length}`);
+  assert('file panels produced', s.filePanels.length >= 1,  `panels: ${s.filePanels.length}`);
+
+  // The workspace copy of Player_Item.gd should have grown
+  const wsItemPath = path.join(WORKSPACES_ROOT, tid, 'Player_Item.gd');
+  const outputExists = existsSync(wsItemPath);
+  assert('Player_Item.gd written in workspace', outputExists, `checked: ${wsItemPath}`);
+
+  if (outputExists) {
+    const written = await fs.readFile(wsItemPath, 'utf-8');
+
+    assert('file grew — ExtractionProperties added', written.length > itemFileContent.length,
+      `before: ${itemFileContent.length} chars, after: ${written.length} chars`);
+
+    assert('ExtractionProperties key present', written.includes('"ExtractionProperties"'),
+      'no ExtractionProperties key found in written file');
+
+    assert(`${KNOWN_ORE} entry present`, written.includes(`"${KNOWN_ORE}"`),
+      `${KNOWN_ORE} not found — file may have been replaced`);
+
+    // Spot-check: known yield value for Aegirinite → Alumen from Grand Levigator
+    const oreIdx = written.indexOf(`"${KNOWN_ORE}"`);
+    const nextOreIdx = written.indexOf(`"Argentite"`, oreIdx);  // next ore after Aegirinite
+    const oreBlock = oreIdx >= 0 ? written.slice(oreIdx, nextOreIdx > oreIdx ? nextOreIdx : oreIdx + 2000) : '';
+    warnAssert(`${KNOWN_ORE}: ${KNOWN_MACHINE} → ${KNOWN_OUTPUT} ${KNOWN_YIELD}`,
+      oreBlock.includes(KNOWN_YIELD) || oreBlock.includes('2850'),
+      `yield not found in Aegirinite block (${oreBlock.length} chars)`);
+
+    // Structural integrity: file must still close correctly
+    assert('GDScript closes correctly', written.trimEnd().endsWith('}'),
+      `last 20 chars: ${JSON.stringify(written.slice(-20))}`);
+
+    // Brace balance sanity
+    const openBraces  = (written.match(/\{/g) ?? []).length;
+    const closeBraces = (written.match(/\}/g) ?? []).length;
+    warnAssert('brace count balanced', openBraces === closeBraces,
+      `open: ${openBraces}, close: ${closeBraces}`);
+  }
+
+  endTest();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function testXL01_fullCompendiumPopulation(): Promise<void> {
+  startTest('XL01',
+    'Primal: multi-compendium read (paginated) + full Player_Item.gd population — crown jewel',
+    'xl');
+
+  const requiredFiles = [
+    'Primal_Extraction_Refining_Compendium_v1.md',
+    'Primal_Taxonomy_Materials_Compendium_v1.md',
+    'Primal_Crafting_Compendium_v1.md',
+    'Primal_Material_Lore_Skills_Compendium_v1.md',
+    'Player_Item.gd',
+  ];
+
+  const missingFiles = requiredFiles.filter(f => !existsSync(path.join(PRIMAL_DIR, f)));
+  if (missingFiles.length > 0) {
+    warnAssert('XL01 fixture files present', false,
+      `Missing from test-outputs/primal/: ${missingFiles.join(', ')}`);
+    endTest();
+    return;
+  }
+
+  const tid = randomUUID();
+
+  // Upload all compendiums as attachments. The combined set (~291KB) exceeds
+  // a comfortable single-pass context — expect SEREN to paginate reads.
+  const attachIds: string[] = [];
+  const fileSizes: Record<string, number> = {};
+  for (const fname of requiredFiles) {
+    const fpath   = path.join(PRIMAL_DIR, fname);
+    const content = await fs.readFile(fpath, 'utf-8');
+    fileSizes[fname] = content.length;
+    const aid = await uploadAttachment(tid, fname, content);
+    if (aid) attachIds.push(aid);
+    console.log(`    📎 attached ${fname} (${content.length.toLocaleString()} chars)`);
+  }
+  assert('all files attached', attachIds.length === requiredFiles.length,
+    `attached: ${attachIds.length}/${requiredFiles.length}`);
+
+  const itemFileContent = await fs.readFile(path.join(PRIMAL_DIR, 'Player_Item.gd'), 'utf-8');
+  const itemsBefore = (itemFileContent.match(/^\t"[^"]+": \{/gm) ?? []).length;
+  console.log(`    📊 Player_Item.gd before: ${itemsBefore} items, ${itemFileContent.length.toLocaleString()} chars`);
+
+  const s = await sendMessageAndCapture(
+    tid,
+    'Read all the Primal Online compendium files attached and add all missing item data to Player_Item.gd. ' +
+    'This includes ExtractionProperties for ores from the Extraction & Refining Compendium, ' +
+    'material taxonomy data from the Taxonomy Compendium, ' +
+    'crafting recipes from the Crafting Compendium, ' +
+    'and any skill or lore properties from the Material Lore & Skills Compendium. ' +
+    'Do not modify any existing properties — only add new property blocks to existing entries. ' +
+    'Read each document fully before writing. If any document is too large to read at once, read it in sections.',
+    { attachmentIds: attachIds },
+    t(7_200_000)  // 2 hours — multi-document paginated read + batched write
+  );
+
+  assert('turn complete',       s.complete,                s.timedOut ? 'TIMED OUT' : `elapsed ${s.durationMs}ms`);
+  assert('NEEDS_SEREN routing', s.routing === 'NEEDS_SEREN', `got: ${s.routing}`);
+  assert('multiple tasks dispatched', s.taskStarts.length >= 4, `task_starts: ${s.taskStarts.length}`);
+
+  const wsItemPath = path.join(WORKSPACES_ROOT, tid, 'Player_Item.gd');
+  const outputExists = existsSync(wsItemPath);
+  assert('Player_Item.gd written in workspace', outputExists, `checked: ${wsItemPath}`);
+
+  if (outputExists) {
+    const written = await fs.readFile(wsItemPath, 'utf-8');
+    const itemsAfter = (written.match(/^\t"[^"]+": \{/gm) ?? []).length;
+
+    console.log(`    📊 Player_Item.gd after:  ${itemsAfter} items, ${written.length.toLocaleString()} chars`);
+
+    // Item count must be preserved — no entries created or deleted, only enriched
+    assert('item count unchanged', itemsAfter === itemsBefore,
+      `before: ${itemsBefore}, after: ${itemsAfter}`);
+
+    assert('file grew substantially', written.length > itemFileContent.length * 1.1,
+      `before: ${itemFileContent.length}, after: ${written.length}`);
+
+    // ExtractionProperties from Extraction & Refining Compendium
+    assert('ExtractionProperties present',
+      written.includes('"ExtractionProperties"'),
+      'no ExtractionProperties found — Extraction compendium not processed');
+
+    // Spot-check one known recipe value from each compendium
+    // Extraction: Aegirinite → Alumen 2850 via Grand Levigator
+    const aegIdx  = written.indexOf('"Aegirinite"');
+    const aegBlock = aegIdx >= 0 ? written.slice(aegIdx, aegIdx + 2000) : '';
+    warnAssert('Extraction: Aegirinite Grand Levigator yield present',
+      aegBlock.includes('2850') || aegBlock.includes('2,850'),
+      'Aegirinite extraction yield not found');
+
+    // CraftingProperties from Crafting Compendium Part IX addendum
+    // Every craftable material should receive HV / UTS / CV / E / CR / TR / ERF / SIF
+    assert('CraftingProperties present',
+      written.includes('"CraftingProperties"'),
+      'no CraftingProperties found — Crafting compendium Part IX not processed');
+
+    // Spot-check two known values from the metals table (1.3):
+    // Chalybs HV = 420, Darksteel CV = 85
+    const chalybsIdx   = written.indexOf('"Chalybs"');
+    const chalybsBlock = chalybsIdx >= 0 ? written.slice(chalybsIdx, chalybsIdx + 1000) : '';
+    warnAssert('Crafting: Chalybs HV 420 present',
+      chalybsBlock.includes('420'),
+      'Chalybs HV not found in Chalybs block');
+
+    const darksteelIdx   = written.indexOf('"Darksteel"');
+    const darksteelBlock = darksteelIdx >= 0 ? written.slice(darksteelIdx, darksteelIdx + 1000) : '';
+    warnAssert('Crafting: Darksteel CV 85 present',
+      darksteelBlock.includes('85'),
+      'Darksteel CV not found in Darksteel block');
+
+    // LoreProperties from Material Lore & Skills Compendium
+    // Each craftable material should receive its lore node name, threshold, and book title
+    warnAssert('LoreProperties present',
+      written.includes('"LoreProperties"'),
+      'no LoreProperties found — Material Lore compendium not processed');
+
+    // Spot-check: Chalybs lore threshold = 60, book = "De Chalybe"
+    warnAssert('Lore: Chalybs threshold 60 present',
+      chalybsBlock.includes('60') && chalybsBlock.includes('De Chalybe'),
+      'Chalybs lore node (threshold 60 / De Chalybe) not found in Chalybs block');
+
+    // Structural integrity
+    assert('GDScript closes correctly', written.trimEnd().endsWith('}'),
+      `last 20 chars: ${JSON.stringify(written.slice(-20))}`);
+
+    const openBraces  = (written.match(/\{/g) ?? []).length;
+    const closeBraces = (written.match(/\}/g) ?? []).length;
+    warnAssert('brace count balanced', openBraces === closeBraces,
+      `open: ${openBraces}, close: ${closeBraces}`);
+
+    // Copy final output to PRIMAL_DIR for inspection
+    const outPath = path.join(PRIMAL_DIR, `Player_Item_XL01_output.gd`);
+    await fs.writeFile(outPath, written, 'utf-8');
+    console.log(`    💾 Written to: ${outPath}`);
+  }
+
   endTest();
 }
 
@@ -1826,7 +2162,7 @@ async function main(): Promise<void> {
   // ── Medium tests ───────────────────────────────────────────────────────────
   const runMedium = !LONG_ONLY && (RUN_ALL || WITH_MEDIUM || (ONLY_ID?.startsWith('M') ?? false));
   if (runMedium && !SHORT_ONLY) {
-    console.log('\n── Medium Tests (M01–M08) ────────────────────────────────────');
+    console.log('\n── Medium Tests (M01–M09) ────────────────────────────────────');
     if (!ONLY_ID || ONLY_ID === 'M01') { await testM01_directAnswerPersistence();     await waitForModelIdle('M01'); }
     if (!ONLY_ID || ONLY_ID === 'M02') { await testM02_singleFileCreation();          await waitForModelIdle('M02'); }
     if (!ONLY_ID || ONLY_ID === 'M03') { await testM03_conversationRAGRetrieval();    await waitForModelIdle('M03'); }
@@ -1835,17 +2171,27 @@ async function main(): Promise<void> {
     if (!ONLY_ID || ONLY_ID === 'M06') { await testM06_copilotSayonMemory();          await waitForModelIdle('M06'); }
     if (!ONLY_ID || ONLY_ID === 'M07') { await testM07_inlineContentExtraction();     await waitForModelIdle('M07'); }
     if (!ONLY_ID || ONLY_ID === 'M08') { await testM08_fileReadCycle();               await waitForModelIdle('M08'); }
+    if (!ONLY_ID || ONLY_ID === 'M09') { await testM09_codeAuditOperation();          await waitForModelIdle('M09'); }
   }
 
   // ── Long tests ─────────────────────────────────────────────────────────────
   const runLong = LONG_ONLY || (ONLY_ID?.startsWith('L') ?? false);
   if (runLong && !SHORT_ONLY) {
-    console.log('\n── Long Tests (L01–L05) ──────────────────────────────────────');
+    console.log('\n── Long Tests (L01–L06) ──────────────────────────────────────');
     if (!ONLY_ID || ONLY_ID === 'L01') { await testL01_paginatedWriting();            await waitForModelIdle('L01'); }
     if (!ONLY_ID || ONLY_ID === 'L02') { await testL02_agentStateSequence();          await waitForModelIdle('L02'); }
     if (!ONLY_ID || ONLY_ID === 'L03') { await testL03_contextOverflowHandling();     await waitForModelIdle('L03'); }
     if (!ONLY_ID || ONLY_ID === 'L04') { await testL04_fullConversationRAGRoundTrip(); await waitForModelIdle('L04'); }
     if (!ONLY_ID || ONLY_ID === 'L05') { await testL05_exhaustiveWebsite();           await waitForModelIdle('L05'); }
+    if (!ONLY_ID || ONLY_ID === 'L06') { await testL06_singleCompendiumReadWrite();   await waitForModelIdle('L06'); }
+  }
+
+  // ── XL tests ───────────────────────────────────────────────────────────────
+  const runXL = args.includes('--xl') || (ONLY_ID?.startsWith('XL') ?? false);
+  if (runXL) {
+    console.log('\n── XL Tests (XL01) ───────────────────────────────────────────');
+    console.log('   ⚠️  XL tests may run for up to 2 hours. Use --notimelimit.');
+    if (!ONLY_ID || ONLY_ID === 'XL01') { await testXL01_fullCompendiumPopulation();  await waitForModelIdle('XL01'); }
   }
 
   // ── Edge case tests ────────────────────────────────────────────────────────

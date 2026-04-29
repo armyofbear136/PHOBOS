@@ -136,7 +136,7 @@ function isLicenseFileValid(): boolean {
   return validateKeyAgainstTx(txId, key);
 }
 
-function writeLicenseFile(transactionId: string, key: string): void {
+function writeLicenseFile(transactionId: string, key: string, username: string): void {
   const dir = getPhobosDir();
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const date = new Date().toISOString().split('T')[0];
@@ -146,11 +146,17 @@ function writeLicenseFile(transactionId: string, key: string): void {
     '# Do not share this file. One active connection per license.',
     `# Generated: ${date}`,
     `# Transaction: ${transactionId.trim().toUpperCase()}`,
+    `# Username: ${username.trim()}`,
     '',
     key,
     '',
   ].join('\n');
   writeFileSync(getLicenseKeyPath(), content, 'utf-8');
+}
+
+function extractUsernameFromFile(content: string): string {
+  const line = content.split('\n').find(l => l.startsWith('# Username:'));
+  return line ? line.replace('# Username:', '').trim() : '';
 }
 
 // ─── Route registration ──────────────────────────────────────────────────────
@@ -162,12 +168,15 @@ export async function registerLicenseRoutes(app: FastifyInstance) {
       return reply.send({ valid: false, reason: 'seed_not_configured' });
     }
     const valid = isLicenseFileValid();
-    return reply.send({ valid, tier: valid ? 'individual' : null });
+    if (!valid) return reply.send({ valid: false, tier: null, username: null });
+    const content  = readLicenseFile() ?? '';
+    const username = extractUsernameFromFile(content);
+    return reply.send({ valid: true, tier: 'individual', username: username || null });
   });
 
   // POST /api/license — validate TX ID (online + offline fallback), keygen, write
   app.post('/api/license', async (req, reply) => {
-    const { transactionId } = req.body as { transactionId?: string };
+    const { transactionId, username = '' } = req.body as { transactionId?: string; username?: string };
 
     if (!transactionId?.trim()) {
       return reply.status(400).send({ valid: false, reason: 'missing_transaction_id' });
@@ -188,13 +197,16 @@ export async function registerLicenseRoutes(app: FastifyInstance) {
       });
     }
 
+    // Use username from autarch response if present (set during activation), else fall back to body param
+    const resolvedUsername = (result as any).username?.trim() || username.trim() || '';
     const key = generateLicenseKey(transactionId);
 
     try {
-      writeLicenseFile(transactionId, key);
+      writeLicenseFile(transactionId, key, resolvedUsername);
       return reply.send({
         valid: true,
         key,
+        username: resolvedUsername,
         source: result.source,
       });
     } catch (err) {
@@ -211,5 +223,21 @@ export async function registerLicenseRoutes(app: FastifyInstance) {
     }
     const valid = validateKeyAgainstTx(transactionId, key);
     return reply.send({ valid });
+  });
+
+  // GET /api/patrons — proxy to autarch; returns top 100 [{ username, amount }]
+  app.get('/api/patrons', async (_req, reply) => {
+    try {
+      const url = `${AUTARCH_LICENSE_URL}/api/patrons`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), VERIFY_TIMEOUT_MS);
+      const res = await fetch(url, { signal: controller.signal, headers: { 'Accept': 'application/json' } });
+      clearTimeout(timeout);
+      if (!res.ok) return reply.status(502).send({ error: 'patrons_unavailable' });
+      const data = await res.json();
+      return reply.send(data);
+    } catch {
+      return reply.status(502).send({ error: 'patrons_unavailable' });
+    }
   });
 }

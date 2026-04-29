@@ -38,7 +38,83 @@ function kavitaRunning(): boolean {
   return getKavitaJwt() !== null;
 }
 
+
+/**
+ * True when src and dest refer to the same filesystem path.
+ * On Windows NTFS, path comparison is case-insensitive.
+ */
+function isSamePath(a: string, b: string): boolean {
+  const ra = path.resolve(a);
+  const rb = path.resolve(b);
+  return process.platform === 'win32'
+    ? ra.toLowerCase() === rb.toLowerCase()
+    : ra === rb;
+}
+
+/**
+ * Recursively copy all content from src into dest, then remove originals.
+ * Handles case-only renames on Windows by routing through a temp directory
+ * so NTFS does not treat the source and destination as the same path.
+ */
+function moveTree(src: string, dest: string): void {
+  const srcResolved  = path.resolve(src);
+  const destResolved = path.resolve(dest);
+  const caseRename   = process.platform === 'win32'
+    && srcResolved.toLowerCase() === destResolved.toLowerCase()
+    && srcResolved !== destResolved;
+
+  if (caseRename) {
+    const tmp = srcResolved + `.__phobos_tmp_${Date.now()}__`;
+    fs.renameSync(srcResolved, tmp);
+    fs.mkdirSync(destResolved, { recursive: true });
+    walkCopy(tmp, destResolved);
+    try { fs.rmdirSync(tmp, { recursive: true }); } catch { /* non-fatal */ }
+  } else {
+    walkCopy(srcResolved, destResolved);
+  }
+}
+
+function walkCopy(src: string, dest: string): void {
+  const entries = fs.readdirSync(src, { withFileTypes: true });
+  for (const e of entries) {
+    const srcPath  = path.join(src, e.name);
+    const rel      = path.relative(src, srcPath);
+    const destPath = path.join(dest, rel);
+    if (e.isDirectory()) {
+      fs.mkdirSync(destPath, { recursive: true });
+      walkCopy(srcPath, destPath);
+    } else {
+      fs.copyFileSync(srcPath, destPath);
+      fs.unlinkSync(srcPath);
+    }
+  }
+  try { fs.rmdirSync(src, { recursive: true }); } catch { /* non-fatal */ }
+}
 // ── Route registration ────────────────────────────────────────────────────────
+
+// ── Pandoc binary resolution ──────────────────────────────────────────────────
+// Pandoc is a packaged dependency — never a system install.
+// In the built SEA distribution, pandoc[.exe] sits alongside phobos-core.exe
+// in the dist/ directory. path.dirname(process.execPath) is that directory
+// in both SEA mode and plain `node server.ts` dev mode (where execPath is node).
+// Dev fallback: also check the repo-level dist/ via __dirname traversal.
+
+function resolvePandocBinary(): string {
+  const exe        = process.platform === 'win32' ? 'pandoc.exe' : 'pandoc';
+  const candidates = [
+    // Production SEA: dist/pandoc[.exe] next to phobos-core.exe
+    path.join(path.dirname(process.execPath), exe),
+    // Dev fallback: dist/ relative to this compiled file (phobos-core/dist/routes/../)
+    path.join(path.dirname(process.execPath), '..', 'dist', exe),
+  ];
+  for (const bin of candidates) {
+    if (fs.existsSync(bin)) return bin;
+  }
+  throw new Error(
+    `pandoc binary not found. Expected at: ${candidates[0]}. ` +
+    `Add pandoc[.exe] to the dist/ directory alongside phobos-core.exe.`
+  );
+}
 
 export async function registerKavitaIngestRoutes(fastify: FastifyInstance): Promise<void> {
 
@@ -217,18 +293,10 @@ export async function registerKavitaIngestRoutes(fastify: FastifyInstance): Prom
     // Create destination.
     fs.mkdirSync(newFolder, { recursive: true });
 
-    // Content migration.
+    // Content migration — recursive tree copy + delete, case-rename safe.
     if (moveContent && oldFolder && fs.existsSync(oldFolder)) {
       try {
-        const entries = fs.readdirSync(oldFolder);
-        for (const entry of entries) {
-          const src  = path.join(oldFolder, entry);
-          const dest = path.join(newFolder, entry);
-          fs.copyFileSync(src, dest);
-          fs.unlinkSync(src);
-        }
-        // Remove old folder only if now empty.
-        try { fs.rmdirSync(oldFolder); } catch { /* not empty or already gone */ }
+        moveTree(oldFolder, newFolder);
       } catch (err) {
         return reply.status(500).send({ error: `Content migration failed: ${(err as Error).message}` });
       }
@@ -429,18 +497,12 @@ export async function registerKavitaIngestRoutes(fastify: FastifyInstance): Prom
       // Kavita-native formats go to a library; everything else lands in phobosDocs.
       const found: string[] = [];
       const walk = (dir: string) => {
-        let entries: fs.Dirent[];
-        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-        for (const entry of entries) {
-          const full = path.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            walk(full);
-          } else if (entry.isFile()) {
-            found.push(full);
-          }
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const e of entries) {
+          const full = path.join(dir, e.name);
+          if (e.isDirectory()) { walk(full); } else { found.push(full); }
         }
       };
-
       walk(normalized);
       return reply.send({ files: found });
     }
@@ -523,6 +585,89 @@ export async function registerKavitaIngestRoutes(fastify: FastifyInstance): Prom
     return reply.send({ path: selectedPath || null });
   });
 
+  // ── GET /api/kavita/file-raw ──────────────────────────────────────────────
+  // Streams a library file as binary with correct Content-Type.
+  // Used by the frontend to open PDFs natively in the browser.
+  // Validates path is inside a registered library folder.
+  fastify.get<{ Querystring: { path: string } }>('/api/kavita/file-raw', async (req, reply) => {
+    if (!kavitaRunning()) return reply.status(503).send({ error: 'Kavita not running' });
+    const filePath = req.query.path;
+    if (!filePath) return reply.status(400).send({ error: 'path required' });
+
+    const libs = await listLibraries();
+    const allowed = libs.flatMap(l => l.folders);
+    const normalized = path.resolve(filePath);
+    const safe = allowed.some(f => normalized.startsWith(path.resolve(f)));
+    if (!safe) return reply.status(403).send({ error: 'Path outside library' });
+
+    if (!fs.existsSync(normalized)) return reply.status(404).send({ error: 'File not found' });
+
+    const MIME: Record<string, string> = {
+      '.pdf':  'application/pdf',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.odt':  'application/vnd.oasis.opendocument.text',
+      '.epub': 'application/epub+zip',
+    };
+    const ext  = path.extname(normalized).toLowerCase();
+    const mime = MIME[ext] ?? 'application/octet-stream';
+
+    const buf = fs.readFileSync(normalized);
+    return reply
+      .header('Content-Type', mime)
+      .header('Content-Disposition', `inline; filename="${path.basename(normalized)}"`)
+      .send(buf);
+  });
+
+  // ── GET /api/kavita/file-html ─────────────────────────────────────────────
+  // Converts any supported document to HTML on the server via system pandoc.
+  // Returns { html: string, filename: string } — no base64, no WASM.
+  fastify.get<{ Querystring: { path: string } }>('/api/kavita/file-html', async (req, reply) => {
+    if (!kavitaRunning()) return reply.status(503).send({ error: 'Kavita not running' });
+    const filePath = req.query.path;
+    if (!filePath) return reply.status(400).send({ error: 'path required' });
+
+    const libs = await listLibraries();
+    const allowed = libs.flatMap(l => l.folders);
+    const normalized = path.resolve(filePath);
+    const safe = allowed.some(f => normalized.startsWith(path.resolve(f)));
+    if (!safe) return reply.status(403).send({ error: 'Path outside library' });
+
+    const ext = path.extname(normalized).slice(1).toLowerCase();
+    const FROM_MAP: Record<string, string> = {
+      docx: 'docx', doc: 'docx', odt: 'odt', rtf: 'rtf',
+      md: 'gfm', markdown: 'gfm', txt: 'plain',
+      html: 'html', htm: 'html',
+    };
+    const fromFmt = FROM_MAP[ext];
+    if (!fromFmt) return reply.status(415).send({ error: `Unsupported file type: .${ext}` });
+
+    try {
+      if (ext === 'html' || ext === 'htm') {
+        const raw = fs.readFileSync(normalized, 'utf8');
+        const bodyMatch = raw.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+        const html = bodyMatch ? bodyMatch[1].trim() : raw.trim();
+        return reply.send({ html, filename: path.basename(normalized) });
+      }
+
+      const { stdout } = await execFileAsync(resolvePandocBinary(), [
+        normalized,
+        '--from', fromFmt,
+        '--to',   'html',
+        '--standalone',
+      ]);
+
+      const bodyMatch = stdout.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+      const html = bodyMatch ? bodyMatch[1].trim() : stdout.trim();
+      return reply.send({ html, filename: path.basename(normalized) });
+    } catch (err) {
+      const msg = (err as Error).message ?? String(err);
+      if (msg.includes('ENOENT') || msg.includes('not found') || msg.includes('fetch-pandoc')) {
+        return reply.status(503).send({ error: msg });
+      }
+      return reply.status(500).send({ error: msg });
+    }
+  });
+
   // ── GET /api/kavita/file-content ────────────────────────────────────────────
   // Validates path is inside a registered library folder.
   // Text files  → { content: string,        filename, ext, binary: false }
@@ -563,5 +708,75 @@ export async function registerKavitaIngestRoutes(fastify: FastifyInstance): Prom
     }
   });
 
+  // ── POST /api/kavita/convert ──────────────────────────────────────────────
+  // Converts HTML to docx or gfm (markdown) via system pandoc.
+  // Body: { html: string, to: 'docx' | 'gfm' }
+  // docx → returns binary stream with Content-Type application/vnd.openxmlformats...
+  // gfm  → returns { markdown: string }
+  fastify.post<{ Body: { html: string; to: string } }>('/api/kavita/convert', async (req, reply) => {
+    const { html, to } = req.body;
+    if (!html || !to) return reply.status(400).send({ error: 'html and to required' });
+    if (to !== 'docx' && to !== 'gfm') return reply.status(400).send({ error: 'to must be docx or gfm' });
+
+    const tmpDir  = fs.mkdtempSync(path.join(os.tmpdir(), 'phobos-pandoc-'));
+    const inFile  = path.join(tmpDir, 'input.html');
+    const outFile = path.join(tmpDir, to === 'docx' ? 'output.docx' : 'output.md');
+
+    try {
+      fs.writeFileSync(inFile, html, 'utf8');
+      await execFileAsync(resolvePandocBinary(), [inFile, '--from', 'html', '--to', to, '--output', outFile]);
+
+      if (to === 'docx') {
+        const buf = fs.readFileSync(outFile);
+        return reply
+          .header('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+          .header('Content-Disposition', 'attachment; filename="output.docx"')
+          .send(buf);
+      }
+      const markdown = fs.readFileSync(outFile, 'utf8');
+      return reply.send({ markdown });
+    } catch (err) {
+      const msg = (err as Error).message ?? String(err);
+      if (msg.includes('ENOENT') || msg.includes('not found') || msg.includes('fetch-pandoc')) {
+        return reply.status(503).send({ error: msg });
+      }
+      return reply.status(500).send({ error: msg });
+    } finally {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* non-fatal */ }
+    }
+  });
+
+  // ── POST /api/kavita/convert-file ────────────────────────────────────────
+  // Converts a binary document to HTML via pandoc.
+  // Body: { base64: string, filename: string }
+  // Returns { html: string }
+  fastify.post<{ Body: { base64: string; filename: string } }>('/api/kavita/convert-file', async (req, reply) => {
+    const { base64, filename } = req.body;
+    if (!base64 || !filename) return reply.status(400).send({ error: 'base64 and filename required' });
+
+    const ext     = path.extname(filename).slice(1).toLowerCase();
+    const FROM_MAP: Record<string, string> = { docx: 'docx', doc: 'docx', odt: 'odt', rtf: 'rtf' };
+    const fromFmt = FROM_MAP[ext];
+    if (!fromFmt) return reply.status(415).send({ error: `Unsupported type: .${ext}` });
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'phobos-pandoc-'));
+    const inFile = path.join(tmpDir, `input.${ext}`);
+
+    try {
+      fs.writeFileSync(inFile, Buffer.from(base64, 'base64'));
+      const { stdout } = await execFileAsync(resolvePandocBinary(), [inFile, '--from', fromFmt, '--to', 'html', '--standalone']);
+      const bodyMatch  = stdout.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+      const html       = bodyMatch ? bodyMatch[1].trim() : stdout.trim();
+      return reply.send({ html });
+    } catch (err) {
+      const msg = (err as Error).message ?? String(err);
+      if (msg.includes('ENOENT') || msg.includes('not found') || msg.includes('fetch-pandoc')) {
+        return reply.status(503).send({ error: msg });
+      }
+      return reply.status(500).send({ error: msg });
+    } finally {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* non-fatal */ }
+    }
+  });
 
 }

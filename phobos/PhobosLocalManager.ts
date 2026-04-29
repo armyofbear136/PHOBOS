@@ -4178,6 +4178,121 @@ export function scanFolderForModels(folderPath: string): ScannedMatch[] {
   return results;
 }
 
+// ── Variant download ──────────────────────────────────────────────────────────
+// Downloads an arbitrary URL to a specific dest path.
+// Used by the uncensored-variant feature: the file lands at the original
+// model's path (replacing it in-place) regardless of the variant's filename.
+
+export async function* downloadVariantModel(
+  modelId: string,
+  sourceUrl: string,
+  destPath: string,
+  sizeBytes: number,
+): AsyncGenerator<DownloadProgress> {
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
+
+  const tmp = destPath + '.download';
+  const existingBytes = fs.existsSync(tmp) ? fs.statSync(tmp).size : 0;
+  const reqHeaders: Record<string, string> = {};
+  if (existingBytes > 0) reqHeaders['Range'] = `bytes=${existingBytes}-`;
+
+  let bytesReceived = existingBytes;
+  let bytesTotal    = sizeBytes;
+
+  yield { modelId, phase: 'seren', bytesReceived, bytesTotal, done: false };
+
+  type QueueItem =
+    | { kind: 'progress'; bytesReceived: number; bytesTotal: number }
+    | { kind: 'installing' }
+    | { kind: 'done' }
+    | { kind: 'error'; err: Error };
+
+  const queue: QueueItem[] = [];
+  let notify: (() => void) | null = null;
+  const push = (item: QueueItem) => { queue.push(item); notify?.(); };
+
+  const THROTTLE_MS    = 250;
+  const THROTTLE_BYTES = 2 * 1024 * 1024;
+  let lastEmitBytes = existingBytes;
+  let lastEmitTime  = Date.now();
+
+  const downloadPromise = new Promise<void>((resolve, reject) => {
+    const follow = (targetUrl: string, redirectCount = 0) => {
+      if (redirectCount > 5) { reject(new Error('Too many redirects')); return; }
+      const parsed = new URL(targetUrl);
+      const mod = parsed.protocol === 'http:' ? http : https;
+      const req = mod.get(
+        { hostname: parsed.hostname, path: parsed.pathname + parsed.search, headers: reqHeaders },
+        (res) => {
+          if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) {
+            follow(res.headers.location!, redirectCount + 1); return;
+          }
+          if (res.statusCode !== 200 && res.statusCode !== 206) {
+            push({ kind: 'error', err: new Error(`HTTP ${res.statusCode}`) }); resolve(); return;
+          }
+          bytesTotal = res.statusCode === 206
+            ? existingBytes + parseInt(res.headers['content-length'] ?? '0', 10)
+            : parseInt(res.headers['content-length'] ?? String(sizeBytes), 10);
+
+          const fd = fs.createWriteStream(tmp, { flags: existingBytes > 0 ? 'a' : 'w' });
+          res.on('data', (chunk: Buffer) => {
+            bytesReceived += chunk.length;
+            fd.write(chunk);
+            const now = Date.now();
+            if (now - lastEmitTime >= THROTTLE_MS || bytesReceived - lastEmitBytes >= THROTTLE_BYTES) {
+              lastEmitTime = now; lastEmitBytes = bytesReceived;
+              push({ kind: 'progress', bytesReceived, bytesTotal });
+            }
+          });
+          res.on('end', () => {
+            push({ kind: 'installing' });
+            fd.end(async () => {
+              try {
+                await fsPromises.rename(tmp, destPath);
+              } catch {
+                try { await fsPromises.copyFile(tmp, destPath); await fsPromises.unlink(tmp); }
+                catch (copyErr) {
+                  push({ kind: 'error', err: new Error(`Failed to finalize: ${copyErr}`) });
+                  resolve(); return;
+                }
+              }
+              push({ kind: 'done' }); resolve();
+            });
+          });
+          res.on('error', (err) => { fd.destroy(); push({ kind: 'error', err }); resolve(); });
+        },
+      );
+      req.on('error', (err) => { push({ kind: 'error', err }); resolve(); });
+    };
+    follow(sourceUrl);
+  });
+
+  while (true) {
+    if (queue.length > 0) {
+      const item = queue.shift()!;
+      if (item.kind === 'progress') {
+        yield { modelId, phase: 'seren', bytesReceived: item.bytesReceived, bytesTotal: item.bytesTotal, done: false };
+      } else if (item.kind === 'installing') {
+        yield { modelId, phase: 'seren', bytesReceived, bytesTotal, done: false, installing: true };
+      } else if (item.kind === 'done') {
+        yield { modelId, phase: 'seren', bytesReceived, bytesTotal, done: true };
+        return;
+      } else if (item.kind === 'error') {
+        yield { modelId, phase: 'seren', bytesReceived, bytesTotal, done: false, error: item.err.message };
+        return;
+      }
+    } else {
+      await new Promise<void>((res) => {
+        notify = res;
+        // Wake up when downloadPromise settles even if no queue push comes
+        downloadPromise.then(res, res);
+      });
+      notify = null;
+      if (queue.length === 0) break; // downloadPromise resolved with nothing left
+    }
+  }
+}
+
 // ── Model deletion ────────────────────────────────────────────────────────────
 
 export function deleteModel(modelId: string): boolean {

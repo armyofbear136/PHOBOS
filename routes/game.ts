@@ -1,14 +1,17 @@
 /**
  * routes/game.ts — PHOBOS World game API routes.
  *
- * GET  /api/game/stream       — SSE stream (persona states, coins, world state)
- * GET  /api/game/player       — Read player record
- * POST /api/game/player       — Create / update player
- * POST /api/game/collect      — Coin collection
- * GET  /api/game/inventory    — Player inventory
- * POST /api/game/decorations  — Place decoration
- * GET  /api/game/decorations  — List decorations
- * DELETE /api/game/decorations/:id — Remove decoration
+ * GET  /api/game/stream             — SSE stream (persona states, coins, world state)
+ * GET  /api/game/player             — Read player record
+ * POST /api/game/player             — Create / update player
+ * POST /api/game/player/xp          — Add XP, returns { level, xp } after level-up computation
+ * POST /api/game/collect            — Coin collection
+ * GET  /api/game/inventory          — Player inventory
+ * POST /api/game/decorations        — Place decoration
+ * GET  /api/game/decorations        — List decorations
+ * DELETE /api/game/decorations/:id  — Remove decoration
+ * GET  /api/game/ether/bank         — Read ether_held + ether_banked
+ * POST /api/game/ether/bank         — Deposit or withdraw ether
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -74,6 +77,8 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
       bonus_agi?: number;
       bonus_vit?: number;
       unspent_points?: number;
+      skill_points?: number;
+      unlocked_nodes?: string;
     };
   }>('/api/game/player', async (req, reply) => {
     await store.ensurePlayer();
@@ -82,6 +87,15 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
     if (xp !== undefined) fields.experience = xp;
     const updated = await store.updatePlayer(fields as any);
     return reply.send(updated);
+  });
+
+  // ── XP + Level-up ──────────────────────────────────────────────────────
+  fastify.post<{
+    Body: { xp: number };
+  }>('/api/game/player/xp', async (req, reply) => {
+    const amount = Math.max(0, Math.floor(req.body.xp ?? 0));
+    const result = await store.addXp(amount);
+    return reply.send(result);
   });
 
   // ── Coin Collection ────────────────────────────────────────────────────
@@ -146,6 +160,26 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
     Body: { amount: number };
   }>('/api/game/coins/spend', async (req, reply) => {
     const result = await store.spendCoins(Math.max(0, req.body.amount ?? 0));
+    return reply.send(result);
+  });
+
+  // ── Ether Bank ─────────────────────────────────────────────────────────
+  fastify.get('/api/game/ether/bank', async (_req, reply) => {
+    const player = await store.ensurePlayer();
+    return reply.send({ ether_held: player.ether_held, ether_banked: player.ether_banked });
+  });
+
+  fastify.post<{
+    Body: { action: 'deposit' | 'withdraw'; amount: number };
+  }>('/api/game/ether/bank', async (req, reply) => {
+    const amount = Math.max(0, Math.floor(req.body.amount ?? 0));
+    if (amount === 0) {
+      const player = await store.ensurePlayer();
+      return reply.send({ ether_held: player.ether_held, ether_banked: player.ether_banked });
+    }
+    const result = req.body.action === 'deposit'
+      ? await store.depositEther(amount)
+      : await store.withdrawEther(amount);
     return reply.send(result);
   });
 

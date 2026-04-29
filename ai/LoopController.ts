@@ -168,7 +168,7 @@ export interface LoopOptions {
   /** Called during image generation phases — wire to SSE for frontend status updates */
   onImageStatus?: (status: import('../phobos/ImageGenerationHandler.js').ImageGenStatus) => void;
   /** Called when an execute or simulate task completes — wire to SSE for frontend result card */
-  onExecuteResult?: (result: { taskIndex: number; exitCode: number; durationMs: number; timedOut: boolean; stdoutPreview: string; mode: 'execute' | 'simulate' }) => void;
+  onExecuteResult?: (result: { taskIndex: number; exitCode: number; durationMs: number; timedOut: boolean; stdoutPreview: string; mode: 'execute' | 'simulate' | 'audit' }) => void;
   /**
    * Called just before each task is dispatched to SEREN/SAYON for execution.
    * Receives the full system prompt + user message so it can be logged for export/debugging.
@@ -220,7 +220,7 @@ export type SSEEvent =
   | { type: 'task_start'; taskIndex: number; total: number; title: string }
   | { type: 'task_complete'; taskIndex: number; total: number; title: string }
   | { type: 'task_failed'; taskIndex: number; total: number; title: string; reason: string }
-  | { type: 'execute_result'; taskIndex: number; exitCode: number; durationMs: number; timedOut: boolean; stdoutPreview: string; mode: 'execute' | 'simulate' }
+  | { type: 'execute_result'; taskIndex: number; exitCode: number; durationMs: number; timedOut: boolean; stdoutPreview: string; mode: 'execute' | 'simulate' | 'audit' }
   | { type: 'complete'; approved: boolean; bestAttempt: number }
   | { type: 'thinking_retry'; attempt: number }
   | { type: 'clarification_needed'; questions: string[] }
@@ -1065,6 +1065,108 @@ export class LoopController {
           taskApproved = true;
           break;
         }
+
+        // ── audit operation: static AST security scan via CodeAuditor ──────────────────
+        // Runs the tree-sitter 12-rule pen test engine against a target path.
+        // No sandbox, no executor feature flag -- always available.
+        // Output (findings grouped by severity + SEREN digest) flows through
+        // outputRequiredBy and DeliveryComposer identically to every other operation.
+        if (task.operation === 'audit') {
+          const rawTarget = task.targetPath ?? task.targetFile ?? '';
+
+          if (!rawTarget) {
+            const errMsg = '[Audit task missing targetPath -- cannot run]';
+            attemptResult.output = errMsg;
+            task.completedOutput = errMsg;
+            taskApproved = true;
+            break;
+          }
+
+          const nodePath   = await import('node:path');
+          const absTarget  = nodePath.isAbsolute(rawTarget)
+            ? rawTarget
+            : nodePath.join(projectRoot, rawTarget);
+
+          let auditOutput: string;
+          try {
+            const { DatabaseManager: DM } = await import('../db/DatabaseManager.js');
+            const { SecurityStore }        = await import('../db/SecurityStore.js');
+            const { runCodeAudit }         = await import('../security/CodeAuditor.js');
+
+            const secStore = new SecurityStore(DM.getInstance());
+            await secStore.ensureTable();
+            const run = await secStore.createRun('code_audit');
+
+            agentState.transition('executing', rawTarget, task.index, total);
+            sendStatus(`[${task.index}/${total}] Auditing ${rawTarget}…`);
+
+            await runCodeAudit(secStore, run.id, absTarget);
+
+            const completed = await secStore.getRunById(run.id);
+            const findings  = await secStore.getFindingsByRun(run.id);
+            const durationMs = Date.now() - (completed ? Date.parse(completed.started_at) : Date.now());
+
+            // Emit SSE result card reusing execute_result shape
+            const findingPreview = findings.length > 0
+              ? findings[0].title.slice(0, 120)
+              : 'No issues found';
+            this.sendEvent(reply, {
+              type:          'execute_result',
+              taskIndex:     task.index,
+              exitCode:      findings.length > 0 ? 1 : 0,
+              durationMs,
+              timedOut:      false,
+              stdoutPreview: findingPreview,
+              mode:          'audit',
+            });
+            this.options.onExecuteResult?.({
+              taskIndex:     task.index,
+              exitCode:      findings.length > 0 ? 1 : 0,
+              durationMs,
+              timedOut:      false,
+              stdoutPreview: findingPreview,
+              mode:          'audit',
+            });
+
+            // Build output string: findings grouped by severity, digest appended.
+            // This becomes completedOutput and flows through outputRequiredBy
+            // and DeliveryComposer exactly like every other operation.
+            if (findings.length === 0) {
+              auditOutput = `[CODE AUDIT CLEAN -- ${rawTarget}]\nNo security issues detected.`;
+            } else {
+              const bySeverity: Record<string, typeof findings> = {};
+              for (const f of findings) {
+                (bySeverity[f.severity] ??= []).push(f);
+              }
+              const lines: string[] = [
+                `[CODE AUDIT -- ${findings.length} finding${findings.length !== 1 ? 's' : ''} in ${rawTarget}]`,
+                '',
+              ];
+              for (const sev of ['critical', 'high', 'medium', 'low', 'info'] as const) {
+                const group = bySeverity[sev];
+                if (!group?.length) continue;
+                lines.push(`${sev.toUpperCase()} (${group.length}):`);
+                for (const f of group) {
+                  lines.push(`  [${f.target ?? rawTarget}] ${f.title}`);
+                  if (f.detail) lines.push(`    ${f.detail}`);
+                }
+                lines.push('');
+              }
+              if (completed?.seren_digest) {
+                lines.push('ANALYSIS:', completed.seren_digest);
+              }
+              auditOutput = lines.join('\n');
+            }
+          } catch (auditErr) {
+            auditOutput = `[Audit error: ${(auditErr as Error).message}]`;
+          }
+
+          attemptResult.output = auditOutput!;
+          task.completedOutput = auditOutput!;
+          taskApproved = true;
+          break;
+        }
+
         // SEREN emitted a <continue_writing path="..."/> tag, run continuation
         // turns until the output is complete. Each turn appends to the prior
         // output. Hard cap: PAGINATE_MAX_CONTINUATIONS turns to prevent loops.

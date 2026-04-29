@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS game_player (
   bonus_int       INTEGER DEFAULT 0,
   bonus_agi       INTEGER DEFAULT 0,
   bonus_vit       INTEGER DEFAULT 0,
+  skill_points    INTEGER DEFAULT 1,
+  unlocked_nodes  VARCHAR DEFAULT '[]',
+  ether_held      INTEGER DEFAULT 0,
+  ether_banked    INTEGER DEFAULT 0,
   created_at      TIMESTAMP DEFAULT now()
 );
 
@@ -56,10 +60,23 @@ ALTER TABLE game_player ADD COLUMN IF NOT EXISTS bonus_dex INTEGER DEFAULT 0;
 ALTER TABLE game_player ADD COLUMN IF NOT EXISTS bonus_int INTEGER DEFAULT 0;
 ALTER TABLE game_player ADD COLUMN IF NOT EXISTS bonus_agi INTEGER DEFAULT 0;
 ALTER TABLE game_player ADD COLUMN IF NOT EXISTS bonus_vit INTEGER DEFAULT 0;
+ALTER TABLE game_player ADD COLUMN IF NOT EXISTS skill_points INTEGER DEFAULT 1;
+ALTER TABLE game_player ADD COLUMN IF NOT EXISTS unlocked_nodes VARCHAR DEFAULT '[]';
+ALTER TABLE game_player ADD COLUMN IF NOT EXISTS ether_held INTEGER DEFAULT 0;
+ALTER TABLE game_player ADD COLUMN IF NOT EXISTS ether_banked INTEGER DEFAULT 0;
 ALTER TABLE game_inventory ADD COLUMN IF NOT EXISTS slot VARCHAR DEFAULT '';
 ALTER TABLE game_inventory ADD COLUMN IF NOT EXISTS rarity INTEGER DEFAULT 0;
 ALTER TABLE game_inventory ADD COLUMN IF NOT EXISTS data VARCHAR DEFAULT '{}';
 `;
+
+/** XP required to reach a given level (cumulative total). Formula: 100 * level^1.5 per level. */
+function xpRequiredForLevel(level: number): number {
+  let total = 0;
+  for (let l = 1; l < level; l++) {
+    total += Math.round(100 * Math.pow(l, 1.5));
+  }
+  return total;
+}
 
 export interface GamePlayer {
   id: string;
@@ -78,6 +95,10 @@ export interface GamePlayer {
   bonus_int: number;
   bonus_agi: number;
   bonus_vit: number;
+  skill_points: number;
+  unlocked_nodes: string;
+  ether_held: number;
+  ether_banked: number;
   created_at: string;
 }
 
@@ -143,7 +164,8 @@ export class GameStore {
   async updatePlayer(fields: Partial<Pick<GamePlayer,
     'name' | 'element' | 'weapon' | 'laser_color' | 'player_class' | 'body_type' |
     'phobos_coins' | 'level' | 'experience' | 'unspent_points' |
-    'bonus_str' | 'bonus_dex' | 'bonus_int' | 'bonus_agi' | 'bonus_vit'
+    'bonus_str' | 'bonus_dex' | 'bonus_int' | 'bonus_agi' | 'bonus_vit' |
+    'skill_points' | 'unlocked_nodes' | 'ether_held' | 'ether_banked'
   >>): Promise<GamePlayer> {
     const sets: string[] = [];
     const vals: unknown[] = [];
@@ -160,6 +182,27 @@ export class GameStore {
       );
     }
     return (await this.getPlayer())!;
+  }
+
+  /**
+   * Add XP to the player, computing level-ups.
+   * Returns the updated level and total XP. Level is capped at 100.
+   */
+  async addXp(amount: number): Promise<{ level: number; xp: number }> {
+    const player = await this.ensurePlayer();
+    const newXp = player.experience + amount;
+    let newLevel = player.level;
+
+    while (newLevel < 100 && newXp >= xpRequiredForLevel(newLevel + 1)) {
+      newLevel++;
+    }
+
+    await this.db.run(
+      `UPDATE game_player SET experience = ?, level = ? WHERE id = 'local'`,
+      [newXp, newLevel]
+    );
+
+    return { level: newLevel, xp: newXp };
   }
 
   async addCoins(amount: number): Promise<number> {
@@ -180,6 +223,32 @@ export class GameStore {
     );
     const updated = await this.getPlayer();
     return { ok: true, remaining: updated?.phobos_coins ?? 0 };
+  }
+
+  // ── Ether ──────────────────────────────────────────────────────────────
+
+  async depositEther(amount: number): Promise<{ ether_held: number; ether_banked: number }> {
+    const p = await this.ensurePlayer();
+    const deposit = Math.min(amount, p.ether_held);
+    if (deposit <= 0) return { ether_held: p.ether_held, ether_banked: p.ether_banked };
+    await this.db.run(
+      `UPDATE game_player SET ether_held = ether_held - ?, ether_banked = ether_banked + ? WHERE id = 'local'`,
+      [deposit, deposit]
+    );
+    const updated = await this.getPlayer();
+    return { ether_held: updated!.ether_held, ether_banked: updated!.ether_banked };
+  }
+
+  async withdrawEther(amount: number): Promise<{ ether_held: number; ether_banked: number }> {
+    const p = await this.ensurePlayer();
+    const withdraw = Math.min(amount, p.ether_banked);
+    if (withdraw <= 0) return { ether_held: p.ether_held, ether_banked: p.ether_banked };
+    await this.db.run(
+      `UPDATE game_player SET ether_held = ether_held + ?, ether_banked = ether_banked - ? WHERE id = 'local'`,
+      [withdraw, withdraw]
+    );
+    const updated = await this.getPlayer();
+    return { ether_held: updated!.ether_held, ether_banked: updated!.ether_banked };
   }
 
   // ── Inventory ──────────────────────────────────────────────────────────

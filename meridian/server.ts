@@ -78,7 +78,6 @@ export async function startMeridianServer(
 
     // Ensure required directories exist.
     fs.mkdirSync(cfg.thumbCacheDir, { recursive: true });
-    fs.mkdirSync(path.join(os.homedir(), '.phobos', 'media', 'photos'), { recursive: true });
 
     // Use the already-open DatabaseManager from the main process — no second open.
     const db = new MeridianDB(dbManager);

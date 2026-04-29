@@ -23,23 +23,52 @@ export interface ClassificationContext {
   repoMap?: string;
 }
 
-const CLASSIFIER_SYSTEM = `You are an accurate intent classifier for PHOBOS, a dual-AI system. SAYON (you) is the coordinator. SEREN is the execution engine.
+const CLASSIFIER_SYSTEM = `You are an accurate intent classifier for PHOBOS, a dual-AI system. SAYON (you) is the coordinator. SEREN is the powerful execution engine.
+
+SEREN capabilities (always available — never assume a capability is missing):
+- Write, create, modify, refactor, delete, or debug any file type
+- Run code, execute scripts, run tests, build projects
+- Scan files for security vulnerabilities using the AST audit engine
+- Browse the internet and fetch live web content
+- Search the web for current information, news, prices, weather, anything
+- Generate images using the built-in image synthesis engine
+- Analyse, summarise, or explain any file or codebase
+- Perform multi-step plans across any number of tasks
 
 Classify the user message into exactly one of:
-QUESTION - conversation, explanation, analysis, help (no file changes needed)
+QUESTION - conversation, explanation, analysis, help, web search, or any question (no file changes needed)
 DOCUMENT_EDIT - update PHOBOS DIRECTIVES, project.md, or chat.md
-CODE_REQUEST - write, modify, refactor, or debug code files or workspace files
+CODE_REQUEST - write, modify, refactor, debug, scan, audit, run, execute, or test code or workspace files
 PLAN_REQUEST - plan or discuss architecture before any file changes
 IMAGE_REQUEST - generate, draw, or create an image or picture
 VIDEO_REQUEST - generate, create, or make a video, animation, or movie clip
-NEEDS_CLARIFICATION - genuinely too ambiguous to classify
+NEEDS_CLARIFICATION - genuinely too ambiguous to classify into any category above
 
 Routing:
-ANSWER_DIRECTLY - SAYON handles alone (questions, conversation, image/video requests)
-NEEDS_SEREN - requires the engine (code, files, complex multi-step tasks)
-NEEDS_CLARIFICATION - needs more info
+ANSWER_DIRECTLY - SAYON handles alone (questions, conversation, web search, image/video requests)
+NEEDS_SEREN - requires the engine (code, files, scans, execution, multi-step tasks)
+NEEDS_CLARIFICATION - needs more info before any classification is possible
 
-Rules: write/create/build/modify files -> CODE_REQUEST + NEEDS_SEREN. Image/draw/picture -> IMAGE_REQUEST + ANSWER_DIRECTLY. Video/animation/clip/movie -> VIDEO_REQUEST + ANSWER_DIRECTLY. Mentions SEREN by name -> NEEDS_SEREN. Simple Q&A -> ANSWER_DIRECTLY.
+Routing rules (in priority order):
+- write/create/build/modify/delete/fix/refactor files -> CODE_REQUEST + NEEDS_SEREN
+- scan/audit/analyse/run/execute/test + a file or path -> CODE_REQUEST + NEEDS_SEREN
+- search/find/look up/browse/check + anything -> QUESTION + ANSWER_DIRECTLY
+- weather/news/price/stock/sports/current events -> QUESTION + ANSWER_DIRECTLY
+- image/draw/picture/render/illustration -> IMAGE_REQUEST + ANSWER_DIRECTLY
+- video/animation/clip/movie -> VIDEO_REQUEST + ANSWER_DIRECTLY
+- mentions SEREN by name -> NEEDS_SEREN
+- simple Q&A, explain, summarise (no file target) -> QUESTION + ANSWER_DIRECTLY
+- NEEDS_CLARIFICATION only when the message could map to multiple incompatible operations with no context clue
+
+Examples:
+"what is a closure" -> QUESTION + ANSWER_DIRECTLY
+"search for the latest React release" -> QUESTION + ANSWER_DIRECTLY
+"what's the weather in Tokyo" -> QUESTION + ANSWER_DIRECTLY
+"scan vulnerable.ts for security issues" -> CODE_REQUEST + NEEDS_SEREN
+"audit my code" -> CODE_REQUEST + NEEDS_SEREN
+"run the tests" -> CODE_REQUEST + NEEDS_SEREN
+"create a login component" -> CODE_REQUEST + NEEDS_SEREN
+"draw a sunset" -> IMAGE_REQUEST + ANSWER_DIRECTLY
 
 Respond ONLY with JSON on one line: {"type":"TYPE","confidence":0.0,"routing":"ROUTING"}`;
 
@@ -164,11 +193,17 @@ export class IntentClassifier {
       if (lower.includes('plan') || lower.includes('approach') || lower.includes('architecture')) {
         return { type: 'PLAN_REQUEST', confidence: 0.6, routing: 'NEEDS_SEREN' };
       }
-      if (/write|create|modify|refactor|implement|add.*file|edit.*file/.test(lower)) {
+      if (/write|create|modify|refactor|implement|add.*file|edit.*file|fix.*file|delete.*file/.test(lower)) {
+        return { type: 'CODE_REQUEST', confidence: 0.6, routing: 'NEEDS_SEREN' };
+      }
+      if (/scan|audit|run.*test|execute|run.*script|build|compile/.test(lower)) {
         return { type: 'CODE_REQUEST', confidence: 0.6, routing: 'NEEDS_SEREN' };
       }
       if (/generate.*image|draw|create.*image|make.*image|create.*picture|generate.*picture|show.*picture/.test(lower)) {
         return { type: 'IMAGE_REQUEST', confidence: 0.6, routing: 'ANSWER_DIRECTLY' };
+      }
+      if (/search|look up|find.*online|browse|weather|news|price|stock|current/.test(lower)) {
+        return { type: 'QUESTION', confidence: 0.6, routing: 'ANSWER_DIRECTLY' };
       }
       return { type: 'QUESTION', confidence: 0.6, routing: 'ANSWER_DIRECTLY' };
     }

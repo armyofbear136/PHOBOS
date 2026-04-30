@@ -129,6 +129,19 @@ function connectSocket(): Promise<void> {
                 entry.reject(new Error(`mpv IPC error: ${msg.error}`));
               }
             }
+          } else if (msg.event === 'property-change' && msg.name === 'core-idle') {
+            // core-idle flips true when mpv finishes or fails to open a file.
+            if (msg.data === true && (_state === 'playing' || _state === 'paused')) {
+              _state = 'idle';
+              console.log('[MpvManager] stream ended or failed to open (core-idle)');
+            } else if (msg.data === false && _state === 'idle') {
+              _state = 'playing';
+            }
+          } else if (msg.event === 'end-file') {
+            if (msg.reason === 'error') {
+              _state = 'idle';
+              console.log(`[MpvManager] stream error: reason=${msg.reason} error=${msg.file_error ?? 'unknown'}`);
+            }
           }
         } catch { /* malformed line — ignore */ }
       }
@@ -221,9 +234,10 @@ export async function startMpv(): Promise<void> {
   const args = [
     '--idle',
     '--no-terminal',
-    '--keep-open=yes',      // stay open after file ends
-    '--force-window=yes',   // always open a window — audio-only streams won't silently vanish
+    '--keep-open=yes',           // stay open after file ends
+    '--force-window=yes',        // always open a window — audio-only streams won't silently vanish
     '--osd-level=1',
+    '--load-unsafe-playlists',   // allow HLS/m3u8 playlists loaded via IPC (blocked by default)
     ipcArg,
   ];
 
@@ -259,6 +273,9 @@ export async function startMpv(): Promise<void> {
   try {
     await waitForSocket(15_000);
     _state = 'idle';
+    // Subscribe to playback events so _state tracks reality, not optimism.
+    await sendCommand(['observe_property', 1, 'core-idle']);
+    await sendCommand(['enable_event', 'end-file']);
     console.log('[MpvManager] IPC ready.');
   } catch (err) {
     _state = 'error';

@@ -827,7 +827,9 @@ let activeModel = null, llamaPort = null, isReady = false, activeDevice = null;
 
 // Download progress — updated by ensureModel, read by /health
 let downloadState = {
-  phase:     'idle',       // 'idle' | 'detecting' | 'downloading' | 'loading' | 'ready'
+  phase:     'idle',       // 'idle' | 'prep_deps' | 'extracting' | 'detecting' | 'downloading' | 'loading' | 'ready'
+  dep:       '',           // current dep name during prep_deps phase
+  file:      '',           // current file being downloaded during prep_deps phase
   progress:  0,            // 0-100
   totalMB:   0,
   speedMBs:  0,
@@ -845,6 +847,8 @@ function startProxyServer() {
       res.end(JSON.stringify({
         status,
         phase:     downloadState.phase,
+        dep:       downloadState.dep      || null,
+        file:      downloadState.file     || null,
         progress:  downloadState.progress,
         totalMB:   downloadState.totalMB,
         speedMBs:  downloadState.speedMBs,
@@ -873,6 +877,23 @@ function proxyToLlama(req, res) {
 async function boot() {
   log(`PHOBOS-Lite starting — mode=${MODE}, port=${PORT}, excludePrimary=${EXCLUDE_PRIMARY}`);
   log(`Models dir: ${MODELS_DIR}`);
+
+  // ── Phase 0: Dependency prep ────────────────────────────────────────────────
+  // If llama-server is missing (fresh install, or dist/ was wiped by an update),
+  // download it from PHOBOS-DEPS before attempting hardware detection.
+  if (!fs.existsSync(LLAMA_SERVER)) {
+    log(`llama-server not found at ${LLAMA_SERVER} — running dep prep`);
+    downloadState.phase = 'prep_deps';
+    try {
+      await ensureLlamaServer();
+    } catch (err) {
+      log(`ERROR: dep prep failed: ${err.message}`);
+      log('PHOBOS-Lite cannot start without llama-server. Check your internet connection.');
+      downloadState.phase = 'idle';
+      return;
+    }
+  }
+
   log(`llama-server: ${LLAMA_SERVER}`);
   startProxyServer();
 
@@ -911,6 +932,165 @@ function parseArgs(argv) {
     if (argv[i].startsWith('--')) { out[argv[i]] = argv[i + 1]?.startsWith('--') ? true : argv[++i] ?? true; }
   }
   return out;
+}
+
+// ─── Dep Prep — llama-server download ────────────────────────────────────────
+//
+// Downloads llama-server from PHOBOS-DEPS if it's missing from the exe directory.
+// phobos-lite is a standalone server — it handles its own first-boot dep install
+// rather than relying on phobos-core's DepPrep.
+//
+// Only llama-server is handled here. All other deps (Jellyfin, Kavita, etc.) are
+// managed by phobos-core's DepPrep and are not needed by phobos-lite.
+
+const DEPS_BASE      = 'https://github.com/armyofbear136/PHOBOS-BUILDS/releases/download/PHOBOS-DEPS';
+const PHOBOS_HOME    = process.env.PHOBOS_DATA_DIR || path.join(os.homedir(), '.phobos');
+const LLAMA_VERSION  = 'b8940';
+
+const _LITE_INSTALL_HASH = (() => {
+  const crypto = require('crypto');
+  return crypto.createHash('sha1').update(path.dirname(process.execPath || __filename)).digest('hex').slice(0, 8);
+})();
+const LITE_MARKER = path.join(PHOBOS_HOME, `.lite-dep-prep-${_LITE_INSTALL_HASH}.ok`);
+
+function litePrepComplete() {
+  if (!fs.existsSync(LITE_MARKER)) return false;
+  try { return fs.statSync(LLAMA_SERVER).size >= 500_000; } catch { return false; }
+}
+
+function llamaArchiveForPlatform() {
+  const p = process.platform, a = process.arch;
+  if (p === 'win32'  && a === 'x64')   return `llama-${LLAMA_VERSION}-bin-win-vulkan-x64.zip`;
+  if (p === 'darwin' && a === 'arm64') return `llama-${LLAMA_VERSION}-bin-macos-arm64.tar.gz`;
+  if (p === 'darwin' && a === 'x64')   return `llama-${LLAMA_VERSION}-bin-macos-x64.tar.gz`;
+  if (p === 'linux'  && a === 'x64')   return `llama-${LLAMA_VERSION}-bin-ubuntu-vulkan-x64.tar.gz`;
+  if (p === 'linux'  && a === 'arm64') return null; // built from source — should already be in place
+  return null;
+}
+
+async function ensureLlamaServer() {
+  if (litePrepComplete()) return;
+
+  const archive = llamaArchiveForPlatform();
+  if (!archive) {
+    log('Platform has no pre-built llama-server archive — expected binary to be pre-built.');
+    throw new Error('llama-server binary missing and no archive available for this platform');
+  }
+
+  const url       = `${DEPS_BASE}/${archive}`;
+  const BIN_DIR   = path.dirname(LLAMA_SERVER);
+  const tmpDir    = path.join(PHOBOS_HOME, 'lite-dep-prep');
+  const tmpFile   = path.join(tmpDir, archive);
+
+  fs.mkdirSync(tmpDir,   { recursive: true });
+  fs.mkdirSync(PHOBOS_HOME, { recursive: true });
+
+  log(`Downloading ${archive} from PHOBOS-DEPS...`);
+  downloadState.dep  = 'LLM Server (llama.cpp)';
+  downloadState.file = archive;
+
+  // Download with progress
+  await new Promise((resolve, reject) => {
+    const doGet = (target, hops = 0) => {
+      if (hops > 12) { reject(new Error('Too many redirects')); return; }
+      const mod = target.startsWith('https') ? https : http;
+      const parsed = new URL(target);
+      const existingBytes = fs.existsSync(tmpFile) ? fs.statSync(tmpFile).size : 0;
+      const hdrs = existingBytes > 0 ? { Range: `bytes=${existingBytes}-` } : {};
+      mod.get({ hostname: parsed.hostname, path: parsed.pathname + parsed.search,
+                headers: { 'User-Agent': 'phobos-lite/1.0', ...hdrs } }, (res) => {
+        if ([301, 302, 307, 308].includes(res.statusCode) && res.headers.location) {
+          res.resume(); doGet(res.headers.location, hops + 1); return;
+        }
+        if (res.statusCode !== 200 && res.statusCode !== 206) {
+          res.resume(); reject(new Error(`HTTP ${res.statusCode} fetching ${target}`)); return;
+        }
+        const fromHeader = parseInt(res.headers['content-length'] || '0', 10);
+        const total = res.statusCode === 206 ? existingBytes + fromHeader : fromHeader;
+        const fd = fs.createWriteStream(tmpFile, { flags: existingBytes > 0 ? 'a' : 'w' });
+        let received = existingBytes;
+        res.on('data', (chunk) => {
+          received += chunk.length;
+          if (!fd.write(chunk)) { res.pause(); fd.once('drain', () => res.resume()); }
+          if (total > 0) {
+            downloadState.progress = Math.floor(received / total * 100);
+            downloadState.totalMB  = +(total / 1024 / 1024).toFixed(1);
+          }
+        });
+        res.on('end',    () => fd.end());
+        fd.on('finish', resolve);
+        fd.on('error',  reject);
+        res.on('error', reject);
+      }).on('error', reject);
+    };
+    doGet(url);
+  });
+
+  log(`Extracting ${archive}...`);
+  downloadState.phase = 'extracting';
+  const extractDir = tmpFile + '-extract';
+  fs.mkdirSync(extractDir, { recursive: true });
+
+  await new Promise((resolve, reject) => {
+    const { execFile } = require('child_process');
+    const isZip = archive.endsWith('.zip');
+    const isWin = process.platform === 'win32';
+    if (isZip && isWin) {
+      execFile('powershell', ['-NoProfile', '-Command',
+        `Expand-Archive -Force -LiteralPath '${tmpFile}' -DestinationPath '${extractDir}'`],
+        { timeout: 300_000 }, (err) => err ? reject(err) : resolve());
+    } else if (isZip) {
+      execFile('unzip', ['-o', '-q', tmpFile, '-d', extractDir],
+        { timeout: 300_000 }, (err) => err ? reject(err) : resolve());
+    } else {
+      execFile('tar', ['-xzf', tmpFile, '-C', extractDir],
+        { timeout: 300_000 }, (err) => err ? reject(err) : resolve());
+    }
+  });
+
+  // Find llama-server binary in extracted tree
+  const binName = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
+  const found   = findFileRec(extractDir, binName);
+  if (!found) throw new Error(`${binName} not found in ${archive} after extraction`);
+
+  fs.mkdirSync(BIN_DIR, { recursive: true });
+  fs.copyFileSync(found, LLAMA_SERVER);
+  if (process.platform !== 'win32') fs.chmodSync(LLAMA_SERVER, 0o755);
+
+  // On Windows, copy all companion DLLs from the same source directory
+  if (process.platform === 'win32') {
+    const srcDir = path.dirname(found);
+    for (const f of fs.readdirSync(srcDir)) {
+      if (f.endsWith('.dll')) {
+        fs.copyFileSync(path.join(srcDir, f), path.join(BIN_DIR, f));
+      }
+    }
+  }
+
+  // Cleanup
+  try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch {}
+  try { fs.unlinkSync(tmpFile); } catch {}
+
+  // Write marker
+  fs.mkdirSync(PHOBOS_HOME, { recursive: true });
+  fs.writeFileSync(LITE_MARKER, new Date().toISOString(), 'utf8');
+  log(`llama-server installed at ${LLAMA_SERVER}`);
+
+  // Reset download state
+  downloadState.dep  = '';
+  downloadState.file = '';
+  downloadState.progress = 0;
+}
+
+function findFileRec(dir, name) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return null; }
+  for (const ent of entries) {
+    const full = path.join(dir, ent.name);
+    if (ent.isFile() && ent.name === name) return full;
+    if (ent.isDirectory()) { const f = findFileRec(full, name); if (f) return f; }
+  }
+  return null;
 }
 
 function resolveLlamaServer() {

@@ -23,27 +23,23 @@ jobs:
             runner:       windows-latest
             artifact:     phobos-win32-x64
             pack:         zip
-            fetch-script: scripts/fetch-win32-x64.js
             build-full-target: win32-x64
           - label:        darwin-arm64
             runner:       macos-14
             artifact:     phobos-darwin-arm64
             pack:         tar
-            fetch-script: scripts/fetch-darwin-arm64.js
             build-full-target: darwin-arm64
 
           - label:        linux-x64
             runner:       ubuntu-latest
             artifact:     phobos-linux-x64
             pack:         tar
-            fetch-script: scripts/fetch-linux-x64.js
             build-full-target: linux-x64
 
           - label:        linux-arm64
             runner:       ubuntu-24.04-arm
             artifact:     phobos-linux-arm64
             pack:         tar
-            fetch-script: scripts/fetch-linux-arm64.js
             build-llama:  linux-arm64
             build-full-target: linux-arm64
 
@@ -88,20 +84,10 @@ jobs:
           " >> $GITHUB_OUTPUT
         shell: bash
 
-      - name: Fetch llama.cpp binaries
-        if: "!matrix.build-llama"
-        run: node ${{ matrix.fetch-script }} ${{ steps.pins.outputs.LLAMA_VERSION && format('--version {0}', steps.pins.outputs.LLAMA_VERSION) || '' }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Fetch sd.cpp binaries
-        # linux-arm64 skipped — no sd.cpp arm64 release binary exists
-        if: "!matrix.build-llama"
-        run: node scripts/fetch-sd-cpp.js ${{ steps.pins.outputs.SD_VERSION && format('--version {0}', steps.pins.outputs.SD_VERSION) || '' }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build llama-server from source (linux-arm64)
+      - name: Build llama-server from source (linux-arm64 — for phobos-lite)
+        # phobos-lite bundles llama-server. linux-arm64 has no release binary
+        # so we build from source and stage it into bin/ for build-lite.js.
+        # phobos-core does NOT use this — DepPrep installs llama-server at first boot.
         if: matrix.build-llama == 'linux-arm64'
         run: |
           sudo apt-get update -q

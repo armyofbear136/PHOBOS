@@ -3890,28 +3890,30 @@ export function resolveLlamaServerBin(): string {
  * Linux/macOS: single binary handles all backends via env vars.
  */
 export function resolveSdServerBin(sdBinary: 'cuda' | 'vulkan' | 'rocm' | 'cpu' = 'cuda'): string {
-  const platform = process.platform;
-  const arch     = process.arch;
-  const seaDir   = path.dirname(process.execPath);
-  const binDir   = path.join(path.resolve(_dirname, '..'), 'bin');
+  const platform  = process.platform;
+  const arch      = process.arch;
+  const seaDir    = path.dirname(process.execPath);
+  const binDir    = path.join(path.resolve(_dirname, '..'), 'bin');
+  const envBinDir = process.env.PHOBOS_BIN_DIR;
 
   // Linux/macOS: single binary, flat layout (Vulkan/Metal)
   // ROCm on Linux uses an isolated subdirectory (sd-rocm/) to avoid .so conflicts.
   if (platform !== 'win32') {
+    const unixDirs = [...(envBinDir ? [envBinDir] : []), seaDir, binDir];
     if (sdBinary === 'rocm') {
-      for (const dir of [seaDir, binDir]) {
+      for (const dir of unixDirs) {
         const p = path.join(dir, 'sd-rocm', `sd-server-${platform}-${arch}-rocm`);
         if (fs.existsSync(p)) return p;
       }
       // Also check flat layout (dev builds)
-      for (const dir of [seaDir, binDir]) {
+      for (const dir of unixDirs) {
         const p = path.join(dir, `sd-server-${platform}-${arch}-rocm`);
         if (fs.existsSync(p)) return p;
       }
       // ROCm binary not present — fall through to Vulkan
       console.warn('[resolveSdServerBin] ROCm binary not found, falling back to Vulkan');
     }
-    for (const dir of [seaDir, binDir]) {
+    for (const dir of unixDirs) {
       const p = path.join(dir, `sd-server-${platform}-${arch}`);
       if (fs.existsSync(p)) return p;
     }
@@ -3923,7 +3925,7 @@ export function resolveSdServerBin(sdBinary: 'cuda' | 'vulkan' | 'rocm' | 'cpu' 
   const byCandidates = (dirs: string[], file: string): Candidate[] =>
     dirs.map(dir => ({ file, dir }));
 
-  const searchDirs = [seaDir, binDir];
+  const searchDirs = [...(envBinDir ? [envBinDir] : []), seaDir, binDir];
   const cudaCandidates: Candidate[] = [
     ...byCandidates(searchDirs.map(d => path.join(d, 'sd-cuda')), `sd-server-${platform}-${arch}-cuda.exe`),
     ...byCandidates(searchDirs, `sd-server-${platform}-${arch}-cuda.exe`), // flat fallback

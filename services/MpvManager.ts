@@ -308,13 +308,14 @@ export interface LoadOptions {
 export async function loadFile(url: string, opts: LoadOptions = { userAgent: null, referrer: null }): Promise<void> {
   if (_state === 'stopped' || _state === 'error') await startMpv();
 
-  // Per-file options must be a JSON object (key→value map), not a string.
-  // loadfile signature: ["loadfile", url, flags, {option: value, ...}]
   const ua = opts.userAgent ?? DEFAULT_UA;
   const perFileOpts: Record<string, string> = { 'user-agent': ua };
   if (opts.referrer) perFileOpts['referrer'] = opts.referrer;
 
-  await sendCommand(['loadfile', url, 'replace', perFileOpts]);
+  // loadfile signature (mpv ≥ 0.38): [url, flags, index, {options}]
+  // index = -1 means "don't use insert-at, just replace" — required placeholder
+  // when passing per-file options as the 4th argument.
+  await sendCommand(['loadfile', url, 'replace', -1, perFileOpts]);
   _state = 'playing';
 }
 

@@ -1,7 +1,7 @@
 {
-  "name": "phobos-core",
+  "name": "dual-reasoning",
   "version": "1.0.0",
-  "description": "Self Sovereign Creative AI Operating System and Task Execution Engine",
+  "description": "Local AI Coding Engine",
   "main": "server.ts",
   "type": "module",
   "scripts": {
@@ -66,6 +66,12 @@
     "duckdb-async": {
       "duckdb": "1.4.4"
     },
-    "node-gyp": "^10.3.1"
+    "node-gyp": "^10.3.1",
+    "tree-sitter-javascript": {
+      "tree-sitter": "$tree-sitter"
+    },
+    "tree-sitter-typescript": {
+      "tree-sitter": "$tree-sitter"
+    }
   }
 }

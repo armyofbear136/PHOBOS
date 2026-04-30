@@ -1,11 +1,11 @@
 name: Build llama-server linux-arm64
 
 # Run manually when you want to update the arm64 llama binary on PHOBOS-DEPS.
-# Downloads the artifact, extracts llama-server-linux-arm64, and uploads it
-# to PHOBOS-DEPS via the GitHub release API.
+# Uses QEMU cross-compilation on a standard ubuntu-latest (x64) runner —
+# no paid arm64 runner required, works on the free GitHub Actions tier.
 #
 # After this completes:
-#   1. Download the artifact from the Actions run
+#   1. Download the artifact from the Actions run (or let the script do it)
 #   2. Upload llama-server-linux-arm64 to PHOBOS-DEPS release
 
 on:
@@ -18,7 +18,7 @@ on:
 
 jobs:
   build-llama-arm64:
-    runs-on: ubuntu-24.04-arm64
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -29,35 +29,42 @@ jobs:
           if [ -n "${{ github.event.inputs.llama_version }}" ]; then
             echo "LLAMA_VERSION=${{ github.event.inputs.llama_version }}" >> $GITHUB_OUTPUT
           else
-            LLAMA=$(node -e "const m=require('./scripts/bin-manifest.json'); console.log(m['linux-arm64']?.llama ?? '')")
+            LLAMA=$(node -e "const m=require('./scripts/bin-manifest.json'); console.log(m['linux-arm64']?.llama ?? m['linux-x64']?.llama ?? '')")
             echo "LLAMA_VERSION=$LLAMA" >> $GITHUB_OUTPUT
           fi
 
-      - name: Install build dependencies
+      - name: Install cross-compile toolchain + QEMU
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake git ninja-build
+            build-essential cmake git ninja-build \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            qemu-user-static binfmt-support
 
       - name: Clone llama.cpp at pinned version
         run: |
           VERSION="${{ steps.pins.outputs.LLAMA_VERSION }}"
           if [ -z "$VERSION" ]; then
-            echo "No version pinned — using latest"
+            echo "No version pinned — using latest main"
             git clone --depth 1 https://github.com/ggml-org/llama.cpp llama-src
           else
             git clone https://github.com/ggml-org/llama.cpp llama-src
             cd llama-src && git checkout "$VERSION"
           fi
 
-      - name: Build llama-server
+      - name: Build llama-server (cross-compile for linux-arm64)
         run: |
           cd llama-src
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+            -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
             -DLLAMA_BUILD_SERVER=ON \
             -DLLAMA_BUILD_TESTS=OFF \
-            -DLLAMA_BUILD_EXAMPLES=OFF
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DGGML_NATIVE=OFF
           cmake --build build --target llama-server -j$(nproc)
 
       - name: Stage binary
@@ -65,6 +72,8 @@ jobs:
           mkdir -p staging
           cp llama-src/build/bin/llama-server staging/llama-server-linux-arm64
           chmod +x staging/llama-server-linux-arm64
+          # Verify it's actually an arm64 binary
+          file staging/llama-server-linux-arm64
           ls -lh staging/
 
       - name: Upload llama-server-linux-arm64 artifact

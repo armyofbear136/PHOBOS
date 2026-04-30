@@ -10,6 +10,7 @@ import { ModelConfigStore, PROVIDERS, getCoordinatorModels, getEngineModels } fr
 import { isConfigOptimal, detectHardware } from '../phobos/PhobosLocalManager.js';
 import { getSandboxExecutorEnabled, setSandboxExecutorEnabled } from '../db/ModelPathStore.js';
 import { getCamofoxStatus } from '../phobos/CamofoxManager.js';
+import { snapshot as bootSnapshot } from '../boot/BootState.js';
 
 // ── Config optimal cache — avoids running the scoring engine on every 5s poll ──
 let _optimalCache: { optimal: boolean; recommendedSayon: string; recommendedSeren: string } | null = null;
@@ -79,6 +80,8 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
       visionCapability: getModelVisionCapability(),
       sandboxExecutorEnabled: await getSandboxExecutorEnabled(db),
       camofox: getCamofoxStatus(),
+      bootPhase:    bootSnapshot().phase,
+      bootProgress: bootSnapshot().progress,
       timestamp: new Date().toISOString(),
     });
   });

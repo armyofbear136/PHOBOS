@@ -19,14 +19,11 @@
  * PolarisPlayer floating widget pattern.
  */
 
-import { spawn, execFile, type ChildProcess } from 'child_process';
-import { promisify } from 'util';
+import { spawn, type ChildProcess } from 'child_process';
 import * as net  from 'net';
 import * as fs   from 'fs';
 import * as path from 'path';
 import * as os   from 'os';
-
-const execFileAsync = promisify(execFile);
 
 // ── IPC socket path ───────────────────────────────────────────────────────────
 
@@ -74,12 +71,22 @@ export interface MpvStatus {
 let _state: MpvState   = 'stopped';
 let _error: string | null = null;
 
-// ── mpv availability check ────────────────────────────────────────────────────
+// ── Portable binary resolution ────────────────────────────────────────────────
+// mpv is not on the system PATH. It lives in ~/.phobos/services/mpv/ and is
+// placed there by scripts/fetch-mpv.js / DepPrep at first boot.
 
-export async function isMpvAvailable(): Promise<boolean> {
+const MPV_SERVICE_DIR = path.join(os.homedir(), '.phobos', 'services', 'mpv');
+
+export function resolveMpvBin(): string {
+  return path.join(MPV_SERVICE_DIR, process.platform === 'win32' ? 'mpv.exe' : 'mpv');
+}
+
+// ── mpv availability check ────────────────────────────────────────────────────
+// Sync fs check — no process spawn. Safe to call on every status poll.
+
+export function isMpvAvailable(): boolean {
   try {
-    await execFileAsync('mpv', ['--version']);
-    return true;
+    return fs.statSync(resolveMpvBin()).size > 1_000_000;
   } catch {
     return false;
   }
@@ -191,9 +198,9 @@ export async function startMpv(): Promise<void> {
   if (_state === 'idle' || _state === 'playing' || _state === 'paused') return;
   if (_state === 'starting') return;
 
-  if (!(await isMpvAvailable())) {
+  if (!isMpvAvailable()) {
     _state = 'error';
-    _error = 'mpv not found. Install: Linux: apt install mpv | macOS: brew install mpv | Windows: winget install mpv';
+    _error = `mpv binary not found at ${resolveMpvBin()}. Run: node scripts/fetch-mpv.js`;
     throw new Error(_error);
   }
 
@@ -215,14 +222,16 @@ export async function startMpv(): Promise<void> {
     '--idle',
     '--no-terminal',
     '--keep-open=yes',      // stay open after file ends
+    '--force-window=yes',   // always open a window — audio-only streams won't silently vanish
     '--osd-level=1',
     ipcArg,
   ];
 
-  const proc = spawn('mpv', args, {
+  const proc = spawn(resolveMpvBin(), args, {
     stdio:       ['ignore', 'pipe', 'pipe'],
+    cwd:         MPV_SERVICE_DIR,  // mpv must run from its own dir to resolve DLLs
     detached:    false,
-    windowsHide: false,     // mpv renders its own window — must be visible
+    windowsHide: false,            // mpv renders its own window — must be visible
   });
 
   proc.stdout?.on('data', (d: Buffer) => {
@@ -280,13 +289,32 @@ export async function stopMpv(): Promise<void> {
 
 // ── Playback control ──────────────────────────────────────────────────────────
 
+// Default UA — accepted by most CDNs that block empty or curl-like user agents.
+const DEFAULT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+export interface LoadOptions {
+  userAgent: string | null;
+  referrer:  string | null;
+}
+
 /**
  * Load a file or URL. Starts mpv if not already running.
  * url can be a filesystem path or any URL mpv supports (HLS, HTTP, etc.)
+ *
+ * user-agent and referrer are passed as per-file options in the loadfile
+ * IPC command (4th arg) so they apply to HLS segment fetches, not just
+ * the manifest request.
  */
-export async function loadFile(url: string): Promise<void> {
+export async function loadFile(url: string, opts: LoadOptions = { userAgent: null, referrer: null }): Promise<void> {
   if (_state === 'stopped' || _state === 'error') await startMpv();
-  await sendCommand(['loadfile', url, 'replace']);
+
+  // Per-file options must be a JSON object (key→value map), not a string.
+  // loadfile signature: ["loadfile", url, flags, {option: value, ...}]
+  const ua = opts.userAgent ?? DEFAULT_UA;
+  const perFileOpts: Record<string, string> = { 'user-agent': ua };
+  if (opts.referrer) perFileOpts['referrer'] = opts.referrer;
+
+  await sendCommand(['loadfile', url, 'replace', perFileOpts]);
   _state = 'playing';
 }
 
@@ -332,7 +360,7 @@ export async function stop(): Promise<void> {
 // ── Status query ──────────────────────────────────────────────────────────────
 
 export async function getMpvStatus(): Promise<MpvStatus> {
-  const available = await isMpvAvailable();
+  const available = isMpvAvailable();
 
   if (!player.ready) {
     return { state: _state, available, title: null, duration: null, position: null, volume: null, paused: false };

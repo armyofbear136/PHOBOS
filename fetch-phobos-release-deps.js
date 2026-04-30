@@ -476,21 +476,27 @@ for (const [label, name] of [
 console.log('\n── Jellyfin ───────────────────────────────────────────────────');
 console.log(`   jellyfin: ${V.JELLYFIN}   ffmpeg: ${V.JELLYFIN_FFMPEG}`);
 
-const JF_GH    = `https://github.com/jellyfin/jellyfin/releases/download/v${V.JELLYFIN}`;
-const JF_WIN   = `https://repo.jellyfin.org/files/server/windows/latest-stable/amd64`;
-const FFMP_GH  = `https://github.com/jellyfin/jellyfin-ffmpeg/releases/download/v${V.JELLYFIN_FFMPEG}`;
-const FFMP_D   = V.JELLYFIN_DISTRO;
+const JF_REPO_LIN_X64   = `https://repo.jellyfin.org/files/server/linux/latest-stable/amd64`;
+const JF_REPO_LIN_ARM64 = `https://repo.jellyfin.org/files/server/linux/latest-stable/arm64`;
+const JF_REPO_MAC_X64   = `https://repo.jellyfin.org/files/server/macos/latest-stable/amd64`;
+const JF_REPO_MAC_ARM64 = `https://repo.jellyfin.org/files/server/macos/latest-stable/arm64`;
+const JF_WIN             = `https://repo.jellyfin.org/files/server/windows/latest-stable/amd64`;
+const FFMP_REPO_X64     = `https://repo.jellyfin.org/files/ffmpeg/linux/latest-7.x/amd64`;
+const FFMP_REPO_ARM64   = `https://repo.jellyfin.org/files/ffmpeg/linux/latest-7.x/arm64`;
+const FFMP_V             = V.JELLYFIN_FFMPEG;
 
 const jellyfinFiles = [
-  // Server archives — keep original upstream filenames for clarity
-  { label: 'jellyfin linux-x64',    name: `jellyfin_${V.JELLYFIN}_linux-x64.tar.gz`,    url: `${JF_GH}/jellyfin_${V.JELLYFIN}_linux-x64.tar.gz`,    min: 70_000_000 },
-  { label: 'jellyfin linux-arm64',  name: `jellyfin_${V.JELLYFIN}_linux-arm64.tar.gz`,  url: `${JF_GH}/jellyfin_${V.JELLYFIN}_linux-arm64.tar.gz`,  min: 65_000_000 },
-  { label: 'jellyfin win32-x64',    name: `jellyfin_${V.JELLYFIN}-amd64.zip`,           url: `${JF_WIN}/jellyfin_${V.JELLYFIN}-amd64.zip`,           min: 60_000_000 },
-  { label: 'jellyfin darwin-arm64', name: `jellyfin_${V.JELLYFIN}_macos-arm64.tar.gz`,  url: `${JF_GH}/jellyfin_${V.JELLYFIN}_macos-arm64.tar.gz`,  min: 70_000_000 },
-  { label: 'jellyfin darwin-x64',   name: `jellyfin_${V.JELLYFIN}_macos-x64.tar.gz`,   url: `${JF_GH}/jellyfin_${V.JELLYFIN}_macos-x64.tar.gz`,    min: 70_000_000 },
-  // jellyfin-ffmpeg — Linux only
-  { label: 'jellyfin-ffmpeg linux-x64',   name: `jellyfin-ffmpeg7_${V.JELLYFIN_FFMPEG}-${FFMP_D}_amd64.tar.gz`, url: `${FFMP_GH}/jellyfin-ffmpeg7_${V.JELLYFIN_FFMPEG}-${FFMP_D}_amd64.tar.gz`, min: 35_000_000 },
-  { label: 'jellyfin-ffmpeg linux-arm64', name: `jellyfin-ffmpeg7_${V.JELLYFIN_FFMPEG}-${FFMP_D}_arm64.tar.gz`, url: `${FFMP_GH}/jellyfin-ffmpeg7_${V.JELLYFIN_FFMPEG}-${FFMP_D}_arm64.tar.gz`, min: 30_000_000 },
+  // Linux — repo.jellyfin.org, filename without underscore-version suffix
+  { label: 'jellyfin linux-x64',    name: `jellyfin_${V.JELLYFIN}-linux-x64.tar.gz`,   url: `${JF_REPO_LIN_X64}/jellyfin_${V.JELLYFIN}-amd64.tar.gz`,   min: 80_000_000 },
+  { label: 'jellyfin linux-arm64',  name: `jellyfin_${V.JELLYFIN}-linux-arm64.tar.gz`, url: `${JF_REPO_LIN_ARM64}/jellyfin_${V.JELLYFIN}-arm64.tar.gz`, min: 75_000_000 },
+  // Windows — repo.jellyfin.org
+  { label: 'jellyfin win32-x64',    name: `jellyfin_${V.JELLYFIN}-amd64.zip`,          url: `${JF_WIN}/jellyfin_${V.JELLYFIN}-amd64.zip`,               min: 60_000_000 },
+  // macOS — repo.jellyfin.org, .tar.xz
+  { label: 'jellyfin darwin-arm64', name: `jellyfin_${V.JELLYFIN}-macos-arm64.tar.xz`, url: `${JF_REPO_MAC_ARM64}/jellyfin_${V.JELLYFIN}-arm64.tar.xz`, min: 60_000_000 },
+  { label: 'jellyfin darwin-x64',   name: `jellyfin_${V.JELLYFIN}-macos-x64.tar.xz`,  url: `${JF_REPO_MAC_X64}/jellyfin_${V.JELLYFIN}-amd64.tar.xz`,  min: 55_000_000 },
+  // jellyfin-ffmpeg — Linux only, repo.jellyfin.org portable builds
+  { label: 'jellyfin-ffmpeg linux-x64',   name: `jellyfin-ffmpeg_${FFMP_V}-linux-x64.tar.xz`,   url: `${FFMP_REPO_X64}/jellyfin-ffmpeg_${FFMP_V}_portable_linux64-gpl.tar.xz`,   min: 35_000_000 },
+  { label: 'jellyfin-ffmpeg linux-arm64', name: `jellyfin-ffmpeg_${FFMP_V}-linux-arm64.tar.xz`,  url: `${FFMP_REPO_ARM64}/jellyfin-ffmpeg_${FFMP_V}_portable_linuxarm64-gpl.tar.xz`, min: 30_000_000 },
 ];
 
 for (const f of jellyfinFiles) {
@@ -647,6 +653,74 @@ for (const f of nodeFiles) {
   const destName = f.rename ?? f.name;
   record(f.label, destName, await download(f.label, f.url, out(destName), f.min));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 12. PANDOC  (document converter — backend only)
+// ─────────────────────────────────────────────────────────────────────────────
+
+console.log('\n── Pandoc ─────────────────────────────────────────────────────');
+
+const PANDOC_VERSION = '3.6.4';
+const PANDOC_GH = `https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}`;
+
+const pandocFiles = [
+  { label: 'pandoc win32-x64',    name: `pandoc-${PANDOC_VERSION}-windows-x86_64.zip`,  url: `${PANDOC_GH}/pandoc-${PANDOC_VERSION}-windows-x86_64.zip`,  min: 20_000_000 },
+  { label: 'pandoc darwin-arm64', name: `pandoc-${PANDOC_VERSION}-arm64-macOS.zip`,      url: `${PANDOC_GH}/pandoc-${PANDOC_VERSION}-arm64-macOS.zip`,      min: 18_000_000 },
+  { label: 'pandoc darwin-x64',   name: `pandoc-${PANDOC_VERSION}-x86_64-macOS.zip`,    url: `${PANDOC_GH}/pandoc-${PANDOC_VERSION}-x86_64-macOS.zip`,    min: 20_000_000 },
+  { label: 'pandoc linux-x64',    name: `pandoc-${PANDOC_VERSION}-linux-amd64.tar.gz`,  url: `${PANDOC_GH}/pandoc-${PANDOC_VERSION}-linux-amd64.tar.gz`,  min: 20_000_000 },
+  { label: 'pandoc linux-arm64',  name: `pandoc-${PANDOC_VERSION}-linux-arm64.tar.gz`,  url: `${PANDOC_GH}/pandoc-${PANDOC_VERSION}-linux-arm64.tar.gz`,  min: 18_000_000 },
+];
+
+for (const f of pandocFiles) {
+  record(f.label, f.name, await download(f.label, f.url, out(f.name), f.min));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 13. MPV  (video player for Media Hub)
+// ─────────────────────────────────────────────────────────────────────────────
+
+console.log('\n── mpv ────────────────────────────────────────────────────────');
+
+const MPV_GH = 'https://github.com/mpv-player/mpv/releases/download/v0.41.0';
+
+const mpvFiles = [
+  { label: 'mpv win32-x64',    name: 'mpv-v0.41.0-x86_64-w64-mingw32.zip',  url: `${MPV_GH}/mpv-v0.41.0-x86_64-w64-mingw32.zip`,    min: 30_000_000 },
+  { label: 'mpv darwin-arm64', name: 'mpv-v0.41.0-macos-26-arm.zip',          url: `${MPV_GH}/mpv-v0.41.0-macos-26-arm.zip`,           min: 5_000_000  },
+  { label: 'mpv darwin-x64',   name: 'mpv-v0.41.0-macos-15-intel.zip',        url: `${MPV_GH}/mpv-v0.41.0-macos-15-intel.zip`,         min: 5_000_000  },
+];
+
+for (const f of mpvFiles) {
+  record(f.label, f.name, await download(f.label, f.url, out(f.name), f.min));
+}
+
+// mpv linux-x64: no official static binary from mpv project.
+// Install via package manager on your Linux machine and upload the binary manually:
+//   which mpv  OR  apt show mpv  OR  flatpak run io.mpv.Mpv
+//   Upload the binary as: mpv-linux-x64  to PHOBOS-DEPS release
+manual.push({
+  target:  'mpv linux-x64',
+  outFile: 'mpv-linux-x64',
+  instructions: [
+    '# On your Linux machine (static build via package manager):',
+    '# Option A — system mpv (if statically linked or appimage):',
+    '#   cp $(which mpv) ./mpv-linux-x64',
+    '# Option B — download AppImage and extract:',
+    '#   wget https://github.com/zhongfly/mpv-packaging/releases/latest/download/mpv-x86_64.AppImage',
+    '#   chmod +x mpv-x86_64.AppImage && ./mpv-x86_64.AppImage --appimage-extract',
+    '#   cp squashfs-root/usr/bin/mpv ./mpv-linux-x64',
+    '# Upload as: mpv-linux-x64  to PHOBOS-DEPS release',
+  ],
+});
+// mpv linux-arm64: same situation — no static binary available.
+manual.push({
+  target:  'mpv linux-arm64',
+  outFile: 'mpv-linux-arm64',
+  instructions: [
+    '# On your Linux ARM64 machine:',
+    '#   cp $(which mpv) ./mpv-linux-arm64',
+    '# Upload as: mpv-linux-arm64  to PHOBOS-DEPS release',
+  ],
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SUMMARY

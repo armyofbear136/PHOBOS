@@ -67,13 +67,15 @@ const CACHE_TTL = 30 * 60 * 1000;
 // ── Channel type ──────────────────────────────────────────────────────────────
 
 export interface IptvChannel {
-  name:     string;
-  url:      string;
-  logo:     string | null;
-  group:    string | null;
-  language: string | null;
-  country:  string | null;
-  tvgId:    string | null;
+  name:      string;
+  url:       string;
+  logo:      string | null;
+  group:     string | null;
+  language:  string | null;
+  country:   string | null;
+  tvgId:     string | null;
+  userAgent: string | null;
+  referrer:  string | null;
 }
 
 // ── M3U parser ────────────────────────────────────────────────────────────────
@@ -103,7 +105,18 @@ function parseM3U(text: string): IptvChannel[] {
       const commaIdx = trimmed.lastIndexOf(',');
       const name     = commaIdx >= 0 ? trimmed.slice(commaIdx + 1).trim() : (tvgName ?? 'Unknown');
 
-      meta = { name: name || tvgName || 'Unknown', logo, group, language, country, tvgId };
+      meta = { name: name || tvgName || 'Unknown', logo, group, language, country, tvgId, userAgent: null, referrer: null };
+      continue;
+    }
+
+    // #EXTVLCOPT lines carry stream-specific headers — must appear between EXTINF and URL.
+    if (trimmed.startsWith('#EXTVLCOPT:') && meta) {
+      const val = trimmed.slice('#EXTVLCOPT:'.length);
+      if (val.toLowerCase().startsWith('http-user-agent=')) {
+        meta.userAgent = val.slice('http-user-agent='.length).trim() || null;
+      } else if (val.toLowerCase().startsWith('http-referrer=')) {
+        meta.referrer = val.slice('http-referrer='.length).trim() || null;
+      }
       continue;
     }
 
@@ -111,13 +124,15 @@ function parseM3U(text: string): IptvChannel[] {
       // This line is the stream URL.
       if (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('rtmp://')) {
         channels.push({
-          name:     meta.name     ?? 'Unknown',
-          url:      trimmed,
-          logo:     meta.logo     ?? null,
-          group:    meta.group    ?? null,
-          language: meta.language ?? null,
-          country:  meta.country  ?? null,
-          tvgId:    meta.tvgId    ?? null,
+          name:      meta.name      ?? 'Unknown',
+          url:       trimmed,
+          logo:      meta.logo      ?? null,
+          group:     meta.group     ?? null,
+          language:  meta.language  ?? null,
+          country:   meta.country   ?? null,
+          tvgId:     meta.tvgId     ?? null,
+          userAgent: meta.userAgent ?? null,
+          referrer:  meta.referrer  ?? null,
         });
       }
       meta = null;
@@ -180,7 +195,7 @@ function checkStream(url: string): Promise<boolean> {
           path:     parsed.pathname + parsed.search,
           method:   'HEAD',
           timeout:  4_000,
-          headers:  { 'User-Agent': 'phobos-iptv/1.0' },
+          headers:  { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' },
         },
         (res: { statusCode: number }) => {
           // 200, 206 = live. 403 = geo-blocked but server is up. Anything else = treat as dead.
@@ -250,7 +265,7 @@ export async function registerIptvRoutes(fastify: FastifyInstance): Promise<void
   );
 
   // ── Stream liveness check ─────────────────────────────────────────────────
-  // Accepts up to 20 URLs. Returns { url, live } for each.
+  // Accepts up to 50 URLs per call. Returns { url, live } for each.
   // Checks run concurrently — total latency ≈ single check timeout (4s).
   fastify.post<{ Body: { urls: string[] } }>('/api/iptv/check', async (req, reply) => {
     const { urls } = req.body;
@@ -258,7 +273,7 @@ export async function registerIptvRoutes(fastify: FastifyInstance): Promise<void
       return reply.status(400).send({ error: 'urls array required' });
     }
 
-    const batch  = urls.slice(0, 20); // hard cap
+    const batch   = urls.slice(0, 50); // 50 concurrent HEAD requests at 4s timeout
     const results = await Promise.all(
       batch.map(async (url) => ({
         url,

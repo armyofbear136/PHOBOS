@@ -258,18 +258,10 @@ if (!usedMaster) {
   }
   report.fetched = true;
 
-  // Portable node binary -- required by CamofoxManager and MeridianManager.
-  // In production, process.execPath is the PHOBOS SEA binary; these managers
-  // need a real node binary to spawn camofox-browser and meridian/server.js.
-  console.log('\n  Fetching portable node runtime binary...');
-  try {
-    run('node scripts/fetch-node.js');
-  } catch (e) {
-    console.warn('\n  fetch-node.js failed (non-fatal):', e.message?.split('\n')[0] ?? e);
-    console.warn('   Camofox and Meridian will not work in production until this is resolved.');
-    console.warn('   Run manually: node scripts/fetch-node.js');
-  }
-
+  // Note: node runtime binary is staged by build.js if present in bin/.
+  // On production installs, DepPrep downloads it from PHOBOS-DEPS at first boot.
+  // To pre-populate for dev: download node-{platform}-{arch}[.exe] from the
+  // PHOBOS-DEPS release and place it in bin/.
 
   // Fallback: copy any missing critical files from bin-master/ if available
   if (hasMaster) {

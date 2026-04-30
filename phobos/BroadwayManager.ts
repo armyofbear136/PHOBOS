@@ -369,3 +369,19 @@ async function startGimpNative(): Promise<void> {
     'gimp-native',
   );
 }
+
+// ── Boot-time exit guard ───────────────────────────────────────────────────
+// Registered at module load — before server.ts wires its own shutdown handlers.
+// Guarantees broadwayd is killed even if Phobos crashes during boot, before
+// continueBootSequence() runs, or if process.exit() is called directly.
+// stopBroadway() is idempotent — safe to call redundantly from server.ts too.
+
+async function emergencyStop(): Promise<void> {
+  await stopBroadway().catch(() => {});
+}
+
+process.once('exit',               () => { void emergencyStop(); });
+process.once('SIGINT',             () => { void emergencyStop().then(() => process.exit(0)); });
+process.once('SIGTERM',            () => { void emergencyStop().then(() => process.exit(0)); });
+process.once('uncaughtException',  () => { void emergencyStop(); });
+process.once('unhandledRejection', () => { void emergencyStop(); });

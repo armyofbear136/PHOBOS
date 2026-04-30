@@ -25,7 +25,6 @@ jobs:
             pack:         zip
             fetch-script: scripts/fetch-win32-x64.js
             build-full-target: win32-x64
-
           - label:        darwin-arm64
             runner:       macos-14
             artifact:     phobos-darwin-arm64
@@ -145,13 +144,18 @@ jobs:
         run: node scripts/build-lite.js ${{ matrix.build-full-target }}
         continue-on-error: true
 
+      - name: Write version.txt
+        run: echo "${{ steps.version.outputs.CORE_VERSION }}" > version.txt
+        shell: bash
+
       - name: Package phobos-core (tar)
         if: matrix.pack == 'tar'
         run: tar -czf ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.tar.gz -C dist .
 
-      - name: Package phobos-core (7z)
+      - name: Package phobos-core (zip)
         if: matrix.pack == 'zip'
-        run: 7z a -mx=9 ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.7z ./dist/*
+        shell: pwsh
+        run: Compress-Archive -Path dist\* -DestinationPath "${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.zip"
 
       - name: Upload phobos-core artifact (tar)
         if: matrix.pack == 'tar'
@@ -161,12 +165,19 @@ jobs:
           path: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.tar.gz
           retention-days: 7
 
-      - name: Upload phobos-core artifact (7z)
+      - name: Upload phobos-core artifact (zip)
         if: matrix.pack == 'zip'
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}
-          path: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.7z
+          path: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.zip
+          retention-days: 7
+
+      - name: Upload version.txt
+        uses: actions/upload-artifact@v6
+        with:
+          name: version-${{ matrix.label }}
+          path: version.txt
           retention-days: 7
 
       - name: Upload phobos-lite artifact
@@ -203,5 +214,5 @@ jobs:
           draft:                  false
           prerelease:             false
           generate_release_notes: true
-          files:                  release-artifacts/**/*.{tar.gz,7z,zip}
+          files:                  release-artifacts/**/*.{tar.gz,zip}
           fail_on_unmatched_files: false

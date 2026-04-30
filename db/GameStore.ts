@@ -48,6 +48,15 @@ CREATE TABLE IF NOT EXISTS game_decorations (
   tile_y      INTEGER,
   placed_at   TIMESTAMP DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS game_buildings (
+  id          VARCHAR PRIMARY KEY,
+  building_id VARCHAR NOT NULL,
+  tile_x      INTEGER NOT NULL,
+  tile_y      INTEGER NOT NULL,
+  state       VARCHAR DEFAULT 'placed',
+  placed_at   TIMESTAMP DEFAULT now()
+);
 `;
 
 /** Migrate old schema — add columns that may be missing. */
@@ -118,6 +127,15 @@ export interface GameDecoration {
   item_id: string;
   tile_x: number;
   tile_y: number;
+  placed_at: string;
+}
+
+export interface GameBuilding {
+  id: string;
+  building_id: string;
+  tile_x: number;
+  tile_y: number;
+  state: 'placed' | 'building' | 'built';
   placed_at: string;
 }
 
@@ -336,5 +354,29 @@ export class GameStore {
 
   async removeDecoration(id: string): Promise<void> {
     await this.db.run(`DELETE FROM game_decorations WHERE id = ?`, [id]);
+  }
+
+  // ── Buildings ──────────────────────────────────────────────────────────────
+
+  async getBuildings(): Promise<GameBuilding[]> {
+    return this.db.query<GameBuilding>(
+      `SELECT * FROM game_buildings ORDER BY placed_at ASC`
+    );
+  }
+
+  async placeBuilding(buildingId: string, tileX: number, tileY: number): Promise<GameBuilding> {
+    const id = crypto.randomUUID();
+    await this.db.run(
+      `INSERT INTO game_buildings (id, building_id, tile_x, tile_y) VALUES (?, ?, ?, ?)`,
+      [id, buildingId, tileX, tileY]
+    );
+    const rows = await this.db.query<GameBuilding>(
+      `SELECT * FROM game_buildings WHERE id = ?`, [id]
+    );
+    return rows[0];
+  }
+
+  async removeBuilding(id: string): Promise<void> {
+    await this.db.run(`DELETE FROM game_buildings WHERE id = ?`, [id]);
   }
 }

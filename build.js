@@ -503,34 +503,30 @@ export async function buildForPlatform({
   // staged alongside everything else in the bin/ loop below.
   // CamofoxManager and MeridianManager require this at runtime — process.execPath
   // in production is the SEA binary and cannot execute .js scripts.
-  (function ensureNodeBinary() {
-    const nodeName = process.platform === 'win32'
-      ? 'node-' + process.platform + '-' + process.arch + '.exe'
-      : 'node-' + process.platform + '-' + process.arch;
-    const binNode    = path.join(__dirname, 'bin', nodeName);
-    const fetchScript = path.join(__dirname, 'scripts', 'fetch-node.js');
+  // ── Portable node binary ─────────────────────────────────────────────────
+  // Stage node-{platform}-{arch}[.exe] from bin/ into dist/ if present.
+  // On production installs, DepPrep downloads this from PHOBOS-DEPS at first boot.
+  // On dev builds, place it in bin/ manually (download from PHOBOS-DEPS release)
+  // or run fetch-phobos-release-deps.js to populate it.
+  (function stageNodeBinary() {
+    const isWin     = process.platform === 'win32';
+    const nodeName  = isWin
+      ? `node-${process.platform}-${process.arch}.exe`
+      : `node-${process.platform}-${process.arch}`;
+    const binNode   = path.join(__dirname, 'bin', nodeName);
     if (fs.existsSync(binNode)) {
-      log('  ✅ ' + nodeName + ' (already in bin/)');
-      return;
-    }
-    if (!fs.existsSync(fetchScript)) {
-      log('  ⚠️  scripts/fetch-node.js missing — Camofox/Meridian will not work in production');
-      return;
-    }
-    log('  Fetching portable node binary for ' + process.platform + '-' + process.arch + '...');
-    try {
-      execSync('node ' + JSON.stringify(fetchScript), { stdio: verbose ? 'inherit' : 'pipe' });
-      log('  ✅ ' + nodeName + ' fetched');
-    } catch (e) {
-      log('  ⚠️  fetch-node.js failed: ' + (e.message?.split('\n')[0] ?? e));
-      log('     Camofox and Meridian will not work until resolved.');
-      log('     Run manually: node scripts/fetch-node.js');
+      fs.copyFileSync(binNode, path.join(distDir, nodeName));
+      log(`  ✅ ${nodeName} (staged from bin/)`);
+    } else {
+      log(`  ℹ️  ${nodeName} — not in bin/ (DepPrep will install it at first boot)`);
     }
   })();
 
   // llama-server + sd-cli — stage all platform binaries present in bin/ into dist/
   // Copies everything recursively: binaries, dylibs, DLLs, and subdirectories
   // (sd-cuda/, sd-vulkan/, sd-cpu/ for Windows sd-cli isolation).
+  // On production installs, DepPrep downloads llama-server and sd-server at first boot.
+  // In dev, populate bin/ by running: node scripts/fetch-llamacpp.js
   const binDir = path.join(__dirname, 'bin');
   if (fs.existsSync(binDir)) {
     let staged = 0;
@@ -551,9 +547,9 @@ export async function buildForPlatform({
     };
     stageBinDir(binDir, distDir);
     if (staged > 0) log(`  ✅ bin/ (${staged} files staged, including subdirs)`);
-    else            log('  ⚠️  llama-server — no binaries in bin/ (run: node scripts/fetch-llamacpp.js)');
+    else            log('  ℹ️  bin/ is empty — llama-server and sd-server will be installed by DepPrep at first boot');
   } else {
-    log('  ⚠️  bin/ missing — run: node scripts/fetch-llamacpp.js');
+    log('  ℹ️  bin/ missing — llama-server and sd-server will be installed by DepPrep at first boot');
   }
 
   // ── PyTorch script + bundled model configs ─────────────────────────────────
@@ -580,42 +576,13 @@ export async function buildForPlatform({
     log('  ✅ configs/ (bundled model configs for PyTorch)');
   }
 
-  // ── SYBIL bundled models ────────────────────────────────────────────────────
-  // phobos/models/ contains pre-bundled GGUFs that ship with PHOBOS and are
-  // never user-managed. Currently: nomic-embed-text-v1.5.Q4_K_M.gguf (SYBIL).
-  // Staged to dist/phobos/models/ so startSybil() resolves the path at runtime
-  // regardless of SEA vs dev mode.
-  const bundledModelsDir = path.join(__dirname, 'phobos', 'models');
-  if (fs.existsSync(bundledModelsDir)) {
-    copyDirRec(bundledModelsDir, path.join(distDir, 'phobos', 'models'));
-    const ggufFiles = fs.readdirSync(bundledModelsDir).filter(f => f.endsWith('.gguf'));
-    const totalMb   = ggufFiles.reduce((sum, f) => sum + fs.statSync(path.join(bundledModelsDir, f)).size, 0) / 1e6;
-    log(`  ✅ phobos/models/ (${ggufFiles.length} bundled GGUF${ggufFiles.length !== 1 ? 's' : ''}, ${totalMb.toFixed(0)} MB — SYBIL)`);
-  } else {
-    log('  ⚠️  phobos/models/ missing — SYBIL disabled. Run: node scripts/fetch-sybil-model.js');
-  }
+  // ── SYBIL model ─────────────────────────────────────────────────────────────
+  // Installed by DepPrep at first boot from PHOBOS-DEPS — not bundled in dist/.
+  log('  ℹ️  SYBIL model — installed by DepPrep at first boot (not bundled)');
 
-  // ── DuckDB VSS extension ────────────────────────────────────────────────────
-  // phobos/extensions/ contains the pre-bundled vss.duckdb_extension.
-  // DuckDB expects: {extension_directory}/v{version}/{platform}/vss.duckdb_extension
-  // We set extension_directory to dist/phobos/extensions/ in DatabaseManager,
-  // so DuckDB finds it without touching ~/.duckdb/.
-  const bundledExtDir = path.join(__dirname, 'phobos', 'extensions');
-  if (fs.existsSync(bundledExtDir)) {
-    copyDirRec(bundledExtDir, path.join(distDir, 'phobos', 'extensions'));
-    // Count extension files staged
-    let extCount = 0;
-    const countExts = (dir) => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (e.isDirectory()) countExts(path.join(dir, e.name));
-        else if (e.name.endsWith('.duckdb_extension')) extCount++;
-      }
-    };
-    countExts(bundledExtDir);
-    log(`  ✅ phobos/extensions/ (${extCount} DuckDB extension${extCount !== 1 ? 's' : ''} bundled)`);
-  } else {
-    log('  ⚠️  phobos/extensions/ missing — SYBIL VSS disabled. Run: node scripts/fetch-vss-extension.js');
-  }
+  // ── DuckDB VSS extension ─────────────────────────────────────────────────────
+  // Installed by DepPrep at first boot from PHOBOS-DEPS — not bundled in dist/.
+  log('  ℹ️  DuckDB VSS extension — installed by DepPrep at first boot (not bundled)');
 
   // phobos/skills/ must ship alongside the exe so SkillManager can find it at
   // runtime via process.execPath. The directory structure is preserved exactly:

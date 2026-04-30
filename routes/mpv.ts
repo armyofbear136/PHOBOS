@@ -48,13 +48,13 @@ export async function registerMpvRoutes(fastify: FastifyInstance): Promise<void>
   });
 
   // ── Load ──────────────────────────────────────────────────────────────────
-  fastify.post<{ Body: { url: string } }>('/api/mpv/load', async (req, reply) => {
-    const { url } = req.body;
+  fastify.post<{ Body: { url: string; userAgent?: string | null; referrer?: string | null } }>('/api/mpv/load', async (req, reply) => {
+    const { url, userAgent, referrer } = req.body;
     if (!url || typeof url !== 'string') {
       return reply.status(400).send({ error: 'url required' });
     }
     try {
-      await loadFile(url);
+      await loadFile(url, { userAgent: userAgent ?? null, referrer: referrer ?? null });
       return reply.send({ ok: true });
     } catch (err) {
       return reply.status(500).send({ error: (err as Error).message });

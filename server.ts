@@ -53,6 +53,7 @@ import { stopStirling, startStirling, isBinaryPresent as isStirlingBinaryPresent
 import { ArchiveStore } from './db/ArchiveStore.js';
 import { registerArchiveRoutes } from './routes/archiveRoutes.js';
 import { registerMpvRoutes } from './routes/mpv.js';
+import { stopMpv } from './services/MpvManager.js'
 import { registerIptvRoutes } from './routes/iptv.js';
 import {
   startKavita,
@@ -64,6 +65,9 @@ import { registerKavitaIngestRoutes } from './routes/kavitaIngestRoutes.js';
 import { registerJellyfinIngestRoutes } from './routes/jellyfinIngestRoutes.js';
 import { registerPolarisIngestRoutes } from './routes/polarisIngestRoutes.js';
 import { registerMeridianIngestRoutes } from './routes/meridianIngestRoutes.js';
+import { registerBootEventsRoute } from './routes/bootEvents.js';
+import { runDepPrep, isPrepComplete } from './boot/DepPrep.js';
+import { setBootPhase, setBootProgress, snapshot as bootSnapshot } from './boot/BootState.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -124,6 +128,7 @@ async function buildServer() {
   await fastify.register(messagesRoute);
   await fastify.register(documentsRoute);
   await fastify.register(statusRoute);
+  await registerBootEventsRoute(fastify);
   await fastify.register(phobosLocalRoute);
   await fastify.register(exportRoute);
   await fastify.register(workflowsRoute);
@@ -167,15 +172,101 @@ async function main() {
   process.env.DB_PATH         = DB_PATH;
   process.env.WORKSPACES_ROOT = WORKSPACES_ROOT;
 
-  console.log('⚙️  Initializing Phobos Core Systems...');
+  // ── PHASE 1: Dependency prep ───────────────────────────────────────────────
+  // Fastify starts immediately so /api/boot/events is reachable during prep.
+  // The frontend subscribes to the SSE stream and shows granular progress.
 
-  const db = DatabaseManager.getInstance(DB_PATH);
-  await db.initialize();
+  if (!isPrepComplete()) {
+    console.log('⚙️  [Boot] Phase 1: Dependency prep — downloading missing assets...');
+    setBootPhase('prep_deps');
+
+    // Initialize DB before buildServer() — routes call DatabaseManager.getInstance()
+    // and ensureTable() at plugin registration time and need a live connection.
+    const db = DatabaseManager.getInstance(DB_PATH);
+    await db.initialize();
+
+    const fastify = await buildServer();
+    try {
+      await fastify.listen({ port: PORT, host: HOST });
+      console.log(`[Boot] HTTP listening on :${PORT} — boot events active`);
+    } catch (err) {
+      fastify.log.error(err);
+      process.exit(1);
+    }
+
+    await runDepPrep((evt) => {
+      switch (evt.phase) {
+        case 'prep_start':
+          setBootProgress({ depsTotal: evt.depsTotal, depsDone: 0 });
+          break;
+        case 'dep_start':
+        case 'dep_progress':
+          setBootProgress({
+            dep: evt.dep, file: evt.file,
+            bytes: evt.bytes, total: evt.total, pct: evt.pct,
+            depsTotal: evt.depsTotal, depsDone: evt.depsDone,
+          });
+          break;
+        case 'dep_done':
+        case 'dep_skip':
+          setBootProgress({ dep: evt.dep, depsDone: evt.depsDone, depsTotal: evt.depsTotal });
+          break;
+        case 'dep_error':
+          console.error(`[DepPrep] Non-fatal error on ${evt.dep}: ${evt.error}`);
+          break;
+        case 'extract_start':
+          setBootProgress({ dep: evt.dep, file: evt.file });
+          break;
+      }
+    });
+
+    console.log('✅  [Boot] Phase 1 complete — all dependencies ready.');
+    await continueBootSequence(fastify, db);
+    return;
+  }
+
+  // Fast-path: prep already done on a previous boot.
+  // DB must be initialized before buildServer() — routes call DatabaseManager.getInstance()
+  // and ensureTable() at plugin registration time.
+  console.log('⚙️  Initializing Phobos Core Systems...');
+  setBootPhase('db_init');
+
+  const fastDb = DatabaseManager.getInstance(DB_PATH);
+  await fastDb.initialize();
+
+  const fastify = await buildServer();
+  try {
+    await fastify.listen({ port: PORT, host: HOST });
+  } catch (err) {
+    fastify.log.error(err);
+    process.exit(1);
+  }
+
+  await continueBootSequence(fastify, fastDb);
+}
+
+// ── continueBootSequence ───────────────────────────────────────────────────────
+// Phases 2–4 run whether or not we went through dep prep.
+// Fastify is already listening when this is called.
+
+async function continueBootSequence(
+  fastify: Awaited<ReturnType<typeof buildServer>>,
+  existingDb: ReturnType<typeof DatabaseManager.getInstance> | null,
+) {
+  // ── PHASE 2: Database ──────────────────────────────────────────────────────
+  console.log('⚙️  [Boot] Phase 2: Database init...');
+  setBootPhase('db_init');
+
+  // existingDb is passed when we already called initialize() before buildServer()
+  // (the dep-prep path). On the fast-path it is null and we initialize here.
+  const db = existingDb ?? DatabaseManager.getInstance(DB_PATH);
+  if (!existingDb) await db.initialize();
+
+  // ── PHASE 3: Core init ─────────────────────────────────────────────────────
+  console.log('⚙️  [Boot] Phase 3: Core init...');
+  setBootPhase('core_init');
 
   // GIMP / Broadway — boot with PHOBOS, stay alive perpetually.
-  // A phantom WebSocket client connects to broadwayd before GIMP starts,
-  // giving broadwayd a real display canvas (1920×1080) so GIMP's icon
-  // scaling math never receives a zero-width and divide-by-zero crashes.
   startBroadway().catch(err => console.warn('[Broadway] Startup error (non-fatal):', (err as Error).message));
 
   const memoryStore = new MemoryStore(db);
@@ -184,25 +275,20 @@ async function main() {
   await ModelPathStore.loadAsync(db);
   await reconfigureClients();
 
-  // Earliest start point for 
-  // ── SYBIL ─────────────────────────────────────────────────────────────────
+  // ── SYBIL ──────────────────────────────────────────────────────────────────
   const archiveHasContent = ArchiveStore.hasAnyContent();
- 
+
   if (archiveHasContent) {
-    // Archive content exists — SYBIL is required. Wait for startup to settle.
     try {
       await startSybil();
     } catch (err) {
       console.error('[PHOBOS] Archive content exists but SYBIL failed to start:', err);
       console.error('[PHOBOS] Archive search will be disabled until SYBIL is running.');
-      // archiveEnabled flag — read by /api/archive/status to surface warning banner.
       process.env.ARCHIVE_SYBIL_FAILED = '1';
     }
   } else {
-    // No archive content — SYBIL startup is non-fatal (Phase 1 behaviour).
     startSybil().catch(err => console.warn('[SYBIL] Startup error (non-fatal):', err));
   }
- 
 
   await loadRegistry();
   await scanUserSkills();
@@ -219,21 +305,18 @@ async function main() {
 
   scheduler.start();
 
-  // ── PHOBOS World game state ───────────────────────────────────────────────
+  // ── PHOBOS World game state ─────────────────────────────────────────────────
   const gameStoreInstance = new GameStore(db);
   await gameStoreInstance.ensureTable();
   gsm.start();
 
-  // ── LLM Cartridge Library ─────────────────────────────────────────────────
+  // ── LLM Cartridge Library ───────────────────────────────────────────────────
   const cartridgeStore = new CartridgeStore(db);
   await cartridgeStore.ensureTable();
   initCartridgeManager(cartridgeStore);
   await reconcileCartridgeSlots();
 
-  // ── Camofox Web Browser ───────────────────────────────────────────────────
-  // Core feature — starts with PHOBOS on every boot. Non-fatal if the binary
-  // hasn't been downloaded yet (first run); Camofox auto-downloads ~300 MB on
-  // first npm start. If the npm package is missing entirely, logs a warning.
+  // ── Camofox Web Browser ─────────────────────────────────────────────────────
   if (isCamofoxInstalled()) {
     startCamofox().catch(err =>
       console.warn('[Camofox] Auto-start failed (non-fatal):', (err as Error).message)
@@ -242,27 +325,24 @@ async function main() {
     console.warn('[Camofox] camofox-browser not found in node_modules — run: npm install');
   }
 
-  // ── Stirling PDF — persistent startup ────────────────────────────────────
-  // Stirling is started at server boot so opening the PDF editor is instant.
-  // Non-fatal: if the jar is not present yet, the UI shows an install prompt.
+  // ── Stirling PDF ────────────────────────────────────────────────────────────
   if (isStirlingBinaryPresent()) {
     startStirling().catch(err =>
       console.warn('[Stirling] Auto-start failed (non-fatal):', (err as Error).message)
     );
   }
 
-  // ── Media Hub ─────────────────────────────────────────────────────────────
+  // ── Media Hub ───────────────────────────────────────────────────────────────
   const serviceStore = new ServiceStore(db);
   await serviceStore.ensureTable();
 
-  // ── Meridian — core service, always starts (first-party, no binary gate) ───
+  // Meridian — always starts (first-party, no binary gate)
   {
     let merRecord = await serviceStore.get('meridian');
     if (!merRecord.enabled) {
       await serviceStore.setEnabled('meridian', true);
       merRecord = await serviceStore.get('meridian');
     }
-    // Seed default library path if never configured
     if (!merRecord.libraryPath) {
       const defaultPath = path.join(os.homedir(), '.phobos', 'media', 'meridian', 'phobosPictures');
       mkdirSync(defaultPath, { recursive: true });
@@ -276,14 +356,13 @@ async function main() {
     }).catch(err => console.warn('[MediaHub] Meridian auto-start failed:', err.message));
   }
 
-  // ── Polaris — core service, always starts if binary is present ────────
+  // Polaris — starts if binary is present
   if (isPolarisBinaryPresent()) {
     let polarisRecord = await serviceStore.get('polaris');
     if (!polarisRecord.enabled) {
       await serviceStore.setEnabled('polaris', true);
       polarisRecord = await serviceStore.get('polaris');
     }
-    // Seed default library path if never configured
     if (!polarisRecord.libraryPath) {
       const defaultPath = path.join(os.homedir(), '.phobos', 'media', 'polaris', 'phobosMusic');
       mkdirSync(defaultPath, { recursive: true });
@@ -298,18 +377,13 @@ async function main() {
     }).catch(err => console.warn('[MediaHub] Polaris auto-start failed:', err.message));
   }
 
-  // ── Jellyfin — core service, always starts if binary is present ────────
-  // Like Kavita, Jellyfin is not gated on user enable/disable. It starts
-  // unconditionally at PHOBOS launch whenever the binary is present.
-  // setEnabled is called here so the DB reflects reality and the UI shows
-  // RUNNING without requiring any manual enable step.
+  // Jellyfin — starts if binary is present
   if (isJellyfinBinaryPresent()) {
     let jellyfinRecord = await serviceStore.get('jellyfin');
     if (!jellyfinRecord.enabled) {
       await serviceStore.setEnabled('jellyfin', true);
       jellyfinRecord = await serviceStore.get('jellyfin');
     }
-    // If the row was created before password generation was added, patch it now.
     let adminPassword = (jellyfinRecord.settings.adminPassword as string) || '';
     if (!adminPassword) {
       const { randomBytes } = await import('node:crypto');
@@ -317,7 +391,6 @@ async function main() {
       jellyfinRecord = await serviceStore.patchSettings('jellyfin', { adminPassword });
       console.log('[MediaHub] Generated missing Jellyfin adminPassword and persisted to DB.');
     }
-    // Seed default library path if never configured
     if (!jellyfinRecord.libraryPath) {
       const defaultPath = path.join(os.homedir(), '.phobos', 'media', 'jellyfin', 'phobosVideos');
       mkdirSync(defaultPath, { recursive: true });
@@ -334,19 +407,11 @@ async function main() {
     ).catch(err => console.warn('[MediaHub] Jellyfin auto-start failed:', err.message));
   }
 
-  // ── Kavita — core service, always starts if binary is present ────────────
-  // Unlike Polaris/Jellyfin, Kavita is not gated on user enable/disable.
-  // It starts unconditionally at PHOBOS launch. The phobosDocs library is
-  // created on first boot at ~/.phobos/media/kavita/phobosdocs (or the
-  // user-configured path stored in ServiceStore).
+  // Kavita — starts if binary is present
   if (isKavitaBinaryPresent()) {
     let kavitaRecord = await serviceStore.get('kavita');
-
-    // Generate credentials if the row was created by an older ServiceStore
-    // that didn't include tokenKey/adminPassword in kavita defaults.
     let tokenKey      = (kavitaRecord.settings.tokenKey      as string) || '';
     let adminPassword = (kavitaRecord.settings.adminPassword as string) || '';
-
     if (!tokenKey || !adminPassword) {
       const { randomBytes } = await import('node:crypto');
       const patch: Record<string, string> = {};
@@ -357,89 +422,51 @@ async function main() {
       adminPassword = kavitaRecord.settings.adminPassword as string;
       console.log('[KavitaManager] Generated missing credentials — first boot.');
     }
-
     const authKey  = (kavitaRecord.settings.refreshToken as string) || '';
     const docsPath = kavitaRecord.libraryPath ?? defaultDocsPath();
-
     const firstBoot = !authKey;
-    startKavita({
-      tokenKey,
-      adminPassword,
-      refreshToken: authKey,
-      docsPath,
-      firstBoot,
-    }).then(async ({ refreshToken: newToken }) => {
-      // Persist the refresh token if it changed (first boot or re-auth).
-      if (newToken !== authKey) {
-        await serviceStore.patchSettings('kavita', { refreshToken: newToken });
-      }
-      // Ensure libraryPath row reflects the active docs path.
-      if (!kavitaRecord.libraryPath) {
-        await serviceStore.setLibraryPath('kavita', docsPath);
-      }
-    }).catch(async (err: Error) => {
-      console.warn('[MediaHub] Kavita auto-start failed:', err.message);
-      // If startup failed, clear the stored refresh token so the next boot
-      // triggers fresh registration rather than re-using a stale token.
-      await serviceStore.patchSettings('kavita', { refreshToken: '' }).catch(() => {});
-    });
+    startKavita({ tokenKey, adminPassword, refreshToken: authKey, docsPath, firstBoot })
+      .then(async ({ refreshToken: newToken }) => {
+        if (newToken !== authKey) await serviceStore.patchSettings('kavita', { refreshToken: newToken });
+        if (!kavitaRecord.libraryPath) await serviceStore.setLibraryPath('kavita', docsPath);
+      })
+      .catch(async (err: Error) => {
+        console.warn('[MediaHub] Kavita auto-start failed:', err.message);
+        await serviceStore.patchSettings('kavita', { refreshToken: '' }).catch(() => {});
+      });
   } else {
-    console.log('[KavitaManager] Binary not present — skipping. Run: node scripts/fetch-kavita.js');
+    console.log('[KavitaManager] Binary not present — will install on next boot via DepPrep.');
   }
 
-  // ── Flush WAL after all migrations ────────────────────────────────────────
-  // ensureTable() runs ALTER TABLE ADD COLUMN IF NOT EXISTS on every boot.
-  // Even though they're no-ops when columns exist, DuckDB writes them to the
-  // WAL. If the process is killed before db.close(), the WAL is left dirty
-  // and fails to replay on next startup. CHECKPOINT flushes the WAL to the
-  // main database file immediately, so a hard kill after this point leaves
-  // a clean state.
+  // ── Flush WAL after all migrations ─────────────────────────────────────────
   await db.checkpoint();
   console.log('[DB] Post-migration checkpoint complete — WAL flushed');
 
-  // ── Periodic WAL checkpoint ───────────────────────────────────────────────
-  // Flush the WAL every 5 minutes so a hard kill (Windows console close,
-  // power loss, crash) loses at most 5 minutes of writes instead of the
-  // entire session. The checkpoint is fast (~1ms for small WALs) and
-  // non-blocking for concurrent reads.
   const CHECKPOINT_INTERVAL_MS = 5 * 60 * 1000;
   const checkpointTimer = setInterval(() => {
-    db.checkpoint().catch(err =>
+    db.checkpoint().catch((err: unknown) =>
       console.warn('[DB] Periodic checkpoint failed (non-fatal):', err)
     );
   }, CHECKPOINT_INTERVAL_MS);
-  checkpointTimer.unref(); // don't keep the process alive just for this
+  checkpointTimer.unref();
 
-  const fastify = await buildServer();
+  // ── PHASE 4: Ready ─────────────────────────────────────────────────────────
+  // Signal the frontend — it will do a full page reload to enter PHOBOS.
+  setBootPhase('ready');
 
-  try {
-    await fastify.listen({ port: PORT, host: HOST });
-    console.log(`\n🚀  PHOBOS Engine running on http://localhost:${PORT}`);
-    console.log(`📦  Database: ${DB_PATH}`);
-    console.log(`🧠  Coordinator: http://localhost:16313/v1  (${COORDINATOR_MODEL})`);
-    console.log(`⚙️   Reason:      http://localhost:16314/v1  (${ENGINE_MODEL})`);
-    console.log(`📖   Memory:      http://localhost:16315/v1  (nomic-embed-text-v1.5.Q4_K_M)\n`);
-  } catch (err) {
-    fastify.log.error(err);
-    process.exit(1);
-  }
+  console.log(`\n🚀  PHOBOS Engine running on http://localhost:${PORT}`);
+  console.log(`📦  Database: ${DB_PATH}`);
+  console.log(`🧠  Coordinator: http://localhost:16313/v1  (${COORDINATOR_MODEL})`);
+  console.log(`⚙️   Reason:      http://localhost:16314/v1  (${ENGINE_MODEL})`);
+  console.log(`📖   Memory:      http://localhost:16315/v1  (nomic-embed-text-v1.5.Q4_K_M)\n`);
 
-  // ── Graceful shutdown ─────────────────────────────────────────────────────
-  // CRITICAL: db.close() runs FIRST. The database WAL must be flushed before
-  // anything else. LLM servers, Meridian, Polaris, etc. are stateless
-  // subprocesses — they can be killed dirty with no data loss. DuckDB cannot.
-  //
-  // On Windows, closing the console window sends CTRL_CLOSE_EVENT which gives
-  // the process ~5 seconds before force-kill. The old shutdown order
-  // (stopAllServers → fastify.close → db.close) often timed out before
-  // reaching db.close, leaving a corrupt WAL that fails to replay on restart.
+  // ── Graceful shutdown ───────────────────────────────────────────────────────
   let shuttingDown = false;
   const shutdown = async (reason: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`\n${reason} — shutting down...`);
 
-    // ── PHASE 1: Database (critical — must complete) ──────────────────────
     clearInterval(checkpointTimer);
     try {
       await db.close();
@@ -448,11 +475,9 @@ async function main() {
       console.error('[Shutdown] Database close error:', err);
     }
 
-    // ── PHASE 2: Timers and in-process state (instant) ────────────────────
     scheduler.stop();
     gsm.stop();
 
-    // ── PHASE 3: Subprocesses (can fail without data loss) ────────────────
     await stopBroadway().catch(() => {});
     await stopCamofox().catch(() => {});
     await stopStirling().catch(() => {});
@@ -460,6 +485,7 @@ async function main() {
     await stopPolaris().catch(() => {});
     await stopJellyfin().catch(() => {});
     await stopKavita().catch(() => {});
+    await stopMpv().catch(() => {});
     await stopCarla().catch(() => {});
     await stopAllServers().catch(() => {});
     await fastify.close().catch(() => {});
@@ -467,18 +493,13 @@ async function main() {
     process.exit(0);
   };
 
-  // Standard Unix signals
   process.once('SIGINT',  () => shutdown('SIGINT received'));
   process.once('SIGTERM', () => shutdown('SIGTERM received'));
 
-  // Windows: SIGHUP fires when the console window is closed via the X button.
-  // This is often the only signal received on Windows before force-kill.
   if (process.platform === 'win32') {
     process.once('SIGHUP', () => shutdown('SIGHUP received (console closed)'));
   }
 
-  // Last resort: if an uncaught exception crashes the process, at least
-  // try to close the database so the WAL doesn't corrupt.
   process.once('uncaughtException', async (err) => {
     console.error('[FATAL] Uncaught exception:', err);
     await shutdown('uncaughtException');
@@ -489,5 +510,6 @@ async function main() {
     await shutdown('unhandledRejection');
   });
 }
+
 
 main().catch(err => { console.error('Server failed:', err); process.exit(1); });

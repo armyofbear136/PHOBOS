@@ -8,7 +8,7 @@
  *
  * Usage:
  *   npx tsx test-ai-features.ts                        S+M+E tiers (default, fast)
- *   npx tsx test-ai-features.ts --short                S01-S10 only (< 5 min)
+ *   npx tsx test-ai-features.ts --short                S01-S13 only (< 5 min)
  *   npx tsx test-ai-features.ts --short --medium       S+M tiers (< 15 min)
  *   npx tsx test-ai-features.ts --only S01             single test by ID
  *   npx tsx test-ai-features.ts --no-reset             skip template restore
@@ -97,14 +97,17 @@ const args        = process.argv.slice(2);
 const SHORT_ONLY    = args.includes('--short') && !args.includes('--medium') && !args.includes('--long');
 const WITH_MEDIUM   = args.includes('--medium');
 const LONG_ONLY     = args.includes('--long');
+const XL_ONLY       = args.includes('--xl') && !LONG_ONLY;
 // When --long is passed, run only L-tier tests and write a separate log.
-// Without --long, L tests are excluded from the default run — they are too
-// slow to be part of a routine development loop.
+// When --xl is passed alone, run only XL-tier tests and write a separate log.
+// Without these flags, L and XL tests are excluded from the default run.
 const NO_TIME_LIMIT = args.includes('--notimelimit');
 
 const LOG_PATH = path.join(
   __dirname, 'test-outputs',
-  LONG_ONLY ? 'ai-features-long.log' : 'ai-features.log'
+  LONG_ONLY ? 'ai-features-long.log'
+  : XL_ONLY  ? 'ai-features-xl.log'
+  :             'ai-features.log'
 );
 mkdirSync(path.dirname(LOG_PATH), { recursive: true });
 // Convenience: any sendMessageAndCapture call that passes NO_TIME_LIMIT will
@@ -703,10 +706,11 @@ async function startServer(): Promise<boolean> {
     cwd: __dirname,
     env: {
       ...process.env,
-      PHOBOS_DATA_DIR: SCRATCH_DIR,
-      DB_PATH:         dbPath,
-      WORKSPACES_ROOT: path.join(SCRATCH_DIR, 'workspaces'),
-      PORT: String(SERVER_PORT),
+      PHOBOS_DATA_DIR:        SCRATCH_DIR,
+      DB_PATH:                dbPath,
+      WORKSPACES_ROOT:        path.join(SCRATCH_DIR, 'workspaces'),
+      PORT:                   String(SERVER_PORT),
+      PHOBOS_SKIP_DEP_PREP:   '1',
       ...(!isNaN(SAYON_CTX) ? { PHOBOS_TEST_SAYON_CTX: String(SAYON_CTX) } : {}),
       ...(!isNaN(SEREN_CTX) ? { PHOBOS_TEST_SEREN_CTX: String(SEREN_CTX) } : {}),
     },
@@ -1221,6 +1225,57 @@ async function testS10_archiveDoesNotPolluteCovnersations(): Promise<void> {
   endTest();
 }
 
+
+async function testS11_imageRequestForcedRouting(): Promise<void> {
+  startTest('S11', 'IMAGE_REQUEST routes to ANSWER_DIRECTLY regardless of model decision', 'short');
+  const tid = randomUUID();
+  const s   = await sendMessageAndCapture(tid, 'Draw a sunset over the mountains', {}, t(120_000));
+
+  assert('no timeout',                  !s.timedOut,                                    `elapsed ${s.durationMs}ms`);
+  assert('routing ANSWER_DIRECTLY',     s.routing === 'ANSWER_DIRECTLY',                `got: ${s.routing}`);
+  assert('intentType IMAGE_REQUEST',    s.intentType === 'IMAGE_REQUEST',               `got: ${s.intentType}`);
+  assert('no SEREN task dispatched',    s.taskStarts.length === 0,                      `task_starts: ${s.taskStarts.length}`);
+  assert('complete event received',     s.complete,                                      'stream finished');
+  endTest();
+}
+
+async function testS12_copilotSerenWiring(): Promise<void> {
+  startTest('S12', 'SEREN copilot channel responds and bypasses SEREN task dispatch', 'short');
+  // Copilot threads are fixed IDs — send directly to the copilot endpoint
+  const s = await sendMessageAndCapture(
+    'copilot-seren',
+    'Tell me something brief about what you can help with',
+    {},
+    t(120_000)
+  );
+
+  assert('no timeout',               !s.timedOut,                                    `elapsed ${s.durationMs}ms`);
+  assert('complete event received',  s.complete,                                      'stream finished');
+  assert('no SEREN task dispatched', s.taskStarts.length === 0,                      `task_starts: ${s.taskStarts.length}`);
+  // Copilot always routes to ANSWER_DIRECTLY — it never dispatches tasks
+  assert('routing ANSWER_DIRECTLY',  s.routing === 'ANSWER_DIRECTLY',                `got: ${s.routing}`);
+  endTest();
+}
+
+async function testS13_weatherNeedsSerenNotDirect(): Promise<void> {
+  startTest('S13', 'Real-time data query (weather) routes through SEREN browse, not SAYON direct', 'short');
+  // This test documents the CORRECT behavior. If it fails, the classifier is routing
+  // weather/live-data queries to ANSWER_DIRECTLY (SAYON has no tools for this).
+  const tid = randomUUID();
+  const s   = await sendMessageAndCapture(tid, "What's the weather in Denver right now?", {}, t(180_000));
+
+  assert('no timeout',    !s.timedOut, `elapsed ${s.durationMs}ms`);
+  assert('complete',       s.complete, 'stream finished');
+  // Weather requires live data — should route to SEREN to use browse operation
+  // If this fails with ANSWER_DIRECTLY, fix the classifier: weather/news/live → NEEDS_SEREN
+  warnAssert('routes to NEEDS_SEREN for live data', s.routing === 'NEEDS_SEREN',
+    s.routing === 'ANSWER_DIRECTLY'
+      ? 'SAYON answered directly — no live data access. Fix classifier to route real-time queries to SEREN.'
+      : `got: ${s.routing}`
+  );
+  endTest();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ── MEDIUM TESTS ──────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1566,6 +1621,176 @@ async function testM09_codeAuditOperation(): Promise<void> {
   endTest();
 }
 
+
+async function testM10_browseAndWrite(): Promise<void> {
+  startTest('M10', 'SEREN browse operation: fetch URL content and write summary to file', 'medium');
+
+  const camofoxUp = await checkPort(9377);
+  if (!camofoxUp) {
+    endTest('SKIP', 'Camofox not running on :9377 — start Camofox to run this test');
+    return;
+  }
+
+  const tid = randomUUID();
+  const s   = await sendMessageAndCapture(
+    tid,
+    'Fetch the content of https://example.com and write a one-paragraph summary to example-summary.md',
+    {},
+    t(300_000)  // 5 minutes — browse + write
+  );
+
+  assert('no timeout',               !s.timedOut,             `elapsed ${s.durationMs}ms`);
+  assert('routes to NEEDS_SEREN',    s.routing === 'NEEDS_SEREN', `got: ${s.routing}`);
+  assert('task dispatched',          s.taskStarts.length > 0,  `task_starts: ${s.taskStarts.length}`);
+  assert('complete',                 s.complete,               'stream finished');
+
+  const wsDir  = path.join(WORKSPACES_ROOT, tid);
+  const outFile = path.join(wsDir, 'example-summary.md');
+  assert('summary file created', existsSync(outFile), `checked: ${outFile}`);
+
+  if (existsSync(outFile)) {
+    const content = await fs.readFile(outFile, 'utf-8');
+    assert('summary has content', content.trim().length > 50, `length: ${content.length}`);
+  }
+  endTest();
+}
+
+async function testM11_planRequestMultiFile(): Promise<void> {
+  startTest('M11', 'PLAN_REQUEST produces multiple ordered tasks and creates one file per phase', 'medium');
+  const tid = randomUUID();
+  const s   = await sendMessageAndCapture(
+    tid,
+    'Create a 3-phase migration plan from REST to GraphQL. Write a separate markdown file for each phase: phase1.md, phase2.md, phase3.md.',
+    {},
+    t(300_000)
+  );
+
+  assert('no timeout',               !s.timedOut,                  `elapsed ${s.durationMs}ms`);
+  assert('routes to NEEDS_SEREN',    s.routing === 'NEEDS_SEREN',  `got: ${s.routing}`);
+  assert('multiple tasks dispatched', s.taskStarts.length >= 3,    `task_starts: ${s.taskStarts.length}`);
+  assert('complete',                  s.complete,                   'stream finished');
+
+  const wsDir = path.join(WORKSPACES_ROOT, tid);
+  for (const f of ['phase1.md', 'phase2.md', 'phase3.md']) {
+    const p = path.join(wsDir, f);
+    assert(`${f} created`, existsSync(p), `checked: ${p}`);
+  }
+  endTest();
+}
+
+async function testM12_userSkillInjection(): Promise<void> {
+  startTest('M12', 'User skill created and injected into SEREN task on trigger match', 'medium');
+
+  // Create a minimal user skill whose trigger matches a specific prompt
+  const skillPayload = {
+    name:        'Test Greeting Skill',
+    description: 'Injects a custom greeting instruction into tasks',
+    trigger:     'write a greeting message',
+    enabled:     true,
+    systemPrompt: 'Always begin your response with the phrase: SKILL_ACTIVE_CONFIRMED',
+  };
+
+  const createRes = await apiPost('/api/user-skills', skillPayload, 5_000);
+  assert('skill created (201 or 200)', createRes.status === 201 || createRes.status === 200,
+    `status: ${createRes.status} body: ${JSON.stringify(createRes.json)?.slice(0, 100)}`);
+
+  const skillId = (createRes.json as any)?.id ?? (createRes.json as any)?.skill?.id;
+  assert('skill has id', skillId != null, `response: ${JSON.stringify(createRes.json)?.slice(0, 100)}`);
+
+  // Send a message that matches the trigger
+  const tid = randomUUID();
+  const s   = await sendMessageAndCapture(
+    tid,
+    'write a greeting message for a new user joining our platform',
+    {},
+    t(180_000)
+  );
+
+  assert('no timeout', !s.timedOut, `elapsed ${s.durationMs}ms`);
+  assert('complete',    s.complete, 'stream finished');
+
+  // The skill instructs SEREN to include SKILL_ACTIVE_CONFIRMED — check for it
+  const apiMsgs = await apiGetMessages(tid);
+  const assistant = apiMsgs.find(m => m.role === 'assistant');
+  warnAssert('skill instruction reflected in response',
+    (assistant?.content ?? '').includes('SKILL_ACTIVE_CONFIRMED'),
+    'skill marker not in response — skill may not have matched or injected'
+  );
+
+  // Cleanup
+  if (skillId) {
+    await apiPost(`/api/user-skills/${skillId}`, {}, 5_000).catch(() => {});
+    // DELETE — use fetch directly since apiPost doesn't support DELETE
+    await fetch(`http://127.0.0.1:${SERVER_PORT}/api/user-skills/${skillId}`, { method: 'DELETE' }).catch(() => {});
+  }
+  endTest();
+}
+
+async function testM13_archiveIngestAndQuery(): Promise<void> {
+  startTest('M13', 'Archive ingest (paste) and semantic search returns relevant result', 'medium');
+
+  if (!await checkPort(16315)) {
+    endTest('SKIP', 'SYBIL offline — archive VSS search not available');
+    return;
+  }
+
+  const testDomain  = 'test-m13';
+  const testContent = `PHOBOS is a local AI operating system. It uses two models: SAYON (coordinator) 
+and SEREN (execution engine). SAYON classifies intent and orchestrates tasks. 
+SEREN performs file operations, code execution, and web browsing via Camofox.
+The system supports 699 skills, persistent workspaces, and VSS semantic search via SYBIL.`;
+
+  // Create the domain
+  await apiPost('/api/archive/domains', { domain: testDomain }, 5_000);
+
+  // Ingest via paste (SSE stream — collect until end)
+  const ingestUrl = `http://127.0.0.1:${SERVER_PORT}/api/archive/ingest`;
+  let ingestComplete = false;
+  let chunksWritten  = 0;
+
+  await new Promise<void>((resolve) => {
+    const body = JSON.stringify({ domain: testDomain, input: testContent, sourceType: 'paste' });
+    const req  = http.request(ingestUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, (res) => {
+      let buf = '';
+      res.on('data', (chunk: Buffer) => {
+        buf += chunk.toString();
+        const lines = buf.split('\n\n');
+        buf = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const evt = JSON.parse(line.slice(6));
+            if (evt.chunks_written) chunksWritten = evt.chunks_written;
+            if (evt.status === 'complete') ingestComplete = true;
+          } catch { /* ignore */ }
+        }
+      });
+      res.on('end', resolve);
+    });
+    req.on('error', () => resolve());
+    req.write(body);
+    req.end();
+  });
+
+  assert('ingest completed', ingestComplete, `chunksWritten: ${chunksWritten}`);
+  warnAssert('at least one chunk indexed', chunksWritten > 0, `chunksWritten: ${chunksWritten}`);
+
+  // Wait briefly for VSS indexing to propagate
+  await new Promise(r => setTimeout(r, 1000));
+
+  // Search for content we know is in the document
+  const searchRes = await apiGet(`/api/archive/search?q=SAYON+SEREN+coordinator+engine&domains=${testDomain}&k=3`, 10_000);
+  assert('search returns 200',     searchRes.status === 200, `status: ${searchRes.status}`);
+  const results = (searchRes.json as any)?.results ?? [];
+  warnAssert('search returns relevant results', results.length > 0,
+    results.length === 0 ? 'no results — VSS index may not have committed yet' : `found ${results.length}`
+  );
+
+  // Cleanup domain
+  await fetch(`http://127.0.0.1:${SERVER_PORT}/api/archive/domains/${testDomain}`, { method: 'DELETE' }).catch(() => {});
+  endTest();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ── LONG TESTS ────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1796,8 +2021,11 @@ async function testL06_singleCompendiumReadWrite(): Promise<void> {
   const s = await sendMessageAndCapture(
     tid,
     'Read Primal_Extraction_Refining_Compendium_v1.md and add ExtractionProperties to every ore entry in Player_Item.gd. ' +
-    'ExtractionProperties should list each valid machine+catalyst combination with the exact output yields from the compendium tables. ' +
-    'Do not modify any existing properties — only add the new ExtractionProperties block to each ore entry.',
+    'ExtractionProperties is a GDScript Dictionary literal added inline to each ore entry, listing every valid machine+catalyst ' +
+    'combination with the exact output item name and numeric yield from the compendium tables — for example: ' +
+    '"ExtractionProperties": {"Grand Levigator": {"Alumen": 2850}, "Crusher": {"Copper Powder": 400}}. ' +
+    'Generate this data directly from the compendium contents. ' +
+    'Do not modify any existing properties — only add the new ExtractionProperties key to each ore entry.',
     { attachmentIds: [compId!, itemId!] },
     t(600_000)  // 10 minutes — single large compendium, multi-task write
   );
@@ -1871,20 +2099,25 @@ async function testXL01_fullCompendiumPopulation(): Promise<void> {
 
   const tid = randomUUID();
 
-  // Upload all compendiums as attachments. The combined set (~291KB) exceeds
-  // a comfortable single-pass context — expect SEREN to paginate reads.
-  const attachIds: string[] = [];
+  // Pre-populate the workspace with all files on disk. The four compendiums
+  // are too large to inline as attachments (244k+ tokens combined). Writing
+  // them directly to the workspace lets SEREN read them via file tools in
+  // paginated passes without blowing the coordinator context during planning.
+  const wsDir = path.join(WORKSPACES_ROOT, tid);
+  mkdirSync(wsDir, { recursive: true });
   const fileSizes: Record<string, number> = {};
   for (const fname of requiredFiles) {
-    const fpath   = path.join(PRIMAL_DIR, fname);
-    const content = await fs.readFile(fpath, 'utf-8');
-    fileSizes[fname] = content.length;
-    const aid = await uploadAttachment(tid, fname, content);
-    if (aid) attachIds.push(aid);
-    console.log(`    📎 attached ${fname} (${content.length.toLocaleString()} chars)`);
+    const fcontent = await fs.readFile(path.join(PRIMAL_DIR, fname), 'utf-8');
+    fileSizes[fname] = fcontent.length;
+    await fs.writeFile(path.join(wsDir, fname), fcontent, 'utf-8');
+    console.log(`    📁 workspace: ${fname} (${fcontent.length.toLocaleString()} chars)`);
   }
-  assert('all files attached', attachIds.length === requiredFiles.length,
-    `attached: ${attachIds.length}/${requiredFiles.length}`);
+
+  // Only attach Player_Item.gd so the planner can see the target file structure
+  // without overflowing. The compendiums are referenced by filename in the prompt.
+  const itemId = await uploadAttachment(tid, 'Player_Item.gd',
+    await fs.readFile(path.join(PRIMAL_DIR, 'Player_Item.gd'), 'utf-8'));
+  assert('Player_Item.gd attached', itemId != null, 'attachment upload failed');
 
   const itemFileContent = await fs.readFile(path.join(PRIMAL_DIR, 'Player_Item.gd'), 'utf-8');
   const itemsBefore = (itemFileContent.match(/^\t"[^"]+": \{/gm) ?? []).length;
@@ -1892,14 +2125,16 @@ async function testXL01_fullCompendiumPopulation(): Promise<void> {
 
   const s = await sendMessageAndCapture(
     tid,
-    'Read all the Primal Online compendium files attached and add all missing item data to Player_Item.gd. ' +
-    'This includes ExtractionProperties for ores from the Extraction & Refining Compendium, ' +
+    'The following Primal Online compendium files are in your workspace: ' +
+    'Primal_Extraction_Refining_Compendium_v1.md, Primal_Taxonomy_Materials_Compendium_v1.md, ' +
+    'Primal_Crafting_Compendium_v1.md, and Primal_Material_Lore_Skills_Compendium_v1.md. ' +
+    'Player_Item.gd is attached. Read each compendium fully and add all missing item data to Player_Item.gd. ' +
+    'This includes ExtractionProperties (GDScript Dictionary, inline) for ores from the Extraction & Refining Compendium, ' +
     'material taxonomy data from the Taxonomy Compendium, ' +
-    'crafting recipes from the Crafting Compendium, ' +
-    'and any skill or lore properties from the Material Lore & Skills Compendium. ' +
-    'Do not modify any existing properties — only add new property blocks to existing entries. ' +
-    'Read each document fully before writing. If any document is too large to read at once, read it in sections.',
-    { attachmentIds: attachIds },
+    'CraftingProperties (GDScript Dictionary, inline) from the Crafting Compendium Part IX addendum, ' +
+    'and LoreProperties (GDScript Dictionary, inline) from the Material Lore & Skills Compendium. ' +
+    'Read each compendium file in sections if needed. Do not modify any existing properties — only add new property blocks.',
+    { attachmentIds: itemId ? [itemId] : [] },
     t(7_200_000)  // 2 hours — multi-document paginated read + batched write
   );
 
@@ -1986,6 +2221,64 @@ async function testXL01_fullCompendiumPopulation(): Promise<void> {
   endTest();
 }
 
+
+async function testL07_largeInlineAttachmentIngest(): Promise<void> {
+  startTest('L07',
+    'Large file attached inline to message (not workspace) — pipeline completes without context overflow',
+    'long');
+
+  // This test uses Primal_Extraction_Refining_Compendium_v1.md from the primal fixture set.
+  // It is intentionally the acceptance criterion for the inline-attachment ingest-compression
+  // feature. Expected to FAIL until that feature is built.
+  const PRIMAL_DIR = path.join(__dirname, 'test-outputs', 'primal');
+  const compFile   = path.join(PRIMAL_DIR, 'Primal_Extraction_Refining_Compendium_v1.md');
+
+  if (!existsSync(compFile)) {
+    endTest('SKIP', `Fixture not found: ${compFile} — copy Primal compendium files to test-outputs/primal/`);
+    return;
+  }
+
+  const compContent = await fs.readFile(compFile, 'utf-8');
+  console.log(`    📎 inline attachment: ${compFile} (${compContent.length.toLocaleString()} chars)`);
+
+  // Upload as an attachment to inject into the message context (not as a workspace file)
+  const tid    = randomUUID();
+  const compId = await uploadAttachment(tid, 'Primal_Extraction_Refining_Compendium_v1.md', compContent);
+  assert('attachment uploaded', compId != null, 'upload failed');
+
+  const s = await sendMessageAndCapture(
+    tid,
+    'Summarise the key sections of this document. What are the main extraction machines and what materials do they process?',
+    { attachmentIds: compId ? [compId] : [] },
+    t(600_000)  // 10 minutes — may need summarization pass
+  );
+
+  assert('turn complete', s.complete, s.timedOut ? 'TIMED OUT — context overflow likely' : `elapsed ${s.durationMs}ms`);
+  assert('no error event', !s.byType.has('error'), `error: ${JSON.stringify(s.byType.get('error')?.[0])?.slice(0, 100)}`);
+
+  // SAYON should summarize directly — if it routes to SEREN with the full file inline,
+  // SEREN's 32K context overflows. ANSWER_DIRECTLY is the correct path.
+  warnAssert('SAYON handles inline large attachment directly',
+    s.routing === 'ANSWER_DIRECTLY',
+    s.routing === 'NEEDS_SEREN'
+      ? 'Routed to SEREN — 32K context will overflow with 120KB+ inline attachment. Build ingest-compression.'
+      : `routing: ${s.routing}`
+  );
+
+  const apiMsgs   = await apiGetMessages(tid);
+  const assistant  = apiMsgs.find(m => m.role === 'assistant');
+  assert('assistant response has content', (assistant?.content?.length ?? 0) > 100,
+    `content length: ${assistant?.content?.length ?? 0}`);
+
+  // Check the response references actual document content
+  const resp = assistant?.content ?? '';
+  warnAssert('response references extraction machines',
+    /levigator|crusher|furnace|kiln|refin/i.test(resp),
+    'no machine names found — model may not have processed the attachment'
+  );
+  endTest();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ── EDGE CASE TESTS ───────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2065,13 +2358,99 @@ async function testE03_fileOverwriteSafe(): Promise<void> {
   endTest();
 }
 
+
+async function testE06_imageWorkflowCreated(): Promise<void> {
+  startTest('E06', 'Image generation request emits image_workflow_created SSE event', 'edge');
+
+  // Check image gen is available (sd-server running)
+  const sdUp = await checkPort(8188).catch(() => false);
+  if (!sdUp) {
+    // Attempt the request anyway — the event may still fire even if sd-server is loading
+  }
+
+  const tid = randomUUID();
+  const s   = await sendMessageAndCapture(tid, 'Generate a photo of a red apple on a wooden table', {}, t(60_000));
+
+  assert('intentType IMAGE_REQUEST',        s.intentType === 'IMAGE_REQUEST',           `got: ${s.intentType}`);
+  assert('routing ANSWER_DIRECTLY',         s.routing === 'ANSWER_DIRECTLY',            `got: ${s.routing}`);
+  warnAssert('image_workflow_created fired', s.byType.has('image_workflow_created'),
+    s.byType.has('image_workflow_created') ? 'present' : 'event not emitted — check sd-server and image gen pipeline'
+  );
+
+  // workflowId should be non-null if event fired
+  const workflowEvt = s.byType.get('image_workflow_created')?.[0];
+  if (workflowEvt) {
+    const workflowId = (workflowEvt as any)?.workflowId ?? (workflowEvt as any)?.id;
+    warnAssert('workflowId present in event', workflowId != null, `event: ${JSON.stringify(workflowEvt)?.slice(0, 100)}`);
+  }
+  endTest();
+}
+
+async function testE07_dependencyAuditScan(): Promise<void> {
+  startTest('E07', 'Security: dependency_audit scan starts and reaches terminal status', 'edge');
+
+  const startRes = await apiPost('/api/security/scans/dependency_audit/run', {}, 10_000);
+  assert('scan start returns 200 or 202', startRes.status === 200 || startRes.status === 202,
+    `status: ${startRes.status} body: ${JSON.stringify(startRes.json)?.slice(0, 100)}`);
+
+  const runId = (startRes.json as any)?.runId ?? (startRes.json as any)?.id;
+  assert('runId returned', runId != null, `response: ${JSON.stringify(startRes.json)?.slice(0, 100)}`);
+
+  // Poll until terminal status (max 60s — dependency audit is fast)
+  let finalStatus = 'running';
+  for (let i = 0; i < 12; i++) {
+    await new Promise(r => setTimeout(r, 5_000));
+    const pollRes = await apiGet(`/api/security/scans/${runId}`, 5_000).catch(() => ({ status: 0, json: null }));
+    const status  = (pollRes.json as any)?.status ?? (pollRes.json as any)?.scan?.status;
+    if (status && status !== 'running') { finalStatus = status; break; }
+  }
+
+  assert('scan reached terminal status', finalStatus !== 'running',
+    `still running after 60s — scan may be blocked or endpoint path is wrong`
+  );
+  warnAssert('scan completed (not errored)', finalStatus === 'completed',
+    `status: ${finalStatus} — errored is acceptable if no package.json present in scan target`
+  );
+  endTest();
+}
+
+async function testE08_serviceHealthChecks(): Promise<void> {
+  startTest('E08', 'All service status endpoints respond with non-null JSON', 'edge');
+
+  const checks: Array<{ label: string; path: string }> = [
+    { label: 'Camofox',    path: '/api/tools/camofox/status' },
+    { label: 'Stirling',   path: '/api/tools/stirling/status' },
+    { label: 'Scheduler',  path: '/api/scheduler/tasks' },
+    { label: 'Archive',    path: '/api/archive/status' },
+    { label: 'Security',   path: '/api/security/status' },
+  ];
+
+  for (const { label, path: p } of checks) {
+    const res = await apiGet(p, 5_000).catch(() => ({ status: 0, json: null }));
+    // 200 = running, 503 = offline but endpoint exists — both are acceptable
+    // 404 = route not registered = real failure
+    assert(`${label}: endpoint registered (not 404)`, res.status !== 404,
+      `${label} returned ${res.status} — route may not be registered`
+    );
+    warnAssert(`${label}: returns non-null JSON`, res.json != null,
+      `${label} returned status ${res.status} with no JSON body`
+    );
+  }
+  endTest();
+}
+
+// Extend E04 with boot phase fields
 async function testE04_serverHealthEndpoint(): Promise<void> {
   startTest('E04', 'Server health and status endpoints respond correctly', 'edge');
   const statusRes = await apiGet('/api/status', 5_000).catch(() => ({ status: 0, json: null }));
-  assert('GET /api/status returns 200', statusRes.status === 200, `status: ${statusRes.status}`);
-  assert('status has coordinator field', (statusRes.json as any)?.coordinator != null, `json: ${JSON.stringify(statusRes.json)?.slice(0, 100)}`);
+  assert('GET /api/status returns 200',     statusRes.status === 200,                              `status: ${statusRes.status}`);
+  assert('status has coordinator field',    (statusRes.json as any)?.coordinator != null,          `json: ${JSON.stringify(statusRes.json)?.slice(0, 100)}`);
+  assert('bootPhase is ready',              (statusRes.json as any)?.bootPhase === 'ready',        `bootPhase: ${(statusRes.json as any)?.bootPhase}`);
+  warnAssert('bootProgress present',        (statusRes.json as any)?.bootProgress != null,         `bootProgress: ${(statusRes.json as any)?.bootProgress}`);
   endTest();
 }
+
+
 
 async function testE05_conversationsDbIsolation(): Promise<void> {
   startTest('E05', 'conversations.duckdb is separate from archive domains', 'edge');
@@ -2146,7 +2525,7 @@ async function main(): Promise<void> {
   // ── Short tests ────────────────────────────────────────────────────────────
   const runShort = !LONG_ONLY && (!ONLY_ID || ONLY_ID.startsWith('S'));
   if (runShort) {
-    console.log('\n── Short Tests (S01–S10) ─────────────────────────────────────');
+    console.log('\n── Short Tests (S01–S13) ─────────────────────────────────────');
     if (!ONLY_ID || ONLY_ID === 'S01') { await testS01_intentRoutingDirect();              await waitForModelIdle('S01'); }
     if (!ONLY_ID || ONLY_ID === 'S02') { await testS02_intentRoutingNeeds();               await waitForModelIdle('S02'); }
     if (!ONLY_ID || ONLY_ID === 'S03') { await testS03_ctxComputedEvent();                 await waitForModelIdle('S03'); }
@@ -2157,12 +2536,15 @@ async function main(): Promise<void> {
     if (!ONLY_ID || ONLY_ID === 'S08') { await testS08_clarificationLoopSeren();           await waitForModelIdle('S08'); }
     if (!ONLY_ID || ONLY_ID === 'S09') { await testS09_ctxOverrideManual();                await waitForModelIdle('S09'); }
     if (!ONLY_ID || ONLY_ID === 'S10') { await testS10_archiveDoesNotPolluteCovnersations(); await waitForModelIdle('S10'); }
+    if (!ONLY_ID || ONLY_ID === 'S11') { await testS11_imageRequestForcedRouting();        await waitForModelIdle('S11'); }
+    if (!ONLY_ID || ONLY_ID === 'S12') { await testS12_copilotSerenWiring();               await waitForModelIdle('S12'); }
+    if (!ONLY_ID || ONLY_ID === 'S13') { await testS13_weatherNeedsSerenNotDirect();       await waitForModelIdle('S13'); }
   }
 
   // ── Medium tests ───────────────────────────────────────────────────────────
   const runMedium = !LONG_ONLY && (RUN_ALL || WITH_MEDIUM || (ONLY_ID?.startsWith('M') ?? false));
   if (runMedium && !SHORT_ONLY) {
-    console.log('\n── Medium Tests (M01–M09) ────────────────────────────────────');
+    console.log('\n── Medium Tests (M01–M13) ────────────────────────────────────');
     if (!ONLY_ID || ONLY_ID === 'M01') { await testM01_directAnswerPersistence();     await waitForModelIdle('M01'); }
     if (!ONLY_ID || ONLY_ID === 'M02') { await testM02_singleFileCreation();          await waitForModelIdle('M02'); }
     if (!ONLY_ID || ONLY_ID === 'M03') { await testM03_conversationRAGRetrieval();    await waitForModelIdle('M03'); }
@@ -2172,22 +2554,27 @@ async function main(): Promise<void> {
     if (!ONLY_ID || ONLY_ID === 'M07') { await testM07_inlineContentExtraction();     await waitForModelIdle('M07'); }
     if (!ONLY_ID || ONLY_ID === 'M08') { await testM08_fileReadCycle();               await waitForModelIdle('M08'); }
     if (!ONLY_ID || ONLY_ID === 'M09') { await testM09_codeAuditOperation();          await waitForModelIdle('M09'); }
+    if (!ONLY_ID || ONLY_ID === 'M10') { await testM10_browseAndWrite();              await waitForModelIdle('M10'); }
+    if (!ONLY_ID || ONLY_ID === 'M11') { await testM11_planRequestMultiFile();        await waitForModelIdle('M11'); }
+    if (!ONLY_ID || ONLY_ID === 'M12') { await testM12_userSkillInjection();          await waitForModelIdle('M12'); }
+    if (!ONLY_ID || ONLY_ID === 'M13') { await testM13_archiveIngestAndQuery();       await waitForModelIdle('M13'); }
   }
 
   // ── Long tests ─────────────────────────────────────────────────────────────
   const runLong = LONG_ONLY || (ONLY_ID?.startsWith('L') ?? false);
   if (runLong && !SHORT_ONLY) {
-    console.log('\n── Long Tests (L01–L06) ──────────────────────────────────────');
+    console.log('\n── Long Tests (L01–L07) ──────────────────────────────────────');
     if (!ONLY_ID || ONLY_ID === 'L01') { await testL01_paginatedWriting();            await waitForModelIdle('L01'); }
     if (!ONLY_ID || ONLY_ID === 'L02') { await testL02_agentStateSequence();          await waitForModelIdle('L02'); }
     if (!ONLY_ID || ONLY_ID === 'L03') { await testL03_contextOverflowHandling();     await waitForModelIdle('L03'); }
     if (!ONLY_ID || ONLY_ID === 'L04') { await testL04_fullConversationRAGRoundTrip(); await waitForModelIdle('L04'); }
     if (!ONLY_ID || ONLY_ID === 'L05') { await testL05_exhaustiveWebsite();           await waitForModelIdle('L05'); }
     if (!ONLY_ID || ONLY_ID === 'L06') { await testL06_singleCompendiumReadWrite();   await waitForModelIdle('L06'); }
+    if (!ONLY_ID || ONLY_ID === 'L07') { await testL07_largeInlineAttachmentIngest(); await waitForModelIdle('L07'); }
   }
 
   // ── XL tests ───────────────────────────────────────────────────────────────
-  const runXL = args.includes('--xl') || (ONLY_ID?.startsWith('XL') ?? false);
+  const runXL = XL_ONLY || (ONLY_ID?.startsWith('XL') ?? false);
   if (runXL) {
     console.log('\n── XL Tests (XL01) ───────────────────────────────────────────');
     console.log('   ⚠️  XL tests may run for up to 2 hours. Use --notimelimit.');
@@ -2197,12 +2584,15 @@ async function main(): Promise<void> {
   // ── Edge case tests ────────────────────────────────────────────────────────
   const runEdge = RUN_ALL || (ONLY_ID?.startsWith('E') ?? false);
   if (runEdge && !SHORT_ONLY) {
-    console.log('\n── Edge Case Tests (E01–E05) ─────────────────────────────────');
+    console.log('\n── Edge Case Tests (E01–E08) ─────────────────────────────────');
     if (!ONLY_ID || ONLY_ID === 'E01') { await testE01_sybilUnavailableDegrades();   await waitForModelIdle('E01'); }
     if (!ONLY_ID || ONLY_ID === 'E02') { await testE02_emptyContentRejected(); }
     if (!ONLY_ID || ONLY_ID === 'E03') { await testE03_fileOverwriteSafe();           await waitForModelIdle('E03'); }
     if (!ONLY_ID || ONLY_ID === 'E04') { await testE04_serverHealthEndpoint(); }
     if (!ONLY_ID || ONLY_ID === 'E05') { await testE05_conversationsDbIsolation(); }
+    if (!ONLY_ID || ONLY_ID === 'E06') { await testE06_imageWorkflowCreated();        await waitForModelIdle('E06'); }
+    if (!ONLY_ID || ONLY_ID === 'E07') { await testE07_dependencyAuditScan(); }
+    if (!ONLY_ID || ONLY_ID === 'E08') { await testE08_serviceHealthChecks(); }
   }
 
   // ── Teardown ───────────────────────────────────────────────────────────────

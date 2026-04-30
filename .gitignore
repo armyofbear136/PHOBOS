@@ -1,20 +1,22 @@
 # Build binaries
-bin/
+bin*/
 
 # Build output
-dist/
-dist-all/
-dist-lite/
+dist*/
 
 # Native addons (large binaries)
 node_modules/
 
 # License generation output
 output/
-test-outputs/
+
+#testing files
+test-*/
 godot-docs/
 
 *.duckdb.*
+
+scan-report*
 
 # Environment secrets
 .env

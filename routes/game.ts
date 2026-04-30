@@ -202,4 +202,26 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
     await store.removeDecoration(req.params.id);
     return reply.send({ ok: true });
   });
+
+  // ── Buildings ──────────────────────────────────────────────────────────────
+
+  fastify.get('/api/game/buildings', async (_req, reply) => {
+    const buildings = await store.getBuildings();
+    return reply.send(buildings);
+  });
+
+  fastify.post<{
+    Body: { building_id: string; tile_x: number; tile_y: number };
+  }>('/api/game/buildings', async (req, reply) => {
+    const { building_id, tile_x, tile_y } = req.body;
+    const building = await store.placeBuilding(building_id, tile_x, tile_y);
+    return reply.send(building);
+  });
+
+  fastify.delete<{
+    Params: { id: string };
+  }>('/api/game/buildings/:id', async (req, reply) => {
+    await store.removeBuilding(req.params.id);
+    return reply.send({ ok: true });
+  });
 }

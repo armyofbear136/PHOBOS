@@ -1,7 +1,7 @@
 {
-  "name": "dual-reasoning",
+  "name": "phobos-core",
   "version": "1.0.0",
-  "description": "Local AI Coding Engine",
+  "description": "Self Sovereign Creative AI Operating System and Task Execution Engine",
   "main": "server.ts",
   "type": "module",
   "scripts": {

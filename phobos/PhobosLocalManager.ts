@@ -3849,6 +3849,14 @@ export function resolveLlamaServerBin(): string {
   const ext      = platform === 'win32' ? '.exe' : '';
   const name     = `llama-server-${platform}-${arch}${ext}`;
 
+  // PHOBOS_BIN_DIR lets the test harness (and any other non-SEA launcher) point
+  // directly at dist/ without relying on process.execPath being the packaged exe.
+  const envBinDir = process.env.PHOBOS_BIN_DIR;
+  if (envBinDir) {
+    const envPath = path.join(envBinDir, name);
+    if (fs.existsSync(envPath)) return envPath;
+  }
+
   const seaDir   = path.dirname(process.execPath);
   const repoRoot = path.resolve(_dirname, '..');
 
@@ -3857,8 +3865,13 @@ export function resolveLlamaServerBin(): string {
   const devPath = path.join(repoRoot, 'bin', name);
   if (fs.existsSync(devPath)) return devPath;
 
+  const tried = [
+    ...(envBinDir ? [`  ${path.join(envBinDir, name)}`] : []),
+    `  ${seaPath}`,
+    `  ${devPath}`,
+  ].join('\n');
   throw new Error(
-    `llama-server binary not found.\nExpected at:\n  ${seaPath}\n  ${devPath}\n` +
+    `llama-server binary not found.\nExpected at:\n${tried}\n` +
     `Run scripts/fetch-llamacpp.js to download binaries.`
   );
 }

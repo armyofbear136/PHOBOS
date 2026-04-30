@@ -179,36 +179,109 @@ function fetchText(url: string, timeoutMs = 15_000): Promise<string> {
 }
 
 // ── Stream liveness check ─────────────────────────────────────────────────────
-// HEAD request with a 4s timeout. A 200, 206, or even 403 (geo-blocked but live)
-// counts as reachable. Connection refused / timeout = dead.
+// Two-phase check for HLS streams:
+//   Phase 1 — GET the manifest URL, read up to 4KB.
+//   Phase 2 — If the body looks like an m3u8, extract the first non-comment
+//             URI line (variant playlist or segment) and HEAD-check that URL.
+//             This catches CDNs that serve manifests fine but have dead segments.
+// Non-m3u8 URLs (mp3, aac, ts) are confirmed live if phase 1 returns any data.
 
-function checkStream(url: string): Promise<boolean> {
-  return new Promise((resolve) => {
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+function httpGet(url: string, maxBytes: number, timeoutMs: number): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
     try {
-      const parsed   = new URL(url);
-      const isHttps  = parsed.protocol === 'https:';
-      const mod      = isHttps ? https : require('http');
+      const parsed  = new URL(url);
+      const isHttps = parsed.protocol === 'https:';
+      const mod     = isHttps ? https : require('http');
       const req = mod.request(
-        {
-          hostname: parsed.hostname,
-          port:     parsed.port || (isHttps ? 443 : 80),
-          path:     parsed.pathname + parsed.search,
-          method:   'HEAD',
-          timeout:  4_000,
-          headers:  { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' },
-        },
-        (res: { statusCode: number }) => {
-          // 200, 206 = live. 403 = geo-blocked but server is up. Anything else = treat as dead.
-          resolve([200, 206, 301, 302, 403].includes(res.statusCode));
+        { hostname: parsed.hostname, port: parsed.port || (isHttps ? 443 : 80),
+          path: parsed.pathname + parsed.search, method: 'GET', timeout: timeoutMs,
+          headers: { 'User-Agent': UA } },
+        (res: import('http').IncomingMessage) => {
+          const status = res.statusCode ?? 0;
+          const chunks: Buffer[] = [];
+          let received = 0;
+          res.on('data', (chunk: Buffer) => {
+            chunks.push(chunk);
+            received += chunk.length;
+            if (received >= maxBytes) { res.destroy(); resolve({ status, body: Buffer.concat(chunks).toString('utf8') }); }
+          });
+          res.on('end',   () => resolve({ status, body: Buffer.concat(chunks).toString('utf8') }));
+          res.on('error', reject);
         }
       );
-      req.on('timeout', () => { req.destroy(); resolve(false); });
-      req.on('error',   () => resolve(false));
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+      req.on('error', reject);
       req.end();
-    } catch {
-      resolve(false);
-    }
+    } catch (e) { reject(e); }
   });
+}
+
+function httpHead(url: string, timeoutMs: number): Promise<number> {
+  return new Promise((resolve) => {
+    try {
+      const parsed  = new URL(url);
+      const isHttps = parsed.protocol === 'https:';
+      const mod     = isHttps ? https : require('http');
+      const req = mod.request(
+        { hostname: parsed.hostname, port: parsed.port || (isHttps ? 443 : 80),
+          path: parsed.pathname + parsed.search, method: 'HEAD', timeout: timeoutMs,
+          headers: { 'User-Agent': UA } },
+        (res: import('http').IncomingMessage) => { res.destroy(); resolve(res.statusCode ?? 0); }
+      );
+      req.on('timeout', () => { req.destroy(); resolve(0); });
+      req.on('error',   () => resolve(0));
+      req.end();
+    } catch { resolve(0); }
+  });
+}
+
+// Resolve a relative URI found in an m3u8 against its base URL.
+function resolveM3uUri(base: string, uri: string): string {
+  try {
+    return new URL(uri, base).toString();
+  } catch {
+    return uri;
+  }
+}
+
+// Extract the first playable URI from an m3u8 body (variant playlist or segment).
+function extractFirstM3uUri(body: string): string | null {
+  for (const line of body.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    if (t.startsWith('http://') || t.startsWith('https://') || t.endsWith('.m3u8') || t.endsWith('.ts') || t.endsWith('.aac')) {
+      return t;
+    }
+  }
+  return null;
+}
+
+async function checkStream(url: string): Promise<boolean> {
+  try {
+    // Phase 1 — fetch the manifest (4KB is enough to read the full m3u8 for most streams).
+    const { status, body } = await httpGet(url, 4096, 6_000);
+
+    if (status === 403) return true;  // geo-blocked but server alive
+    if (status === 0 || status >= 400) return false;
+
+    // Non-m3u8 streams (mp3, aac, raw TS): any data = live.
+    const isM3u8 = body.trimStart().startsWith('#EXTM3U') || url.includes('.m3u8') || url.includes('.m3u');
+    if (!isM3u8) return body.length > 0;
+
+    // Phase 2 — extract first URI from manifest and probe it.
+    const firstUri = extractFirstM3uUri(body);
+    if (!firstUri) return false;  // empty manifest = dead
+
+    const segUrl    = resolveM3uUri(url, firstUri);
+    const segStatus = await httpHead(segUrl, 5_000);
+
+    // 200/206 = live segment. 403 = geo-blocked but streaming. Anything else = dead.
+    return segStatus === 200 || segStatus === 206 || segStatus === 403;
+  } catch {
+    return false;
+  }
 }
 
 // ── Route registration ────────────────────────────────────────────────────────

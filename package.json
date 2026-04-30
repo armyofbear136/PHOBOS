@@ -25,7 +25,8 @@
     "build:lite:linux": "node scripts/build-lite.js linux-x64",
     "build:lite:linux-arm": "node scripts/build-lite.js linux-arm64",
     "start": "node dist/server.js",
-    "db:setup": "node scripts/setup-db.js"
+    "db:setup": "node scripts/setup-db.js",
+    "build:llamaarm64": "gh workflow run build-llamaarm64.yml"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",

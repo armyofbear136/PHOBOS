@@ -42,7 +42,7 @@ import {
   startJellyfin,
   isBinaryPresent as isJellyfinBinaryPresent,
 } from './services/JellyfinManager.js';
-import { stopCarla } from './phobos/CarlaManager.js';
+import { stopPhobosHost } from './phobos/PhobosHostManager.js';
 import { registerToolsRoutes } from './routes/toolsRoute.js';
 import { stopBroadway, startBroadway } from './phobos/BroadwayManager.js';
 import { registerCartridgeRoutes } from './routes/cartridgeRoutes.js';
@@ -486,7 +486,7 @@ async function continueBootSequence(
     await stopJellyfin().catch(() => {});
     await stopKavita().catch(() => {});
     await stopMpv().catch(() => {});
-    await stopCarla().catch(() => {});
+    await stopPhobosHost().catch(() => {});
     await stopAllServers().catch(() => {});
     await fastify.close().catch(() => {});
 

@@ -320,7 +320,7 @@ function buildDeps(arch: PhobosArch): Dep[] {
   const kavitaDir   = path.join(SERVICES_DIR, 'kavita');
   const polarisDir  = path.join(SERVICES_DIR, 'polaris');
   const stirlingDir = path.join(SERVICES_DIR, 'stirling');
-  const carlaDir    = path.join(SERVICES_DIR, 'carla');
+  const phobosHostDir = path.join(SERVICES_DIR, 'phobos-host');
 
   // ── Jellyfin archive + probe per platform ─────────────────────────────────
   function jellyfinDep(): Dep {
@@ -415,35 +415,39 @@ function buildDeps(arch: PhobosArch): Dep[] {
     };
   }
 
-  // ── Carla ─────────────────────────────────────────────────────────────────
-  function carlaDep(): Dep | null {
+  // ── PhobosHost ─────────────────────────────────────────────────────────────
+  // Single-executable JUCE-based VST3 host (replaces Carla). Distributed as
+  // a per-platform zip in the standard PHOBOS-DEPS release alongside the
+  // other third-party deps. Asset names follow the underscore-arch
+  // convention used by the existing release (`PhobosHost-<platform>_<arch>.zip`).
+  function phobosHostDep(): Dep {
     if (isWin) return {
-      id: 'carla', label: 'Carla DAW Host',
-      file: 'Carla-2.5.10-win64.zip', minBytes: 150_000_000,
-      isPresent: () => serviceInstalled(carlaDir, 'Carla/Carla.exe', 50_000),
-      install: async (arc) => extractZip(arc, carlaDir),
+      id: 'phobos-host', label: 'PhobosHost VST3 host',
+      file: 'PhobosHost-win_x64.zip',
+      minBytes: 1_000_000,
+      isPresent: () => serviceInstalled(phobosHostDir, 'PhobosHost.exe', 500_000),
+      install: async (arc) => extractZip(arc, phobosHostDir),
     };
     if (isMac) return {
-      id: 'carla', label: 'Carla DAW Host',
-      file: 'Carla-2.5.10-macos-universal.dmg', minBytes: 200_000_000,
-      isPresent: () => serviceInstalled(carlaDir, 'Carla.app/Contents/MacOS/Carla', 50_000),
+      id: 'phobos-host', label: 'PhobosHost VST3 host',
+      file: arch === 'darwin-arm64' ? 'PhobosHost-darwin_arm64.zip' : 'PhobosHost-darwin_x64.zip',
+      minBytes: 1_000_000,
+      isPresent: () => serviceInstalled(phobosHostDir, 'PhobosHost', 500_000),
       install: async (arc) => {
-        // hdiutil attach → copy .app → detach
-        const mount  = `/Volumes/Carla-prep-${Date.now()}`;
-        await execFileAsync('hdiutil', ['attach', '-mountpoint', mount, '-nobrowse', '-quiet', arc], { timeout: 120_000 });
-        try {
-          await execFileAsync('cp', ['-R', `${mount}/Carla.app`, carlaDir], { timeout: 120_000 });
-        } finally {
-          await execFileAsync('hdiutil', ['detach', mount, '-quiet']).catch(() => {});
-        }
+        await extractZip(arc, phobosHostDir);
+        // macOS: ensure the binary is executable. Some zips lose +x.
+        try { fs.chmodSync(path.join(phobosHostDir, 'PhobosHost'), 0o755); } catch { /* non-fatal */ }
       },
     };
-    // Linux — Carla_2.2.0-linux64.tar.xz (last version with Linux binaries)
     return {
-      id: 'carla', label: 'Carla DAW Host',
-      file: 'Carla_2.2.0-linux64.tar.xz', minBytes: 80_000_000,
-      isPresent: () => serviceInstalled(carlaDir, 'Carla/Carla', 50_000),
-      install: async (arc) => extractTarXz(arc, carlaDir),
+      id: 'phobos-host', label: 'PhobosHost VST3 host',
+      file: arch === 'linux-arm64' ? 'PhobosHost-linux_arm64.zip' : 'PhobosHost-linux_x64.zip',
+      minBytes: 1_000_000,
+      isPresent: () => serviceInstalled(phobosHostDir, 'PhobosHost', 500_000),
+      install: async (arc) => {
+        await extractZip(arc, phobosHostDir);
+        try { fs.chmodSync(path.join(phobosHostDir, 'PhobosHost'), 0o755); } catch { /* non-fatal */ }
+      },
     };
   }
 
@@ -848,7 +852,7 @@ function buildDeps(arch: PhobosArch): Dep[] {
     kavitaDep(),
     polarisDep(),
     stirlingDep,
-    carlaDep(),
+    phobosHostDep(),
     helmDep(),
     pandocDep(),
     mpvDep(),

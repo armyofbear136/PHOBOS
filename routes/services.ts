@@ -367,9 +367,20 @@ export async function registerServiceRoutes(fastify: FastifyInstance): Promise<v
         req.method !== 'GET' && req.method !== 'HEAD' ? (req.body ?? undefined) : undefined,
       );
 
-      reply.raw.writeHead(upstreamRes.status, {
-        'Content-Type': upstreamRes.headers.get('content-type') ?? 'application/json',
-      });
+      // Hijack the raw socket BEFORE any Fastify onSend hooks (including @fastify/cors)
+      // can touch the response. Required for transparent binary proxying.
+      reply.hijack();
+
+      const contentType = upstreamRes.headers.get('content-type') ?? 'application/octet-stream';
+      const respHeaders: Record<string, string> = {
+        'Content-Type':                contentType,
+        'Access-Control-Allow-Origin': (req.headers.origin as string) ?? '*',
+        'Cache-Control':               contentType.startsWith('image/') ? 'max-age=31536000, immutable' : 'no-store',
+      };
+      const contentLength = upstreamRes.headers.get('content-length');
+      if (contentLength) respHeaders['Content-Length'] = contentLength;
+
+      reply.raw.writeHead(upstreamRes.status, respHeaders);
 
       if (upstreamRes.body) {
         const reader = upstreamRes.body.getReader();

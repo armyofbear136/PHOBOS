@@ -3,9 +3,9 @@
  *
  * Scans two sources:
  *   1. Bundled ("phobos") — VST3s shipped with PHOBOS itself. These live in
- *      ~/.phobos/services/carla/plugins/ and are deployed by the fetch-*.js
- *      scripts (fetch-helm, fetch-crystal, eventually fetch-surge-xt).
- *      They're trusted and always available.
+ *      ~/.phobos/services/phobos-host/plugins/ and are deployed by the
+ *      fetch-*.js scripts (fetch-helm, fetch-crystal). They're trusted and
+ *      always available.
  *
  *   2. System — VST3s the user has installed elsewhere. We read VST3_PATH
  *      first then fall back to platform-standard directories:
@@ -15,10 +15,15 @@
  *
  * Discovery is filesystem-only — we identify plugins by the `.vst3` bundle
  * directory name + any `Contents/Resources/moduleinfo.json` metadata. We do
- * NOT probe plugins by running Carla subprocesses. Probing would catch
+ * NOT probe plugins by spawning host subprocesses. Probing would catch
  * broken plugins that crash the host, which is exactly the kind of hazard
  * that can't be recovered from in a scanner. If a plugin's moduleinfo is
  * missing we fall back to deriving the display name from the bundle name.
+ *
+ * Note: PhobosHost has its own VST3 scanner (the C++ side, via JUCE's
+ * AudioPluginFormatManager) used for plugin instantiation metadata. This
+ * TypeScript scanner is the BACKEND-side filesystem catalog used for the
+ * plugin-listing UI; it intentionally does NOT load plugin code.
  *
  * Results cache in DuckDB with a staleness window (default 1 hour). A
  * forced refresh rescans all sources unconditionally.
@@ -27,7 +32,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolvePluginsDir } from './CarlaManager.js';
+import { resolvePluginsDir } from './PhobosHostManager.js';
 import type { DatabaseManager } from '../db/DatabaseManager.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -187,7 +192,7 @@ function makeEntry(pluginPath: string, source: PluginSource): PluginEntry {
 
 // ── Scan ─────────────────────────────────────────────────────────────────────
 
-/** Scan the bundled-plugin dir (the one Carla loads from). */
+/** Scan the bundled-plugin dir (the one PhobosHost loads from). */
 export function scanPhobosPlugins(): PluginEntry[] {
   const root = resolvePluginsDir();
   return scanDirForVst3s(root).map((p) => makeEntry(p, 'phobos'));

@@ -7,7 +7,7 @@
 //   node scripts/fetch-sd-cpp.js
 //   node scripts/fetch-sd-cpp.js --all    (fetch all platforms, not just current)
 //
-// Confirmed asset names from release master-525-d6dd6d7:
+// Confirmed asset names from release master-593-3d6064b (latest as of 2026-04-29):
 //
 //   sd-master-<HASH>-bin-win-vulkan-x64.zip          Windows Vulkan GPU (primary)
 //   sd-master-<HASH>-bin-win-cuda12-x64.zip          Windows CUDA GPU
@@ -322,6 +322,30 @@ function renameFirstMatch(dir, candidates, outPath) {
   return null;
 }
 
+// ── Binary identity check ────────────────────────────────────────────────────────
+// After renaming, verify the binary is sd-cli (generation CLI) not sd-server (HTTP server).
+// sd-server outputs "Svr Options:" / "--listen-port" in its help; sd-cli does not.
+// A mismatch means sd-cli.exe was absent from the release zip — fail loudly.
+async function verifySdCliBinary(binPath) {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const execFileAsync = promisify(execFile);
+  try {
+    await execFileAsync(binPath, ['--bad-arg-intentional-verify'], { timeout: 5000 });
+  } catch (err) {
+    const output = ((err.stdout ?? '') + (err.stderr ?? '')).toString();
+    if (output.includes('Svr Options:') || output.includes('--listen-port')) {
+      console.error(`\n   ✗ CRITICAL: ${path.basename(binPath)} is sd-server (HTTP server), NOT sd-cli (generation CLI).`);
+      console.error(`   sd-cli.exe was missing from the release zip — only sd-server.exe was present.`);
+      console.error(`   Image generation will FAIL until this is corrected.`);
+      console.error(`   Latest release: https://github.com/leejet/stable-diffusion.cpp/releases/latest`);
+      return false;
+    }
+    return true; // unknown-arg error from sd-cli is expected and fine
+  }
+  return true;
+}
+
 // ── Core fetch function ───────────────────────────────────────────────────────
 
 async function fetchAsset(label, url, archiveDest, outPath, extractFn, renameCandidates) {
@@ -609,8 +633,9 @@ export async function fetchSdBinaries({ all = false } = {}) {
     await fetchAsset(
       'sd-server-win32-x64.exe (Vulkan GPU)',
       dl(vulkanFn), tmp(vulkanFn), path.join(SD_VULKAN_DIR, 'sd-server-win32-x64.exe'),
-      extractTo(SD_VULKAN_DIR), ['sd-cli.exe', 'sd.exe'],
+      extractTo(SD_VULKAN_DIR), ['sd-cli.exe', 'sd.exe', 'sd-server.exe' /* fallback: CLI binary missing from zip — server binary only */],
     );
+    await verifySdCliBinary(path.join(SD_VULKAN_DIR, 'sd-server-win32-x64.exe'));
 
     // CUDA GPU build — binary + its own ggml-cuda.dll isolated in sd-cuda/
     const cudaFn = findAsset(
@@ -620,8 +645,9 @@ export async function fetchSdBinaries({ all = false } = {}) {
     await fetchAsset(
       'sd-server-win32-x64-cuda.exe (CUDA GPU)',
       dl(cudaFn), tmp(cudaFn), path.join(SD_CUDA_DIR, 'sd-server-win32-x64-cuda.exe'),
-      extractTo(SD_CUDA_DIR), ['sd-cli.exe', 'sd.exe'],
+      extractTo(SD_CUDA_DIR), ['sd-cli.exe', 'sd.exe', 'sd-server.exe' /* fallback: CLI binary missing from zip — server binary only */],
     );
+    await verifySdCliBinary(path.join(SD_CUDA_DIR, 'sd-server-win32-x64-cuda.exe'));
 
     // CUDA runtime DLLs — sd-cli links against cublas64_12.dll at runtime.
     // cudart64_12.dll provides PTX JIT for Blackwell GPUs.
@@ -651,8 +677,9 @@ export async function fetchSdBinaries({ all = false } = {}) {
     await fetchAsset(
       'sd-server-win32-x64-cpu.exe (AVX2 CPU fallback)',
       dl(avx2Fn), tmp(avx2Fn), path.join(SD_CPU_DIR, 'sd-server-win32-x64-cpu.exe'),
-      extractTo(SD_CPU_DIR), ['sd-cli.exe', 'sd.exe'],
+      extractTo(SD_CPU_DIR), ['sd-cli.exe', 'sd.exe', 'sd-server.exe' /* fallback: CLI binary missing from zip — server binary only */],
     );
+    await verifySdCliBinary(path.join(SD_CPU_DIR, 'sd-server-win32-x64-cpu.exe'));
 
     // ROCm (AMD HIP) — for AMD discrete GPUs with Adrenalin AI Bundle / ROCm installed.
     // 2-4x faster than Vulkan on RDNA 2/3/4. Falls back to Vulkan if not present.
@@ -665,8 +692,9 @@ export async function fetchSdBinaries({ all = false } = {}) {
     await fetchAsset(
       'sd-server-win32-x64-rocm.exe (AMD ROCm GPU)',
       dl(rocmFn), tmp(rocmFn), path.join(SD_ROCM_DIR, 'sd-server-win32-x64-rocm.exe'),
-      extractTo(SD_ROCM_DIR), ['sd-cli.exe', 'sd.exe'],
+      extractTo(SD_ROCM_DIR), ['sd-cli.exe', 'sd.exe', 'sd-server.exe' /* fallback: CLI binary missing from zip — server binary only */],
     );
+    await verifySdCliBinary(path.join(SD_ROCM_DIR, 'sd-server-win32-x64-rocm.exe'));
 
     // ROCm runtime libraries — rocblas, hipblaslt, and Tensile kernel data files.
     // Bundled from AMD HIP SDK 7.1. Without these, the ROCm sd-cli binary fails

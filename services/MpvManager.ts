@@ -235,7 +235,8 @@ export async function startMpv(): Promise<void> {
     '--idle',
     '--no-terminal',
     '--keep-open=yes',           // stay open after file ends
-    '--force-window=yes',        // always open a window — audio-only streams won't silently vanish
+    '--force-window=yes',        // always open a window
+    '--audio-display=no',        // don't require video track — allows audio-only streams to play
     '--osd-level=1',
     '--load-unsafe-playlists',   // allow HLS/m3u8 playlists loaded via IPC (blocked by default)
     ipcArg,
@@ -328,6 +329,7 @@ export async function loadFile(url: string, opts: LoadOptions = { userAgent: nul
   const ua = opts.userAgent ?? DEFAULT_UA;
   const perFileOpts: Record<string, string> = { 'user-agent': ua };
   if (opts.referrer) perFileOpts['referrer'] = opts.referrer;
+  console.log(`[MpvManager] loadFile url=${url}`);
 
   // loadfile signature (mpv ≥ 0.38): [url, flags, index, {options}]
   // index = -1 means "don't use insert-at, just replace" — required placeholder

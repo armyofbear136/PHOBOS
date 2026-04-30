@@ -47,6 +47,9 @@ const _dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT   = path.join(_dirname, 'phobos', 'phobos-diffusers.py');
 const OUT_DIR  = path.resolve('./test-outputs/validate');
 
+// Default PHOBOS_BIN_DIR to ./dist so test scripts work without env var on Windows.
+if (!process.env.PHOBOS_BIN_DIR) process.env.PHOBOS_BIN_DIR = path.resolve('./dist');
+
 // ── CLI args ────────────────────────────────────────────────────────────────
 
 const args          = process.argv.slice(2);
@@ -450,7 +453,7 @@ fs.mkdirSync(OUT_DIR, { recursive: true });
 const gpuSets: { gpu: GpuDevice; entries: ValidationEntry[] }[] = [];
 
 if (allGpus) {
-  const testGpus = hw.gpus.filter(g => g.backend !== 'cpu');
+  const testGpus = hw.gpus; // GpuDevice.backend is 'cuda'|'vulkan'|'metal' — no cpu entries exist
   for (const gpu of testGpus) {
     gpuSets.push({ gpu, entries: entriesToTest });
   }

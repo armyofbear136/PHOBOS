@@ -163,8 +163,7 @@ function buildFluxArgs(
     '--seed',            String(seed),
     '--sampling-method', opts.sampler ?? 'euler',
     '--guidance',        '3.5',
-    '-o',                outPath,
-    '--rng',    'cuda',  // GPU-side RNG — avoids CPU→GPU transfer per step
+    '--output',          outPath,
   ];
 
   if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
@@ -204,8 +203,7 @@ function buildChromaArgs(
     '--seed',            String(seed),
     '--sampling-method', opts.sampler ?? 'euler',
     '--guidance',        '0',
-    '-o',                outPath,
-    '--rng',    'cuda',  // GPU-side RNG
+    '--output',          outPath,
   ];
 
   if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
@@ -251,7 +249,7 @@ function buildSdxlArgs(
     '--seed',            String(seed),
     '--sampling-method', sampler,
     '--cfg-scale',       String(cfgScale),
-    '-o',                outPath,
+    '--output',          outPath,
     '--vae-tiling',      // safe for all VRAM levels, prevents OOM on VAE decode
   ];
 
@@ -295,7 +293,7 @@ function buildKontextArgs(
     '--cfg-scale',       '1.0',
     '--vae-decode-only', 'false',
     '-r',                opts.refImage,
-    '-o',                outPath,
+    '--output',          outPath,
   ];
 
   if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
@@ -330,7 +328,7 @@ function buildFlux2Args(
     '--sampling-method', opts.sampler ?? 'euler',
     '--cfg-scale',       '1.0',
     '--diffusion-fa',
-    '-o',                outPath,
+    '--output',          outPath,
   ];
 
   if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
@@ -368,7 +366,7 @@ function buildZImageArgs(
     '--scheduler',       'discrete',
     '--cfg-scale',       '1.0',
     '--diffusion-fa',
-    '-o',                outPath,
+    '--output',          outPath,
   ];
 
   if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
@@ -407,7 +405,7 @@ function buildQwenImageArgs(
     '--cfg-scale',       '2.5',
     '--flow-shift',      String(flowShift),
     '--diffusion-fa',
-    '-o',                outPath,
+    '--output',          outPath,
   ];
 
   if (opts.negativePrompt) args.push('--negative-prompt', opts.negativePrompt);
@@ -460,7 +458,7 @@ function buildWanArgs(
     '--diffusion-fa',
     // Keep T5/text encoder on CPU to preserve GPU VRAM for diffusion — Wan T5 is 4+ GB
     '--clip-on-cpu',
-    '-o',                outStem,
+    '--output',          outStem,
   ];
 
   // ── Wan 2.2 MoE dual-expert flags ──────────────────────────────────────────

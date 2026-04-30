@@ -6,7 +6,7 @@ export type EffectContext = 'daw' | 'polaris' | 'game' | 'custom';
 
 export interface EffectParamMap {
   [pluginKey: string]: {       // 'helm' | 'surge' | 'crystal'
-    [paramId: string]: number; // Carla plugin parameter index → value
+    [paramId: string]: number; // plugin parameter id → value (legacy schema; see EffectRack note in routes/audio.ts)
   };
 }
 
@@ -160,8 +160,8 @@ export class EffectRackStore {
 
   /**
    * Diff two presets and return (pluginKey, paramId, newValue) tuples for
-   * every param that changed. Used by CarlaManager to send minimal OSC on
-   * context switch.
+   * every param that changed. Legacy from the Carla per-param OSC path; left
+   * intact pending the EffectRackStore redesign for PhobosHost (Session 5+).
    */
   static diff(from: EffectPreset | null, to: EffectPreset): Array<{
     pluginKey: string;

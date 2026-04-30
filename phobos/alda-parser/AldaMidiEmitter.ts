@@ -381,7 +381,7 @@ function writeUInt32BE(buf: Uint8Array, offset: number, v: number): void {
 }
 
 // GM program lookup — exported for callers that want to send a program-change
-// message to Carla alongside note events.
+// message to PhobosHost alongside note events.
 export function gmProgramFor(instrument: string): number {
   return GM_PROGRAMS[instrument.toLowerCase()] ?? 0;
 }

@@ -4,17 +4,40 @@
  * This file covers the DAW (authoring) pipeline — see PHOBOS-Audio-Subsystem-Spec.md §4.
  * Generative audio endpoints (/tts, /music, /sfx) will be added in a later session.
  *
- * ── Carla lifecycle ──────────────────────────────────────────────────────────
- * POST /api/audio/carla/start                    — force-start Carla (diagnostics)
- * POST /api/audio/carla/stop                     — stop Carla (diagnostics)
- * GET  /api/audio/carla/status                   — {state, pid, uptime, activePreset}
- * POST /api/audio/carla/param                    — set a single plugin parameter
- * POST /api/audio/carla/note                     — send note on/off
+ * ── PhobosHost lifecycle ─────────────────────────────────────────────────────
+ * POST /api/audio/host/start                     — force-start PhobosHost (diagnostics)
+ * POST /api/audio/host/stop                      — stop PhobosHost (diagnostics)
+ * GET  /api/audio/host/status                    — {state, pid, uptime, ...}
+ * POST /api/audio/host/ping                      — wire ping → {uptimeMs, version}
+ *
+ * ── PhobosHost plugin ops (1:1 with control protocol §3.2) ───────────────────
+ * POST /api/audio/host/scan                      — {path}             → {plugins, scannedFiles, failedFiles}
+ * POST /api/audio/host/load-plugin               — {channelIdx, pluginPath, kind, fxIndex?} → {slotId}
+ * POST /api/audio/host/unload-plugin             — {slotId}           → {}
+ * POST /api/audio/host/plugin-active             — {slotId, active}   → {}
+ * POST /api/audio/host/reorder-fx                — {slotId, newFxIndex} → {}
+ * POST /api/audio/host/plugin-state/get          — {slotId}           → {state}
+ * POST /api/audio/host/plugin-state/set          — {slotId, state}    → {}
+ * POST /api/audio/host/plugin-ui/show            — {slotId}           → {}
+ * POST /api/audio/host/plugin-ui/close           — {slotId}           → {}
+ * POST /api/audio/host/note                      — {slotId, midiChannel, type, note, velocity?} → {}
+ *
+ * ── Phobos synth (system audio engine on reserved channel 0) ─────────────────
+ * GET  /api/audio/synth/status                    — {mounted, slotId}
+ * POST /api/audio/synth/note                      — {type, note, velocity?} → {}
+ * POST /api/audio/synth/ui/show                   — {} → {}
+ * POST /api/audio/synth/ui/close                  — {} → {}
+ *
+ * ── Phobos Crystal (global FX on channel 0, after the synth) ─────────────────
+ * GET  /api/audio/crystal/status                  — {mounted, slotId}
+ * POST /api/audio/crystal/active                  — {active: boolean} → {}
+ * POST /api/audio/crystal/ui/show                 — {} → {}
+ * POST /api/audio/crystal/ui/close                — {} → {}
  *
  * ── Effect rack ──────────────────────────────────────────────────────────────
  * GET    /api/audio/effect-rack/presets          — list all presets
  * POST   /api/audio/effect-rack/presets          — create/update a preset
- * POST   /api/audio/effect-rack/activate         — activate preset by id
+ * POST   /api/audio/effect-rack/activate         — STUB in Session 4 (see route comment)
  * DELETE /api/audio/effect-rack/presets/:id      — delete non-factory preset
  *
  * ── DAW projects ─────────────────────────────────────────────────────────────
@@ -45,23 +68,48 @@ import { EffectRackStore, EffectPreset, EffectContext } from '../db/EffectRackSt
 import { DawProjectStore } from '../db/DawProjectStore.js';
 import { PluginScanner } from '../phobos/PluginScanner.js';
 import {
-  ensureRunning as ensureCarlaRunning,
-  stopCarla,
-  getStatus as getCarlaStatus,
-  setParam as carlaSetParam,
-  noteOn as carlaNoteOn,
-  noteOff as carlaNoteOff,
-  activatePreset as carlaActivatePreset,
-  showPluginUi as carlaShowPluginUi,
-  setPluginActive as carlaSetPluginActive,
-  setEffectRackStore,
-  PLUGIN_IDX_HELM,
-  PLUGIN_IDX_SURGE,
-  PLUGIN_IDX_CRYSTAL,
-} from '../phobos/CarlaManager.js';
+  ensureRunning as ensureHostRunning,
+  stopPhobosHost,
+  getStatus as getHostStatus,
+  ping as hostPing,
+  scanVst3Path as hostScanVst3Path,
+  loadPlugin as hostLoadPlugin,
+  unloadPlugin as hostUnloadPlugin,
+  setPluginActive as hostSetPluginActive,
+  reorderFx as hostReorderFx,
+  getPluginState as hostGetPluginState,
+  setPluginState as hostSetPluginState,
+  showPluginUi as hostShowPluginUi,
+  closePluginUi as hostClosePluginUi,
+  getPhobosSynthSlotId,
+  showPhobosSynthUi,
+  closePhobosSynthUi,
+  getPhobosCrystalSlotId,
+  setPhobosCrystalActive,
+  showPhobosCrystalUi,
+  closePhobosCrystalUi,
+  PHOBOS_HOST_HOST,
+  PHOBOS_HOST_UDP_PORT,
+  type PluginKind,
+} from '../phobos/PhobosHostManager.js';
+import { OscClient } from '../phobos/OscClient.js';
 import { aldaToMidi } from '../phobos/alda-parser/index.js';
 
 const execFileAsync = promisify(execFile);
+
+// ── Module-scope OSC client ───────────────────────────────────────────────────
+//
+// One UDP socket reused for the lifetime of the server. PhobosHost binds its
+// OSC listener at startup; we send into it whenever a /note request arrives.
+// The OscClient buffer is pre-allocated; this is the standard hot-path pattern.
+let oscClient: OscClient | null = null;
+
+function getOscClient(): OscClient {
+  if (!oscClient) {
+    oscClient = new OscClient({ host: PHOBOS_HOST_HOST, port: PHOBOS_HOST_UDP_PORT });
+  }
+  return oscClient;
+}
 
 // ── Session-file helpers ──────────────────────────────────────────────────────
 
@@ -125,58 +173,110 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
   await dawProjects.ensureTable();
   await pluginScanner.ensureTable();
 
-  // Register the store with CarlaManager so it can resolve preset ids.
-  setEffectRackStore(effectRack);
+  // EffectRackStore is registered for read/write (presets list/upsert/delete).
+  // The activate path is a stub in Session 4 — see route comment below.
 
-  // ── Carla ────────────────────────────────────────────────────────────────
+  // ── PhobosHost lifecycle ─────────────────────────────────────────────────
 
-  fastify.post('/api/audio/carla/start', async (_req, reply) => {
+  fastify.post('/api/audio/host/start', async (_req, reply) => {
     try {
-      await ensureCarlaRunning();
-      return reply.send({ ok: true, status: getCarlaStatus() });
+      await ensureHostRunning();
+      return reply.send({ ok: true, status: getHostStatus() });
     } catch (err) {
       return reply.status(500).send({ error: (err as Error).message });
     }
   });
 
-  fastify.post('/api/audio/carla/stop', async (_req, reply) => {
-    await stopCarla();
-    return reply.send({ ok: true, status: getCarlaStatus() });
+  fastify.post('/api/audio/host/stop', async (_req, reply) => {
+    await stopPhobosHost();
+    return reply.send({ ok: true, status: getHostStatus() });
   });
 
-  fastify.get('/api/audio/carla/status', async (_req, reply) => {
-    return reply.send(getCarlaStatus());
+  fastify.get('/api/audio/host/status', async (_req, reply) => {
+    return reply.send(getHostStatus());
   });
 
-  fastify.post<{
-    Body: { pluginIdx: number; paramId: number; value: number };
-  }>('/api/audio/carla/param', async (req, reply) => {
+  fastify.post('/api/audio/host/ping', async (_req, reply) => {
     try {
-      const { pluginIdx, paramId, value } = req.body;
-      if (typeof pluginIdx !== 'number' || typeof paramId !== 'number' || typeof value !== 'number') {
-        return reply.status(400).send({ error: 'pluginIdx, paramId, and value must be numbers' });
+      await ensureHostRunning();
+      const result = await hostPing();
+      return reply.send({ ok: true, ...result });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  // ── PhobosHost plugin ops ────────────────────────────────────────────────
+
+  /**
+   * Scan a VST3 directory. Returns plugin metadata (name, vendor, uid, etc).
+   * The scan is performed by PhobosHost (using JUCE's AudioPluginFormatManager),
+   * which is more authoritative than the filesystem walk used by PluginScanner —
+   * use this when the caller needs uid/category/numInputs from each plugin.
+   */
+  fastify.post<{
+    Body: { path: string };
+  }>('/api/audio/host/scan', async (req, reply) => {
+    try {
+      const scanPath = req.body?.path;
+      if (typeof scanPath !== 'string' || scanPath.length === 0) {
+        return reply.status(400).send({ error: 'path must be a non-empty string' });
       }
-      await ensureCarlaRunning();
-      carlaSetParam(pluginIdx, paramId, value);
-      return reply.send({ ok: true });
+      await ensureHostRunning();
+      const result = await hostScanVst3Path(scanPath);
+      return reply.send({ ok: true, ...result });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  /**
+   * Instantiate a plugin into a channel chain. `kind: "instrument"` puts it at
+   * the head of the channel; `kind: "fx"` appends (or inserts at fxIndex).
+   * Returns the host-assigned slotId. SlotId is monotonic, never reused, and
+   * is the handle for every subsequent op on this plugin.
+   *
+   * Slot identity is NOT persistent across host restarts. Persist the
+   * { uid, path } pluginRef in session JSON instead — Session 5 territory.
+   */
+  fastify.post<{
+    Body: { channelIdx: number; pluginPath: string; kind: PluginKind; fxIndex?: number };
+  }>('/api/audio/host/load-plugin', async (req, reply) => {
+    try {
+      const { channelIdx, pluginPath, kind } = req.body ?? {};
+      const fxIndex = req.body?.fxIndex;
+      if (typeof channelIdx !== 'number' || channelIdx < 1) {
+        return reply.status(400).send({
+          error: 'channelIdx must be >= 1; channel 0 is reserved for the Phobos synth',
+        });
+      }
+      if (typeof pluginPath !== 'string' || pluginPath.length === 0) {
+        return reply.status(400).send({ error: 'pluginPath must be a non-empty string' });
+      }
+      if (kind !== 'instrument' && kind !== 'fx') {
+        return reply.status(400).send({ error: 'kind must be "instrument" or "fx"' });
+      }
+      if (fxIndex !== undefined && typeof fxIndex !== 'number') {
+        return reply.status(400).send({ error: 'fxIndex must be a number when provided' });
+      }
+      await ensureHostRunning();
+      const result = await hostLoadPlugin({ channelIdx, pluginPath, kind, fxIndex });
+      return reply.send({ ok: true, ...result });
     } catch (err) {
       return reply.status(500).send({ error: (err as Error).message });
     }
   });
 
   fastify.post<{
-    Body: { pluginIdx: number; type: 'on' | 'off'; note: number; velocity?: number; channel?: number };
-  }>('/api/audio/carla/note', async (req, reply) => {
+    Body: { slotId: number };
+  }>('/api/audio/host/unload-plugin', async (req, reply) => {
     try {
-      const { pluginIdx, type, note } = req.body;
-      const velocity = req.body.velocity ?? 100;
-      const channel  = req.body.channel  ?? 0;
-      if (typeof pluginIdx !== 'number' || typeof note !== 'number' || (type !== 'on' && type !== 'off')) {
-        return reply.status(400).send({ error: 'Bad payload' });
+      const { slotId } = req.body ?? {};
+      if (typeof slotId !== 'number') {
+        return reply.status(400).send({ error: 'slotId must be a number' });
       }
-      await ensureCarlaRunning();
-      if (type === 'on') carlaNoteOn(pluginIdx, channel, note, velocity);
-      else               carlaNoteOff(pluginIdx, channel, note);
+      await ensureHostRunning();
+      await hostUnloadPlugin(slotId);
       return reply.send({ ok: true });
     } catch (err) {
       return reply.status(500).send({ error: (err as Error).message });
@@ -184,65 +284,276 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   /**
-   * Open or close the plugin's native custom UI window. Accepts a plugin key
-   * ("helm" | "surge" | "crystal") so clients don't have to know the OSC
-   * index numbering (those are internal wire contracts — see Audio Subsystem
-   * Spec §10.2).
+   * Bypass or reactivate a plugin. For instrument slots, bypass produces
+   * silence; for FX slots, bypass passes audio through unchanged.
    */
   fastify.post<{
-    Body: { plugin: 'helm' | 'surge' | 'crystal'; show: boolean };
-  }>('/api/audio/carla/plugin-ui', async (req, reply) => {
+    Body: { slotId: number; active: boolean };
+  }>('/api/audio/host/plugin-active', async (req, reply) => {
     try {
-      const { plugin, show } = req.body;
-      if (plugin !== 'helm' && plugin !== 'surge' && plugin !== 'crystal') {
-        return reply.status(400).send({ error: 'plugin must be "helm", "surge", or "crystal"' });
-      }
-      if (typeof show !== 'boolean') {
-        return reply.status(400).send({ error: 'show must be a boolean' });
-      }
-      const idx = plugin === 'helm'   ? PLUGIN_IDX_HELM
-                : plugin === 'surge'  ? PLUGIN_IDX_SURGE
-                : PLUGIN_IDX_CRYSTAL;
-      await ensureCarlaRunning();
-      carlaShowPluginUi(idx, show);
-      return reply.send({ ok: true, plugin, show });
-    } catch (err) {
-      return reply.status(500).send({ error: (err as Error).message });
-    }
-  });
-
-  /**
-   * Activate or bypass a plugin. Bypass routes audio around the plugin
-   * unchanged; active re-engages processing.
-   */
-  fastify.post<{
-    Body: { plugin: 'helm' | 'surge' | 'crystal'; active: boolean };
-  }>('/api/audio/carla/plugin-active', async (req, reply) => {
-    try {
-      const { plugin, active } = req.body;
-      if (plugin !== 'helm' && plugin !== 'surge' && plugin !== 'crystal') {
-        return reply.status(400).send({ error: 'plugin must be "helm", "surge", or "crystal"' });
+      const { slotId, active } = req.body ?? {};
+      if (typeof slotId !== 'number') {
+        return reply.status(400).send({ error: 'slotId must be a number' });
       }
       if (typeof active !== 'boolean') {
         return reply.status(400).send({ error: 'active must be a boolean' });
       }
-      const idx = plugin === 'helm'   ? PLUGIN_IDX_HELM
-                : plugin === 'surge'  ? PLUGIN_IDX_SURGE
-                : PLUGIN_IDX_CRYSTAL;
-      await ensureCarlaRunning();
-      carlaSetPluginActive(idx, active);
-      return reply.send({ ok: true, plugin, active });
+      await ensureHostRunning();
+      await hostSetPluginActive(slotId, active);
+      return reply.send({ ok: true });
     } catch (err) {
       return reply.status(500).send({ error: (err as Error).message });
     }
   });
 
-  // ── Plugin enumeration (VST3 scanner) ───────────────────────────────────
+  fastify.post<{
+    Body: { slotId: number; newFxIndex: number };
+  }>('/api/audio/host/reorder-fx', async (req, reply) => {
+    try {
+      const { slotId, newFxIndex } = req.body ?? {};
+      if (typeof slotId !== 'number' || typeof newFxIndex !== 'number') {
+        return reply.status(400).send({ error: 'slotId and newFxIndex must be numbers' });
+      }
+      await ensureHostRunning();
+      await hostReorderFx(slotId, newFxIndex);
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  /**
+   * Read a plugin's serialized state. Returned as base64. The plugin's state
+   * is not byte-stable across audio-thread ticks (live voice/LFO state mutates
+   * every block); the wire contract is round-trip survival, not byte equality.
+   */
+  fastify.post<{
+    Body: { slotId: number };
+  }>('/api/audio/host/plugin-state/get', async (req, reply) => {
+    try {
+      const { slotId } = req.body ?? {};
+      if (typeof slotId !== 'number') {
+        return reply.status(400).send({ error: 'slotId must be a number' });
+      }
+      await ensureHostRunning();
+      const state = await hostGetPluginState(slotId);
+      return reply.send({ ok: true, state });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  fastify.post<{
+    Body: { slotId: number; state: string };
+  }>('/api/audio/host/plugin-state/set', async (req, reply) => {
+    try {
+      const { slotId, state } = req.body ?? {};
+      if (typeof slotId !== 'number') {
+        return reply.status(400).send({ error: 'slotId must be a number' });
+      }
+      if (typeof state !== 'string' || state.length === 0) {
+        return reply.status(400).send({ error: 'state must be a non-empty base64 string' });
+      }
+      await ensureHostRunning();
+      await hostSetPluginState(slotId, state);
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  /**
+   * Open a plugin's native UI window. Idempotent — opening twice brings the
+   * existing window forward instead of creating a second one.
+   */
+  fastify.post<{
+    Body: { slotId: number };
+  }>('/api/audio/host/plugin-ui/show', async (req, reply) => {
+    try {
+      const { slotId } = req.body ?? {};
+      if (typeof slotId !== 'number') {
+        return reply.status(400).send({ error: 'slotId must be a number' });
+      }
+      await ensureHostRunning();
+      await hostShowPluginUi(slotId);
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  /**
+   * Hide a plugin's UI window without destroying the editor — next show is fast.
+   */
+  fastify.post<{
+    Body: { slotId: number };
+  }>('/api/audio/host/plugin-ui/close', async (req, reply) => {
+    try {
+      const { slotId } = req.body ?? {};
+      if (typeof slotId !== 'number') {
+        return reply.status(400).send({ error: 'slotId must be a number' });
+      }
+      await ensureHostRunning();
+      await hostClosePluginUi(slotId);
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  /**
+   * Send a MIDI note to PhobosHost via OSC. midiChannel is 1-indexed
+   * (channel 0 → midiChannel 1) — the host's per-channel MidiChannelFilter
+   * routes by this value. slotId is informational on the wire (preserved for
+   * future routing modes).
+   */
+  fastify.post<{
+    Body: { slotId: number; type: 'on' | 'off'; note: number; midiChannel: number; velocity?: number };
+  }>('/api/audio/host/note', async (req, reply) => {
+    try {
+      const { slotId, type, note, midiChannel } = req.body ?? {};
+      const velocity = req.body?.velocity ?? 100;
+      if (typeof slotId !== 'number' || typeof note !== 'number' || typeof midiChannel !== 'number') {
+        return reply.status(400).send({ error: 'slotId, note, and midiChannel must be numbers' });
+      }
+      if (type !== 'on' && type !== 'off') {
+        return reply.status(400).send({ error: 'type must be "on" or "off"' });
+      }
+      await ensureHostRunning();
+      const osc = getOscClient();
+      if (type === 'on') osc.noteOn(slotId, midiChannel, note, velocity);
+      else               osc.noteOff(slotId, midiChannel, note);
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  // ── Phobos synth (system audio engine on reserved channel 0) ─────────────
+  //
+  // The Phobos synth is mounted automatically when the host starts and lives
+  // on host channel 0 — reserved by the host itself. These routes are how
+  // backend modules and the (eventual) Polaris hidden button interact with it
+  // without ever knowing the underlying slotId.
+
+  fastify.get('/api/audio/synth/status', async (_req, reply) => {
+    const slotId = getPhobosSynthSlotId();
+    return reply.send({ mounted: slotId !== null, slotId });
+  });
+
+  /**
+   * Send a MIDI note to the Phobos synth via OSC. No channelIdx — the synth
+   * is always on host channel 0, so midiChannel is hardcoded to 1 (channel
+   * index + 1, matching the host's MidiChannelFilter convention).
+   */
+  fastify.post<{
+    Body: { type: 'on' | 'off'; note: number; velocity?: number };
+  }>('/api/audio/synth/note', async (req, reply) => {
+    try {
+      const { type, note } = req.body ?? {};
+      const velocity = req.body?.velocity ?? 100;
+      if (typeof note !== 'number') {
+        return reply.status(400).send({ error: 'note must be a number' });
+      }
+      if (type !== 'on' && type !== 'off') {
+        return reply.status(400).send({ error: 'type must be "on" or "off"' });
+      }
+      await ensureHostRunning();
+      const slotId = getPhobosSynthSlotId();
+      if (slotId === null) {
+        return reply.status(503).send({ error: 'phobos synth not mounted' });
+      }
+      const osc = getOscClient();
+      if (type === 'on') osc.noteOn(slotId, 1, note, velocity);
+      else               osc.noteOff(slotId, 1, note);
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  fastify.post('/api/audio/synth/ui/show', async (_req, reply) => {
+    try {
+      await ensureHostRunning();
+      await showPhobosSynthUi();
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  fastify.post('/api/audio/synth/ui/close', async (_req, reply) => {
+    try {
+      await ensureHostRunning();
+      await closePhobosSynthUi();
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  // ── Phobos Crystal (global FX on channel 0, after the synth) ─────────────
+  //
+  // Crystal sits at the tail of channel 0's FX chain. It processes the synth
+  // output (and, in a future session, the Polaris media-player output once
+  // we relocate that audio into the host). The "Crystal Prism" toggle in
+  // Polaris bypasses this slot via /api/audio/crystal/active.
+
+  fastify.get('/api/audio/crystal/status', async (_req, reply) => {
+    const slotId = getPhobosCrystalSlotId();
+    return reply.send({ mounted: slotId !== null, slotId });
+  });
+
+  /**
+   * Bypass or re-engage Crystal. Bypass is the "Crystal Prism off" state in
+   * Polaris — audio passes through unprocessed; active re-engages the FX.
+   */
+  fastify.post<{
+    Body: { active: boolean };
+  }>('/api/audio/crystal/active', async (req, reply) => {
+    try {
+      const { active } = req.body ?? {};
+      if (typeof active !== 'boolean') {
+        return reply.status(400).send({ error: 'active must be a boolean' });
+      }
+      await ensureHostRunning();
+      await setPhobosCrystalActive(active);
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  fastify.post('/api/audio/crystal/ui/show', async (_req, reply) => {
+    try {
+      await ensureHostRunning();
+      await showPhobosCrystalUi();
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  fastify.post('/api/audio/crystal/ui/close', async (_req, reply) => {
+    try {
+      await ensureHostRunning();
+      await closePhobosCrystalUi();
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  // ── Plugin enumeration (filesystem catalog) ──────────────────────────────
 
   /**
    * List discoverable VST3 plugins — bundled (phobos) and system.
    * Defaults to cached results; pass ?refresh=true to force a filesystem rescan.
    * Cache is automatically refreshed if older than 1 hour.
+   *
+   * This is the FILESYSTEM-side scan (PluginScanner); for plugin metadata
+   * authoritative for instantiation (uid, category, etc.), use
+   * /api/audio/host/scan which goes through PhobosHost itself.
    */
   fastify.get<{
     Querystring: { refresh?: string };
@@ -277,15 +588,26 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     }
   });
 
+  /**
+   * Effect-rack preset activation — STUBBED in Session 4.
+   *
+   * The Carla path was per-parameter OSC diff (`setParam` per change). PhobosHost
+   * has no per-param op yet; only whole getPluginState/setPluginState. The
+   * EffectRackStore preset-as-param-bag schema needs to redesign around
+   * setPluginState before this can do real work — likely Session 5/6 territory.
+   *
+   * Returns ok=true so the existing frontend doesn't break, but logs a WARN
+   * so the no-op is visible in logs. Frontend behavior is unchanged for now.
+   */
   fastify.post<{
     Body: { id: string };
   }>('/api/audio/effect-rack/activate', async (req, reply) => {
-    try {
-      await carlaActivatePreset(req.body.id);
-      return reply.send({ ok: true, activePresetId: req.body.id });
-    } catch (err) {
-      return reply.status(400).send({ error: (err as Error).message });
+    const id = req.body?.id;
+    if (typeof id !== 'string' || id.length === 0) {
+      return reply.status(400).send({ error: 'id must be a non-empty string' });
     }
+    process.stderr.write(`[audio:WARN] effect-rack/activate is a stub in Session 4 (id="${id}")\n`);
+    return reply.send({ ok: true, activePresetId: id, stub: true });
   });
 
   fastify.delete<{
@@ -331,7 +653,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
   //
   // These persist the Phase 3 Session model to disk under the user's data dir
   // (`~/.phobos/media/efflux/`). The DB-backed XTK projects above are a
-  // separate, parallel format used by Carla/Efflux upstream tooling.
+  // separate, parallel format used by the Efflux engine's own serializer.
 
   /**
    * Save a .phobos-session file. The frontend pre-slugifies the filename

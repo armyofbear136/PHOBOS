@@ -51,8 +51,6 @@ const V = {
   JELLYFIN_FFMPEG: '7.1.3-5',
   JELLYFIN_DISTRO: 'bookworm',
   KAVITA:          '0.8.9.1',
-  CARLA:           '2.5.10',
-  CARLA_LINUX:     '2.2.0',           // falkTX stopped shipping Linux binaries after 2.2.0
   HELM:            '0.9.0',
   STIRLING:        '2.9.2',
   POLARIS:         '0.16.0',
@@ -525,27 +523,7 @@ for (const f of kavitaFiles) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 7. CARLA  (DAW host)
-// ─────────────────────────────────────────────────────────────────────────────
-
-console.log('\n── Carla ──────────────────────────────────────────────────────');
-console.log(`   win/mac: ${V.CARLA}   linux: ${V.CARLA_LINUX}`);
-
-const CARLA_WM_GH  = `https://github.com/falkTX/Carla/releases/download/v${V.CARLA}`;
-const CARLA_LIN_GH = `https://github.com/falkTX/Carla/releases/download/v${V.CARLA_LINUX}`;
-
-const carlaFiles = [
-  { label: 'carla win32-x64',           name: `Carla-${V.CARLA}-win64.zip`,            url: `${CARLA_WM_GH}/Carla-${V.CARLA}-win64.zip`,            min: 30_000_000 },
-  { label: 'carla darwin universal',    name: `Carla-${V.CARLA}-macos-universal.dmg`,  url: `${CARLA_WM_GH}/Carla-${V.CARLA}-macos-universal.dmg`,  min: 30_000_000 },
-  { label: 'carla linux64',             name: `Carla_${V.CARLA_LINUX}-linux64.tar.xz`, url: `${CARLA_LIN_GH}/Carla_${V.CARLA_LINUX}-linux64.tar.xz`, min: 20_000_000 },
-];
-
-for (const f of carlaFiles) {
-  record(f.label, f.name, await download(f.label, f.url, out(f.name), f.min));
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 8. HELM VST3  (DAW synth plugin)
+// 7. HELM VST3  (DAW synth plugin)
 // ─────────────────────────────────────────────────────────────────────────────
 
 console.log('\n── Helm ───────────────────────────────────────────────────────');
@@ -564,7 +542,7 @@ for (const f of helmFiles) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 9. STIRLING-PDF  (cross-platform jar)
+// 8. STIRLING-PDF  (cross-platform jar)
 // ─────────────────────────────────────────────────────────────────────────────
 
 console.log('\n── Stirling PDF ───────────────────────────────────────────────');
@@ -579,7 +557,7 @@ console.log(`   version: ${V.STIRLING}`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 10. POLARIS  (music server)
+// 9. POLARIS  (music server)
 // ─────────────────────────────────────────────────────────────────────────────
 
 console.log('\n── Polaris ────────────────────────────────────────────────────');
@@ -633,7 +611,7 @@ manual.push({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 11. NODE.JS v22 LTS  (runtime for CamofoxManager + MeridianManager)
+// 10. NODE.JS v22 LTS  (runtime for CamofoxManager + MeridianManager)
 // ─────────────────────────────────────────────────────────────────────────────
 
 console.log('\n── Node.js v22 LTS ────────────────────────────────────────────');

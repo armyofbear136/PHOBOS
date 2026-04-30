@@ -1,35 +1,49 @@
 import * as dgram from 'dgram';
 
 // ── OscClient ─────────────────────────────────────────────────────────────────
-// Minimal OSC 1.0 UDP client for the Carla OSC control surface on port 16331.
+// Minimal OSC 1.0 UDP client for the PhobosHost OSC MIDI surface on UDP/16331.
+//
+// Wire contract (locked — see PHOBOS-PhobosHost-Spec.md §3.4 and the
+// Sessions 1–3 handoff):
+//
+//   /phobos/note_on   ,iiii   slotId, midiChannel, note, velocity
+//   /phobos/note_off  ,iii    slotId, midiChannel, note
+//   /phobos/cc        ,iiii   slotId, midiChannel, controller, value
+//
+// `slotId` is INFORMATIONAL — the host's MIDI dispatch goes to the audio
+// player's MIDI collector with the OSC `midiChannel` field as the MIDI channel
+// byte, and the per-channel MidiChannelFilter (configured at channelIdx + 1)
+// filters by that. **Backend MUST set midiChannel = channelIdx + 1** (1-indexed)
+// for the message to reach the right plugin.
 //
 // Hot-path guarantees:
-//   • One pre-allocated send buffer (OSC_BUFFER_BYTES). Reused on every call.
-//   • No Buffer.alloc, no Buffer.concat, no string allocation beyond the
-//     address path itself (one Buffer.from per send — minimum required since
-//     the address is caller-provided and variable-length).
-//   • Cursor-based writes; no per-field allocations.
+//   - One pre-allocated send buffer (OSC_BUFFER_BYTES). Reused on every call.
+//   - No Buffer.alloc, no Buffer.concat in the per-message path beyond a
+//     single Buffer.allocUnsafe(cursor) on send (necessary because dgram.send
+//     accepts the buffer asynchronously and we'd stomp on the storage with
+//     back-to-back sends otherwise — see flush() comment).
+//   - Cursor-based writes; no per-field allocations.
 //
-// OSC wire format (we implement only what Carla needs):
+// OSC wire format (we implement only what PhobosHost needs):
 //   [address string, null-terminated, padded to 4-byte boundary]
 //   [type tag string ",<types>", null-terminated, padded to 4-byte boundary]
 //   [argument values, big-endian, each padded to 4-byte boundary]
 //
 // Supported types:
 //   i  int32      Big-endian signed int
-//   f  float32    Big-endian IEEE-754
-//   s  string     Null-terminated, 4-byte padded
-//
-// Carla OSC surface we send to (documented at hoisted layer in CarlaManager):
-//   /Carla/0/<pluginIdx>/set_parameter_value    i f     → int paramId, float value
-//   /Carla/0/<pluginIdx>/set_program            i       → int programIdx
-//   /Carla/0/<pluginIdx>/note_on                i i i   → channel, note, velocity
-//   /Carla/0/<pluginIdx>/note_off               i i     → channel, note
-//   /Carla/0/load_project                       s       → string path
+//   f  float32    Big-endian IEEE-754  (kept for OscDecoder round-trip use)
+//   s  string     Null-terminated, 4-byte padded  (kept for OscDecoder)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const OSC_BUFFER_BYTES = 512;  // High-water mark. Largest message is load_project
-                                // with a fully-qualified path (~256 chars + header).
+const OSC_BUFFER_BYTES = 256;  // High-water mark. Largest message is /phobos/cc
+                                // (4 ints + headers ≈ 50 bytes); 256 is generous.
+
+const ADDR_NOTE_ON  = '/phobos/note_on';
+const ADDR_NOTE_OFF = '/phobos/note_off';
+const ADDR_CC       = '/phobos/cc';
+
+const TYPE_IIII = ',iiii';
+const TYPE_III  = ',iii';
 
 export interface OscClientConfig {
   host: string;
@@ -59,8 +73,8 @@ export class OscClient {
    * the Buffer reference asynchronously, so back-to-back sends with the
    * same underlying storage stomp on each other before the OS drains
    * them. The copy is ~40 bytes per message, at <100 Hz control rates —
-   * negligible. The engine's actual hot paths (sequencer tick, note
-   * events) still avoid allocation; OSC control messages are not hot.
+   * negligible. The DAW's hot paths (sequencer tick, note events) emit at
+   * note-rate, well below the threshold where the alloc would matter.
    */
   private flush(cursor: number): void {
     const frame = Buffer.allocUnsafe(cursor);
@@ -74,9 +88,8 @@ export class OscClient {
     this.buf.write(s, cursor, 'utf8');
     cursor += bytes;
     this.buf[cursor++] = 0;                            // null terminator
-    // Pad to next 4-byte boundary (at least one pad byte required — the null
-    // is only one byte, remaining padding brings total including null up to
-    // a multiple of 4).
+    // Pad to next 4-byte boundary (the null is one byte; remaining padding
+    // brings the total including null up to a multiple of 4).
     const afterNull = cursor;
     const padded    = (afterNull + 3) & ~3;
     for (let i = afterNull; i < padded; i++) this.buf[i] = 0;
@@ -88,116 +101,54 @@ export class OscClient {
     return cursor + 4;
   }
 
-  private writeFloat32(cursor: number, v: number): number {
-    this.buf.writeFloatBE(v, cursor);
-    return cursor + 4;
-  }
-
-  // ── Public API — message builders + send ─────────────────────────────────
+  // ── Public API ───────────────────────────────────────────────────────────
 
   /**
-   * Send a parameter set: /Carla/0/<pluginIdx>/set_parameter_value i f
+   * Send a note-on. /phobos/note_on ,iiii slotId, midiChannel, note, velocity
+   *
+   * The host's MIDI dispatch routes by `midiChannel` (1-indexed). Backend must
+   * pass `channelIdx + 1` as `midiChannel` for the message to reach the right
+   * plugin. `slotId` is preserved on the wire but not used for routing yet.
    */
-  setParam(pluginIdx: number, paramId: number, value: number): void {
+  noteOn(slotId: number, midiChannel: number, note: number, velocity: number): void {
     if (this.closed) return;
     let cursor = 0;
-    cursor = this.writeStringPadded(cursor, `/Carla/0/${pluginIdx}/set_parameter_value`);
-    cursor = this.writeStringPadded(cursor, ',if');
-    cursor = this.writeInt32(cursor, paramId);
-    cursor = this.writeFloat32(cursor, value);
-    this.flush(cursor);
-  }
-
-  /**
-   * Send a program change: /Carla/0/<pluginIdx>/set_program i
-   */
-  setProgram(pluginIdx: number, programIdx: number): void {
-    if (this.closed) return;
-    let cursor = 0;
-    cursor = this.writeStringPadded(cursor, `/Carla/0/${pluginIdx}/set_program`);
-    cursor = this.writeStringPadded(cursor, ',i');
-    cursor = this.writeInt32(cursor, programIdx);
-    this.flush(cursor);
-  }
-
-  /**
-   * Note on: /Carla/0/<pluginIdx>/note_on i i i
-   */
-  noteOn(pluginIdx: number, channel: number, note: number, velocity: number): void {
-    if (this.closed) return;
-    let cursor = 0;
-    cursor = this.writeStringPadded(cursor, `/Carla/0/${pluginIdx}/note_on`);
-    cursor = this.writeStringPadded(cursor, ',iii');
-    cursor = this.writeInt32(cursor, channel);
+    cursor = this.writeStringPadded(cursor, ADDR_NOTE_ON);
+    cursor = this.writeStringPadded(cursor, TYPE_IIII);
+    cursor = this.writeInt32(cursor, slotId);
+    cursor = this.writeInt32(cursor, midiChannel);
     cursor = this.writeInt32(cursor, note);
     cursor = this.writeInt32(cursor, velocity);
     this.flush(cursor);
   }
 
   /**
-   * Note off: /Carla/0/<pluginIdx>/note_off i i
+   * Send a note-off. /phobos/note_off ,iii slotId, midiChannel, note
    */
-  noteOff(pluginIdx: number, channel: number, note: number): void {
+  noteOff(slotId: number, midiChannel: number, note: number): void {
     if (this.closed) return;
     let cursor = 0;
-    cursor = this.writeStringPadded(cursor, `/Carla/0/${pluginIdx}/note_off`);
-    cursor = this.writeStringPadded(cursor, ',ii');
-    cursor = this.writeInt32(cursor, channel);
+    cursor = this.writeStringPadded(cursor, ADDR_NOTE_OFF);
+    cursor = this.writeStringPadded(cursor, TYPE_III);
+    cursor = this.writeInt32(cursor, slotId);
+    cursor = this.writeInt32(cursor, midiChannel);
     cursor = this.writeInt32(cursor, note);
     this.flush(cursor);
   }
 
   /**
-   * Show/hide the plugin's native (custom) UI:
-   * /Carla/0/<pluginIdx>/show_custom_ui i (1 = show, 0 = hide)
+   * Send a control-change. /phobos/cc ,iiii slotId, midiChannel, controller, value
    */
-  showCustomUi(pluginIdx: number, show: boolean): void {
+  cc(slotId: number, midiChannel: number, controller: number, value: number): void {
     if (this.closed) return;
     let cursor = 0;
-    cursor = this.writeStringPadded(cursor, `/Carla/0/${pluginIdx}/show_custom_ui`);
-    cursor = this.writeStringPadded(cursor, ',i');
-    cursor = this.writeInt32(cursor, show ? 1 : 0);
+    cursor = this.writeStringPadded(cursor, ADDR_CC);
+    cursor = this.writeStringPadded(cursor, TYPE_IIII);
+    cursor = this.writeInt32(cursor, slotId);
+    cursor = this.writeInt32(cursor, midiChannel);
+    cursor = this.writeInt32(cursor, controller);
+    cursor = this.writeInt32(cursor, value);
     this.flush(cursor);
-  }
-
-  /**
-   * Activate/bypass a plugin:
-   * /Carla/0/<pluginIdx>/set_active i (1 = active, 0 = bypassed)
-   */
-  setActive(pluginIdx: number, active: boolean): void {
-    if (this.closed) return;
-    let cursor = 0;
-    cursor = this.writeStringPadded(cursor, `/Carla/0/${pluginIdx}/set_active`);
-    cursor = this.writeStringPadded(cursor, ',i');
-    cursor = this.writeInt32(cursor, active ? 1 : 0);
-    this.flush(cursor);
-  }
-
-  /**
-   * Load project: /Carla/0/load_project s
-   */
-  loadProject(path: string): void {
-    if (this.closed) return;
-    let cursor = 0;
-    cursor = this.writeStringPadded(cursor, `/Carla/0/load_project`);
-    cursor = this.writeStringPadded(cursor, ',s');
-    cursor = this.writeStringPadded(cursor, path);
-    this.flush(cursor);
-  }
-
-  /**
-   * Encode a message into a provided output buffer. Used by tests for
-   * round-trip verification against OscDecoder. Returns bytes written.
-   */
-  encodeSetParam(outBuf: Buffer, pluginIdx: number, paramId: number, value: number): number {
-    let cursor = 0;
-    const s1 = `/Carla/0/${pluginIdx}/set_parameter_value`;
-    const s2 = ',if';
-    cursor = writeStringPaddedInto(outBuf, cursor, s1);
-    cursor = writeStringPaddedInto(outBuf, cursor, s2);
-    outBuf.writeInt32BE(paramId | 0, cursor); cursor += 4;
-    outBuf.writeFloatBE(value, cursor);       cursor += 4;
-    return cursor;
   }
 
   close(): void {
@@ -205,18 +156,6 @@ export class OscClient {
     this.closed = true;
     this.socket.close();
   }
-}
-
-// Standalone helpers for tests that don't want a live socket.
-
-function writeStringPaddedInto(buf: Buffer, cursor: number, s: string): number {
-  const bytes = Buffer.byteLength(s, 'utf8');
-  buf.write(s, cursor, 'utf8');
-  cursor += bytes;
-  buf[cursor++] = 0;
-  const padded = (cursor + 3) & ~3;
-  for (let i = cursor; i < padded; i++) buf[i] = 0;
-  return padded;
 }
 
 // ── OscDecoder ────────────────────────────────────────────────────────────────

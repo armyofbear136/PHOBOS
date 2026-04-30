@@ -121,88 +121,12 @@ fs.unlinkSync(configPath);
 
 console.log(`   ✅ SEA binary: ${path.basename(exePath)}`);
 
-// ── 3. Copy llama-server + shared libs from bin/ ─────────────────────────────
-// The main phobos-core build already fetched these into bin/.
-// We copy the llama-server binary and all shared libs that phobos-lite needs.
-console.log('\n📋 [3/4] Copying llama-server binaries...');
+// ── 3. (Skipped) llama-server ───────────────────────────────────────────────
+// phobos-lite handles its own dep prep at first boot via ensureLlamaServer().
+// No binaries are bundled at build time.
+console.log('\n  ℹ️  llama-server — installed by phobos-lite DepPrep at first boot (not bundled)');
 
-// Map target → files we need from bin/
-const LLAMA_FILES = {
-  'win32-x64': {
-    required: ['llama-server-win32-x64.exe'],
-    rename:   { 'llama-server-win32-x64.exe': 'llama-server.exe' },
-    // Copy all shared libs (.dll) — CUDA, Vulkan, CPU backends + CUDA runtime
-    sharedLibGlob: '.dll',
-  },
-  'darwin-arm64': {
-    required: ['llama-server-darwin-arm64'],
-    rename:   { 'llama-server-darwin-arm64': 'llama-server' },
-    sharedLibGlob: '.dylib',
-  },
-  'darwin-x64': {
-    required: ['llama-server-darwin-x64'],
-    rename:   { 'llama-server-darwin-x64': 'llama-server' },
-    sharedLibGlob: '.dylib',
-  },
-  'linux-x64': {
-    required: ['llama-server-linux-x64'],
-    rename:   { 'llama-server-linux-x64': 'llama-server' },
-    sharedLibGlob: '.so',
-  },
-  'linux-arm64': {
-    required: ['llama-server-linux-arm64'],
-    rename:   { 'llama-server-linux-arm64': 'llama-server' },
-    sharedLibGlob: '.so',
-  },
-};
-
-const fileCfg = LLAMA_FILES[target];
-if (!fileCfg) {
-  console.error(`❌ No llama-server file config for target: ${target}`);
-  process.exit(1);
-}
-
-let copiedCount = 0;
-
-// Copy required binaries (with rename)
-for (const srcName of fileCfg.required) {
-  const srcPath = path.join(BIN_DIR, srcName);
-  const dstName = fileCfg.rename[srcName] ?? srcName;
-  const dstPath = path.join(platformDir, dstName);
-
-  if (!fs.existsSync(srcPath)) {
-    console.error(`   ❌ Missing: ${srcName} (run build:full first to fetch llama.cpp binaries)`);
-    process.exit(1);
-  }
-
-  fs.copyFileSync(srcPath, dstPath);
-  if (!isWin) fs.chmodSync(dstPath, 0o755);
-  console.log(`   ✓ ${dstName}`);
-  copiedCount++;
-}
-
-// Copy all shared libraries (.dll, .so, .dylib) from bin/
-if (fileCfg.sharedLibGlob) {
-  for (const entry of fs.readdirSync(BIN_DIR)) {
-    // Match shared lib extension, skip the llama-server binaries themselves
-    if (!entry.includes(fileCfg.sharedLibGlob)) continue;
-    if (entry.startsWith('llama-server')) continue;
-    // Skip sd-cpp binaries — phobos-lite doesn't do image gen
-    if (entry.includes('stable-diffusion') || entry.startsWith('sd-')) continue;
-
-    const srcPath = path.join(BIN_DIR, entry);
-    const dstPath = path.join(platformDir, entry);
-    if (!fs.statSync(srcPath).isFile()) continue;
-
-    fs.copyFileSync(srcPath, dstPath);
-    if (!isWin) fs.chmodSync(dstPath, 0o755);
-    copiedCount++;
-  }
-}
-
-console.log(`   ✅ Copied ${copiedCount} files from bin/`);
-
-// ── 4. Create ZIP archive ────────────────────────────────────────────────────
+// ── 4. Create ZIP archive  (step 3 of 3 effective steps) ────────────────────────────────────────────────────
 console.log('\n📦 [4/4] Creating ZIP archive...');
 const zipName = `phobos-lite-${target}-v${LITE_VERSION}.zip`;
 const zipPath = path.join(LITE_DIST, zipName);

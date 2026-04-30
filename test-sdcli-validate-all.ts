@@ -49,11 +49,16 @@ import {
 const _dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUT_DIR  = path.resolve('./test-outputs/sdcli-validate');
 
+// Default PHOBOS_BIN_DIR to ./dist so test scripts work without env var on Windows.
+// The env var is picked up by resolveSdServerBin() in PhobosLocalManager.
+if (!process.env.PHOBOS_BIN_DIR) process.env.PHOBOS_BIN_DIR = path.resolve('./dist');
+
 // ── CLI args ────────────────────────────────────────────────────────────────
 
 const args           = process.argv.slice(2);
-const forceBinary    = args.find(a => a.startsWith('--binary='))?.split('=')[1]
-                    ?? (args.includes('--binary') ? args[args.indexOf('--binary') + 1] : undefined) as 'cuda' | 'vulkan' | 'rocm' | 'cpu' | undefined;
+const _forceBinaryRaw = args.find(a => a.startsWith('--binary='))?.split('=')[1]
+                       ?? (args.includes('--binary') ? args[args.indexOf('--binary') + 1] : undefined);
+const forceBinary = _forceBinaryRaw as 'cuda' | 'vulkan' | 'rocm' | 'cpu' | undefined;
 const skipDownload   = args.includes('--skip-download');
 const modelFilter    = args.find(a => a.startsWith('--model='))?.split('=')[1]
                     ?? (args.includes('--model') ? args[args.indexOf('--model') + 1] : undefined);
@@ -243,7 +248,7 @@ function buildTestArgs(
       '--seed',            String(seed),
       '--sampling-method', sampler,
       '--cfg-scale',       String(cfgScale),
-      '-o',                outArg,
+      '--output',          outArg,
       '--vae-tiling',
     );
   } else if (runner === 'wan') {
@@ -268,7 +273,7 @@ function buildTestArgs(
       '--video-frames',    '5',
       '--diffusion-fa',
       '--clip-on-cpu',
-      '-o',                outArg,
+      '--output',          outArg,
     );
     // Wan 2.2 MoE: add high-noise expert if present
     const hnPath = highNoiseModelPath(spec);
@@ -292,7 +297,7 @@ function buildTestArgs(
       '--sampling-method', 'euler',
       '--guidance',        '1.0',
       '--diffusion-fa',
-      '-o',                outArg,
+      '--output',          outArg,
       '--vae-tiling',
     );
   } else if (runner === 'flux2') {
@@ -310,7 +315,7 @@ function buildTestArgs(
       '--sampling-method', 'euler',
       '--guidance',        '1.0',
       '--diffusion-fa',
-      '-o',                outArg,
+      '--output',          outArg,
       '--vae-tiling',
     );
   } else if (runner === 'qwen-image') {
@@ -328,7 +333,7 @@ function buildTestArgs(
       '--sampling-method', 'euler',
       '--guidance',        '2.5',
       '--diffusion-fa',
-      '-o',                outArg,
+      '--output',          outArg,
       '--vae-tiling',
     );
   } else if (runner === 'flux1-kontext') {
@@ -351,7 +356,7 @@ function buildTestArgs(
       '--seed',            String(seed),
       '--sampling-method', 'euler',
       '--cfg-scale',       '1.0',
-      '-o',                outArg,
+      '--output',          outArg,
       '--vae-tiling',
     );
   } else {
@@ -373,8 +378,7 @@ function buildTestArgs(
       '--seed',            String(seed),
       '--sampling-method', 'euler',
       '--guidance',        guidance,
-      '-o',                outArg,
-      '--rng',             'cuda',
+      '--output',          outArg,
       '--vae-tiling',
     );
     // FLUX needs CLIP-L, Chroma does not

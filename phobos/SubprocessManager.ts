@@ -241,8 +241,10 @@ export function spawnProcess(
  */
 function killWindowsTree(pid: number, label: string): Promise<void> {
   return new Promise((resolve) => {
-    const { spawn: spawnRaw } = require('child_process') as typeof import('child_process');
-    const tk = spawnRaw('taskkill', ['/F', '/T', '/PID', String(pid)], {
+    // Use the top-of-file ESM `spawn` import. The previous implementation
+    // used require('child_process') here, which throws "require is not
+    // defined" under ESM/tsx — every shutdown path on Windows hit this.
+    const tk = spawn('taskkill', ['/F', '/T', '/PID', String(pid)], {
       stdio: 'ignore',
       windowsHide: true,
     });

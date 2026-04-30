@@ -1,22 +1,22 @@
 {
   "win32-x64": {
-    "llama": "b8940",
+    "llama": "b8989",
     "llama-vulkan-source": "b8429",
-    "sd": "master-586-c97702e",
+    "sd": "master-593-3d6064b",
     "files": {
       "llama-server-win32-x64.exe": {
-        "sha256": "e900fbec29263678356b4357b5793a8c9039bf265f34842c6cbf83c23e0d05a7",
-        "size": 13179904,
+        "sha256": "150923b94dc276857d5d8f0712411f1e0ad196a0a5c537da99a5ae7bc432999e",
+        "size": 13274624,
         "source": "unknown"
       },
       "ggml-vulkan.dll": {
-        "sha256": "ec3848a6d5ba8520953295072006fdd02ca373cdea14fb5163e6c4fa46b9c7ae",
-        "size": 61967872,
+        "sha256": "3ec90503b783cbf0be1feaddf45acb7899b772f7853b058660d6fe640c4e7b1e",
+        "size": 61963776,
         "source": "unknown"
       },
       "ggml-cuda.dll": {
-        "sha256": "094dba125ac60ba0cd88f59a31079747f86127255a8e8ac768dc0d4837fed174",
-        "size": 482579968,
+        "sha256": "5eac91d50c2d95800b6a8053a187991f3faf1c55d3e9674f7ed0ad30bb2c492d",
+        "size": 484663808,
         "source": "unknown"
       },
       "cudart64_12.dll": {
@@ -35,95 +35,95 @@
         "source": "unknown"
       },
       "ggml.dll": {
-        "sha256": "08c0c03966e45eeea372991af1066e93ef703007b906a62f247a2f73aa7d68df",
+        "sha256": "4ea321d01a9823c1fb1a2969d7a0b989393c5dcce0a75a4985ffebb2fcf08bd1",
         "size": 96768,
         "source": "unknown"
       },
       "ggml-base.dll": {
-        "sha256": "0b1b8b10d0a65082f9f5f35c3588edda188dad301ef708aa84a9ab46f016570f",
-        "size": 780288,
+        "sha256": "e9ce9cc374f030629cf8f5e21dd4343856d81ce735360f3fc6bc06e85fab2fd6",
+        "size": 780800,
         "source": "unknown"
       },
       "ggml-rpc.dll": {
-        "sha256": "0a5e772b5d982a875af0bc6f5e47b1887058fc88aecb2b6aff7626f40328bc67",
-        "size": 148480,
+        "sha256": "4c12e861d66b3c978c2c707bf64f8669f2267dfe15a90e5d0dd8dd3a573be22f",
+        "size": 150528,
         "source": "unknown"
       },
       "llama.dll": {
-        "sha256": "250981626cc0b3289486525502254d7ea46c0fd3e9e39ac67eaf9364e6ab581d",
+        "sha256": "85bca1c1ef697a838b087a09c84acdb70598707cbcdc4bfc0c19334692ea0a33",
         "size": 2505728,
         "source": "unknown"
       },
       "sd-vulkan/sd-server-win32-x64.exe": {
-        "sha256": "b0a0f3caefbdb8d4f87143b9292baf0809f7255f4493bda2c508e11b55c0ced4",
-        "size": 986624,
+        "sha256": "90254bc0bdd6f4196a4d173467994c8cf0fc6f727784223e88ba636bd3d19199",
+        "size": 1004544,
         "source": "unknown"
       },
       "sd-cuda/sd-server-win32-x64-cuda.exe": {
-        "sha256": "190c84c36eea87d3cee76acce36e48a7681f2aa364cf29283a80b44733ebb519",
-        "size": 986624,
+        "sha256": "dbb2612497f15627d3d3c4244eaa7aa2b70fd034a67237c161cad2b230abd410",
+        "size": 1004544,
         "source": "unknown"
       },
       "sd-cpu/sd-server-win32-x64-cpu.exe": {
-        "sha256": "35b060bb7cda938c70e7583fbffe86c07dbb7041d2263fc9968814c4080a83f9",
-        "size": 986624,
+        "sha256": "b3c74e37045aeac9c94dacb9a1976f5262b735f95d7f908a1894d281177125fb",
+        "size": 1004544,
         "source": "unknown"
       },
       "sd-rocm/sd-server-win32-x64-rocm.exe": {
-        "sha256": "3cdffa8582ba709695975bd7e2ced4b69a2878690c4c76a349b30b93d870feac",
-        "size": 1802752,
+        "sha256": "c5b3c74cc2eb8e3762dae7df3ef5b40a474c208d6e4c4d4e6c5c966f00152f24",
+        "size": 1868800,
         "source": "unknown"
       }
     },
     "llama-rocm": "b1250"
   },
   "darwin-arm64": {
-    "llama": "b8940",
-    "sd": "master-586-c97702e",
+    "llama": "b8989",
+    "sd": "master-593-3d6064b",
     "files": {
       "llama-server-darwin-arm64": {
-        "sha256": "8dc141a1303046dfbd48d1c64347e8a2fdf85ff88ee72d1a772994457e88f58d",
-        "size": 9134208,
+        "sha256": "90954399dd33c050e6392e700265513ec480be7512cf79807ade87c44e8a462c",
+        "size": 9221904,
         "source": "unknown"
       },
       "sd-server-darwin-arm64": {
-        "sha256": "eae222b325da24aad8b63dc26af843b7fe011501bd9b44795fc2db2f4a0c4091",
-        "size": 3160376,
+        "sha256": "3d56c5a21d2b2fc66a4620cec548bb054e8bac87d658279f839270bb9cda6a25",
+        "size": 3231864,
         "source": "unknown"
       }
     }
   },
   "darwin-x64": {
-    "llama": "b8940",
+    "llama": "b8989",
     "sd": "",
     "files": {
       "llama-server-darwin-x64": {
-        "sha256": "d9bf11b18f71e44dbecdb9a3ed434e32d286b69c99ea286c3cfa44aa218dc79b",
-        "size": 9125192,
+        "sha256": "fcf62897ae03e6a094401082161c85c17cb5d096aae9d0b30ce4977a65593c33",
+        "size": 9218856,
         "source": "unknown"
       }
     }
   },
   "linux-x64": {
-    "llama": "b8940",
-    "sd": "master-586-c97702e",
+    "llama": "b8989",
+    "sd": "master-593-3d6064b",
     "files": {
       "llama-server-linux-x64": {
-        "sha256": "96b71dd5794723b8812e559e39657e3cb1acfb699ebe52938717c32143212b04",
-        "size": 9201200,
+        "sha256": "0695fc735f9ddac3925880fef4ce8cfdf2cf7e27a088143b4f57916f99c76189",
+        "size": 9278248,
         "source": "unknown"
       },
       "sd-server-linux-x64": {
-        "sha256": "116895f55857ff2cebe7dd6306cee86ccd643484cddfb251a475202e55804726",
-        "size": 2134208,
+        "sha256": "c04344d770569d197a81e07c8e4bc88c134921769a72585cdcd9de0c0138db35",
+        "size": 2185896,
         "source": "unknown"
       }
     }
   },
   "linux-arm64": {
-    "llama": "b8940",
+    "llama": "b8989",
     "sd": "n/a",
     "files": {}
   },
-  "_updated": "2026-04-26T15:37:23.657Z"
+  "_updated": "2026-04-30T21:35:45.076Z"
 }

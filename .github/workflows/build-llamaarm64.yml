@@ -1,0 +1,75 @@
+name: Build llama-server linux-arm64
+
+# Run manually when you want to update the arm64 llama binary on PHOBOS-DEPS.
+# Downloads the artifact, extracts llama-server-linux-arm64, and uploads it
+# to PHOBOS-DEPS via the GitHub release API.
+#
+# After this completes:
+#   1. Download the artifact from the Actions run
+#   2. Upload llama-server-linux-arm64 to PHOBOS-DEPS release
+
+on:
+  workflow_dispatch:
+    inputs:
+      llama_version:
+        description: 'llama.cpp version tag (e.g. b8940). Leave blank to use bin-manifest.json.'
+        required: false
+        default: ''
+
+jobs:
+  build-llama-arm64:
+    runs-on: ubuntu-24.04-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read pinned llama version from manifest
+        id: pins
+        run: |
+          if [ -n "${{ github.event.inputs.llama_version }}" ]; then
+            echo "LLAMA_VERSION=${{ github.event.inputs.llama_version }}" >> $GITHUB_OUTPUT
+          else
+            LLAMA=$(node -e "const m=require('./scripts/bin-manifest.json'); console.log(m['linux-arm64']?.llama ?? '')")
+            echo "LLAMA_VERSION=$LLAMA" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake git ninja-build
+
+      - name: Clone llama.cpp at pinned version
+        run: |
+          VERSION="${{ steps.pins.outputs.LLAMA_VERSION }}"
+          if [ -z "$VERSION" ]; then
+            echo "No version pinned — using latest"
+            git clone --depth 1 https://github.com/ggml-org/llama.cpp llama-src
+          else
+            git clone https://github.com/ggml-org/llama.cpp llama-src
+            cd llama-src && git checkout "$VERSION"
+          fi
+
+      - name: Build llama-server
+        run: |
+          cd llama-src
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF
+          cmake --build build --target llama-server -j$(nproc)
+
+      - name: Stage binary
+        run: |
+          mkdir -p staging
+          cp llama-src/build/bin/llama-server staging/llama-server-linux-arm64
+          chmod +x staging/llama-server-linux-arm64
+          ls -lh staging/
+
+      - name: Upload llama-server-linux-arm64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-server-linux-arm64
+          path: staging/llama-server-linux-arm64
+          retention-days: 30

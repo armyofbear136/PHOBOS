@@ -12,6 +12,7 @@ output/
 
 #testing files
 test-*/
+test-*.*
 godot-docs/
 
 *.duckdb.*

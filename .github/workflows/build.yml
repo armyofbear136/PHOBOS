@@ -40,7 +40,6 @@ jobs:
             runner:       ubuntu-24.04-arm
             artifact:     phobos-linux-arm64
             pack:         tar
-            build-llama:  linux-arm64
             build-full-target: linux-arm64
 
 
@@ -83,43 +82,6 @@ jobs:
             else       console.error('⚠️  No pinned sd.cpp version — will fetch latest');
           " >> $GITHUB_OUTPUT
         shell: bash
-
-      - name: Build llama-server from source (linux-arm64 — for phobos-lite)
-        # phobos-lite bundles llama-server. linux-arm64 has no release binary
-        # so we build from source and stage it into bin/ for build-lite.js.
-        # phobos-core does NOT use this — DepPrep installs llama-server at first boot.
-        if: matrix.build-llama == 'linux-arm64'
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y cmake build-essential ninja-build libgomp1
-          git clone --depth 1 https://github.com/ggml-org/llama.cpp llama-src
-          cmake -B llama-src/build llama-src \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DLLAMA_BUILD_TESTS=OFF \
-            -DGGML_RPC=ON \
-            -DGGML_OPENMP=OFF \
-            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
-            -DCMAKE_C_FLAGS='-march=armv8-a+crc' \
-            -DCMAKE_CXX_FLAGS='-march=armv8-a+crc'
-          cmake --build llama-src/build --config Release -j$(nproc)
-          mkdir -p bin
-          cp llama-src/build/bin/llama-server bin/llama-server-linux-arm64
-          # Copy all .so files from anywhere in the build tree (handles varied cmake output layouts)
-          find llama-src/build -name '*.so' -o -name '*.so.*' | while read f; do
-            # Skip symlinks — copy only real files, then recreate symlinks after
-            if [ ! -L "$f" ]; then cp "$f" bin/; fi
-          done
-          # Recreate symlinks in bin/ so dlopen short names resolve correctly
-          find llama-src/build -name '*.so.*' -type l | while read lnk; do
-            base=$(basename "$lnk")
-            target=$(readlink "$lnk")
-            target_base=$(basename "$target")
-            if [ -f "bin/$target_base" ] && [ ! -e "bin/$base" ]; then
-              ln -s "$target_base" "bin/$base"
-            fi
-          done
-          chmod +x bin/llama-server-linux-arm64
 
       - name: Build phobos-core
         run: node build.js

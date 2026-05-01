@@ -216,6 +216,10 @@ export class MeridianDB {
     await this.db.run('UPDATE meridian_libraries SET last_scan_at=now(), file_count=? WHERE id=?',[fileCount,id]);
   }
 
+  async deleteLibrary(id: string): Promise<void> {
+    await this.db.run('DELETE FROM meridian_libraries WHERE id=?', [id]);
+  }
+
   // ── Albums ─────────────────────────────────────────────────────────────────
 
   async getAlbum(id: string): Promise<MeridianAlbum | null> {

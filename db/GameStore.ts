@@ -76,6 +76,9 @@ ALTER TABLE game_player ADD COLUMN IF NOT EXISTS ether_banked INTEGER DEFAULT 0;
 ALTER TABLE game_inventory ADD COLUMN IF NOT EXISTS slot VARCHAR DEFAULT '';
 ALTER TABLE game_inventory ADD COLUMN IF NOT EXISTS rarity INTEGER DEFAULT 0;
 ALTER TABLE game_inventory ADD COLUMN IF NOT EXISTS data VARCHAR DEFAULT '{}';
+ALTER TABLE game_buildings ADD COLUMN IF NOT EXISTS config VARCHAR DEFAULT '{}';
+ALTER TABLE game_buildings ADD COLUMN IF NOT EXISTS last_collected_at TIMESTAMP;
+ALTER TABLE game_buildings ADD COLUMN IF NOT EXISTS state VARCHAR DEFAULT 'blueprint';
 `;
 
 /** XP required to reach a given level (cumulative total). Formula: 100 * level^1.5 per level. */
@@ -131,13 +134,22 @@ export interface GameDecoration {
 }
 
 export interface GameBuilding {
-  id: string;
-  building_id: string;
-  tile_x: number;
-  tile_y: number;
-  state: 'placed' | 'building' | 'built';
-  placed_at: string;
+  id:                 string;
+  building_id:        string;
+  tile_x:             number;
+  tile_y:             number;
+  // 'blueprint' = placed, no materials supplied yet
+  // 'building'  = partially supplied
+  // 'built'     = all material slots fulfilled
+  state:              'blueprint' | 'building' | 'built';
+  // JSON: { slotId: { materialId: quantity } }
+  // e.g. { "frame": { "heartwood_t2": 3 }, "core": {} }
+  config:             string;
+  // ISO timestamp of last RCS collection. Null until first collect.
+  last_collected_at:  string | null;
+  placed_at:          string;
 }
+
 
 export class GameStore {
   private db: DatabaseManager;
@@ -364,10 +376,11 @@ export class GameStore {
     );
   }
 
-  async placeBuilding(buildingId: string, tileX: number, tileY: number): Promise<GameBuilding> {
+    async placeBuilding(buildingId: string, tileX: number, tileY: number): Promise<GameBuilding> {
     const id = crypto.randomUUID();
     await this.db.run(
-      `INSERT INTO game_buildings (id, building_id, tile_x, tile_y) VALUES (?, ?, ?, ?)`,
+      `INSERT INTO game_buildings (id, building_id, tile_x, tile_y, state, config)
+       VALUES (?, ?, ?, ?, 'blueprint', '{}')`,
       [id, buildingId, tileX, tileY]
     );
     const rows = await this.db.query<GameBuilding>(
@@ -375,8 +388,75 @@ export class GameStore {
     );
     return rows[0];
   }
-
+ 
   async removeBuilding(id: string): Promise<void> {
     await this.db.run(`DELETE FROM game_buildings WHERE id = ?`, [id]);
   }
+ 
+  /** Move a building to a new tile (relocate flow). */
+  async updateBuildingPosition(id: string, tileX: number, tileY: number): Promise<GameBuilding> {
+    await this.db.run(
+      `UPDATE game_buildings SET tile_x = ?, tile_y = ? WHERE id = ?`,
+      [tileX, tileY, id]
+    );
+    const rows = await this.db.query<GameBuilding>(
+      `SELECT * FROM game_buildings WHERE id = ?`, [id]
+    );
+    return rows[0];
+  }
+
+    /**
+   * Persist material supply progress and derive the new state.
+   * config: full JSON string — { slotId: { materialId: quantity } }
+   * state:  caller computes via progressToState() from HubBuildingCatalog.
+   */
+  async updateBuildingConfig(
+    id: string,
+    config: string,
+    state: 'blueprint' | 'building' | 'built',
+  ): Promise<GameBuilding> {
+    await this.db.run(
+      `UPDATE game_buildings SET config = ?, state = ? WHERE id = ?`,
+      [config, state, id]
+    );
+    const rows = await this.db.query<GameBuilding>(
+      `SELECT * FROM game_buildings WHERE id = ?`, [id]
+    );
+    return rows[0];
+  }
+ 
+  /**
+   * Collect accumulated RCS output.
+   * Returns the number of units collected and resets the timestamp.
+   * Caller computes units via rcsAccumulatedUnits() from HubBuildingCatalog.
+   */
+  async collectRcsOutput(id: string): Promise<{ units: number; building: GameBuilding }> {
+    // Read current record to compute units
+    const rows = await this.db.query<GameBuilding>(
+      `SELECT * FROM game_buildings WHERE id = ?`, [id]
+    );
+    if (!rows[0]) throw new Error(`Building ${id} not found`);
+    const building = rows[0];
+ 
+    // Import is intentionally dynamic to keep this file free of catalog coupling.
+    // The route layer can also pass units directly — see routes/game.ts.
+    const since = building.last_collected_at ?? building.placed_at;
+    const elapsedMs = Date.now() - new Date(since).getTime();
+    const units = Math.min(
+      Math.floor(elapsedMs / (10 * 60 * 1000)), // 10 min per unit
+      144,                                        // RCS_MAX_STORED
+    );
+ 
+    await this.db.run(
+      `UPDATE game_buildings SET last_collected_at = now() WHERE id = ?`,
+      [id]
+    );
+ 
+    const updated = await this.db.query<GameBuilding>(
+      `SELECT * FROM game_buildings WHERE id = ?`, [id]
+    );
+    return { units, building: updated[0] };
+  }
+
+  
 }

@@ -27,9 +27,12 @@ const execFileAsync = promisify(execFile);
 const execAsync     = promisify(exec);
 const __dirname     = path.dirname(fileURLToPath(import.meta.url));
 
-const CRYSTAL_URL = 'https://github.com/armyofbear136/PHOBOS-BUILDS/releases/download/PHOBOS-CORE-LATEST/PhobosCrystal.vst3.zip';
+const CRYSTAL_URL = 'https://github.com/armyofbear136/PHOBOS-BUILDS/releases/download/PHOBOS-DEPS/PhobosCrystal.vst3.zip';
 
-const PLUGINS_DIR  = path.join(os.homedir(), '.phobos', 'services', 'carla', 'plugins');
+// Crystal lives in PhobosHost's plugins dir — the host's PluginScanner
+// discovers VST3 bundles here on first scan. (Legacy carla path retired
+// in Session 6 with the PhobosHost migration.)
+const PLUGINS_DIR  = path.join(os.homedir(), '.phobos', 'services', 'phobos-host', 'plugins');
 const DEST_BUNDLE  = path.join(PLUGINS_DIR, 'PhobosCrystal.vst3');
 const TMP_DIR      = path.join(PLUGINS_DIR, '.tmp-crystal');
 const ZIP_PATH     = path.join(TMP_DIR, 'PhobosCrystal.vst3.zip');

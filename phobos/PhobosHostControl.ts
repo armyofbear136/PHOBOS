@@ -173,7 +173,7 @@ export class PhobosHostControl {
    * Convenience: send and unwrap a successful result. Throws on ok=false or
    * any wire/timeout error. Returns the `result` field directly.
    */
-  async call<T extends Record<string, unknown>>(
+  async call<T extends object>(
     op: string,
     args: Record<string, unknown> = {},
     timeoutMs = DEFAULT_OP_TIMEOUT_MS,

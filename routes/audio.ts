@@ -53,6 +53,17 @@
  *
  * ── ALDA ─────────────────────────────────────────────────────────────────────
  * POST /api/audio/alda/compile                   — compile ALDA text → MIDI events
+ * POST /api/audio/alda/play                      — compile + play on Phobos synth, returns {sequenceId}
+ * POST /api/audio/alda/stop                      — cancel a sequence by id
+ *
+ * ── File player (Polaris + game audio) ───────────────────────────────────────
+ * POST /api/audio/player/play           — {path, startMs?, loop?}        → {audioId, durationMs}
+ * POST /api/audio/player/play-polaris   — {virtualPath, startMs?, loop?} → {audioId, durationMs, localPath}
+ * POST /api/audio/player/pause          — {audioId}                      → {}
+ * POST /api/audio/player/resume         — {audioId}                      → {}
+ * POST /api/audio/player/seek           — {audioId, positionMs}          → {}
+ * POST /api/audio/player/stop           — {audioId}                      → {}
+ * GET  /api/audio/player/status         — ?audioId=N                     → {playing, positionMs, durationMs, finished}
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -88,12 +99,20 @@ import {
   setPhobosCrystalActive,
   showPhobosCrystalUi,
   closePhobosCrystalUi,
+  playAudioFile,
+  pauseAudio,
+  resumeAudio,
+  seekAudio,
+  stopAudio,
+  getAudioStatus,
   PHOBOS_HOST_HOST,
   PHOBOS_HOST_UDP_PORT,
   type PluginKind,
 } from '../phobos/PhobosHostManager.js';
 import { OscClient } from '../phobos/OscClient.js';
 import { aldaToMidi } from '../phobos/alda-parser/index.js';
+import { playSourceOnPhobosSynth, stopAldaSequence } from '../phobos/AldaPlayer.js';
+import { playPolarisFile } from '../phobos/PolarisHostPlayer.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -780,6 +799,153 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     }
   });
 
+  // ── File player (Polaris audio + future game audio) ─────────────────────
+  //
+  // Audio files play through the host's FilePlayerNode and route through
+  // channel 0's audioSumNode → Phobos Crystal → device output. Multiple
+  // files can play concurrently; each gets its own audioId.
+  //
+  // Path is interpreted by the host on its own filesystem. Since the host
+  // and backend run on the same machine, the path the frontend hands the
+  // backend is the same path the host opens. Backend doesn't translate.
+
+  fastify.post<{
+    Body: { path: string; startMs?: number; loop?: boolean };
+  }>('/api/audio/player/play', async (req, reply) => {
+    const { path: filePath, startMs, loop } = req.body ?? {};
+    if (typeof filePath !== 'string' || filePath.length === 0) {
+      return reply.status(400).send({ error: 'missing or empty "path"' });
+    }
+    try {
+      await ensureHostRunning();
+      const result = await playAudioFile({ path: filePath, startMs, loop });
+      return reply.send({ ok: true, ...result });
+    } catch (err) {
+      const message = (err as Error).message;
+      if (message.includes('not found') || message.includes('unsupported')) {
+        return reply.status(400).send({ error: message });
+      }
+      return reply.status(500).send({ error: message });
+    }
+  });
+
+  /**
+   * Play an audio file by its Polaris virtual path. The backend translates
+   * the virtual path (`<mountName>/Artist/Album/Track.ext`) to a local
+   * filesystem path by reading polaris.toml's `[[mount_dirs]]` entries, then
+   * hands the local path to the host's FilePlayerNode.
+   *
+   * Frontend callers (the dock, the floating player) hit this route rather
+   * than `/play` so they don't have to know anything about Polaris's mount
+   * config — they just pass through whatever `path` field Polaris's API gave
+   * them on the song object.
+   *
+   * On any resolution failure (no mount, traversal attempt, file missing on
+   * disk after resolution), returns 400 with a descriptive error so the UI
+   * can show something more useful than a generic 500.
+   */
+  fastify.post<{
+    Body: { virtualPath: string; startMs?: number; loop?: boolean };
+  }>('/api/audio/player/play-polaris', async (req, reply) => {
+    const { virtualPath, startMs, loop } = req.body ?? {};
+    if (typeof virtualPath !== 'string' || virtualPath.length === 0) {
+      return reply.status(400).send({ error: 'missing or empty "virtualPath"' });
+    }
+    try {
+      const result = await playPolarisFile({ virtualPath, startMs, loop });
+      return reply.send({ ok: true, ...result });
+    } catch (err) {
+      const message = (err as Error).message;
+      if (
+        message.includes('could not be resolved') ||
+        message.includes('does not exist on disk') ||
+        message.includes('unsupported')
+      ) {
+        return reply.status(400).send({ error: message });
+      }
+      return reply.status(500).send({ error: message });
+    }
+  });
+
+  fastify.post<{
+    Body: { audioId: number };
+  }>('/api/audio/player/pause', async (req, reply) => {
+    const audioId = req.body?.audioId;
+    if (typeof audioId !== 'number' || audioId < 0) {
+      return reply.status(400).send({ error: 'missing or invalid "audioId"' });
+    }
+    try {
+      await pauseAudio(audioId);
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  fastify.post<{
+    Body: { audioId: number };
+  }>('/api/audio/player/resume', async (req, reply) => {
+    const audioId = req.body?.audioId;
+    if (typeof audioId !== 'number' || audioId < 0) {
+      return reply.status(400).send({ error: 'missing or invalid "audioId"' });
+    }
+    try {
+      await resumeAudio(audioId);
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  fastify.post<{
+    Body: { audioId: number; positionMs: number };
+  }>('/api/audio/player/seek', async (req, reply) => {
+    const { audioId, positionMs } = req.body ?? {};
+    if (typeof audioId !== 'number' || audioId < 0) {
+      return reply.status(400).send({ error: 'missing or invalid "audioId"' });
+    }
+    if (typeof positionMs !== 'number' || !isFinite(positionMs) || positionMs < 0) {
+      return reply.status(400).send({ error: 'missing or invalid "positionMs"' });
+    }
+    try {
+      await seekAudio(audioId, positionMs);
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  fastify.post<{
+    Body: { audioId: number };
+  }>('/api/audio/player/stop', async (req, reply) => {
+    const audioId = req.body?.audioId;
+    if (typeof audioId !== 'number' || audioId < 0) {
+      return reply.status(400).send({ error: 'missing or invalid "audioId"' });
+    }
+    try {
+      await stopAudio(audioId);
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  fastify.get<{
+    Querystring: { audioId: string };
+  }>('/api/audio/player/status', async (req, reply) => {
+    const audioIdStr = req.query?.audioId;
+    const audioId = typeof audioIdStr === 'string' ? parseInt(audioIdStr, 10) : NaN;
+    if (!isFinite(audioId) || audioId < 0) {
+      return reply.status(400).send({ error: 'missing or invalid "audioId" query param' });
+    }
+    try {
+      const status = await getAudioStatus(audioId);
+      return reply.send({ ok: true, ...status });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
   // ── ALDA ─────────────────────────────────────────────────────────────────
 
   fastify.post<{
@@ -796,6 +962,59 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
       });
     } catch (err) {
       return reply.status(400).send({ error: (err as Error).message });
+    }
+  });
+
+  /**
+   * Compile ALDA source and immediately play it on the Phobos synth via the
+   * host's SchedulerNode. Fire-and-forget — returns the sequenceId; audio
+   * plays asynchronously. Use POST /api/audio/alda/stop with the same id to
+   * cancel mid-playback.
+   *
+   * Compile errors return 400 (caller's source is bad). Host/scheduler errors
+   * return 500. The compiled-zero-events case is treated as a 400 too — empty
+   * playback is almost always a caller mistake.
+   */
+  fastify.post<{
+    Body: { source: string };
+  }>('/api/audio/alda/play', async (req, reply) => {
+    const source = req.body?.source;
+    if (typeof source !== 'string' || source.length === 0) {
+      return reply.status(400).send({ error: 'missing or empty "source"' });
+    }
+    try {
+      const result = await playSourceOnPhobosSynth(source);
+      return reply.send({
+        ok:         true,
+        sequenceId: result.sequenceId,
+        eventCount: result.eventCount,
+        tempoBpm:   result.tempoBpm,
+      });
+    } catch (err) {
+      const message = (err as Error).message;
+      // Compile failures and "compiled to zero events" are caller errors.
+      if (message.includes('compiled to zero events')
+       || message.includes('parse')
+       || message.includes('syntax')
+       || message.includes('expected')) {
+        return reply.status(400).send({ error: message });
+      }
+      return reply.status(500).send({ error: message });
+    }
+  });
+
+  fastify.post<{
+    Body: { sequenceId: number };
+  }>('/api/audio/alda/stop', async (req, reply) => {
+    const sequenceId = req.body?.sequenceId;
+    if (typeof sequenceId !== 'number' || sequenceId < 0) {
+      return reply.status(400).send({ error: 'missing or invalid "sequenceId"' });
+    }
+    try {
+      await stopAldaSequence(sequenceId);
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
     }
   });
 }

@@ -669,8 +669,8 @@ async function installTriton(
 async function installDiffusersStack(pyBin: string): Promise<{ ok: boolean; error?: string }> {
   return runPip(pyBin, [
     '-m', 'pip', 'install',
-    'diffusers>=0.31.0',
-    'transformers>=4.39.0',
+    'diffusers>=0.31.0,<0.34.0',
+    'transformers>=4.39.0,<5.0.0',
     'accelerate>=0.20.0',
     'safetensors>=0.4.0',
     'gguf>=0.10.0',

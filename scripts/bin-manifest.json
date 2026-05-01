@@ -125,5 +125,49 @@
     "sd": "n/a",
     "files": {}
   },
-  "_updated": "2026-04-30T21:35:45.076Z"
+  "_updated": "2026-04-30T21:35:45.076Z",
+   "deps": {
+    "vss": {
+      "version": "1.4.4"
+    },
+    "sybil-model": {
+      "version": "nomic-embed-text-v1.5.Q4_K_M"
+    },
+    "node-runtime": {
+      "version": "22.14.0"
+    },
+    "pandoc": {
+      "version": "3.6.4"
+    },
+    "stirling": {
+      "version": "2.9.2"
+    },
+    "jellyfin": {
+      "version": "10.11.8"
+    },
+    "kavita": {
+      "version": "0.8.9.1"
+    },
+    "polaris": {
+      "version": "0.16.0"
+    },
+    "carla-win": {
+      "version": "2.5.10"
+    },
+    "carla-linux": {
+      "version": "2.2.0"
+    },
+    "helm": {
+      "version": "0.9.0"
+    },
+    "phobos-host": {
+      "version": "1.0.0"
+    },
+    "phobos-crystal": {
+      "version": "1.0.0"
+    },
+    "mpv": {
+      "version": "0.41.0"
+    }
+  }
 }

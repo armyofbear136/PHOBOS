@@ -76,6 +76,16 @@ export async function startMeridianServer(
     };
     _config = cfg;
 
+    // Write config.json to disk so it reflects the actual runtime config.
+    // This keeps the on-disk file in sync after path migrations.
+    const configDir = path.join(os.homedir(), '.phobos', 'services', 'meridian');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, 'config.json'),
+      JSON.stringify(cfg, null, 2),
+      'utf8',
+    );
+
     // Ensure required directories exist.
     fs.mkdirSync(cfg.thumbCacheDir, { recursive: true });
 
@@ -107,6 +117,17 @@ export async function startMeridianServer(
       cfg.userLibPaths.map((p, i) => ensureLibrary(p, `Library ${i + 1}`))
     );
     const allLibs = [phobosLib, ...userLibs];
+
+    // ── Purge stale library rows ───────────────────────────────────────────
+    // Delete file rows belonging to library IDs that are no longer active.
+    // This cleans up after path changes (old phobosLibPath rows accumulate otherwise).
+    const activeIds = new Set(allLibs.map(l => l.id));
+    const allLibRows = await db.listLibraries(cfg.userId);
+    for (const staleLib of allLibRows.filter(l => !activeIds.has(l.id))) {
+      console.log(`[Meridian] Purging stale library ${staleLib.id} (${staleLib.path})`);
+      await db.deleteFilesNotIn(staleLib.id, []);
+      await db.deleteLibrary(staleLib.id);
+    }
 
     // Build scanner, watcher, classifier.
     const scanner    = new Scanner(db, cfg);

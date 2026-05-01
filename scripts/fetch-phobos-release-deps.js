@@ -25,7 +25,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const OUT_DIR   = path.resolve(__dirname, 'test-outputs', 'fetch');
+const OUT_DIR   = path.resolve(__dirname, '../test-outputs', 'fetch');
 
 // ── CLI / env ─────────────────────────────────────────────────────────────────
 
@@ -40,12 +40,15 @@ if (!TOKEN) {
   console.warn('   Pass --github-token=ghp_xxx or set GITHUB_TOKEN env var.\n');
 }
 
+const manifestPath = path.resolve(__dirname, 'bin-manifest.json');
+const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+
 // ── Versions ──────────────────────────────────────────────────────────────────
 // Keep in sync with your fetch-*.js scripts.
 
 const V = {
-  LLAMA_CPP:       'b8940',           // bin-manifest.json: llama field (all platforms)
-  SD_CPP:          'master-586-c97702e', // bin-manifest.json: sd field
+  LLAMA_CPP:       manifest['win32-x64'].llama,
+  SD_CPP:          manifest['win32-x64'].sd,
   DUCKDB:          '1.4.4',           // package.json: duckdb dependency
   JELLYFIN:        '10.11.8',
   JELLYFIN_FFMPEG: '7.1.3-5',

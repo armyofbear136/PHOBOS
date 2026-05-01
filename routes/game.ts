@@ -224,4 +224,78 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
     await store.removeBuilding(req.params.id);
     return reply.send({ ok: true });
   });
+
+    // ── Move building to new tile (relocate) ───────────────────────────────
+ 
+  fastify.patch<{
+    Params: { id: string };
+    Body:   { tile_x: number; tile_y: number };
+  }>('/api/game/buildings/:id', async (req, reply) => {
+    const { tile_x, tile_y } = req.body;
+    if (!Number.isInteger(tile_x) || !Number.isInteger(tile_y)) {
+      return reply.status(400).send({ error: 'tile_x and tile_y must be integers' });
+    }
+    const updated = await store.updateBuildingPosition(req.params.id, tile_x, tile_y);
+    return reply.send(updated);
+  });
+ 
+  // ── Supply materials to a building slot ────────────────────────────────
+  // Body: full config object — the client always sends the complete
+  // suppliedBySlot map, never partial patches. State is derived server-side.
+ 
+  fastify.post<{
+    Params: { id: string };
+    Body:   {
+      config: Record<string, Record<string, number>>;
+      state:  'blueprint' | 'building' | 'built';
+    };
+  }>('/api/game/buildings/:id/supply', async (req, reply) => {
+    const { config, state } = req.body;
+    if (!config || !state) {
+      return reply.status(400).send({ error: 'config and state are required' });
+    }
+    const validStates = ['blueprint', 'building', 'built'] as const;
+    if (!validStates.includes(state)) {
+      return reply.status(400).send({ error: 'invalid state value' });
+    }
+    const updated = await store.updateBuildingConfig(
+      req.params.id,
+      JSON.stringify(config),
+      state,
+    );
+    return reply.send(updated);
+  });
+ 
+  // ── Collect RCS accumulated output ─────────────────────────────────────
+  // Returns { units, materialId, building } so the client can add items to
+  // inventory. The route adds the inventory item automatically.
+ 
+  fastify.post<{
+    Params: { id: string };
+    Body:   { material_id: string };
+  }>('/api/game/buildings/:id/collect', async (req, reply) => {
+    const { material_id } = req.body;
+    if (!material_id) {
+      return reply.status(400).send({ error: 'material_id is required' });
+    }
+ 
+    const { units, building } = await store.collectRcsOutput(req.params.id);
+ 
+    if (units === 0) {
+      return reply.send({ units: 0, material_id, building });
+    }
+ 
+    // Add one inventory item per unit collected.
+    // Uses existing addItem — same pattern as all other material drops.
+    const addPromises: Promise<unknown>[] = [];
+    for (let i = 0; i < units; i++) {
+      addPromises.push(
+        store.addItem(material_id, 'player', 'material', 0, JSON.stringify({ materialId: material_id }))
+      );
+    }
+    await Promise.all(addPromises);
+ 
+    return reply.send({ units, material_id, building });
+  });
+
 }

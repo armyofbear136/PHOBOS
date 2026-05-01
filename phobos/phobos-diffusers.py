@@ -321,13 +321,7 @@ def load_flux_gguf_pipeline(args, device: str, dtype):
 
 
 def load_sdxl_safetensors_pipeline(args, device: str, dtype):
-    """Load an SDXL model from single-file safetensors.
-
-    Newer diffusers (>=0.32) broke the internal CLIP loader used by from_single_file
-    when inferring config from a bare checkpoint — CLIPTextModel loses its text_model
-    attribute during construction. Fix: pass config pointing at the canonical SDXL
-    base repo so diffusers uses the known-good config instead of inferring from keys.
-    """
+    """Load an SDXL model from single-file safetensors."""
     from diffusers import StableDiffusionXLPipeline
 
     log(f"loading diffusion model from {Path(args.model_path).name}")
@@ -335,7 +329,6 @@ def load_sdxl_safetensors_pipeline(args, device: str, dtype):
     pipe = StableDiffusionXLPipeline.from_single_file(
         args.model_path,
         torch_dtype=dtype,
-        config="stabilityai/stable-diffusion-xl-base-1.0",
     )
 
     if args.offload_cpu:
@@ -347,8 +340,6 @@ def load_sdxl_safetensors_pipeline(args, device: str, dtype):
     log("loading tensors completed")
     return pipe
 
-
-# ── Pipeline loading dispatch ────────────────────────────────────────────────
 
 def load_wan_pipeline(args, device: str, dtype):
     """Load a Wan 2.1 T2V model from GGUF with Diffusers.

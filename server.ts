@@ -42,7 +42,6 @@ import {
   startJellyfin,
   isBinaryPresent as isJellyfinBinaryPresent,
 } from './services/JellyfinManager.js';
-import { stopPhobosHost } from './phobos/PhobosHostManager.js';
 import { registerToolsRoutes } from './routes/toolsRoute.js';
 import { stopBroadway, startBroadway } from './phobos/BroadwayManager.js';
 import { registerCartridgeRoutes } from './routes/cartridgeRoutes.js';
@@ -343,12 +342,13 @@ async function continueBootSequence(
       await serviceStore.setEnabled('meridian', true);
       merRecord = await serviceStore.get('meridian');
     }
-    if (!merRecord.libraryPath) {
-      const defaultPath = path.join(os.homedir(), '.phobos', 'media', 'meridian', 'phobosPictures');
-      mkdirSync(defaultPath, { recursive: true });
-      await serviceStore.setLibraryPath('meridian', defaultPath);
+    const correctDefaultPath = path.join(os.homedir(), '.phobos', 'media', 'meridian', 'phobosPhotos');
+    if (!merRecord.libraryPath || merRecord.libraryPath.endsWith('phobosPictures') || merRecord.libraryPath.endsWith('photos')) {
+      // Migrate from old incorrect default path to the correct one
+      mkdirSync(correctDefaultPath, { recursive: true });
+      await serviceStore.setLibraryPath('meridian', correctDefaultPath);
       merRecord = await serviceStore.get('meridian');
-      console.log('[MediaHub] Meridian: seeded default library path:', defaultPath);
+      console.log('[MediaHub] Meridian: set library path:', correctDefaultPath);
     }
     startMeridian({
       libraryPath:  merRecord.libraryPath!,
@@ -486,7 +486,6 @@ async function continueBootSequence(
     await stopJellyfin().catch(() => {});
     await stopKavita().catch(() => {});
     await stopMpv().catch(() => {});
-    await stopPhobosHost().catch(() => {});
     await stopAllServers().catch(() => {});
     await fastify.close().catch(() => {});
 

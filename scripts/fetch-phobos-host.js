@@ -31,13 +31,21 @@ const __dirname     = path.dirname(fileURLToPath(import.meta.url));
 
 // Per-platform release artifact. The release-side is responsible for naming
 // these exactly. Update in lockstep with the publish step.
+//
+// win-x64 ships as a flat .zip. Mac/Linux ship as .tar.gz to preserve
+// executable bit + symlinks (matching how every other platform-specific dep
+// in DepPrep is packaged).
 const PLATFORM_ASSET = {
-  win32:  'PhobosHost-win32-x64.zip',
-  darwin: 'PhobosHost-darwin-universal.zip',
-  linux:  'PhobosHost-linux-x64.zip',
+  win32:  'PhobosHost-win-x64.zip',
+  darwin: process.arch === 'arm64'
+    ? 'PhobosHost-darwin-arm64.tar.gz'
+    : 'PhobosHost-darwin-x64.tar.gz',
+  linux:  process.arch === 'arm64'
+    ? 'PhobosHost-linux-arm64.tar.gz'
+    : 'PhobosHost-linux-x64.tar.gz',
 };
 
-const RELEASE_TAG  = 'PHOBOS-CORE-LATEST';
+const RELEASE_TAG  = 'PHOBOS-DEPS';
 const ASSET_NAME   = PLATFORM_ASSET[process.platform];
 if (!ASSET_NAME) {
   console.error(`[fetch-phobos-host] unsupported platform: ${process.platform}`);

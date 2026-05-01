@@ -81,58 +81,60 @@ type PrepListener = (evt: PrepEvent) => void;
 // ── Marker file — written after successful first-run prep ─────────────────────
 // Keyed to the release tag so an upgrade triggers a fresh prep automatically.
 
-const RELEASE_TAG    = 'PHOBOS-DEPS';
-// Marker is keyed to the release tag AND a hash of BIN_DIR (the install location).
-// This prevents two PHOBOS installs that share the same home directory (e.g. via
-// OneDrive-synced profiles or a dev machine and a laptop with the same Windows user)
-// from treating each other's prep as done.
-const _installHash   = crypto.createHash('sha1').update(BIN_DIR).digest('hex').slice(0, 8);
-const MARKER_FILE    = path.join(PHOBOS_HOME, `.dep-prep-${RELEASE_TAG}-${_installHash}.ok`);
+// ── Manifest-based version tracking ──────────────────────────────────────────
+//
+// bin-manifest.json defines the authoritative version for every dep.
+// DepPrep compares it against an installed-deps manifest written to ~/.phobos/
+// after each successful install. Only stale or missing deps are re-downloaded.
 
-export function isPrepComplete(): boolean {
-  if (process.env.PHOBOS_SKIP_DEP_PREP === '1') return true;
-  if (!fs.existsSync(MARKER_FILE)) return false;
+const _installHash = crypto.createHash('sha1').update(BIN_DIR).digest('hex').slice(0, 8);
+const INSTALLED_MANIFEST_PATH = path.join(PHOBOS_HOME, `installed-deps-${_installHash}.json`);
 
-  // Marker exists but physically verify the two most critical binaries before
-  // trusting it. A fresh npm run build wipes dist/ leaving the marker stale —
-  // without this check the server fast-paths past dep prep and crashes on boot.
-  const isWin = process.platform === 'win32';
-  const llamaBin = path.join(
-    BIN_DIR,
-    `llama-server-${process.platform}-${process.arch}${isWin ? '.exe' : ''}`,
-  );
-  const vssExt = path.join(
-    resolveExtensionDir(),
-    `v1.4.4`,   // keep in sync with DUCKDB_PLATFORM map in buildDeps()
-    (() => {
-      const DUCKDB_PLATFORM: Record<string, string> = {
-        'win32-x64':   'windows_amd64',
-        'darwin-arm64':'osx_arm64',
-        'darwin-x64':  'osx_amd64',
-        'linux-x64':   'linux_amd64',
-        'linux-arm64': 'linux_arm64',
-      };
-      return DUCKDB_PLATFORM[`${process.platform}-${process.arch}`] ?? 'windows_amd64';
-    })(),
-    'vss.duckdb_extension',
-  );
-
-  const llamaOk = (() => { try { return fs.statSync(llamaBin).size >= 500_000; } catch { return false; } })();
-  const vssOk   = (() => { try { return fs.statSync(vssExt).size >= 5_000_000; } catch { return false; } })();
-
-  if (!llamaOk || !vssOk) {
-    // Stale marker — wipe it so DepPrep re-runs on next boot.
-    console.warn(`[DepPrep] Marker present but binaries missing (llama=${llamaOk} vss=${vssOk}) — invalidating marker.`);
-    try { fs.unlinkSync(MARKER_FILE); } catch {}
-    return false;
+function loadBinManifest(): Record<string, unknown> {
+  const candidates = [
+    path.join(path.dirname(process.execPath), 'bin-manifest.json'),
+    path.join(path.dirname(process.execPath), 'scripts', 'bin-manifest.json'),
+    path.join(__dirname, '..', 'scripts', 'bin-manifest.json'),
+    path.join(__dirname, 'bin-manifest.json'),
+  ];
+  for (const c of candidates) {
+    try { return JSON.parse(fs.readFileSync(c, 'utf8')); } catch {}
   }
-
-  return true;
+  return {};
 }
 
-function markPrepComplete(): void {
+const _binManifest = loadBinManifest();
+
+function loadInstalledManifest(): Record<string, { version: string; installedAt: string }> {
+  try { return JSON.parse(fs.readFileSync(INSTALLED_MANIFEST_PATH, 'utf8')); } catch { return {}; }
+}
+
+function markDepInstalled(depId: string, version: string): void {
   fs.mkdirSync(PHOBOS_HOME, { recursive: true });
-  fs.writeFileSync(MARKER_FILE, new Date().toISOString(), 'utf8');
+  const manifest = loadInstalledManifest();
+  manifest[depId] = { version, installedAt: new Date().toISOString() };
+  fs.writeFileSync(INSTALLED_MANIFEST_PATH, JSON.stringify(manifest, null, 2), 'utf8');
+}
+
+function getInstalledVersion(depId: string): string | null {
+  return loadInstalledManifest()[depId]?.version ?? null;
+}
+
+function getExpectedVersion(depId: string, platKey: string): string | null {
+  const m = _binManifest as Record<string, unknown>;
+  const deps = m['deps'] as Record<string, { version: string }> | undefined;
+  if (deps?.[depId]?.version) return deps[depId].version;
+  const platData = m[platKey] as Record<string, string> | undefined;
+  if (depId === 'llama-server' || depId === 'llama-cudart') return platData?.['llama'] ?? null;
+  if (depId.startsWith('sd-server') || depId === 'sd-cudart') return platData?.['sd'] ?? null;
+  return null;
+}
+
+// isPrepComplete is intentionally always false — runDepPrep handles the fast-path
+// internally by comparing installed versions against bin-manifest.json.
+// Only deps that are missing or at a stale version are re-downloaded.
+export function isPrepComplete(): boolean {
+  return process.env.PHOBOS_SKIP_DEP_PREP === '1';
 }
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -272,6 +274,12 @@ function buildDeps(arch: PhobosArch): Dep[] {
   const isWin = arch.startsWith('win32');
   const isMac = arch.startsWith('darwin');
   const isLinux = arch.startsWith('linux');
+
+  // Version constants from bin-manifest.json — bump the manifest to trigger re-downloads.
+  const _platKey  = `${process.platform}-${process.arch}`;
+  const _bm       = _binManifest as Record<string, Record<string, string>>;
+  const _platVers = _bm[_platKey] ?? _bm['win32-x64'] ?? {};
+  const LLAMA_VER = _platVers['llama'] ?? 'b8989';
   const duckdbVersion = '1.4.4'; // keep in sync with package.json
 
   // DuckDB platform string
@@ -302,35 +310,55 @@ function buildDeps(arch: PhobosArch): Dep[] {
     // CUDA — optional; absent on pure Vulkan builds
   ];
 
-  // ── LLAMA archive filenames per platform ──────────────────────────────────
-  function llamaArchive(): string {
-    if (isWin) return `llama-b8940-bin-win-vulkan-x64.zip`;   // vulkan build has all companion .dlls
-    if (isMac && arch === 'darwin-arm64') return `llama-b8940-bin-macos-arm64.tar.gz`;
-    if (isMac) return `llama-b8940-bin-macos-x64.tar.gz`;
-    if (arch === 'linux-arm64') return `llama-b8940-bin-ubuntu-vulkan-x64.tar.gz`; // best available
-    return `llama-b8940-bin-ubuntu-vulkan-x64.tar.gz`;
+  // sd-server binary — sd-server is placed in subdirectories per GPU backend on Windows
+  function sdDest(variant: string): string {
+    if (isWin) return path.join(BIN_DIR, `sd-${variant}`, `sd-server-win32-x64-${variant}.exe`);
+    return path.join(BIN_DIR, `sd-server-${process.platform}-${process.arch}${variant === 'rocm' ? '-rocm' : ''}`);
   }
 
-  // ── Version constants ──────────────────────────────────────────────────────
-  const JELLYFIN_VERSION = '10.11.8';
-  const V = { JELLYFIN: JELLYFIN_VERSION };
+  // ── LLAMA archive filenames per platform ──────────────────────────────────
+  function llamaArchive(): string {
+    if (isWin) return `llama-${LLAMA_VER}-bin-win-vulkan-x64.zip`;
+    if (isMac && arch === 'darwin-arm64') return `llama-${LLAMA_VER}-bin-macos-arm64.tar.gz`;
+    if (isMac) return `llama-${LLAMA_VER}-bin-macos-x64.tar.gz`;
+    if (arch === 'linux-arm64') return `llama-${LLAMA_VER}-linux-arm64.tar.gz`;
+    return `llama-${LLAMA_VER}-bin-ubuntu-vulkan-x64.tar.gz`;
+  }
+
+  // ── Version constants from bin-manifest.json ────────────────────────────
+  const platKey  = `${process.platform}-${process.arch}` as string;
+  const _m       = _binManifest as Record<string, Record<string, string>>;
+  const _pd      = _m[platKey] ?? _m['win32-x64'] ?? {};
+  const SD_VER   = _pd['sd'] ?? 'master-3d6064b';
+  const SD_HASH  = SD_VER.split('-').pop() ?? '3d6064b';
+
+  function sdArchiveForVariant2(variant: 'vulkan' | 'cuda' | 'rocm' | 'cpu'): string {
+    if (isWin) {
+      if (variant === 'cpu') return `sd-master-${SD_HASH}-bin-win-avx2-x64.zip`;
+      return `sd-master-${SD_HASH}-bin-win-${variant === 'cuda' ? 'cuda12' : variant}-x64.zip`;
+    }
+    if (isMac && arch === 'darwin-arm64') return `sd-master-${SD_HASH}-bin-Darwin-macOS-15.7.4-arm64.zip`;
+    if (variant === 'rocm') return `sd-master-${SD_HASH}-bin-Linux-Ubuntu-24.04-x86_64-rocm.zip`;
+    return `sd-master-${SD_HASH}-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip`;
+  }
 
   // ── Service dirs ──────────────────────────────────────────────────────────
   const jellyfinDir = path.join(SERVICES_DIR, 'jellyfin');
   const kavitaDir   = path.join(SERVICES_DIR, 'kavita');
   const polarisDir  = path.join(SERVICES_DIR, 'polaris');
   const stirlingDir = path.join(SERVICES_DIR, 'stirling');
-  const phobosHostDir = path.join(SERVICES_DIR, 'phobos-host');
+  const carlaDir    = path.join(SERVICES_DIR, 'carla');
 
   // ── Jellyfin archive + probe per platform ─────────────────────────────────
   function jellyfinDep(): Dep {
     if (isWin) return {
       id: 'jellyfin', label: 'Jellyfin Media Server',
-      file: `jellyfin_${V.JELLYFIN}-amd64.zip`, minBytes: 120_000_000,
+      file: 'jellyfin_10.11.8-amd64.zip', minBytes: 120_000_000,
       isPresent: () => serviceInstalled(jellyfinDir, 'jellyfin.exe', 10_000_000),
       install: async (arc) => {
         await extractZip(arc, jellyfinDir);
-        const sub = path.join(jellyfinDir, `jellyfin_${V.JELLYFIN}`);
+        // jellyfin win zip extracts to jellyfin_10.11.8/ subdir — flatten one level
+        const sub = path.join(jellyfinDir, 'jellyfin_10.11.8');
         if (fs.existsSync(sub)) {
           for (const f of fs.readdirSync(sub)) {
             fs.renameSync(path.join(sub, f), path.join(jellyfinDir, f));
@@ -342,8 +370,8 @@ function buildDeps(arch: PhobosArch): Dep[] {
     if (isMac) return {
       id: 'jellyfin', label: 'Jellyfin Media Server',
       file: arch === 'darwin-arm64'
-        ? `jellyfin_${V.JELLYFIN}-macos-arm64.tar.xz`
-        : `jellyfin_${V.JELLYFIN}-macos-x64.tar.xz`,
+        ? 'jellyfin_10.11.8-macos-arm64.tar.xz'
+        : 'jellyfin_10.11.8-macos-x64.tar.xz',
       minBytes: 60_000_000,
       isPresent: () => serviceInstalled(jellyfinDir, 'jellyfin', 5_000_000),
       install: async (arc) => extractTarXz(arc, jellyfinDir),
@@ -351,8 +379,8 @@ function buildDeps(arch: PhobosArch): Dep[] {
     return {
       id: 'jellyfin', label: 'Jellyfin Media Server',
       file: arch === 'linux-arm64'
-        ? `jellyfin_${V.JELLYFIN}-linux-arm64.tar.gz`
-        : `jellyfin_${V.JELLYFIN}-linux-x64.tar.gz`,
+        ? 'jellyfin_10.11.8-linux-arm64.tar.gz'
+        : 'jellyfin_10.11.8-linux-x64.tar.gz',
       minBytes: 80_000_000,
       isPresent: () => serviceInstalled(jellyfinDir, 'jellyfin', 5_000_000),
       install: async (arc) => extractTarGz(arc, jellyfinDir),
@@ -415,39 +443,35 @@ function buildDeps(arch: PhobosArch): Dep[] {
     };
   }
 
-  // ── PhobosHost ─────────────────────────────────────────────────────────────
-  // Single-executable JUCE-based VST3 host (replaces Carla). Distributed as
-  // a per-platform zip in the standard PHOBOS-DEPS release alongside the
-  // other third-party deps. Asset names follow the underscore-arch
-  // convention used by the existing release (`PhobosHost-<platform>_<arch>.zip`).
-  function phobosHostDep(): Dep {
+  // ── Carla ─────────────────────────────────────────────────────────────────
+  function carlaDep(): Dep | null {
     if (isWin) return {
-      id: 'phobos-host', label: 'PhobosHost VST3 host',
-      file: 'PhobosHost-win_x64.zip',
-      minBytes: 1_000_000,
-      isPresent: () => serviceInstalled(phobosHostDir, 'PhobosHost.exe', 500_000),
-      install: async (arc) => extractZip(arc, phobosHostDir),
+      id: 'carla', label: 'Carla DAW Host',
+      file: 'Carla-2.5.10-win64.zip', minBytes: 150_000_000,
+      isPresent: () => serviceInstalled(carlaDir, 'Carla/Carla.exe', 50_000),
+      install: async (arc) => extractZip(arc, carlaDir),
     };
     if (isMac) return {
-      id: 'phobos-host', label: 'PhobosHost VST3 host',
-      file: arch === 'darwin-arm64' ? 'PhobosHost-darwin_arm64.zip' : 'PhobosHost-darwin_x64.zip',
-      minBytes: 1_000_000,
-      isPresent: () => serviceInstalled(phobosHostDir, 'PhobosHost', 500_000),
+      id: 'carla', label: 'Carla DAW Host',
+      file: 'Carla-2.5.10-macos-universal.dmg', minBytes: 200_000_000,
+      isPresent: () => serviceInstalled(carlaDir, 'Carla.app/Contents/MacOS/Carla', 50_000),
       install: async (arc) => {
-        await extractZip(arc, phobosHostDir);
-        // macOS: ensure the binary is executable. Some zips lose +x.
-        try { fs.chmodSync(path.join(phobosHostDir, 'PhobosHost'), 0o755); } catch { /* non-fatal */ }
+        // hdiutil attach → copy .app → detach
+        const mount  = `/Volumes/Carla-prep-${Date.now()}`;
+        await execFileAsync('hdiutil', ['attach', '-mountpoint', mount, '-nobrowse', '-quiet', arc], { timeout: 120_000 });
+        try {
+          await execFileAsync('cp', ['-R', `${mount}/Carla.app`, carlaDir], { timeout: 120_000 });
+        } finally {
+          await execFileAsync('hdiutil', ['detach', mount, '-quiet']).catch(() => {});
+        }
       },
     };
+    // Linux — Carla_2.2.0-linux64.tar.xz (last version with Linux binaries)
     return {
-      id: 'phobos-host', label: 'PhobosHost VST3 host',
-      file: arch === 'linux-arm64' ? 'PhobosHost-linux_arm64.zip' : 'PhobosHost-linux_x64.zip',
-      minBytes: 1_000_000,
-      isPresent: () => serviceInstalled(phobosHostDir, 'PhobosHost', 500_000),
-      install: async (arc) => {
-        await extractZip(arc, phobosHostDir);
-        try { fs.chmodSync(path.join(phobosHostDir, 'PhobosHost'), 0o755); } catch { /* non-fatal */ }
-      },
+      id: 'carla', label: 'Carla DAW Host',
+      file: 'Carla_2.2.0-linux64.tar.xz', minBytes: 80_000_000,
+      isPresent: () => serviceInstalled(carlaDir, 'Carla/Carla', 50_000),
+      install: async (arc) => extractTarXz(arc, carlaDir),
     };
   }
 
@@ -540,184 +564,230 @@ function buildDeps(arch: PhobosArch): Dep[] {
     },
   } : null;
 
-  // ── sd-server — all GPU variants ─────────────────────────────────────────
-  // Windows needs four separate subdirectory installs (cuda/rocm/vulkan/cpu).
-  // Linux/macOS: one vulkan binary + one ROCm binary (isolated subdir).
-  // Binary names must exactly match what resolveSdServerBin() probes.
+  // ── sd-server variants ────────────────────────────────────────────────────
+  //
+  // Stable Diffusion ships as four distinct binaries on Windows, each isolated
+  // in its own subdir to keep ggml DLL versions from colliding. PhobosLocal's
+  // sd-server resolver looks for them in:
+  //
+  //   bin/sd-vulkan/sd-server-win32-x64.exe       — Vulkan (any GPU)
+  //   bin/sd-cuda/sd-server-win32-x64-cuda.exe    — NVIDIA CUDA
+  //   bin/sd-cpu/sd-server-win32-x64-cpu.exe      — CPU AVX2 fallback
+  //   bin/sd-rocm/sd-server-win32-x64-rocm.exe    — AMD ROCm
+  //
+  // The release archive's binary is named `sd-cli.exe` (preferred) with
+  // legacy fallbacks to `sd.exe` and `sd-server.exe` — same precedence as
+  // scripts/fetch-sd-cpp.js. All `.dll` files in the archive are copied
+  // alongside the renamed binary so ggml-vulkan.dll / ggml-hip.dll etc. are
+  // adjacent to the .exe that loads them.
+  //
+  // Linux/macOS use a single binary (Linux gets vulkan, macOS gets the arm64
+  // build); we don't proliferate variants there. ROCm on Linux is reserved
+  // for a future addition.
 
-  const SD_HASH = 'c97702e';
+  type SdVariant = 'vulkan' | 'cuda' | 'cpu' | 'rocm';
 
-  function sdArchiveForVariant(variant: 'vulkan' | 'cuda' | 'rocm' | 'cpu'): string {
-    if (isWin) {
-      if (variant === 'cpu') return `sd-master-${SD_HASH}-bin-win-avx2-x64.zip`;
-      return `sd-master-${SD_HASH}-bin-win-${variant === 'cuda' ? 'cuda12' : variant}-x64.zip`;
-    }
-    if (isMac && arch === 'darwin-arm64') return `sd-master-${SD_HASH}-bin-Darwin-macOS-15.7.4-arm64.zip`;
-    if (variant === 'rocm') return `sd-master-${SD_HASH}-bin-Linux-Ubuntu-24.04-x86_64-rocm.zip`;
-    return `sd-master-${SD_HASH}-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip`;
-  }
+  /** Where each Windows variant's renamed binary lands. */
+  const sdWinBinPath = (variant: SdVariant): string => {
+    const subdir = `sd-${variant}`;
+    const exe    = variant === 'vulkan'
+      ? 'sd-server-win32-x64.exe'                  // bare name — matches PhobosLocal Vulkan probe
+      : `sd-server-win32-x64-${variant}.exe`;
+    return path.join(BIN_DIR, subdir, exe);
+  };
 
-  // Windows: exact binary name per variant (must match resolveSdServerBin candidates)
-  function sdWinBinName(variant: 'vulkan' | 'cuda' | 'rocm' | 'cpu'): string {
-    if (variant === 'vulkan') return 'sd-server-win32-x64.exe';         // no suffix for vulkan
-    return `sd-server-win32-x64-${variant}.exe`;
-  }
+  /** Build a Dep for one Windows variant. */
+  function sdWindowsVariantDep(variant: SdVariant): Dep {
+    const destDir   = path.join(BIN_DIR, `sd-${variant}`);
+    const finalExe  = sdWinBinPath(variant);
+    const archive   = sdArchiveForVariant2(variant);
 
-  function makeSdDep(variant: 'vulkan' | 'cuda' | 'rocm' | 'cpu'): Dep {
-    const label = `Image Generation Server (${variant})`;
-    const file  = sdArchiveForVariant(variant);
-
-    if (isWin) {
-      const subdir  = path.join(BIN_DIR, `sd-${variant}`);
-      const binName = sdWinBinName(variant);
-      const binPath = path.join(subdir, binName);
-      return {
-        id: `sd-server-${variant}`, label, file,
-        minBytes: variant === 'rocm' ? 200_000_000 : 5_000_000,
-        isPresent: () => { try { return fs.statSync(binPath).size >= 500_000; } catch { return false; } },
-        install: async (arc) => {
-          const tmp = arc + `-${variant}-extract`;
-          fs.mkdirSync(tmp, { recursive: true });
-          await extractTarAny(arc, tmp);
-          const srcBin = findFile(tmp, 'sd.exe') ?? findFile(tmp, 'sd-server.exe');
-          if (!srcBin) throw new Error(`sd binary not found in ${arc}`);
-          fs.mkdirSync(subdir, { recursive: true });
-          fs.copyFileSync(srcBin, binPath);
-          // Copy all companion DLLs from the same source directory
-          for (const dll of fs.readdirSync(path.dirname(srcBin))) {
-            if (dll.endsWith('.dll')) {
-              fs.copyFileSync(path.join(path.dirname(srcBin), dll), path.join(subdir, dll));
-            }
-          }
-          fs.rmSync(tmp, { recursive: true, force: true });
-        },
-      };
-    }
-
-    // Linux/macOS: vulkan is the universal binary; ROCm goes in sd-rocm/ subdir
-    if (variant === 'rocm' && isLinux) {
-      const subdir  = path.join(BIN_DIR, 'sd-rocm');
-      const binPath = path.join(subdir, `sd-server-linux-x64-rocm`);
-      return {
-        id: 'sd-server-rocm', label, file, minBytes: 200_000_000,
-        isPresent: () => { try { return fs.statSync(binPath).size >= 500_000; } catch { return false; } },
-        install: async (arc) => {
-          const tmp = arc + '-rocm-extract';
-          fs.mkdirSync(tmp, { recursive: true });
-          await extractTarAny(arc, tmp);
-          const srcBin = findFile(tmp, 'sd') ?? findFile(tmp, 'sd-server');
-          if (!srcBin) throw new Error(`sd binary not found in ${arc}`);
-          fs.mkdirSync(subdir, { recursive: true });
-          fs.copyFileSync(srcBin, binPath);
-          fs.chmodSync(binPath, 0o755);
-          fs.rmSync(tmp, { recursive: true, force: true });
-        },
-      };
-    }
-
-    // vulkan universal (linux + mac)
-    const binPath = path.join(BIN_DIR, `sd-server-${process.platform}-${process.arch}`);
     return {
-      id: 'sd-server-vulkan', label, file, minBytes: 5_000_000,
-      isPresent: () => { try { return fs.statSync(binPath).size >= 500_000; } catch { return false; } },
+      id: `sd-server-${variant}`, label: `Image Generation Server (${variant})`,
+      file: archive, minBytes: 5_000_000,
+      isPresent: () => { try { return fs.statSync(finalExe).size >= 500_000; } catch { return false; } },
       install: async (arc) => {
         const tmp = arc + '-extract';
         fs.mkdirSync(tmp, { recursive: true });
         await extractTarAny(arc, tmp);
-        const srcBin = findFile(tmp, 'sd') ?? findFile(tmp, 'sd-server');
-        if (!srcBin) throw new Error(`sd binary not found in ${arc}`);
-        fs.copyFileSync(srcBin, binPath);
-        fs.chmodSync(binPath, 0o755);
+
+        const serverBin = findFile(tmp, 'sd-cli.exe')
+                       ?? findFile(tmp, 'sd.exe')
+                       ?? findFile(tmp, 'sd-server.exe');
+        if (!serverBin) throw new Error(`sd binary not found in ${archive}`);
+
+        fs.mkdirSync(destDir, { recursive: true });
+        fs.copyFileSync(serverBin, finalExe);
+
+        // Copy every .dll sitting next to the binary into the variant dir.
+        // Each variant carries its own ggml-*.dll set and must NOT mix with
+        // the other variants' DLLs (different ggml versions, would crash).
+        for (const dll of fs.readdirSync(path.dirname(serverBin))) {
+          if (!dll.toLowerCase().endsWith('.dll')) continue;
+          const src = path.join(path.dirname(serverBin), dll);
+          if (fs.statSync(src).isFile()) {
+            fs.copyFileSync(src, path.join(destDir, dll));
+          }
+        }
+
         fs.rmSync(tmp, { recursive: true, force: true });
       },
     };
   }
 
-  // Also stage the CUDA runtime DLLs alongside the cuda binary on Windows
+  /** CUDA runtime DLLs (cudart/cublas/cublasLt) for the SD CUDA variant. */
   const sdCudaRtDep: Dep | null = isWin ? {
-    id: 'sd-cudart', label: 'Image Generation CUDA Runtime DLLs',
+    id: 'sd-cudart', label: 'SD CUDA Runtime DLLs',
     file: 'cudart-sd-bin-win-cu12-x64.zip', minBytes: 50_000_000,
-    isPresent: () => fs.existsSync(path.join(BIN_DIR, 'sd-cuda', 'cudart64_12.dll')),
+    isPresent: () => fs.existsSync(path.join(BIN_DIR, 'sd-cuda', 'cublas64_12.dll')),
     install: async (arc) => {
+      const destDir = path.join(BIN_DIR, 'sd-cuda');
+      fs.mkdirSync(destDir, { recursive: true });
       const tmp = arc + '-extract';
       fs.mkdirSync(tmp, { recursive: true });
       await extractZip(arc, tmp);
-      const destDir = path.join(BIN_DIR, 'sd-cuda');
-      fs.mkdirSync(destDir, { recursive: true });
-      for (const dll of (fs.readdirSync(tmp, { recursive: true }) as string[])) {
-        if (typeof dll === 'string' && dll.endsWith('.dll')) {
-          const src = path.join(tmp, dll);
-          if (fs.statSync(src).isFile()) fs.copyFileSync(src, path.join(destDir, path.basename(dll)));
+
+      // Only the three runtime DLLs land here — sd-cli links cublas at runtime,
+      // and cublasLt is a transitive dep of cublas (without it the loader
+      // returns STATUS_DLL_NOT_FOUND / 0xC0000135).
+      const required = ['cudart64_12.dll', 'cublas64_12.dll', 'cublasLt64_12.dll'];
+      for (const fname of fs.readdirSync(tmp, { recursive: true }) as string[]) {
+        if (typeof fname !== 'string') continue;
+        const base = path.basename(fname);
+        if (!required.includes(base)) continue;
+        const src = path.join(tmp, fname);
+        if (fs.statSync(src).isFile()) {
+          fs.copyFileSync(src, path.join(destDir, base));
         }
       }
       fs.rmSync(tmp, { recursive: true, force: true });
     },
   } : null;
 
-  // ── mpv video player ──────────────────────────────────────────────────────
-  function mpvDep(): Dep | null {
-    const mpvDir  = path.join(SERVICES_DIR, 'mpv');
-    const binName = isWin ? 'mpv.exe' : 'mpv';
-    const binPath = path.join(mpvDir, binName);
-
-    if (arch === 'linux-arm64') return null; // no static binary available
-
-    const fileMap: Partial<Record<PhobosArch, { file: string; minBytes: number }>> = {
-      'win32-x64':    { file: 'mpv-v0.41.0-x86_64-w64-mingw32.zip',   minBytes: 15_000_000 },
-      'darwin-arm64': { file: 'mpv-v0.41.0-macos-26-arm.zip',          minBytes: 10_000_000 },
-      'darwin-x64':   { file: 'mpv-v0.41.0-macos-15-intel.zip',        minBytes: 10_000_000 },
-      'linux-x64':    { file: 'mpv-v0.39.0-x86_64.tar.gz',             minBytes: 25_000_000 },
-    };
-    const entry = fileMap[arch];
-    if (!entry) return null;
-
+  /** Linux/macOS single-binary install — Vulkan on Linux, arm64 universal on macOS. */
+  const sdUnixDep: Dep | null = !isWin ? (() => {
+    const sdBinPath = path.join(BIN_DIR, `sd-server-${process.platform}-${process.arch}`);
     return {
-      id: 'mpv', label: 'mpv Video Player',
-      file: entry.file, minBytes: entry.minBytes,
-      isPresent: () => { try { return fs.statSync(binPath).size >= entry.minBytes; } catch { return false; } },
+      id: 'sd-server', label: 'Image Generation Server',
+      file: sdArchiveForVariant2('vulkan'), minBytes: 1_000_000,
+      isPresent: () => { try { return fs.statSync(sdBinPath).size >= 500_000; } catch { return false; } },
       install: async (arc) => {
         const tmp = arc + '-extract';
         fs.mkdirSync(tmp, { recursive: true });
         await extractTarAny(arc, tmp);
-        fs.mkdirSync(mpvDir, { recursive: true });
 
-        if (isWin) {
-          // Outer zip contains exactly one inner zip (dated, e.g. mpv-git-2025-12-21-...-x86_64.zip).
-          // The inner zip extracts to a flat directory of files (mpv.exe + DLLs).
-          // We must extract the outer, find the inner zip, extract it, then copy everything to mpvDir.
-          const innerZipName = fs.readdirSync(tmp).find(f => f.endsWith('.zip') && f.startsWith('mpv'));
-          if (!innerZipName) throw new Error(`Expected inner mpv zip not found in ${arc}`);
-          const innerZip = path.join(tmp, innerZipName);
-          const innerTmp = tmp + '-inner';
-          fs.mkdirSync(innerTmp, { recursive: true });
-          await extractZip(innerZip, innerTmp);
-          // Inner zip extracts to a flat directory — find where mpv.exe landed
-          const mpvExe = findFile(innerTmp, 'mpv.exe');
-          if (!mpvExe) throw new Error(`mpv.exe not found after inner extraction`);
-          const srcDir = path.dirname(mpvExe);
-          // Copy mpv.exe and all sibling DLLs into mpvDir
-          for (const f of fs.readdirSync(srcDir)) {
-            fs.copyFileSync(path.join(srcDir, f), path.join(mpvDir, f));
-          }
-          fs.rmSync(innerTmp, { recursive: true, force: true });
-        } else if (isMac) {
-          // macOS: mpv.app/Contents/MacOS/mpv
-          const macBin = findFile(tmp, 'mpv');
-          if (!macBin) throw new Error('mpv binary not found in app bundle');
-          fs.copyFileSync(macBin, binPath);
-          fs.chmodSync(binPath, 0o755);
-          try { await execFileAsync('xattr', ['-d', 'com.apple.quarantine', binPath]); } catch {}
-          // Clean up the app bundle
-          const appBundle = path.join(tmp, 'mpv.app');
-          if (fs.existsSync(appBundle)) fs.rmSync(appBundle, { recursive: true, force: true });
-        } else {
-          // Linux: single static binary
-          const linBin = findFile(tmp, 'mpv');
-          if (!linBin) throw new Error('mpv binary not found in archive');
-          fs.copyFileSync(linBin, binPath);
-          fs.chmodSync(binPath, 0o755);
-        }
+        const serverBin = findFile(tmp, 'sd-cli')
+                       ?? findFile(tmp, 'sd')
+                       ?? findFile(tmp, 'sd-server');
+        if (!serverBin) throw new Error(`sd binary not found in ${arc}`);
+        fs.copyFileSync(serverBin, sdBinPath);
+        fs.chmodSync(sdBinPath, 0o755);
+
         fs.rmSync(tmp, { recursive: true, force: true });
+      },
+    };
+  })() : null;
+
+  // The four Windows variants resolve as separate Deps so the manifest can
+  // track each one's installed version independently — bumping the SD hash
+  // re-fetches all four (they share the same upstream tag).
+  const sdWinDeps: Dep[] = isWin
+    ? [
+        sdWindowsVariantDep('vulkan'),
+        sdWindowsVariantDep('cuda'),
+        sdWindowsVariantDep('cpu'),
+        sdWindowsVariantDep('rocm'),
+      ]
+    : [];
+
+  // ── PhobosHost — in-house JUCE-based VST3 host (replaces Carla) ─────────
+  //
+  // Ships per-platform: win-x64 as flat .zip with PhobosHost.exe at root;
+  // mac/linux as .tar.gz with PhobosHost binary at root. Lives at
+  // ~/.phobos/services/phobos-host/ where PhobosHostManager looks for it.
+  //
+  // The win-x64 zip is current; mac/linux tarballs are reserved names —
+  // upload them to the PHOBOS-DEPS release with these exact filenames when
+  // ready and they'll start fetching automatically on next boot.
+  function phobosHostDep(): Dep | null {
+    const hostDir   = path.join(SERVICES_DIR, 'phobos-host');
+    const exeName   = isWin ? 'PhobosHost.exe' : 'PhobosHost';
+    const exePath   = path.join(hostDir, exeName);
+
+    const filenames: Record<PhobosArch, string> = {
+      'win32-x64':    'PhobosHost-win-x64.zip',
+      'darwin-arm64': 'PhobosHost-darwin-arm64.tar.gz',
+      'darwin-x64':   'PhobosHost-darwin-x64.tar.gz',
+      'linux-x64':    'PhobosHost-linux-x64.tar.gz',
+      'linux-arm64':  'PhobosHost-linux-arm64.tar.gz',
+    };
+    const file = filenames[arch];
+    if (!file) return null;
+
+    return {
+      id: 'phobos-host', label: 'PhobosHost VST3 Host',
+      file, minBytes: 1_000_000,
+      isPresent: () => {
+        try { return fs.statSync(exePath).size >= 500_000; } catch { return false; }
+      },
+      install: async (arc) => {
+        fs.mkdirSync(hostDir, { recursive: true });
+        const tmp = arc + '-extract';
+        fs.mkdirSync(tmp, { recursive: true });
+        // extractTarAny handles .zip and .tar.gz transparently.
+        await extractTarAny(arc, tmp);
+
+        const found = findFile(tmp, exeName);
+        if (!found) throw new Error(`${exeName} not found in ${file}`);
+        fs.copyFileSync(found, exePath);
+        if (!isWin) fs.chmodSync(exePath, 0o755);
+
+        // Stage any side-by-side runtime files (DLLs on Win, .so on Linux,
+        // .dylib on Mac) next to the binary so the OS loader can find them.
+        const srcDir = path.dirname(found);
+        for (const name of fs.readdirSync(srcDir)) {
+          if (name === exeName) continue;
+          if (/\.(dll|so|dylib)$/i.test(name)) {
+            const src = path.join(srcDir, name);
+            if (fs.statSync(src).isFile()) {
+              fs.copyFileSync(src, path.join(hostDir, name));
+            }
+          }
+        }
+
+        fs.rmSync(tmp, { recursive: true, force: true });
+      },
+    };
+  }
+
+  // ── PhobosCrystal — in-house global FX VST3 ─────────────────────────────
+  //
+  // Crystal is a VST3 bundle (cross-platform layout). The win-x64 zip
+  // contains PhobosCrystal.vst3/Contents/x86_64-win/PhobosCrystal.vst3
+  // (the inner one is the actual DLL on Windows). On other platforms the
+  // bundle contains MacOS/PhobosCrystal or x86_64-linux/PhobosCrystal.so
+  // respectively. We extract the whole bundle into the plugins dir and let
+  // PhobosHost discover it via its plugin scanner.
+  function phobosCrystalDep(): Dep {
+    const pluginsDir = path.join(SERVICES_DIR, 'phobos-host', 'plugins');
+    const bundleDir  = path.join(pluginsDir, 'PhobosCrystal.vst3');
+
+    return {
+      id: 'phobos-crystal', label: 'PhobosCrystal VST3',
+      file: 'PhobosCrystal.vst3.zip', minBytes: 100_000,
+      isPresent: () => {
+        try { return fs.statSync(bundleDir).isDirectory(); } catch { return false; }
+      },
+      install: async (arc) => {
+        fs.mkdirSync(pluginsDir, { recursive: true });
+        // The zip already contains a PhobosCrystal.vst3/ folder at root —
+        // extract directly into pluginsDir and the bundle drops in place.
+        // Remove any existing bundle first so we don't merge old + new files.
+        if (fs.existsSync(bundleDir)) fs.rmSync(bundleDir, { recursive: true, force: true });
+        await extractZip(arc, pluginsDir);
+        if (!fs.existsSync(bundleDir)) {
+          throw new Error('PhobosCrystal.vst3/ folder not present after extracting PhobosCrystal.vst3.zip');
+        }
       },
     };
   }
@@ -844,18 +914,18 @@ function buildDeps(arch: PhobosArch): Dep[] {
     nodeDep(),
     llamaDep,
     llamaCudaRtDep,
-    // SD variants: all four on Windows, vulkan + ROCm on Linux, vulkan only on mac
-    makeSdDep('vulkan'),
-    ...(isWin ? [makeSdDep('cuda'), makeSdDep('rocm'), makeSdDep('cpu'), sdCudaRtDep] : []),
-    ...(isLinux ? [makeSdDep('rocm')] : []),
+    ...sdWinDeps,           // 4 deps on Windows, 0 elsewhere
+    sdCudaRtDep,            // CUDA runtime DLLs for sd-cuda/ (Windows only)
+    sdUnixDep,              // single-binary install for Linux/macOS
     jellyfinDep(),
     kavitaDep(),
     polarisDep(),
     stirlingDep,
-    phobosHostDep(),
+    carlaDep(),
     helmDep(),
+    phobosHostDep(),
+    phobosCrystalDep(),
     pandocDep(),
-    mpvDep(),
   ].filter((d): d is Dep => d !== null);
 
   return deps;
@@ -888,27 +958,42 @@ function findFile(dir: string, name: string): string | null {
  * Returns when all deps are present.  Throws only on unrecoverable errors.
  */
 export async function runDepPrep(onEvent: PrepListener): Promise<void> {
-  if (isPrepComplete()) return; // fast-path — already done
+  if (process.env.PHOBOS_SKIP_DEP_PREP === '1') return;
 
-  const arch = detectArch();
-  const deps = buildDeps(arch);
-  const tmp  = path.join(PHOBOS_HOME, 'dep-prep-downloads');
+  const arch    = detectArch();
+  const platKey = `${process.platform}-${process.arch}`;
+  const deps    = buildDeps(arch);
+  const tmp     = path.join(PHOBOS_HOME, 'dep-prep-downloads');
   fs.mkdirSync(tmp, { recursive: true });
 
-  onEvent({ phase: 'prep_start', depsTotal: deps.length, depsDone: 0 });
+  // Determine which deps actually need work: missing binary OR version mismatch.
+  const needsWork = deps.filter(dep => {
+    if (!dep.isPresent()) return true;                          // binary missing
+    const expected = getExpectedVersion(dep.id, platKey);
+    if (!expected) return false;                                // no version tracked — presence check only
+    const installed = getInstalledVersion(dep.id);
+    if (installed !== expected) {
+      console.log(`[DepPrep] ${dep.id}: installed=${installed ?? 'none'} expected=${expected} — will update`);
+      return true;
+    }
+    return false;
+  });
+
+  if (needsWork.length === 0) {
+    // Everything is present and at correct versions — fast path
+    onEvent({ phase: 'prep_complete' });
+    return;
+  }
+
+  onEvent({ phase: 'prep_start', depsTotal: needsWork.length, depsDone: 0 });
 
   let done = 0;
-  for (const dep of deps) {
-    if (dep.isPresent()) {
-      onEvent({ phase: 'dep_skip', dep: dep.label, depsDone: ++done, depsTotal: deps.length });
-      continue;
-    }
-
-    onEvent({ phase: 'dep_start', dep: dep.label, file: dep.file, depsDone: done, depsTotal: deps.length });
+  for (const dep of needsWork) {
+    onEvent({ phase: 'dep_start', dep: dep.label, file: dep.file, depsDone: done, depsTotal: needsWork.length });
 
     const archivePath = path.join(tmp, dep.file);
 
-    // Download if not already in the temp dir
+    // Download if not already in the temp dir at the right size
     if (!fs.existsSync(archivePath) || fs.statSync(archivePath).size < dep.minBytes) {
       const url = dep.url ?? `${DEPS_BASE}/${dep.file}`;
       try {
@@ -920,8 +1005,6 @@ export async function runDepPrep(onEvent: PrepListener): Promise<void> {
         const msg = (err as Error).message;
         console.error(`[DepPrep] Download failed for ${dep.id}: ${msg}`);
         onEvent({ phase: 'dep_error', dep: dep.label, file: dep.file, error: msg });
-        // Non-fatal — skip this dep and continue.  The service manager's
-        // isBinaryPresent() check will gate the service off at boot.
         continue;
       }
     }
@@ -930,6 +1013,9 @@ export async function runDepPrep(onEvent: PrepListener): Promise<void> {
     onEvent({ phase: 'extract_start', dep: dep.label, file: dep.file });
     try {
       await dep.install(archivePath);
+      // Record installed version so future boots can detect staleness
+      const version = getExpectedVersion(dep.id, platKey);
+      if (version) markDepInstalled(dep.id, version);
       onEvent({ phase: 'extract_done', dep: dep.label });
     } catch (err) {
       const msg = (err as Error).message;
@@ -938,12 +1024,11 @@ export async function runDepPrep(onEvent: PrepListener): Promise<void> {
       continue;
     }
 
-    onEvent({ phase: 'dep_done', dep: dep.label, depsDone: ++done, depsTotal: deps.length });
+    onEvent({ phase: 'dep_done', dep: dep.label, depsDone: ++done, depsTotal: needsWork.length });
   }
 
-  // Clean up temp downloads — they've all been extracted
+  // Clean up temp downloads
   fs.rmSync(tmp, { recursive: true, force: true });
 
-  markPrepComplete();
   onEvent({ phase: 'prep_complete' });
 }

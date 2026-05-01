@@ -42,11 +42,20 @@ import {
   getPhobosSynthSlotId,
   getPhobosCrystalSlotId,
   setPhobosCrystalActive,
+  playMidiSequence,
+  stopSequence,
+  playAudioFile,
+  pauseAudio,
+  resumeAudio,
+  seekAudio,
+  stopAudio,
+  getAudioStatus,
   PHOBOS_HOST_HOST,
   PHOBOS_HOST_UDP_PORT,
   type HostPluginEntry,
 } from './phobos/PhobosHostManager.js';
 import { OscClient } from './phobos/OscClient.js';
+import { aldaToMidi } from './phobos/alda-parser/index.js';
 
 const HELM_DIR = path.join(os.homedir(), '.phobos', 'services', 'helm', 'VST3');
 
@@ -308,6 +317,231 @@ async function main(): Promise<void> {
       if (typeof result.uptimeMs !== 'number') {
         throw new Error(`ping after synth notes returned malformed result`);
       }
+    });
+
+    // ── Sequencer ops (Session 6 — ALDA emit retarget) ─────────────────────
+    //
+    // Compile a short ALDA snippet, hand it to the host's SchedulerNode via
+    // playMidiSequence on the Phobos synth slot, verify a sequenceId comes
+    // back. Then exercise stopSequence by starting a longer sequence and
+    // cancelling it mid-flight. The host is responsible for the notes-off
+    // sweep when a sequence is stopped — we verify the host stays healthy
+    // (no ERR events, ping still works) but audible verification is up to
+    // the listener.
+
+    const ALDA_SNIPPET    = 'piano: o4 c8 d e f g a b > c';            // 8 notes, ascending
+    const ALDA_LONG_SNIPPET = 'piano: o4 (tempo 80) c2 c c c c c c c'; // 8 half-notes, slow
+
+    await runPhase('alda/compile produces events', async () => {
+      const compiled = aldaToMidi(ALDA_SNIPPET);
+      if (compiled.events.length === 0) throw new Error('compile produced 0 events');
+      if (compiled.tempoBpm <= 0)       throw new Error(`bad tempoBpm: ${compiled.tempoBpm}`);
+      if (compiled.ticksPerBeat <= 0)   throw new Error(`bad ticksPerBeat: ${compiled.ticksPerBeat}`);
+    });
+
+    await runPhase('playMidiSequence on synth plays an ALDA snippet', async () => {
+      const synthSlotId = getPhobosSynthSlotId();
+      if (synthSlotId === null) throw new Error('synth not mounted');
+
+      const compiled = aldaToMidi(ALDA_SNIPPET);
+      const res = await playMidiSequence({
+        slotId:       synthSlotId,
+        events: compiled.events.map(e => ({
+          midiNote:      e.midiNote,
+          velocity:      e.velocity,
+          startTicks:    e.startTicks,
+          durationTicks: e.durationTicks,
+        })),
+        ticksPerBeat: compiled.ticksPerBeat,
+        tempoBpm:     compiled.tempoBpm,
+      });
+      if (typeof res.sequenceId !== 'number' || res.sequenceId < 1) {
+        throw new Error(`bad sequenceId: ${JSON.stringify(res)}`);
+      }
+      console.log(`       sequenceId: ${res.sequenceId}`);
+
+      // Hold long enough for the snippet to play through. The snippet is
+      // 8 eighth-notes at tempoBpm; at 120 BPM that's ~2 seconds. Sleep
+      // 2.5s for headroom plus settle time before the next phase.
+      await new Promise(r => setTimeout(r, 2_500));
+
+      // Host should still be healthy.
+      const ping1 = await ping();
+      if (typeof ping1.uptimeMs !== 'number') {
+        throw new Error(`ping after sequence returned malformed result`);
+      }
+    });
+
+    await runPhase('stopSequence cancels mid-playback', async () => {
+      const synthSlotId = getPhobosSynthSlotId();
+      if (synthSlotId === null) throw new Error('synth not mounted');
+
+      const compiled = aldaToMidi(ALDA_LONG_SNIPPET);
+      const res = await playMidiSequence({
+        slotId:       synthSlotId,
+        events: compiled.events.map(e => ({
+          midiNote:      e.midiNote,
+          velocity:      e.velocity,
+          startTicks:    e.startTicks,
+          durationTicks: e.durationTicks,
+        })),
+        ticksPerBeat: compiled.ticksPerBeat,
+        tempoBpm:     compiled.tempoBpm,
+      });
+      // Let it play for 500ms, then cancel. With tempo 80, half-notes are
+      // 1.5s each; 500ms lands us mid-first-note, so the cancel should
+      // emit a note-off sweep.
+      await new Promise(r => setTimeout(r, 500));
+      await stopSequence(res.sequenceId);
+
+      // Settle, then ping for liveness.
+      await new Promise(r => setTimeout(r, 200));
+      const p = await ping();
+      if (typeof p.uptimeMs !== 'number') {
+        throw new Error(`ping after stopSequence returned malformed result`);
+      }
+    });
+
+    await runPhase('playMidiSequence on bad slot returns ok=false', async () => {
+      let threw = false;
+      try {
+        await playMidiSequence({
+          slotId:       99999,
+          events:       [{ midiNote: 60, velocity: 100, startTicks: 0, durationTicks: 480 }],
+          ticksPerBeat: 480,
+          tempoBpm:     120,
+        });
+      } catch (err) {
+        const msg = (err as Error).message;
+        if (!msg.includes('unknown slot') && !msg.includes('99999')) {
+          throw new Error(`unexpected error message: ${msg}`);
+        }
+        threw = true;
+      }
+      if (!threw) throw new Error('expected playMidiSequence on bad slot to throw');
+    });
+
+    // ── File-player ops (Session 6 — Polaris audio relocation) ─────────────
+    //
+    // Exercises the full audio-file lifecycle (open/play/pause/resume/seek/
+    // stop) for each of the three test formats — WAV, MP3, FLAC — at
+    // ${PHOBOS_TEST_AUDIO_DIR} (defaults to the user's dual-reasoning
+    // test-outputs/songs folder). Phases skip gracefully if a file is
+    // missing — the suite shouldn't fail just because one asset isn't on
+    // this machine.
+    //
+    // The audio routes through channel 0's audioSumNode, which sums into the
+    // synth-and-Crystal chain. Each phase plays for ~1s so the listener can
+    // confirm audio is actually coming out (and that Crystal is processing
+    // it — the global FX pass is what makes "Polaris through the host"
+    // meaningful).
+
+    const TEST_AUDIO_DIR = process.env.PHOBOS_TEST_AUDIO_DIR
+      ?? 'C:\\Users\\armyo\\NodeJS\\Projects\\dual-reasoning\\test-outputs\\songs';
+
+    const testAudioFile = (basename: string): string | null => {
+      const p = path.join(TEST_AUDIO_DIR, basename);
+      return fs.existsSync(p) ? p : null;
+    };
+
+    await runPhase('playAudioFile WAVTEST.wav — returns audioId + duration', async () => {
+      const filePath = testAudioFile('WAVTEST.wav');
+      if (filePath === null) {
+        console.log(`       skipping: WAVTEST.wav not found in ${TEST_AUDIO_DIR}`);
+        return;
+      }
+      const result = await playAudioFile({ path: filePath });
+      if (typeof result.audioId !== 'number' || result.audioId < 1) {
+        throw new Error(`bad audioId: ${JSON.stringify(result)}`);
+      }
+      if (typeof result.durationMs !== 'number' || result.durationMs <= 100) {
+        throw new Error(`bad durationMs: ${result.durationMs}`);
+      }
+      console.log(`       audioId=${result.audioId} durationMs=${result.durationMs.toFixed(0)}`);
+
+      // Let it play briefly, verify status reports playing, then stop.
+      await new Promise(r => setTimeout(r, 800));
+      const status = await getAudioStatus(result.audioId);
+      if (!status.playing) throw new Error(`status.playing=false during playback`);
+      if (status.positionMs <= 0) throw new Error(`positionMs=${status.positionMs} did not advance`);
+
+      await stopAudio(result.audioId);
+    });
+
+    await runPhase('pause / resume / seek round-trip', async () => {
+      const filePath = testAudioFile('WAVTEST.wav');
+      if (filePath === null) {
+        console.log(`       skipping: WAVTEST.wav not found in ${TEST_AUDIO_DIR}`);
+        return;
+      }
+      const { audioId } = await playAudioFile({ path: filePath });
+
+      // Play 200ms, pause, verify playing=false.
+      await new Promise(r => setTimeout(r, 200));
+      await pauseAudio(audioId);
+      await new Promise(r => setTimeout(r, 50));    // settle
+      const paused = await getAudioStatus(audioId);
+      if (paused.playing) throw new Error(`playing=true after pauseAudio`);
+
+      // Resume, verify playing=true.
+      await resumeAudio(audioId);
+      await new Promise(r => setTimeout(r, 50));
+      const resumed = await getAudioStatus(audioId);
+      if (!resumed.playing) throw new Error(`playing=false after resumeAudio`);
+
+      // Seek to 5s, verify position reflects the seek.
+      const seekTarget = 5000;
+      // Only seek if duration permits.
+      if (resumed.durationMs > seekTarget + 1000) {
+        await seekAudio(audioId, seekTarget);
+        await new Promise(r => setTimeout(r, 100));   // give the transport a block to apply
+        const seeked = await getAudioStatus(audioId);
+        if (Math.abs(seeked.positionMs - seekTarget) > 500) {
+          throw new Error(
+            `seek mismatch: target=${seekTarget}ms got=${seeked.positionMs.toFixed(0)}ms`);
+        }
+      }
+
+      await stopAudio(audioId);
+    });
+
+    await runPhase('playAudioFile MP3TEST.mp3 — format check', async () => {
+      const filePath = testAudioFile('MP3TEST.mp3');
+      if (filePath === null) {
+        console.log(`       skipping: MP3TEST.mp3 not found in ${TEST_AUDIO_DIR}`);
+        return;
+      }
+      const { audioId, durationMs } = await playAudioFile({ path: filePath });
+      if (durationMs <= 100) throw new Error(`bad durationMs: ${durationMs}`);
+      console.log(`       audioId=${audioId} durationMs=${durationMs.toFixed(0)}`);
+      await new Promise(r => setTimeout(r, 800));
+      await stopAudio(audioId);
+    });
+
+    await runPhase('playAudioFile FLACTEST.flac — format check', async () => {
+      const filePath = testAudioFile('FLACTEST.flac');
+      if (filePath === null) {
+        console.log(`       skipping: FLACTEST.flac not found in ${TEST_AUDIO_DIR}`);
+        return;
+      }
+      const { audioId, durationMs } = await playAudioFile({ path: filePath });
+      if (durationMs <= 100) throw new Error(`bad durationMs: ${durationMs}`);
+      console.log(`       audioId=${audioId} durationMs=${durationMs.toFixed(0)}`);
+      await new Promise(r => setTimeout(r, 800));
+      await stopAudio(audioId);
+    });
+
+    await runPhase('stopAudio on bad audioId returns ok=false', async () => {
+      let threw = false;
+      try { await stopAudio(99999); }
+      catch (err) {
+        const msg = (err as Error).message;
+        if (!msg.includes('unknown audioId') && !msg.includes('99999')) {
+          throw new Error(`unexpected error: ${msg}`);
+        }
+        threw = true;
+      }
+      if (!threw) throw new Error('expected stopAudio on bad id to throw');
     });
 
     // ── UI ops ──────────────────────────────────────────────────────────────

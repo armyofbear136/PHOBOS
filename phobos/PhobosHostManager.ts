@@ -532,6 +532,121 @@ export async function closePluginUi(slotId: number): Promise<void> {
   await requireControl().call('closePluginUi', { slotId });
 }
 
+// ── Sequencer ─────────────────────────────────────────────────────────────────
+//
+// Tick-space MIDI sequence playback through the host's SchedulerNode. Used by
+// AldaPlayer (and any future tick-emitting source) to play events on a
+// specific instrument slot. The host resolves slot → channel → midiChannel
+// internally; callers don't have to know the wire-MIDI mapping.
+//
+// Sequence ids are monotonic and never reused. A returned sequenceId stays
+// valid until either (a) the sequence completes naturally, (b) stopSequence
+// is called, or (c) the target slot is unloaded (auto-cancellation).
+
+/**
+ * Wire shape mirroring SchedulerNode::MidiEvent on the host side. The host
+ * accepts ALDA's tick-space events directly; conversion to samples happens
+ * on the host using the device's actual sample rate.
+ */
+export interface SequencerMidiEvent {
+  /** 0–127. */
+  midiNote: number;
+  /** 0–127. */
+  velocity: number;
+  /** Absolute tick offset from the start of the sequence. */
+  startTicks: number;
+  /** Tick-space duration; must be > 0. */
+  durationTicks: number;
+}
+
+export async function playMidiSequence(args: {
+  slotId:       number;
+  events:       SequencerMidiEvent[];
+  ticksPerBeat: number;
+  tempoBpm:     number;
+}): Promise<{ sequenceId: number }> {
+  if (args.slotId < 0)             throw new Error(`slotId must be >= 0 (got ${args.slotId})`);
+  if (args.ticksPerBeat <= 0)      throw new Error(`ticksPerBeat must be > 0`);
+  if (args.tempoBpm <= 0)          throw new Error(`tempoBpm must be > 0`);
+  if (!Array.isArray(args.events)) throw new Error(`events must be an array`);
+
+  const result = await requireControl().call<{ sequenceId: number }>(
+    'playMidiSequence',
+    {
+      slotId:       args.slotId,
+      events:       args.events,
+      ticksPerBeat: args.ticksPerBeat,
+      tempoBpm:     args.tempoBpm,
+    },
+  );
+  return result;
+}
+
+export async function stopSequence(sequenceId: number): Promise<void> {
+  await requireControl().call('stopSequence', { sequenceId });
+}
+
+// ── File player ──────────────────────────────────────────────────────────────
+//
+// Audio file playback through the host's FilePlayerNode. Multiple files can
+// play concurrently; each gets a monotonic audioId. The host decodes via JUCE
+// (WAV/AIFF/FLAC/OGG/MP3 supported by registerBasicFormats) and routes audio
+// into channel 0's audioSumNode — the same mix point the synth feeds — so the
+// audio flows through Phobos Crystal alongside any synth output.
+//
+// audioIds share no namespace with slotIds. Frontend code that holds both
+// must keep them separate; the manager doesn't validate cross-confusion.
+
+export interface AudioStatus {
+  playing:    boolean;
+  positionMs: number;
+  durationMs: number;
+  finished:   boolean;
+}
+
+/**
+ * Play an audio file through the host. Path is server-relative — the host
+ * needs to be able to read the file from its own filesystem view (typically
+ * the same machine as the backend).
+ */
+export async function playAudioFile(args: {
+  path:     string;
+  startMs?: number;
+  loop?:    boolean;
+}): Promise<{ audioId: number; durationMs: number }> {
+  if (typeof args.path !== 'string' || args.path.length === 0) {
+    throw new Error('playAudioFile: path must be a non-empty string');
+  }
+  const wireArgs: Record<string, unknown> = { path: args.path };
+  if (args.startMs !== undefined) wireArgs.startMs = args.startMs;
+  if (args.loop    !== undefined) wireArgs.loop    = args.loop;
+
+  // File decode + reader-thread spinup happens host-side; give it room.
+  return await requireControl().call<{ audioId: number; durationMs: number }>(
+    'playAudioFile', wireArgs, 30_000,
+  );
+}
+
+export async function pauseAudio(audioId: number): Promise<void> {
+  await requireControl().call('pauseAudio', { audioId });
+}
+
+export async function resumeAudio(audioId: number): Promise<void> {
+  await requireControl().call('resumeAudio', { audioId });
+}
+
+export async function seekAudio(audioId: number, positionMs: number): Promise<void> {
+  await requireControl().call('seekAudio', { audioId, positionMs });
+}
+
+export async function stopAudio(audioId: number): Promise<void> {
+  await requireControl().call('stopAudio', { audioId });
+}
+
+export async function getAudioStatus(audioId: number): Promise<AudioStatus> {
+  return await requireControl().call<AudioStatus>('getAudioStatus', { audioId });
+}
+
 // ── Phobos synth public surface ──────────────────────────────────────────────
 //
 // Backend modules (ALDA emit, system-audio APIs, the Polaris hidden button)

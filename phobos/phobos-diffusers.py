@@ -652,63 +652,79 @@ def load_pipeline(args, device: str, dtype):
 class ProgressCallback:
     """Diffusers callback that emits sd-cli-compatible progress lines."""
 
-    def __init__(self, total_steps: int, preview_path: str = None, preview_interval: int = 1):
+    def __init__(self, total_steps: int, preview_path: str = None, preview_interval: int = 1,
+                 model_type: str = "flux"):
         self.total_steps = total_steps
         self.preview_path = preview_path
         self.preview_interval = preview_interval
+        self.model_type = model_type
         self.start_time = time.time()
         self.step_count = 0
+        self._preview_error_logged = False
 
     def __call__(self, pipe, step: int, timestep, callback_kwargs):
         self.step_count = step + 1  # Diffusers uses 0-based steps
         elapsed = time.time() - self.start_time
         log_progress(self.step_count, self.total_steps, elapsed)
 
-        # Latent preview — decode current latents and write to disk
         if self.preview_path and self.step_count % self.preview_interval == 0:
-            try:
-                latents = callback_kwargs.get("latents")
-                if latents is not None:
-                    self._write_preview(pipe, latents)
-            except Exception:
-                pass  # preview failure is never fatal
+            latents = callback_kwargs.get("latents")
+            if latents is not None:
+                self._write_preview(latents)
 
         return callback_kwargs
 
-    def _write_preview(self, pipe, latents):
-        """Decode latents to a small preview image and write to disk."""
+    def _write_preview(self, latents):
+        """Project latents to a preview image and write to disk.
+
+        Strategy by model family:
+        - FLUX / Chroma / Z-Image / Kontext / FLUX2 / Qwen-Image:
+            Linear channel projection — no VAE decode. Takes first 3 of the 16
+            latent channels, normalises per-channel to [0,1], saves as RGB.
+            Same concept as sd-cli --preview proj. Zero VRAM impact.
+        - SDXL:
+            Same projection on 4-channel latents, drop ch3.
+        - Wan (video):
+            Skipped — 5D latents, not useful as a still frame.
+        """
         import torch
         from PIL import Image
 
         try:
-            with torch.no_grad():
-                # Always decode on CPU:
-                # 1. Avoids device mismatch when CPU offload is active (VAE is on CPU,
-                #    latents may be on GPU/XPU/MPS).
-                # 2. Downscale latents 2x first — cuts decode cost by 4x.
-                preview_latents = torch.nn.functional.interpolate(
-                    latents.float().cpu(), scale_factor=0.5,
-                    mode='bilinear', align_corners=False,
-                )
-                # Temporarily move VAE to CPU for decode (no-op if already there)
-                vae = pipe.vae
-                original_device = next(vae.parameters()).device
-                vae_was_on_gpu = str(original_device) != 'cpu'
-                if vae_was_on_gpu:
-                    vae = vae.to('cpu')
-                decoded = vae.decode(
-                    preview_latents.to(vae.dtype) / vae.config.scaling_factor,
-                    return_dict=False,
-                )[0]
-                # Restore VAE to original device if we moved it
-                if vae_was_on_gpu:
-                    pipe.vae.to(original_device)
-                decoded = (decoded / 2 + 0.5).clamp(0, 1)
-                image = decoded[0].permute(1, 2, 0).float().numpy()
-                image = (image * 255).round().astype("uint8")
-                Image.fromarray(image).save(self.preview_path)
-        except Exception:
-            pass  # preview failure is never fatal
+            mt = self.model_type
+
+            if mt == "wan":
+                return
+
+            t = latents.detach().float().cpu()
+
+            if mt in ("flux", "chroma", "z-image", "kontext", "flux2", "qwen-image"):
+                # FLUX-family: (B, 16, H, W) after scheduler step
+                if t.ndim != 4 or t.shape[1] < 3:
+                    return
+                rgb = t[0, :3].clone()                      # (3, H, W)
+            elif mt == "sdxl":
+                # SDXL: (B, 4, H, W)
+                if t.ndim != 4 or t.shape[1] < 3:
+                    return
+                rgb = t[0, :3].clone()                      # (3, H, W)
+            else:
+                return
+
+            # Normalise each channel independently to [0, 1]
+            for i in range(3):
+                lo, hi = rgb[i].min(), rgb[i].max()
+                rgb[i] = (rgb[i] - lo) / (hi - lo + 1e-6)
+
+            img_arr = (rgb.permute(1, 2, 0).numpy() * 255).clip(0, 255).astype("uint8")
+            Image.fromarray(img_arr).save(self.preview_path)
+
+        except Exception as e:
+            # Log the first failure so it appears in the console and is diagnosable.
+            # Subsequent steps stay silent to avoid log spam.
+            if not self._preview_error_logged:
+                self._preview_error_logged = True
+                log(f"[WARN] preview write failed (will not retry): {e}")
 
 
 # ── Generation ───────────────────────────────────────────────────────────────
@@ -752,6 +768,7 @@ def generate_txt2img(pipe, args, device: str, dtype):
         total_steps=args.steps,
         preview_path=args.preview_path,
         preview_interval=args.preview_interval,
+        model_type=args.model_type,
     )
     gen_kwargs["callback_on_step_end"] = callback
 
@@ -850,7 +867,7 @@ def generate_img2img(pipe, args, device: str, dtype):
 
     # Actual steps for progress = round(steps * strength)
     actual_steps = max(1, round(args.steps * (args.strength or 0.8)))
-    callback = ProgressCallback(total_steps=actual_steps, preview_path=args.preview_path, preview_interval=args.preview_interval)
+    callback = ProgressCallback(total_steps=actual_steps, preview_path=args.preview_path, preview_interval=args.preview_interval, model_type=args.model_type)
     gen_kwargs["callback_on_step_end"] = callback
 
     start = time.time()
@@ -888,7 +905,7 @@ def generate_video(pipe, args, device: str, dtype):
     if args.negative_prompt:
         gen_kwargs["negative_prompt"] = args.negative_prompt
 
-    callback = ProgressCallback(total_steps=args.steps)
+    callback = ProgressCallback(total_steps=args.steps, model_type=args.model_type)
     gen_kwargs["callback_on_step_end"] = callback
 
     start = time.time()

@@ -361,6 +361,10 @@ async function mountPhobosCrystal(): Promise<void> {
 
   service.phobosCrystalSlotId = result.slotId;
   console.log(`[PhobosHostManager] phobos crystal mounted: ${crystal.name} (slot=${result.slotId})`);
+
+  // Crystal boots active by default in the host. Bypass it immediately so
+  // audio passes through dry until the user explicitly enables it.
+  await setPhobosCrystalActive(false);
 }
 
 /**

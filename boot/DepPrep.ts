@@ -353,7 +353,7 @@ function buildDeps(arch: PhobosArch): Dep[] {
     if (isWin) return {
       id: 'jellyfin', label: 'Jellyfin Media Server',
       file: 'jellyfin_10.11.8-amd64.zip', minBytes: 120_000_000,
-      isPresent: () => serviceInstalled(jellyfinDir, 'jellyfin.exe', 10_000_000),
+      isPresent: () => serviceInstalled(jellyfinDir, 'jellyfin.dll', 100_000),
       install: async (arc) => {
         await extractZip(arc, jellyfinDir);
         // jellyfin win zip extracts to jellyfin_10.11.8/ subdir — flatten one level
@@ -779,7 +779,7 @@ function buildDeps(arch: PhobosArch): Dep[] {
     if (isWin) return {
       id: 'helm', label: 'Helm VST3 Synth',
       file: 'Helm_64bit_v0_9_0_r.msi', minBytes: 4_000_000,
-      isPresent: () => serviceInstalled(helmDir, 'Helm.vst3', 100_000),
+      isPresent: () => serviceInstalled(helmDir, 'VST3/Helm/helm64.vst3', 1_000_000),
       install: async (arc) => {
         fs.mkdirSync(helmDir, { recursive: true });
         // Extract MSI silently to the helm service dir
@@ -791,7 +791,7 @@ function buildDeps(arch: PhobosArch): Dep[] {
     if (isMac) return {
       id: 'helm', label: 'Helm VST3 Synth',
       file: 'Helm_v0_9_0_r.pkg', minBytes: 4_000_000,
-      isPresent: () => serviceInstalled(helmDir, 'Helm.vst3', 100_000),
+      isPresent: () => serviceInstalled(helmDir, 'Helm.vst3/Contents/MacOS/Helm', 100_000),
       install: async (arc) => {
         fs.mkdirSync(helmDir, { recursive: true });
         await execFileAsync('installer', ['-pkg', arc, '-target', helmDir], { timeout: 120_000 });
@@ -801,7 +801,7 @@ function buildDeps(arch: PhobosArch): Dep[] {
     return {
       id: 'helm', label: 'Helm VST3 Synth',
       file: 'helm_0.9.0_amd64_r.deb', minBytes: 2_000_000,
-      isPresent: () => serviceInstalled(helmDir, 'helm.vst3', 100_000),
+      isPresent: () => serviceInstalled(helmDir, 'helm.vst3/Contents/x86_64-linux/helm.so', 100_000),
       install: async (arc) => {
         fs.mkdirSync(helmDir, { recursive: true });
         // dpkg-deb -x extracts without system registration

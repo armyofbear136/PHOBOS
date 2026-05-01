@@ -480,9 +480,10 @@ function selectGpuForModel(entry: SdCliValidationEntry): GpuDevice {
 function binaryForGpu(gpu: GpuDevice): 'cuda' | 'vulkan' | 'rocm' | 'cpu' {
   if (forceBinary) return forceBinary;
   const candidate = (gpu.runner?.sdBinary as any) ?? (gpu.backend === 'cuda' ? 'cuda' : 'vulkan');
-  // sd-cli ROCm is broken on 890M (gfx1150, RDNA 3.5) — STATUS_STACK_BUFFER_OVERRUN.
-  // The HIP SDK 7.1 Wave32 bug prevents ROCm sd-cli from running on this GPU.
-  // Override to Vulkan for sd-cli. PyTorch ROCm works fine (different runtime).
+  // Safety net: PhobosLocalManager now gates all Windows AMD → Vulkan at the runner
+  // profile level, so runner.sdBinary should never be 'rocm' here on Windows.
+  // This guard catches any stale cached hardware profiles where sdBinary='rocm'
+  // was assigned before the fix was deployed.
   if (candidate === 'rocm' && gpu.unifiedMemory === true) {
     return 'vulkan';
   }

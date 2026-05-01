@@ -157,6 +157,17 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   });
 
   fastify.post<{
+    Body: { material_id: string; quantity: number };
+  }>('/api/game/inventory/consume', async (req, reply) => {
+    const { material_id, quantity } = req.body;
+    if (!material_id || !Number.isInteger(quantity) || quantity < 1) {
+      return reply.status(400).send({ error: 'material_id and integer quantity >= 1 required' });
+    }
+    const consumed = await store.consumeItems(material_id, quantity);
+    return reply.send({ ok: true, consumed });
+  });
+
+  fastify.post<{
     Body: { amount: number };
   }>('/api/game/coins/spend', async (req, reply) => {
     const result = await store.spendCoins(Math.max(0, req.body.amount ?? 0));

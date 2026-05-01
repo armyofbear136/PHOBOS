@@ -347,7 +347,6 @@ function buildDeps(arch: PhobosArch): Dep[] {
   const kavitaDir   = path.join(SERVICES_DIR, 'kavita');
   const polarisDir  = path.join(SERVICES_DIR, 'polaris');
   const stirlingDir = path.join(SERVICES_DIR, 'stirling');
-  const carlaDir    = path.join(SERVICES_DIR, 'carla');
 
   // ── Jellyfin archive + probe per platform ─────────────────────────────────
   function jellyfinDep(): Dep {
@@ -443,38 +442,6 @@ function buildDeps(arch: PhobosArch): Dep[] {
     };
   }
 
-  // ── Carla ─────────────────────────────────────────────────────────────────
-  function carlaDep(): Dep | null {
-    if (isWin) return {
-      id: 'carla', label: 'Carla DAW Host',
-      file: 'Carla-2.5.10-win64.zip', minBytes: 150_000_000,
-      isPresent: () => serviceInstalled(carlaDir, 'Carla/Carla.exe', 50_000),
-      install: async (arc) => extractZip(arc, carlaDir),
-    };
-    if (isMac) return {
-      id: 'carla', label: 'Carla DAW Host',
-      file: 'Carla-2.5.10-macos-universal.dmg', minBytes: 200_000_000,
-      isPresent: () => serviceInstalled(carlaDir, 'Carla.app/Contents/MacOS/Carla', 50_000),
-      install: async (arc) => {
-        // hdiutil attach → copy .app → detach
-        const mount  = `/Volumes/Carla-prep-${Date.now()}`;
-        await execFileAsync('hdiutil', ['attach', '-mountpoint', mount, '-nobrowse', '-quiet', arc], { timeout: 120_000 });
-        try {
-          await execFileAsync('cp', ['-R', `${mount}/Carla.app`, carlaDir], { timeout: 120_000 });
-        } finally {
-          await execFileAsync('hdiutil', ['detach', mount, '-quiet']).catch(() => {});
-        }
-      },
-    };
-    // Linux — Carla_2.2.0-linux64.tar.xz (last version with Linux binaries)
-    return {
-      id: 'carla', label: 'Carla DAW Host',
-      file: 'Carla_2.2.0-linux64.tar.xz', minBytes: 80_000_000,
-      isPresent: () => serviceInstalled(carlaDir, 'Carla/Carla', 50_000),
-      install: async (arc) => extractTarXz(arc, carlaDir),
-    };
-  }
-
   // ── Stirling PDF ──────────────────────────────────────────────────────────
   const stirlingDep: Dep = {
     id: 'stirling', label: 'Stirling PDF',
@@ -527,6 +494,20 @@ function buildDeps(arch: PhobosArch): Dep[] {
 
       fs.copyFileSync(found, llamaDest);
       if (!isWin) fs.chmodSync(llamaDest, 0o755);
+
+      // On Linux arm64, the archive ships shared libs (.so.*) that llama-server
+      // links against at runtime. Copy them into BIN_DIR alongside the binary.
+      if (isLinux) {
+        const srcDir = path.dirname(found);
+        for (const name of fs.readdirSync(srcDir)) {
+          if (name.endsWith('.so') || name.includes('.so.')) {
+            const src = path.join(srcDir, name);
+            if (fs.statSync(src).isFile()) {
+              fs.copyFileSync(src, path.join(BIN_DIR, name));
+            }
+          }
+        }
+      }
 
       // On Windows, copy all companion DLLs from the same directory
       if (isWin) {
@@ -921,7 +902,6 @@ function buildDeps(arch: PhobosArch): Dep[] {
     kavitaDep(),
     polarisDep(),
     stirlingDep,
-    carlaDep(),
     helmDep(),
     phobosHostDep(),
     phobosCrystalDep(),
@@ -972,8 +952,14 @@ export async function runDepPrep(onEvent: PrepListener): Promise<void> {
     const expected = getExpectedVersion(dep.id, platKey);
     if (!expected) return false;                                // no version tracked — presence check only
     const installed = getInstalledVersion(dep.id);
+    if (installed === null) {
+      // Binary is present but was installed before the manifest system existed.
+      // Adopt the current expected version so future bumps are detected correctly.
+      markDepInstalled(dep.id, expected);
+      return false;
+    }
     if (installed !== expected) {
-      console.log(`[DepPrep] ${dep.id}: installed=${installed ?? 'none'} expected=${expected} — will update`);
+      console.log(`[DepPrep] ${dep.id}: installed=${installed} expected=${expected} — will update`);
       return true;
     }
     return false;

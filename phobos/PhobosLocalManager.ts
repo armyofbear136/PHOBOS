@@ -745,23 +745,31 @@ async function assignRunnerProfiles(gpus: GpuDevice[]): Promise<void> {
 
     let sdBin: 'rocm' | 'vulkan' | 'cpu' = 'vulkan';
     if (isAmd && _isRocmAvailable()) {
-      // RDNA 4 (RX 9xxx / gfx1200) on Windows: ROCm HIP SDK <7.2 ships Tensile
-      // kernels that crash on gfx1200. Use Vulkan unless we know HIP SDK ≥7.2.
-      // Linux ROCm 7.2+ works fine — this gate is Windows-only.
-      // Detection via amdhip64.dll in System32 now covers the Adrenalin AI drivers
-      // bundle (ROCm 7.2) so this gate no longer trips for that install path.
-      const isRdna4Windows = process.platform === 'win32' && /RX\s*9\d{3}/i.test(gpu.name);
-
-      if (isRdna4Windows) {
+      // AMD iGPU (890M, 780M, gfx1150 / RDNA 3.5) on Windows: sd-cli ROCm binary
+      // crashes with STATUS_STACK_BUFFER_OVERRUN (exit 3221226505) — the bundled
+      // Tensile/rocBLAS kernels do not cover gfx1150. Vulkan is the correct sd-cli
+      // path for these GPUs. PyTorch ROCm (different runtime) works fine and is
+      // unaffected by this gate — this only controls the sd-cli binary choice.
+      //
+      // RDNA 4 (RX 9xxx / gfx1200) on Windows: same gate — sd-cli ROCm unverified.
+      //
+      // Linux ROCm on a proper dGPU (gfx1100 RDNA 3, gfx1201 RDNA 4): ROCm sd-cli
+      // works correctly — Tensile kernels are present via system ROCm install.
+      const isWindowsAmd = process.platform === 'win32';
+      if (isWindowsAmd) {
         sdBin = 'vulkan';
-        console.log(`[HW] ${gpu.name}: ROCm gfx1200 — Windows gate lifted with ROCm 7.2 detection, but sd-cli ROCm still unverified on gfx1200 Windows`);
-      } else {
-        sdBin = 'rocm';
-        // AMD APU / iGPU (890M, 780M, etc): ROCm is valid but the sd-cli Vulkan
-        // single-buffer limit was the historic blocker. sd-cli ROCm bypasses it.
-        // PyTorch path uses enable_model_cpu_offload() for unified memory GPUs.
         if (isUnified) {
-          console.log(`[HW] ${gpu.name}: AMD iGPU with ROCm runtime — assigning rocm path (was Vulkan-only)`);
+          console.log(`[HW] ${gpu.name}: AMD iGPU on Windows — sd-cli Vulkan (ROCm sd-cli unsupported on gfx1150)`);
+        } else {
+          console.log(`[HW] ${gpu.name}: AMD discrete on Windows — sd-cli Vulkan (ROCm sd-cli unverified on this platform)`);
+        }
+      } else {
+        // Linux: ROCm sd-cli works on proper dGPUs (gfx1100, gfx1201).
+        // iGPUs on Linux are uncommon for gen workloads but leave as rocm — if it
+        // crashes the ROCm→Vulkan fallback in generateImage() will catch it.
+        sdBin = 'rocm';
+        if (isUnified) {
+          console.log(`[HW] ${gpu.name}: AMD iGPU with ROCm runtime — assigning rocm path`);
         }
       }
     }

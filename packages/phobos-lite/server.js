@@ -936,35 +936,86 @@ function parseArgs(argv) {
 
 // ─── Dep Prep — llama-server download ────────────────────────────────────────
 //
-// Downloads llama-server from PHOBOS-DEPS if it's missing from the exe directory.
+// Downloads llama-server from PHOBOS-DEPS if it's missing or at a stale version.
 // phobos-lite is a standalone server — it handles its own first-boot dep install
 // rather than relying on phobos-core's DepPrep.
 //
 // Only llama-server is handled here. All other deps (Jellyfin, Kavita, etc.) are
 // managed by phobos-core's DepPrep and are not needed by phobos-lite.
+//
+// Version source: bin-manifest.json (shipped alongside the binary). Bump the
+// manifest's linux-x64/darwin-arm64/etc. 'llama' field to trigger a re-download
+// on next boot — same mechanism as phobos-core DepPrep.
 
-const DEPS_BASE      = 'https://github.com/armyofbear136/PHOBOS-BUILDS/releases/download/PHOBOS-DEPS';
-const PHOBOS_HOME    = process.env.PHOBOS_DATA_DIR || path.join(os.homedir(), '.phobos');
-const LLAMA_VERSION  = 'b8940';
+const DEPS_BASE   = 'https://github.com/armyofbear136/PHOBOS-BUILDS/releases/download/PHOBOS-DEPS';
+const PHOBOS_HOME = process.env.PHOBOS_DATA_DIR || path.join(os.homedir(), '.phobos');
 
-const _LITE_INSTALL_HASH = (() => {
+// ── Load bin-manifest.json ────────────────────────────────────────────────────
+function loadLiteBinManifest() {
+  const candidates = [
+    path.join(path.dirname(process.execPath || __filename), 'bin-manifest.json'),
+    path.join(path.dirname(process.execPath || __filename), 'scripts', 'bin-manifest.json'),
+    path.join(__dirname, '..', 'scripts', 'bin-manifest.json'),
+    path.join(__dirname, 'bin-manifest.json'),
+  ];
+  for (const c of candidates) {
+    try { return JSON.parse(fs.readFileSync(c, 'utf8')); } catch {}
+  }
+  return {};
+}
+
+const _liteBinManifest = loadLiteBinManifest();
+
+function getLlamaVersion() {
+  const platKey = `${process.platform}-${process.arch}`;
+  const bm = _liteBinManifest;
+  return (bm[platKey] && bm[platKey]['llama']) || (bm['linux-x64'] && bm['linux-x64']['llama']) || 'b8989';
+}
+
+// ── Installed-version manifest (replaces .ok marker) ─────────────────────────
+const _liteInstallHash = (() => {
   const crypto = require('crypto');
   return crypto.createHash('sha1').update(path.dirname(process.execPath || __filename)).digest('hex').slice(0, 8);
 })();
-const LITE_MARKER = path.join(PHOBOS_HOME, `.lite-dep-prep-${_LITE_INSTALL_HASH}.ok`);
+const LITE_MANIFEST_PATH = path.join(PHOBOS_HOME, `lite-installed-${_liteInstallHash}.json`);
+
+function liteGetInstalledVersion() {
+  try {
+    const m = JSON.parse(fs.readFileSync(LITE_MANIFEST_PATH, 'utf8'));
+    return m['llama-server'] || null;
+  } catch { return null; }
+}
+
+function liteMarkInstalled(version) {
+  fs.mkdirSync(PHOBOS_HOME, { recursive: true });
+  let m = {};
+  try { m = JSON.parse(fs.readFileSync(LITE_MANIFEST_PATH, 'utf8')); } catch {}
+  m['llama-server'] = version;
+  fs.writeFileSync(LITE_MANIFEST_PATH, JSON.stringify(m, null, 2), 'utf8');
+}
 
 function litePrepComplete() {
-  if (!fs.existsSync(LITE_MARKER)) return false;
-  try { return fs.statSync(LLAMA_SERVER).size >= 500_000; } catch { return false; }
+  try {
+    if (fs.statSync(LLAMA_SERVER).size < 500_000) return false;
+  } catch { return false; }
+  const expected  = getLlamaVersion();
+  const installed = liteGetInstalledVersion();
+  if (installed === null) {
+    // Binary present but predates manifest system — adopt current version.
+    liteMarkInstalled(expected);
+    return true;
+  }
+  return installed === expected;
 }
 
 function llamaArchiveForPlatform() {
   const p = process.platform, a = process.arch;
-  if (p === 'win32'  && a === 'x64')   return `llama-${LLAMA_VERSION}-bin-win-vulkan-x64.zip`;
-  if (p === 'darwin' && a === 'arm64') return `llama-${LLAMA_VERSION}-bin-macos-arm64.tar.gz`;
-  if (p === 'darwin' && a === 'x64')   return `llama-${LLAMA_VERSION}-bin-macos-x64.tar.gz`;
-  if (p === 'linux'  && a === 'x64')   return `llama-${LLAMA_VERSION}-bin-ubuntu-vulkan-x64.tar.gz`;
-  if (p === 'linux'  && a === 'arm64') return null; // built from source — should already be in place
+  const ver = getLlamaVersion();
+  if (p === 'win32'  && a === 'x64')   return `llama-${ver}-bin-win-vulkan-x64.zip`;
+  if (p === 'darwin' && a === 'arm64') return `llama-${ver}-bin-macos-arm64.tar.gz`;
+  if (p === 'darwin' && a === 'x64')   return `llama-${ver}-bin-macos-x64.tar.gz`;
+  if (p === 'linux'  && a === 'x64')   return `llama-${ver}-bin-ubuntu-vulkan-x64.tar.gz`;
+  if (p === 'linux'  && a === 'arm64') return `llama-${ver}-linux-arm64.tar.gz`;
   return null;
 }
 

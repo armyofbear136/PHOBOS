@@ -151,12 +151,6 @@
     "polaris": {
       "version": "0.16.0"
     },
-    "carla-win": {
-      "version": "2.5.10"
-    },
-    "carla-linux": {
-      "version": "2.2.0"
-    },
     "helm": {
       "version": "0.9.0"
     },

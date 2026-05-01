@@ -344,6 +344,29 @@ export class GameStore {
     );
   }
 
+  /**
+   * Remove up to `quantity` inventory items matching a material_id stored
+   * in the item data JSON. Returns the number actually removed.
+   *
+   * Items are matched by data->>'$.materialId' = material_id.
+   * Removes oldest first (lowest rowid). Safe if fewer than quantity exist.
+   */
+  async consumeItems(materialId: string, quantity: number): Promise<number> {
+    // Fetch candidate item UUIDs — match by data JSON field materialId
+    const rows = await this.db.query<{ id: string }>(
+      `SELECT id FROM game_inventory
+       WHERE json_extract(data, '$.materialId') = ?
+         AND target = 'player'
+       ORDER BY rowid ASC
+       LIMIT ?`,
+      [materialId, quantity]
+    );
+    for (const row of rows) {
+      await this.db.run(`DELETE FROM game_inventory WHERE id = ?`, [row.id]);
+    }
+    return rows.length;
+  }
+
   // ── Decorations ────────────────────────────────────────────────────────
 
   async getDecorations(): Promise<GameDecoration[]> {

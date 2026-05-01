@@ -146,4 +146,4 @@ AGPL-3.0 License. See [LICENSE](LICENSE) for full terms.
 ## Links
 
 - Website: [autarch.net](https://www.autarch.net)
-- Releases: [GitHub Releases](../../releases)
+- Releases: [GitHub Releases](https://github.com/armyofbear136/PHOBOS-BUILDS/releases/tag/PHOBOS-CORE-LATEST)

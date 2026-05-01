@@ -131,7 +131,7 @@ Purchase and activate at [autarch.net/pricing](https://www.autarch.net/pricing).
 
 ## Releases
 
-See the [Releases](../../releases) page for pre-built binaries.
+See the [Releases](https://github.com/armyofbear136/PHOBOS-BUILDS/releases/tag/PHOBOS-CORE-LATEST) page for pre-built binaries.
 
 Current: **PHOBOS v1.0.4**
 

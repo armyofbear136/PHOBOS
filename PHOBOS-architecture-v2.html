@@ -1,0 +1,1757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PHOBOS · TWIN SUN Architecture</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;600;700;800&display=swap');
+
+  :root {
+    --bg: #07080a;
+    --surface: #0d0f12;
+    --surface2: #12151a;
+    --border: #1e2228;
+    --border2: #2a2f38;
+
+    --sayon: #f59e0b;
+    --sayon-dim: rgba(245,158,11,0.12);
+    --sayon-glow: rgba(245,158,11,0.25);
+
+    --seren: #3b82f6;
+    --seren-dim: rgba(59,130,246,0.12);
+    --seren-glow: rgba(59,130,246,0.25);
+
+    --green: #22c55e;
+    --green-dim: rgba(34,197,94,0.12);
+    --red: #ef4444;
+    --purple: #a855f7;
+    --purple-dim: rgba(168,85,247,0.12);
+    --cyan: #06b6d4;
+    --cyan-dim: rgba(6,182,212,0.1);
+
+    --text: #e2e8f0;
+    --text-dim: #64748b;
+    --text-mid: #94a3b8;
+
+    --mono: 'JetBrains Mono', monospace;
+    --sans: 'Syne', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.6;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ─── GLOBAL LAYOUT ─── */
+  .page { max-width: 1400px; margin: 0 auto; padding: 40px 32px 80px; }
+
+  .page-header {
+    display: flex; align-items: baseline; gap: 20px;
+    border-bottom: 1px solid var(--border2);
+    padding-bottom: 20px; margin-bottom: 48px;
+  }
+  .page-title {
+    font-family: var(--sans); font-size: 28px; font-weight: 800;
+    letter-spacing: -0.5px; color: #fff;
+  }
+  .page-title span { color: var(--sayon); }
+  .page-sub {
+    font-size: 11px; color: var(--text-dim); letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  .version-tag {
+    margin-left: auto;
+    font-size: 10px; color: var(--text-dim); border: 1px solid var(--border2);
+    padding: 3px 8px; border-radius: 3px; letter-spacing: 0.1em;
+  }
+
+  /* ─── SECTION ─── */
+  .section { margin-bottom: 60px; }
+  .section-label {
+    font-family: var(--sans); font-size: 11px; font-weight: 700;
+    letter-spacing: 0.15em; text-transform: uppercase;
+    color: var(--text-dim); margin-bottom: 16px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .section-label::after {
+    content: ''; flex: 1; height: 1px; background: var(--border);
+  }
+
+  /* ─── HARDWARE STRIP ─── */
+  .hw-strip {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 12px; margin-bottom: 8px;
+  }
+  .hw-block {
+    border: 1px solid var(--border2);
+    border-radius: 6px; padding: 16px 20px;
+    position: relative; overflow: hidden;
+  }
+  .hw-block::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  }
+  .hw-sayon::before { background: var(--sayon); }
+  .hw-seren::before { background: var(--seren); }
+  .hw-sayon { background: var(--sayon-dim); border-color: rgba(245,158,11,0.3); }
+  .hw-seren { background: var(--seren-dim); border-color: rgba(59,130,246,0.3); }
+
+  .hw-name {
+    font-family: var(--sans); font-size: 16px; font-weight: 800;
+    letter-spacing: 0.05em; margin-bottom: 4px;
+  }
+  .hw-sayon .hw-name { color: var(--sayon); }
+  .hw-seren .hw-name { color: var(--seren); }
+  .hw-model { font-size: 11px; color: var(--text-mid); margin-bottom: 10px; }
+  .hw-specs {
+    display: flex; flex-wrap: wrap; gap: 6px;
+  }
+  .hw-spec {
+    font-size: 10px; padding: 2px 7px; border-radius: 3px;
+    background: var(--surface2); border: 1px solid var(--border2);
+    color: var(--text-mid); letter-spacing: 0.05em;
+  }
+
+  /* ─── PIPELINE ─── */
+  .pipeline {
+    display: flex; flex-direction: column; gap: 0;
+  }
+
+  .phase {
+    display: grid;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    margin-bottom: 4px;
+    background: var(--surface);
+  }
+  .phase-header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface2);
+  }
+  .phase-num {
+    font-family: var(--sans); font-size: 10px; font-weight: 700;
+    letter-spacing: 0.1em; color: var(--text-dim);
+    border: 1px solid var(--border2); padding: 2px 7px; border-radius: 3px;
+    min-width: 32px; text-align: center;
+  }
+  .phase-name {
+    font-family: var(--sans); font-size: 13px; font-weight: 700; color: var(--text);
+  }
+  .phase-owner {
+    margin-left: auto; font-size: 10px; font-weight: 500;
+    padding: 2px 8px; border-radius: 3px; letter-spacing: 0.06em;
+  }
+  .owner-sayon { background: var(--sayon-dim); color: var(--sayon); border: 1px solid rgba(245,158,11,0.3); }
+  .owner-seren { background: var(--seren-dim); color: var(--seren); border: 1px solid rgba(59,130,246,0.3); }
+  .owner-both {
+    background: linear-gradient(90deg, var(--sayon-dim), var(--seren-dim));
+    color: var(--text-mid); border: 1px solid var(--border2);
+  }
+  .owner-parallel {
+    background: var(--purple-dim); color: var(--purple);
+    border: 1px solid rgba(168,85,247,0.3);
+  }
+
+  .phase-body {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+  }
+  .phase-body.single { grid-template-columns: 1fr; }
+  .phase-body.triple { grid-template-columns: 1fr 1fr 1fr; }
+
+  .phase-col {
+    padding: 14px 16px;
+    border-right: 1px solid var(--border);
+  }
+  .phase-col:last-child { border-right: none; }
+  .phase-col-label {
+    font-size: 9px; font-weight: 700; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--text-dim); margin-bottom: 8px;
+  }
+  .phase-col-label.sayon { color: var(--sayon); }
+  .phase-col-label.seren { color: var(--seren); }
+  .phase-col-label.shared { color: var(--purple); }
+
+  .step-list { display: flex; flex-direction: column; gap: 5px; }
+  .step {
+    display: flex; align-items: flex-start; gap: 8px;
+    font-size: 11px; color: var(--text-mid); line-height: 1.5;
+  }
+  .step-dot {
+    width: 5px; height: 5px; border-radius: 50%;
+    margin-top: 5px; flex-shrink: 0;
+    background: var(--border2);
+  }
+  .step-dot.sayon { background: var(--sayon); box-shadow: 0 0 4px var(--sayon-glow); }
+  .step-dot.seren { background: var(--seren); box-shadow: 0 0 4px var(--seren-glow); }
+  .step-dot.green { background: var(--green); }
+  .step-dot.red { background: var(--red); }
+  .step-dot.purple { background: var(--purple); }
+
+  .step strong { color: var(--text); font-weight: 500; }
+  .step em { color: var(--text-dim); font-style: normal; font-size: 10px; }
+
+  .connector {
+    display: flex; align-items: center; justify-content: center;
+    height: 24px; color: var(--text-dim); font-size: 18px;
+    position: relative;
+  }
+  .connector::before, .connector::after {
+    content: ''; position: absolute; left: 50%; width: 1px;
+    background: var(--border2);
+  }
+  .connector::before { top: 0; height: 8px; }
+  .connector::after { bottom: 0; height: 8px; }
+
+  /* decision branch */
+  .branch-box {
+    border: 1px solid var(--border2); border-radius: 4px;
+    padding: 8px 12px; font-size: 11px;
+    background: var(--surface2); margin: 4px 0;
+  }
+  .branch-yes { border-color: rgba(34,197,94,0.4); background: var(--green-dim); }
+  .branch-no { border-color: rgba(59,130,246,0.4); background: var(--seren-dim); }
+  .branch-label {
+    font-size: 9px; font-weight: 700; letter-spacing: 0.12em;
+    text-transform: uppercase; margin-bottom: 3px;
+  }
+  .branch-yes .branch-label { color: var(--green); }
+  .branch-no .branch-label { color: var(--seren); }
+
+  /* ─── TOOL GRID ─── */
+  .tool-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+  }
+
+  .tool-category {
+    border: 1px solid var(--border);
+    border-radius: 6px; overflow: hidden;
+    background: var(--surface);
+  }
+  .tool-cat-header {
+    padding: 10px 14px;
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .cat-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+  }
+  .tool-list { padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+
+  .tool-item { }
+  .tool-name {
+    font-size: 11px; font-weight: 500; color: var(--cyan);
+    margin-bottom: 2px; letter-spacing: 0.02em;
+  }
+  .tool-sig {
+    font-size: 10px; color: var(--text-dim); margin-bottom: 3px;
+    font-style: italic;
+  }
+  .tool-desc { font-size: 10px; color: var(--text-mid); line-height: 1.5; }
+  .tool-caller {
+    display: inline-block; font-size: 9px; padding: 1px 5px;
+    border-radius: 2px; margin-top: 3px; letter-spacing: 0.06em;
+  }
+  .caller-sayon { background: var(--sayon-dim); color: var(--sayon); }
+  .caller-seren { background: var(--seren-dim); color: var(--seren); }
+  .caller-both { background: var(--purple-dim); color: var(--purple); }
+
+  /* ─── PAGINATED FLOWS ─── */
+  .flow-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .flow-box {
+    border: 1px solid var(--border);
+    border-radius: 6px; overflow: hidden;
+    background: var(--surface);
+  }
+  .flow-header {
+    padding: 10px 14px; background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--sans); font-size: 12px; font-weight: 700; color: var(--text);
+  }
+  .flow-steps { padding: 12px 14px; display: flex; flex-direction: column; gap: 0; }
+  .flow-step {
+    display: flex; gap: 12px; padding: 7px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+  }
+  .flow-step:last-child { border-bottom: none; }
+  .flow-step-n {
+    font-size: 10px; color: var(--text-dim); min-width: 20px;
+    font-weight: 700; padding-top: 1px;
+  }
+  .flow-step-content { flex: 1; color: var(--text-mid); line-height: 1.5; }
+  .flow-step-content strong { color: var(--text); font-weight: 500; }
+  .flow-step-content .tag {
+    display: inline-block; font-size: 9px; padding: 1px 5px;
+    border-radius: 2px; margin-left: 4px; vertical-align: middle;
+  }
+  .tag-sayon { background: var(--sayon-dim); color: var(--sayon); }
+  .tag-seren { background: var(--seren-dim); color: var(--seren); }
+  .tag-db { background: var(--cyan-dim); color: var(--cyan); }
+
+  /* ─── SKILLS SYSTEM ─── */
+  .skills-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .skill-anatomy {
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface); overflow: hidden;
+  }
+  .skill-anatomy-header {
+    padding: 10px 14px; background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--sans); font-size: 12px; font-weight: 700; color: var(--text);
+  }
+  .skill-block {
+    margin: 12px 14px 0;
+    border: 1px solid var(--border2); border-radius: 4px;
+    overflow: hidden;
+  }
+  .skill-block:last-child { margin-bottom: 12px; }
+  .skill-block-label {
+    font-size: 9px; font-weight: 700; letter-spacing: 0.12em;
+    text-transform: uppercase; padding: 5px 10px;
+    background: var(--surface2); border-bottom: 1px solid var(--border2);
+    color: var(--text-dim);
+  }
+  .skill-block-content {
+    padding: 8px 10px; font-size: 10px; color: var(--text-mid);
+    line-height: 1.6; background: var(--bg);
+  }
+  .skill-block-content code {
+    color: var(--cyan); background: var(--surface2);
+    padding: 1px 4px; border-radius: 2px;
+  }
+
+  /* ─── QUEUE DIAGRAM ─── */
+  .queue-layout { display: grid; grid-template-columns: 1fr 2fr; gap: 12px; }
+  .queue-box {
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface); overflow: hidden;
+  }
+  .queue-header {
+    padding: 10px 14px; background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--sans); font-size: 12px; font-weight: 700;
+  }
+  .queue-items { padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; }
+  .queue-item {
+    border: 1px solid var(--border2); border-radius: 3px;
+    padding: 6px 10px; font-size: 10px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .qi-num { color: var(--text-dim); min-width: 16px; font-weight: 700; }
+  .qi-content { flex: 1; color: var(--text-mid); }
+  .qi-badge {
+    font-size: 9px; padding: 1px 5px; border-radius: 2px;
+    letter-spacing: 0.06em; white-space: nowrap;
+  }
+  .qi-sayon { background: var(--sayon-dim); color: var(--sayon); border-color: rgba(245,158,11,0.2); }
+  .qi-seren { background: var(--seren-dim); color: var(--seren); border-color: rgba(59,130,246,0.2); }
+  .qi-pending { background: var(--surface2); color: var(--text-dim); }
+
+  /* ─── SSE EVENT TABLE ─── */
+  .event-table { width: 100%; border-collapse: collapse; font-size: 10px; }
+  .event-table th {
+    text-align: left; padding: 6px 10px;
+    background: var(--surface2); border: 1px solid var(--border);
+    font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--text-dim); font-weight: 700;
+  }
+  .event-table td {
+    padding: 6px 10px; border: 1px solid var(--border);
+    color: var(--text-mid); vertical-align: top;
+  }
+  .event-table tr:nth-child(even) td { background: var(--surface); }
+  .event-table tr:nth-child(odd) td { background: var(--bg); }
+  .ev-name { color: var(--cyan); font-weight: 500; }
+  .ev-persisted { color: var(--green); font-size: 9px; }
+  .ev-ephemeral { color: var(--text-dim); font-size: 9px; }
+
+  /* ─── NPU OFFLOAD ─── */
+  .offload-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+  .offload-card {
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface); padding: 14px;
+  }
+  .offload-card-title {
+    font-family: var(--sans); font-size: 11px; font-weight: 700;
+    color: var(--sayon); margin-bottom: 8px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .offload-card-title::before {
+    content: '⚡'; font-size: 10px;
+  }
+  .offload-list { display: flex; flex-direction: column; gap: 5px; }
+  .offload-item {
+    font-size: 10px; color: var(--text-mid); line-height: 1.5;
+    padding-left: 10px; position: relative;
+  }
+  .offload-item::before {
+    content: '·'; position: absolute; left: 0; color: var(--sayon);
+  }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+  /* highlight */
+  .hl-sayon { color: var(--sayon); }
+  .hl-seren { color: var(--seren); }
+  .hl-green { color: var(--green); }
+  .hl-red { color: var(--red); }
+  .hl-purple { color: var(--purple); }
+  .hl-cyan { color: var(--cyan); }
+
+  .note-box {
+    border: 1px solid var(--border2); border-left: 3px solid var(--sayon);
+    padding: 10px 14px; border-radius: 0 4px 4px 0;
+    font-size: 10px; color: var(--text-mid); background: var(--surface2);
+    margin-top: 8px; line-height: 1.6;
+  }
+  .note-box strong { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- HEADER -->
+  <div class="page-header">
+    <div class="page-title"><span>PHOBOS</span> · Architecture</div>
+    <div class="page-sub">TWIN SUN · Coordinator–Engine Orchestration</div>
+    <div class="version-tag">v7.0 · DRAFT</div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       1. HARDWARE
+  ══════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-label">01 · Three-Brain Architecture</div>
+    <div class="hw-strip" style="grid-template-columns: 1fr 1fr 1fr;">
+      <div class="hw-block" style="background: rgba(16,185,129,0.08); border-color: rgba(16,185,129,0.35);">
+        <div style="position:absolute; top:0; left:0; right:0; height:2px; background:#10b981;"></div>
+        <div class="hw-name" style="color:#10b981;">PHOBOS CORE</div>
+        <div class="hw-model">Backend Process · Node.js server · DuckDB · tree-sitter</div>
+        <div class="hw-specs">
+          <span class="hw-spec">HTTP / SSE server</span>
+          <span class="hw-spec">Task queue poll loop</span>
+          <span class="hw-spec">Dispatch controller</span>
+          <span class="hw-spec">File tool executor</span>
+          <span class="hw-spec">Build subprocess</span>
+          <span class="hw-spec">Skill runner</span>
+          <span class="hw-spec">Attempt counter</span>
+          <span class="hw-spec">All DuckDB I/O</span>
+        </div>
+      </div>
+      <div class="hw-block hw-sayon">
+        <div class="hw-name">SAYON</div>
+        <div class="hw-model">Coordinator · Highest backendScore device (CUDA=3, Metal=2, discrete Vulkan=1) · port 52625</div>
+        <div class="hw-specs">
+          <span class="hw-spec">Compute-primary assignment</span>
+          <span class="hw-spec">256k ctx</span>
+          <span class="hw-spec">28–50 TPS</span>
+          <span class="hw-spec">Qwen3-8B / Llama3.x</span>
+          <span class="hw-spec">Intent Classification</span>
+          <span class="hw-spec">Prompt Reformation</span>
+          <span class="hw-spec">Full Tool + File Capability</span>
+          <span class="hw-spec">Live Reviewer</span>
+          <span class="hw-spec">Intermediate Planner</span>
+        </div>
+      </div>
+      <div class="hw-block hw-seren">
+        <div class="hw-name">SEREN</div>
+        <div class="hw-model">Reasoning Engine · Highest VRAM device (GPU or unified memory) · port 11434</div>
+        <div class="hw-specs">
+          <span class="hw-spec">VRAM-primary assignment</span>
+          <span class="hw-spec">128k ctx</span>
+          <span class="hw-spec">Extended thinking</span>
+          <span class="hw-spec">Qwen3-30B / DeepSeek-R1</span>
+          <span class="hw-spec">Technical Authority</span>
+          <span class="hw-spec">Primary Planner</span>
+          <span class="hw-spec">Deep Execution</span>
+          <span class="hw-spec">Final Validation</span>
+          <span class="hw-spec">Final Delivery</span>
+        </div>
+      </div>
+    </div>
+    <div class="note-box">
+      <strong>Dynamic peer model — TWIN SUN.</strong> SAYON and SEREN are colleagues with complementary strengths — not a hierarchy. SEREN is the technical authority: it plans, reasons deeply, decides the work split, and does final validation. SAYON is practical and fast: it interprets the user, manages context, and takes on whatever SEREN routes to it, including file writes, tool calls, and execution tasks. Both have full capability. CORE is the only brain that never generates text — it dispatches, executes infrastructure, and persists state exclusively.<br><br>
+      <strong>Hardware assignment (two-sort):</strong> SEREN is assigned the highest-VRAM device (favours deep reasoning quality). SAYON is assigned the highest-backendScore remaining device (favours compute throughput: CUDA=3, Metal=2, discrete Vulkan=1, UMA/index≥100=0). On single-GPU machines, SAYON and SEREN share the same device.
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       2. FULL PIPELINE
+  ══════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-label">02 · Full Request Pipeline</div>
+    <div class="pipeline">
+
+      <!-- INPUT -->
+      <div class="phase">
+        <div class="phase-header">
+          <span class="phase-num">INPUT</span>
+          <span class="phase-name">User Message + Files</span>
+          <span class="phase-owner owner-sayon">SAYON receives</span>
+        </div>
+        <div class="phase-body single">
+          <div class="phase-col">
+            <div class="step-list">
+              <div class="step"><div class="step-dot sayon"></div><div>Text message — optionally with attached files. Pastes &gt;2000 chars auto-saved as workspace .txt</div></div>
+              <div class="step"><div class="step-dot sayon"></div><div>SAYON immediately acks: <strong>brief natural-language echo</strong> of what was understood + intent to read files — visible to user in &lt;1s</div></div>
+              <div class="step"><div class="step-dot red"></div><div><strong>IMAGE_REQUEST detected?</strong> → bypass all LLM prompt rewriting, route direct to image generation pipeline. No SEREN planning phase.</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="connector">↓</div>
+
+      <!-- PHASE 1: PARALLEL INGEST -->
+      <div class="phase">
+        <div class="phase-header">
+          <span class="phase-num">01</span>
+          <span class="phase-name">Parallel Context Ingest</span>
+          <span class="phase-owner owner-parallel">SAYON + SEREN parallel</span>
+        </div>
+        <div class="phase-body">
+          <div class="phase-col">
+            <div class="phase-col-label sayon">SAYON (NPU) — fast triage</div>
+            <div class="step-list">
+              <div class="step"><div class="step-dot sayon"></div><div><strong>File complexity triage:</strong> route by token count + type. Simple files (&lt;4k tok, config, plain text) → SAYON. Dense files (code, docs, large) → SEREN queue</div></div>
+              <div class="step"><div class="step-dot sayon"></div><div><strong>Light file summaries</strong> — reads and summarises its assigned files</div></div>
+              <div class="step"><div class="step-dot sayon"></div><div><strong>Persistent context load:</strong> PHOBOS DIRECTIVES, User Directives, project config, chat_summary, repo_map</div></div>
+              <div class="step"><div class="step-dot sayon"></div><div><strong>knowledge_search</strong> — check internal KB before any web search</div></div>
+              <div class="step"><div class="step-dot sayon"></div><div><strong>web_search</strong> (if KB miss) — distil + store to KB</div></div>
+              <div class="step"><div class="step-dot sayon"></div><div>Emit status pills as each step completes</div></div>
+            </div>
+          </div>
+          <div class="phase-col">
+            <div class="phase-col-label seren">SEREN (GPU/RAM) — deep execution</div>
+            <div class="step-list">
+              <div class="step"><div class="step-dot seren"></div><div><strong>Dense file summaries:</strong> SAYON dispatches complex files here. SEREN processes each with full reasoning and returns structured summary</div></div>
+              <div class="step"><div class="step-dot seren"></div><div><strong>Paginated reading</strong> for oversized files — chunked with overlap, coordinator instructions prepended per chunk</div></div>
+              <div class="step"><div class="step-dot seren"></div><div>Returns structured summaries → SAYON assembles into unified ingest context</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="connector">↓</div>
+
+      <!-- PHASE 2: INGEST SYNTHESIS -->
+      <div class="phase">
+        <div class="phase-header">
+          <span class="phase-num">02</span>
+          <span class="phase-name">Ingest Synthesis → SEREN Planning Prompt</span>
+          <span class="phase-owner owner-sayon">SAYON assembles</span>
+        </div>
+        <div class="phase-body single">
+          <div class="phase-col">
+            <div class="step-list">
+              <div class="step"><div class="step-dot sayon"></div><div>SAYON merges all file summaries (own + SEREN's), persistent context, KB/web results, and rewritten user intent into a single <strong>Complete Ingest Context</strong></div></div>
+              <div class="step"><div class="step-dot sayon"></div><div><strong>token_count</strong> — verify fits in SEREN's context window. Condense if needed.</div></div>
+              <div class="step"><div class="step-dot sayon"></div><div>Dispatch <strong>Complete Ingest Context</strong> → SEREN for planning decision</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="connector">↓</div>
+
+      <!-- PHASE 3: SEREN DECISION -->
+      <div class="phase">
+        <div class="phase-header">
+          <span class="phase-num">03</span>
+          <span class="phase-name">SEREN Planning Decision</span>
+          <span class="phase-owner owner-seren">SEREN</span>
+        </div>
+        <div class="phase-body single">
+          <div class="phase-col">
+            <div class="step-list">
+              <div class="step"><div class="step-dot seren"></div><div>SEREN reads full ingest context with extended thinking. <strong>Three exits:</strong></div></div>
+              <div class="step"><div class="step-dot red"></div><div><strong>NEEDS_CLARIFICATION</strong> → returns structured questions to user via SAYON. Conversation continues.</div></div>
+              <div class="step"><div class="step-dot green"></div><div><strong>BUILD_QUEUE</strong> → SEREN writes ordered task queue to DuckDB. Each task tagged: executor = <span class="hl-sayon">SAYON</span> or <span class="hl-seren">SEREN</span>, dependencies, distilled context slice, file targets</div></div>
+              <div class="step"><div class="step-dot purple"></div><div><strong>IMAGE_REQUEST</strong> → SEREN never reached. SAYON routes directly to image generation pipeline at Phase 1. Listed here for completeness — this exit bypasses Phase 3 entirely.</div></div>
+              <div class="step"><div class="step-dot seren"></div><div>Queue written → SAYON notified → execution begins</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="connector">↓</div>
+
+      <!-- PHASE 4: EXECUTION LOOP -->
+      <div class="phase">
+        <div class="phase-header">
+          <span class="phase-num">04</span>
+          <span class="phase-name">Execution Loop</span>
+          <span class="phase-owner owner-both">SAYON orchestrates · SEREN executes</span>
+        </div>
+        <div class="phase-body triple">
+          <div class="phase-col">
+            <div class="phase-col-label sayon">SAYON — dispatch &amp; monitor</div>
+            <div class="step-list">
+              <div class="step"><div class="step-dot sayon"></div><div>Polls task_queue in DuckDB. Dispatches next eligible task to correct executor</div></div>
+              <div class="step"><div class="step-dot sayon"></div><div>Accepts new user queries mid-execution → plans them → appends to task_queue tail as SAYON or SEREN tasks</div></div>
+              <div class="step"><div class="step-dot sayon"></div><div>If idle: reads SEREN's live thinking stream → emits <strong>progress updates</strong> and optional suggestions to user</div></div>
+              <div class="step"><div class="step-dot sayon"></div><div>Executes its own tasks: reformulation, context prep, tool calls, quick lookups</div></div>
+              <div class="step"><div class="step-dot sayon"></div><div>Reviews SEREN output: APPROVE / NEEDS_REVISION / REJECT</div></div>
+              <div class="step"><div class="step-dot sayon"></div><div>On APPROVE: syntax_validate → apply file tools → emit file_panel → mark task complete</div></div>
+              <div class="step"><div class="step-dot sayon"></div><div>On NEEDS_REVISION (&lt;3): inject guidance + error logs → re-dispatch to SEREN</div></div>
+              <div class="step"><div class="step-dot sayon"></div><div>SEREN finished segment → SAYON can re-queue for further SEREN passes</div></div>
+            </div>
+          </div>
+          <div class="phase-col">
+            <div class="phase-col-label seren">SEREN — deep execution</div>
+            <div class="step-list">
+              <div class="step"><div class="step-dot seren"></div><div>Receives distilled task prompt from SAYON (no raw docs)</div></div>
+              <div class="step"><div class="step-dot seren"></div><div>Extended thinking → think tokens stream to Thinking Column in real time</div></div>
+              <div class="step"><div class="step-dot seren"></div><div>Issues <strong>file tool calls</strong>: write_file, replace_lines, insert_lines, delete_lines, read_file</div></div>
+              <div class="step"><div class="step-dot seren"></div><div><strong>Read→Act cycle</strong>: read_file for line numbers → surgical edits. Max 3 read cycles/attempt</div></div>
+              <div class="step"><div class="step-dot seren"></div><div>Output tokens → Thinking Column (pending review)</div></div>
+              <div class="step"><div class="step-dot seren"></div><div>Max 3 attempts per task before FAIL, reasons recorded</div></div>
+            </div>
+          </div>
+          <div class="phase-col">
+            <div class="phase-col-label shared">Shared State (DuckDB)</div>
+            <div class="step-list">
+              <div class="step"><div class="step-dot purple"></div><div><strong>task_queue</strong>: ordered tasks, executor tag, status, dependencies</div></div>
+              <div class="step"><div class="step-dot purple"></div><div><strong>dispatch_log</strong>: tokens, latency, attempt #, review score per task</div></div>
+              <div class="step"><div class="step-dot purple"></div><div><strong>workspace_files</strong>: invalidated + re-indexed after each write</div></div>
+              <div class="step"><div class="step-dot purple"></div><div><strong>message_events</strong>: persisted SSE events for history replay</div></div>
+              <div class="step"><div class="step-dot purple"></div><div>SAYON and SEREN share read/write access via DB — no direct IPC</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="connector">↓</div>
+
+      <!-- PHASE 5: DELIVERY -->
+      <div class="phase">
+        <div class="phase-header">
+          <span class="phase-num">05</span>
+          <span class="phase-name">Final Delivery</span>
+          <span class="phase-owner owner-seren">SEREN composes · SAYON emits</span>
+        </div>
+        <div class="phase-body single">
+          <div class="phase-col">
+            <div class="step-list">
+              <div class="step"><div class="step-dot seren"></div><div><strong>SEREN</strong> receives completion summary from SAYON (tasks completed, changed files, failures, thinking traces) and composes the final natural-language delivery message</div></div>
+              <div class="step"><div class="step-dot sayon"></div><div>SAYON emits delivery as final assistant message → visible in chat</div></div>
+              <div class="step"><div class="step-dot sayon"></div><div>SAYON calls <strong>chat_summary_update</strong> — writes rolling summary to DuckDB</div></div>
+              <div class="step"><div class="step-dot sayon"></div><div>Stream closes → complete event → done</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       3. QUEUE STRUCTURE
+  ══════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-label">03 · Task Queue Model</div>
+    <div class="queue-layout">
+      <div class="queue-box">
+        <div class="queue-header">
+          <span class="hl-purple">■</span> task_queue (DuckDB)
+        </div>
+        <div class="queue-items">
+          <div class="queue-item">
+            <span class="qi-num">1</span>
+            <span class="qi-content">Read auth.ts + jwt.ts, extract interface shapes</span>
+            <span class="qi-badge qi-sayon">SAYON</span>
+          </div>
+          <div class="queue-item">
+            <span class="qi-num">2</span>
+            <span class="qi-content">Rewrite middleware.ts: replace session check with JWT verify</span>
+            <span class="qi-badge qi-seren">SEREN</span>
+          </div>
+          <div class="queue-item">
+            <span class="qi-num">3</span>
+            <span class="qi-content">Create src/auth/jwt.ts utility (sign + verify)</span>
+            <span class="qi-badge qi-seren">SEREN</span>
+          </div>
+          <div class="queue-item">
+            <span class="qi-num">4</span>
+            <span class="qi-content">Run build, capture errors</span>
+            <span class="qi-badge qi-sayon">SAYON</span>
+          </div>
+          <div class="queue-item">
+            <span class="qi-num">5</span>
+            <span class="qi-content">+ user appended mid-run: "also add refresh token"</span>
+            <span class="qi-badge qi-seren">SEREN</span>
+          </div>
+          <div class="queue-item">
+            <span class="qi-num">6</span>
+            <span class="qi-content">Compose delivery summary</span>
+            <span class="qi-badge qi-seren">SEREN</span>
+          </div>
+        </div>
+      </div>
+      <div class="queue-box">
+        <div class="queue-header">Queue Schema</div>
+        <div class="queue-items" style="font-size:10px; color: var(--text-mid); gap:4px;">
+          <div style="padding: 4px 0; border-bottom: 1px solid var(--border); display:flex; gap: 8px;">
+            <span style="color:var(--cyan); min-width:120px;">id</span><span>uuid</span>
+          </div>
+          <div style="padding: 4px 0; border-bottom: 1px solid var(--border); display:flex; gap: 8px;">
+            <span style="color:var(--cyan); min-width:120px;">thread_id</span><span>fk → threads</span>
+          </div>
+          <div style="padding: 4px 0; border-bottom: 1px solid var(--border); display:flex; gap: 8px;">
+            <span style="color:var(--cyan); min-width:120px;">seq</span><span>integer, ordered</span>
+          </div>
+          <div style="padding: 4px 0; border-bottom: 1px solid var(--border); display:flex; gap: 8px;">
+            <span style="color:var(--cyan); min-width:120px;">executor</span><span>'sayon' | 'seren'</span>
+          </div>
+          <div style="padding: 4px 0; border-bottom: 1px solid var(--border); display:flex; gap: 8px;">
+            <span style="color:var(--cyan); min-width:120px;">status</span><span>pending | running | done | failed</span>
+          </div>
+          <div style="padding: 4px 0; border-bottom: 1px solid var(--border); display:flex; gap: 8px;">
+            <span style="color:var(--cyan); min-width:120px;">task_description</span><span>text</span>
+          </div>
+          <div style="padding: 4px 0; border-bottom: 1px solid var(--border); display:flex; gap: 8px;">
+            <span style="color:var(--cyan); min-width:120px;">distilled_context</span><span>json — only what this task needs</span>
+          </div>
+          <div style="padding: 4px 0; border-bottom: 1px solid var(--border); display:flex; gap: 8px;">
+            <span style="color:var(--cyan); min-width:120px;">file_targets</span><span>string[] — scoped file list</span>
+          </div>
+          <div style="padding: 4px 0; border-bottom: 1px solid var(--border); display:flex; gap: 8px;">
+            <span style="color:var(--cyan); min-width:120px;">depends_on</span><span>seq[] — dependency chain</span>
+          </div>
+          <div style="padding: 4px 0; border-bottom: 1px solid var(--border); display:flex; gap: 8px;">
+            <span style="color:var(--cyan); min-width:120px;">planned_by</span><span>'seren' | 'sayon'</span>
+          </div>
+          <div style="padding: 4px 0; display:flex; gap: 8px;">
+            <span style="color:var(--cyan); min-width:120px;">result</span><span>json — output + review score</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="note-box">
+      <strong>CORE drives the poll loop.</strong> SAYON never polls the queue — CORE does. SAYON's role is to plan tasks and write them to DuckDB. CORE reads the queue, resolves dependency chains, and dispatches to the correct model endpoint. When SEREN's queue is active and a new user query arrives, SAYON plans additional tasks and writes them to the queue tail. CORE detects the new entries and dispatches eligible ones immediately — SAYON tasks that are dependency-free can run on the NPU in parallel with whatever SEREN is executing.
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       4. TOOL REGISTRY
+  ══════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-label">04 · Tool Registry</div>
+    <div class="tool-grid">
+
+      <!-- CONTEXT & DISCOVERY -->
+      <div class="tool-category">
+        <div class="tool-cat-header">
+          <div class="cat-dot" style="background:var(--sayon)"></div>
+          Context &amp; Discovery
+        </div>
+        <div class="tool-list">
+          <div class="tool-item">
+            <div class="tool-name">workspace_read</div>
+            <div class="tool-sig">( path ) → string</div>
+            <div class="tool-desc">Full content of one workspace file. Used in ingest + task construction. Always precedes surgical edits.</div>
+            <span class="tool-caller caller-both">SAYON + SEREN</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">workspace_search</div>
+            <div class="tool-sig">( query ) → ranked snippets[]</div>
+            <div class="tool-desc">Keyword/semantic search across all workspace files. Returns file path + line number. Resolves "that function" references before dispatch.</div>
+            <span class="tool-caller caller-sayon">SAYON</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">repo_map</div>
+            <div class="tool-sig">( threadId? ) → ~1-2k tokens</div>
+            <div class="tool-desc">tree-sitter AST index: all signatures, classes, exports, imports, types. Regenerated after any write. Checked before raw file reads.</div>
+            <span class="tool-caller caller-sayon">SAYON</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">chat_summary</div>
+            <div class="tool-sig">( threadId? ) → summary string</div>
+            <div class="tool-desc">Rolling compressed conversation. Falls back to recent raw messages when stale. Primary conversation memory — not raw history.</div>
+            <span class="tool-caller caller-sayon">SAYON</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">copilot_notes</div>
+            <div class="tool-sig">( projectId ) → notes string</div>
+            <div class="tool-desc">Copilot's accumulated per-project architectural notes. Read during ingest to avoid re-explaining conventions each turn.</div>
+            <span class="tool-caller caller-sayon">SAYON</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">token_count</div>
+            <div class="tool-sig">( text ) → number</div>
+            <div class="tool-desc">Exact count via local encoder. Always called before dispatch to prevent silent truncation.</div>
+            <span class="tool-caller caller-sayon">SAYON</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="tool-category">
+        <div class="tool-cat-header">
+          <div class="cat-dot" style="background:var(--seren)"></div>
+          File Tools (XML — available to SAYON and SEREN)
+        </div>
+        <div class="tool-list">
+          <div class="tool-item">
+            <div class="tool-name">write_file</div>
+            <div class="tool-sig">&lt;write_file path="…"&gt; content &lt;/write_file&gt;</div>
+            <div class="tool-desc">Create or fully overwrite. Primary tool for new files and complete rewrites. Either model may emit this based on SEREN's task assignment.</div>
+            <span class="tool-caller caller-both">SAYON + SEREN</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">append_file</div>
+            <div class="tool-sig">&lt;append_file path="…"&gt; content &lt;/append_file&gt;</div>
+            <div class="tool-desc">Append to end. Works trivially on empty files.</div>
+            <span class="tool-caller caller-both">SAYON + SEREN</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">read_file</div>
+            <div class="tool-sig">&lt;read_file path="…"/&gt; → numbered lines</div>
+            <div class="tool-desc">Returns content with line numbers. CORE detects all-read turn → feeds numbered content back as continuation. Used for Read→Act surgical edits.</div>
+            <span class="tool-caller caller-both">SAYON + SEREN</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">replace_lines</div>
+            <div class="tool-sig">&lt;replace_lines path start_line end_line&gt;</div>
+            <div class="tool-desc">Replace lines N–M inclusive. Always preceded by read_file to get exact line numbers.</div>
+            <span class="tool-caller caller-both">SAYON + SEREN</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">insert_lines</div>
+            <div class="tool-sig">&lt;insert_lines path after_line="N"&gt;</div>
+            <div class="tool-desc">Insert new lines after line N. Zero whitespace ambiguity — no content matching.</div>
+            <span class="tool-caller caller-both">SAYON + SEREN</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">delete_lines</div>
+            <div class="tool-sig">&lt;delete_lines path start_line end_line/&gt;</div>
+            <div class="tool-desc">Delete lines N–M. Combined with read→act for precision removal.</div>
+            <span class="tool-caller caller-both">SAYON + SEREN</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- RESEARCH & CODE INTEL -->
+      <div class="tool-category">
+        <div class="tool-cat-header">
+          <div class="cat-dot" style="background:var(--green)"></div>
+          Research, Code Intelligence &amp; Build
+        </div>
+        <div class="tool-list">
+          <div class="tool-item">
+            <div class="tool-name">knowledge_search</div>
+            <div class="tool-sig">( query ) → KB entries[]</div>
+            <div class="tool-desc">Internal indexed store of prior web results. Always checked before live web_search. Cache-first policy.</div>
+            <span class="tool-caller caller-sayon">SAYON</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">web_search</div>
+            <div class="tool-sig">( query ) → distilled results</div>
+            <div class="tool-desc">Live web search on KB miss. Results auto-distilled and stored to KB for future reuse. SEREN never searches directly — all external data is pre-digested by SAYON before being passed to SEREN.</div>
+            <span class="tool-caller caller-sayon">SAYON</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">syntax_validate</div>
+            <div class="tool-sig">( filename, content ) → pass | errors[]</div>
+            <div class="tool-desc">tree-sitter validation before workspace write. Required for SAYON APPROVE. Errors injected directly into retry prompt.</div>
+            <span class="tool-caller caller-sayon">SAYON</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">build_run</div>
+            <div class="tool-sig">( command ) → { stdout, stderr, exit }</div>
+            <div class="tool-desc">Subprocess build in workspace dir. Called post-patch. Errors fed to retry as structured output — engine sees exactly what compiler saw.</div>
+            <span class="tool-caller caller-sayon">SAYON</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">skill_invoke</div>
+            <div class="tool-sig">( skill_id, params ) → result</div>
+            <div class="tool-desc">Execute an installed user Skill package. Dispatches to skill runner, returns structured result. Skills available to both models depending on declared scope.</div>
+            <span class="tool-caller caller-both">SAYON + SEREN</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- PAGINATION & ASSEMBLY -->
+      <div class="tool-category">
+        <div class="tool-cat-header">
+          <div class="cat-dot" style="background:var(--purple)"></div>
+          Pagination &amp; Assembly
+        </div>
+        <div class="tool-list">
+          <div class="tool-item">
+            <div class="tool-name">paginate</div>
+            <div class="tool-sig">( content, maxTokens, overlap ) → chunks[]</div>
+            <div class="tool-desc">Split oversized content at logical boundaries (MD headers, double newlines, AST function/class boundaries — never raw char count). 10–15% overlap buffer per chunk. Coordinator instructions prepended to every chunk.</div>
+            <span class="tool-caller caller-sayon">SAYON</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">chunk_assemble</div>
+            <div class="tool-sig">( chunks[] ) → file string</div>
+            <div class="tool-desc">Merge sequential SEREN output from paginated write cycle. Validates each section before assembling next. Used for large file creation exceeding one engine turn.</div>
+            <span class="tool-caller caller-sayon">SAYON</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- MEMORY & PERSISTENCE -->
+      <div class="tool-category">
+        <div class="tool-cat-header">
+          <div class="cat-dot" style="background:var(--cyan)"></div>
+          Memory &amp; Persistence
+        </div>
+        <div class="tool-list">
+          <div class="tool-item">
+            <div class="tool-name">event_persist</div>
+            <div class="tool-sig">( threadId, type, payload, msgId )</div>
+            <div class="tool-desc">Write SSE event to message_events. Called for file_panel, coordinator bubble, thinking_complete, patches_applied. Enables indefinite history replay.</div>
+            <span class="tool-caller caller-sayon">SAYON</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">workspace_index_update</div>
+            <div class="tool-sig">( threadId )</div>
+            <div class="tool-desc">Re-scan workspace, update workspace_files table, invalidate cache, regenerate repo_map via tree-sitter. Called automatically after any engine write.</div>
+            <span class="tool-caller caller-sayon">SAYON</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">chat_summary_update</div>
+            <div class="tool-sig">( threadId, summary )</div>
+            <div class="tool-desc">Write rolling conversation summary to chat_summaries. Called end of Stage 5. Token-capped so it never crowds task context on long threads.</div>
+            <span class="tool-caller caller-sayon">SAYON</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">task_queue_write</div>
+            <div class="tool-sig">( tasks[] ) → void</div>
+            <div class="tool-desc">SEREN or SAYON writes planned tasks to DuckDB task_queue. Atomic write. SAYON appends to tail when mid-run planning. SEREN writes full queue at planning phase.</div>
+            <span class="tool-caller caller-both">SAYON + SEREN</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">task_queue_read</div>
+            <div class="tool-sig">( threadId ) → pending tasks[]</div>
+            <div class="tool-desc">CORE polls this to find next dispatchable task. Respects depends_on chain. Models do not poll directly — SAYON reads queue state for planning context only.</div>
+            <span class="tool-caller caller-sayon">CORE (poll) · SAYON (read)</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">media_unpack</div>
+            <div class="tool-sig">( path, type ) → extracted_files[]</div>
+            <div class="tool-desc">CORE extracts archives (zip, tar) or processes media (images, audio) on SAYON request during ingest. Returns list of extracted file paths for subsequent triage.</div>
+            <span class="tool-caller caller-sayon">SAYON requests → CORE executes</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">request_context</div>
+            <div class="tool-sig">( description, type ) → signal</div>
+            <div class="tool-desc">SEREN emits this at task start when it needs additional data. CORE pauses task, creates SAYON sub-task, re-queues original as depends_on=[sub-task]. Emittable only at task start, not mid file-tool-stream.</div>
+            <span class="tool-caller caller-seren">SEREN</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- SKILLS SYSTEM -->
+      <div class="tool-category">
+        <div class="tool-cat-header">
+          <div class="cat-dot" style="background:var(--red)"></div>
+          Skills System (User Packages)
+        </div>
+        <div class="tool-list">
+          <div class="tool-item">
+            <div class="tool-name">skill_list</div>
+            <div class="tool-sig">() → installed skills[]</div>
+            <div class="tool-desc">Returns all installed skills with id, name, description, scope tags, and parameter schema. SAYON reads this at session start to build available-tools context.</div>
+            <span class="tool-caller caller-sayon">SAYON</span>
+          </div>
+          <div class="tool-item">
+            <div class="tool-name">skill_install</div>
+            <div class="tool-sig">( package_path ) → skill_id</div>
+            <div class="tool-desc">Install a .phobos-skill package from local path or URL. Validates manifest, registers in DuckDB skills table, makes available to both models immediately.</div>
+            <span class="tool-caller caller-sayon">SAYON</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       5. PAGINATED FLOWS
+  ══════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-label">05 · Recursive Pagination — Default for All Reads &amp; Writes</div>
+    <div class="flow-grid">
+
+      <div class="flow-box">
+        <div class="flow-header">Recursive Read — Arbitrarily Large Documents</div>
+        <div class="flow-steps">
+          <div class="flow-step">
+            <span class="flow-step-n">1</span>
+            <div class="flow-step-content">
+              <strong>SAYON</strong> calls <code>token_count(document)</code>. If ≤ SEREN window → single dispatch, done. If &gt; → begin pagination.
+              <span class="tag tag-sayon">SAYON</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">2</span>
+            <div class="flow-step-content">
+              <code>paginate(doc, window×0.75, overlap=0.15)</code> at AST/MD logical boundaries. 15% overlap between adjacent chunks. SAYON prepends extraction instructions + position/total to every chunk — SEREN is amnesiac between chunks.
+              <span class="tag tag-sayon">SAYON</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">3</span>
+            <div class="flow-step-content">
+              CORE dispatches each chunk to <strong>SEREN</strong> sequentially. SEREN returns structured summary per chunk. SAYON appends to <code>level_summaries[]</code>.
+              <span class="tag tag-seren">SEREN</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">4</span>
+            <div class="flow-step-content">
+              <strong>token_count(level_summaries)</strong>. Fits in one context? → FINAL SUMMARY, done. Still too large? → treat level_summaries as the new document and recurse from step 2.
+              <span class="tag tag-sayon">SAYON recurse</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">5</span>
+            <div class="flow-step-content">
+              Each recursion level uses more abstract instructions: "summarise the summaries, preserve key decisions and constraints." Recursion terminates when result fits.
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">6</span>
+            <div class="flow-step-content">
+              FINAL SUMMARY is what gets injected into the task prompt — this is "what the AI read" from the original document, regardless of how many recursion levels were needed.
+              <span class="tag tag-db">→ ingest_context</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="flow-box">
+        <div class="flow-header">Paginated Write — Large File Generation (flat, not recursive)</div>
+        <div class="flow-steps">
+          <div class="flow-step">
+            <span class="flow-step-n">1</span>
+            <div class="flow-step-content">
+              SAYON uses repo_map to divide target file into logical write sections: by class, exported function group, or module. Each section must fit in one SEREN context.
+              <span class="tag tag-sayon">SAYON</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">2</span>
+            <div class="flow-step-content">
+              Dispatch section[0]: "Write this section. Interface context: [relevant types from adjacent sections]"
+              <span class="tag tag-seren">SEREN</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">3</span>
+            <div class="flow-step-content">
+              SAYON reviews section[0]. <code>syntax_validate</code>. APPROVE → CORE applies. FAIL → retry section only (not full file). Max 3 per section.
+              <span class="tag tag-sayon">SAYON</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">4</span>
+            <div class="flow-step-content">
+              Dispatch section[1]: includes confirmed section[0] as interface reference. Sequential — each section confirms before next dispatches.
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">5</span>
+            <div class="flow-step-content">
+              <code>chunk_assemble(confirmed_sections[])</code> → final file. <code>workspace_index_update</code> triggers repo_map regen.
+              <span class="tag tag-sayon">SAYON</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="flow-box">
+        <div class="flow-header">Read → Act Cycle (Surgical Edits to Existing Files)</div>
+        <div class="flow-steps">
+          <div class="flow-step">
+            <span class="flow-step-n">1</span>
+            <div class="flow-step-content">
+              SEREN issues <code>&lt;read_file path="…"/&gt;</code>. CORE detects all-read turn → executes read → returns full numbered content to SEREN as continuation.
+              <span class="tag tag-seren">SEREN</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">2</span>
+            <div class="flow-step-content">
+              SEREN issues surgical write: <code>&lt;replace_lines start_line="42" end_line="48"&gt;</code>. No guessing — exact line numbers from the read.
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">3</span>
+            <div class="flow-step-content">
+              CORE enforces max 3 read cycles per attempt. This is separate from paginated read — it is for precision execution, not comprehension.
+              <span class="tag tag-db">CORE guard</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="flow-box">
+        <div class="flow-header">SAYON Mid-Run Planning (New User Query During Execution)</div>
+        <div class="flow-steps">
+          <div class="flow-step">
+            <span class="flow-step-n">1</span>
+            <div class="flow-step-content">
+              User sends new message while CORE's execution loop is running. CORE routes HTTP request → SAYON immediately.
+              <span class="tag tag-core">CORE routes</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">2</span>
+            <div class="flow-step-content">
+              SAYON reads current task_queue state + ingest_context from DuckDB. Plans new tasks. Simple → executor=SAYON. Complex → executor=SEREN, depends_on=[last SEREN seq].
+              <span class="tag tag-sayon">SAYON</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">3</span>
+            <div class="flow-step-content">
+              SAYON writes new tasks to queue tail via <code>task_queue_write</code>. CORE detects new entries on next poll cycle.
+              <span class="tag tag-db">DuckDB</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">4</span>
+            <div class="flow-step-content">
+              Unblocked SAYON tasks → CORE dispatches immediately to NPU (parallel with SEREN). SEREN tasks queue behind current SEREN work. User sees coordinator bubble.
+              <span class="tag tag-core">CORE dispatches</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+      <div class="flow-box">
+        <div class="flow-header">Paginated Read — Oversized Document</div>
+        <div class="flow-steps">
+          <div class="flow-step">
+            <span class="flow-step-n">1</span>
+            <div class="flow-step-content">
+              <strong>SAYON</strong> receives file, calls <code>token_count(content)</code>
+              <span class="tag tag-sayon">SAYON</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">2</span>
+            <div class="flow-step-content">
+              Exceeds limit → <code>paginate(content, maxTokens, 0.12)</code> → chunks[] split at AST/MD boundaries
+              <span class="tag tag-sayon">SAYON</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">3</span>
+            <div class="flow-step-content">
+              SAYON prepends task instructions to chunk[0] → dispatches to <strong>SEREN</strong>
+              <span class="tag tag-seren">SEREN</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">4</span>
+            <div class="flow-step-content">
+              SEREN returns structured findings for chunk[0]. SAYON appends to <strong>Complete Context</strong>
+              <span class="tag tag-db">DuckDB</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">5</span>
+            <div class="flow-step-content">
+              Repeat for chunk[1..N]. Each chunk includes 10–15% overlap of prior chunk's end. Instructions prepended every time (SEREN is amnesiac between chunks)
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">6</span>
+            <div class="flow-step-content">
+              SAYON assembles all findings → <strong>token_count</strong> final package → condense if needed → task dispatch
+              <span class="tag tag-sayon">SAYON</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="flow-box">
+        <div class="flow-header">Paginated Write — Large File Creation</div>
+        <div class="flow-steps">
+          <div class="flow-step">
+            <span class="flow-step-n">1</span>
+            <div class="flow-step-content">
+              SAYON divides target file into logical sections: by function, class, or block boundary
+              <span class="tag tag-sayon">SAYON</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">2</span>
+            <div class="flow-step-content">
+              Dispatch section[0] task to <strong>SEREN</strong> with precise section spec + surrounding interface context
+              <span class="tag tag-seren">SEREN</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">3</span>
+            <div class="flow-step-content">
+              SEREN outputs section[0] using <code>write_file</code> / <code>append_file</code>. SAYON reviews + applies
+              <span class="tag tag-sayon">SAYON</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">4</span>
+            <div class="flow-step-content">
+              <strong>syntax_validate</strong> on section output. Pass → next section. Fail → retry with error
+              <span class="tag tag-sayon">SAYON</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">5</span>
+            <div class="flow-step-content">
+              Repeat for section[1..N]. Each dispatch includes assembled prior sections as interface reference
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">6</span>
+            <div class="flow-step-content">
+              <code>chunk_assemble(sections[])</code> → validated final file written to workspace. <code>workspace_index_update</code> triggered
+              <span class="tag tag-sayon">SAYON</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="flow-box">
+        <div class="flow-header">Read → Act Cycle (Surgical Edits)</div>
+        <div class="flow-steps">
+          <div class="flow-step">
+            <span class="flow-step-n">1</span>
+            <div class="flow-step-content">
+              SEREN issues <code>&lt;read_file path="src/auth.ts"/&gt;</code> — backend returns full numbered content
+              <span class="tag tag-seren">SEREN</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">2</span>
+            <div class="flow-step-content">
+              Backend detects all-read turn → executes read → feeds numbered lines back as continuation
+              <span class="tag tag-db">Backend</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">3</span>
+            <div class="flow-step-content">
+              SEREN issues precise write: <code>&lt;replace_lines path start_line="42" end_line="48"&gt;</code>
+              <span class="tag tag-seren">SEREN</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">4</span>
+            <div class="flow-step-content">
+              Max 3 read cycles per attempt. Prevents infinite read loops
+              <span class="tag tag-sayon">SAYON guard</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="flow-box">
+        <div class="flow-header">SAYON Mid-Run Planning (New User Query)</div>
+        <div class="flow-steps">
+          <div class="flow-step">
+            <span class="flow-step-n">1</span>
+            <div class="flow-step-content">
+              User sends new message while SEREN task queue is executing
+              <span class="tag tag-sayon">SAYON</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">2</span>
+            <div class="flow-step-content">
+              SAYON reads new input + current <strong>task_queue_read</strong> to understand in-progress context
+              <span class="tag tag-sayon">SAYON</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">3</span>
+            <div class="flow-step-content">
+              SAYON plans new tasks: simple ones it handles itself, complex ones tagged executor=seren with depends_on last active SEREN task
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">4</span>
+            <div class="flow-step-content">
+              <code>task_queue_write(newTasks)</code> — appended to tail. Dependency chain ensures order
+              <span class="tag tag-db">DuckDB</span>
+            </div>
+          </div>
+          <div class="flow-step">
+            <span class="flow-step-n">5</span>
+            <div class="flow-step-content">
+              Emit coordinator bubble to user: "Added N tasks to queue — will execute after current work"
+              <span class="tag tag-sayon">SAYON</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       6. SKILLS SYSTEM
+  ══════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-label">06 · User Skills System</div>
+    <div class="skills-layout">
+      <div class="skill-anatomy">
+        <div class="skill-anatomy-header">Skill Package Anatomy (.phobos-skill)</div>
+
+        <div class="skill-block">
+          <div class="skill-block-label">manifest.json</div>
+          <div class="skill-block-content">
+            <code>id</code> — unique slug, e.g. "prettier-format"<br>
+            <code>name</code> — display name<br>
+            <code>description</code> — what this skill does (shown to SAYON so it knows when to invoke)<br>
+            <code>version</code> — semver<br>
+            <code>scope</code> — ["sayon"] | ["seren"] | ["both"]<br>
+            <code>trigger</code> — natural language hints for auto-invocation, e.g. "format code, fix style"<br>
+            <code>params</code> — JSON schema for input parameters<br>
+            <code>output</code> — JSON schema for return value
+          </div>
+        </div>
+
+        <div class="skill-block">
+          <div class="skill-block-label">runner.ts (or .py / .sh)</div>
+          <div class="skill-block-content">
+            The executable entry point. Receives params as JSON on stdin, returns result as JSON on stdout.<br><br>
+            Can use any system tool, script, or binary available on the machine. Full process isolation — runs as subprocess in workspace dir.
+          </div>
+        </div>
+
+        <div class="skill-block">
+          <div class="skill-block-label">prompts/ (optional)</div>
+          <div class="skill-block-content">
+            <code>sayon_context.md</code> — injected into SAYON context when skill is available, describing how and when to use it<br>
+            <code>seren_context.md</code> — injected into SEREN task prompt when this skill is needed
+          </div>
+        </div>
+
+        <div class="skill-block">
+          <div class="skill-block-label">Example skills</div>
+          <div class="skill-block-content">
+            <strong>prettier-format</strong> — run Prettier on a file list, return diff<br>
+            <strong>eslint-fix</strong> — auto-fix linting errors, return structured report<br>
+            <strong>test-runner</strong> — run Jest/Vitest, parse results into structured pass/fail<br>
+            <strong>db-migrate</strong> — run SQL migrations, return applied list<br>
+            <strong>figma-export</strong> — pull Figma tokens, write to design-tokens.ts<br>
+            <strong>screenshot-compare</strong> — visual regression vs. baseline<br>
+            <strong>godot-build</strong> — GDScript export pipeline<br>
+            <strong>docker-deploy</strong> — build + push container, return image digest
+          </div>
+        </div>
+      </div>
+
+      <div class="skill-anatomy">
+        <div class="skill-anatomy-header">Skill Invocation Flow</div>
+
+        <div class="skill-block">
+          <div class="skill-block-label">Discovery (session start)</div>
+          <div class="skill-block-content">
+            SAYON calls <code>skill_list()</code> → reads all installed skill manifests + trigger hints → builds available-tool summary → injected into SAYON's system context. Skills become part of SAYON's planning vocabulary automatically.
+          </div>
+        </div>
+
+        <div class="skill-block">
+          <div class="skill-block-label">Auto-trigger (SAYON planning phase)</div>
+          <div class="skill-block-content">
+            During task decomposition, SAYON checks user intent against skill trigger hints. Match → task tagged with <code>skill_id</code>. Skill task can be executor=sayon (fast, NPU-side parameter prep + subprocess call) or executor=seren (SEREN decides params with reasoning).
+          </div>
+        </div>
+
+        <div class="skill-block">
+          <div class="skill-block-label">Execution</div>
+          <div class="skill-block-content">
+            <code>skill_invoke(skill_id, params)</code> → skill runner subprocess → JSON result → injected as structured context into next task or returned directly to user. Build failures, lint errors, test results all flow through the same review loop as file edits.
+          </div>
+        </div>
+
+        <div class="skill-block">
+          <div class="skill-block-label">Installation</div>
+          <div class="skill-block-content">
+            User drops a <code>.phobos-skill</code> package in a local skills directory or provides a URL. SAYON detects it (or user explicitly installs via copilot / command). <code>skill_install()</code> validates manifest, registers to DuckDB <code>skills</code> table, immediately available to both models. No restart needed.
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       7. NPU OFFLOAD OPPORTUNITIES
+  ══════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-label">07 · SAYON Workload Profile — Complement to SEREN</div>
+    <div class="offload-grid">
+      <div class="offload-card">
+        <div class="offload-card-title">Ingest &amp; Context Prep</div>
+        <div class="offload-list">
+          <div class="offload-item">File complexity triage — route heavy files to SEREN, light ones stay on NPU</div>
+          <div class="offload-item">Summarise small/config files independently</div>
+          <div class="offload-item">Load all persistent context (PHOBOS DIRECTIVES, User Directives, project config, chat_summary, repo_map)</div>
+          <div class="offload-item">knowledge_search before any web call</div>
+          <div class="offload-item">web_search + KB distillation — SAYON is sole external data interface; SEREN never searches directly</div>
+          <div class="offload-item">token_count on assembled context before dispatch</div>
+          <div class="offload-item">Context condensation if over SEREN's window</div>
+        </div>
+      </div>
+      <div class="offload-card">
+        <div class="offload-card-title">Planning &amp; Queue Mgmt</div>
+        <div class="offload-list">
+          <div class="offload-item">Intermediate planner when SEREN queue is active</div>
+          <div class="offload-item">Mid-run task append from new user queries</div>
+          <div class="offload-item">Dependency chain resolution — only dispatch when deps done</div>
+          <div class="offload-item">Task distilled context prep — extract only what each task needs from Complete Context</div>
+          <div class="offload-item">Simple ANSWER_DIRECTLY responses — no SEREN call at all</div>
+          <div class="offload-item">Live thinking stream monitoring — progress updates to user</div>
+        </div>
+      </div>
+      <div class="offload-card">
+        <div class="offload-card-title">Execution Support</div>
+        <div class="offload-list">
+          <div class="offload-item">Output review: APPROVE / NEEDS_REVISION / REJECT without SEREN</div>
+          <div class="offload-item">syntax_validate on every output before workspace write</div>
+          <div class="offload-item">build_run + error structuring for retry prompt</div>
+          <div class="offload-item">file tool execution — SAYON applies patches, not SEREN</div>
+          <div class="offload-item">workspace_index_update + repo_map regeneration</div>
+          <div class="offload-item">event_persist for all SSE events</div>
+          <div class="offload-item">Retry prompt construction (guidance + error logs)</div>
+        </div>
+      </div>
+      <div class="offload-card">
+        <div class="offload-card-title">Pagination Coordination</div>
+        <div class="offload-list">
+          <div class="offload-item">paginate() — split and schedule all chunks</div>
+          <div class="offload-item">Prepend instructions to every chunk independently</div>
+          <div class="offload-item">Assemble chunk findings into Complete Context between SEREN calls</div>
+          <div class="offload-item">chunk_assemble() — merge paginated write output</div>
+          <div class="offload-item">Section-by-section dispatch for large file writes</div>
+          <div class="offload-item">Validate each section before next dispatch</div>
+        </div>
+      </div>
+      <div class="offload-card">
+        <div class="offload-card-title">Memory &amp; Persistence (SAYON writes, CORE executes I/O)</div>
+        <div class="offload-list">
+          <div class="offload-item">chat_summary_update — SAYON composes, CORE writes to DuckDB</div>
+          <div class="offload-item">SSE event_persist — CORE writes; SAYON decides what to emit</div>
+          <div class="offload-item">task_queue poll loop — CORE only. SAYON writes to queue, never polls.</div>
+          <div class="offload-item">task_queue_write — SAYON plans tasks mid-run, CORE detects on next poll</div>
+          <div class="offload-item">Copilot notes read during ingest — SAYON requests, CORE fetches</div>
+          <div class="offload-item">Knowledge base write after web_search — SAYON distils, CORE persists</div>
+        </div>
+      </div>
+      <div class="offload-card">
+        <div class="offload-card-title">Skills &amp; Tooling</div>
+        <div class="offload-list">
+          <div class="offload-item">skill_list() at session start — build tool vocabulary</div>
+          <div class="offload-item">Skill trigger matching during planning</div>
+          <div class="offload-item">skill_invoke() for NPU-scope skills (no SEREN needed)</div>
+          <div class="offload-item">skill_install() — register new packages to DB</div>
+          <div class="offload-item">Skill result injection into subsequent task prompts</div>
+          <div class="offload-item">Intent classification — route to ANSWER_DIRECTLY vs BUILD_QUEUE without bias toward code</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       8. SSE EVENTS
+  ══════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-label">08 · SSE Event Stream</div>
+    <table class="event-table">
+      <thead>
+        <tr>
+          <th>Event</th><th>Where Shown</th><th>Persist</th><th>Emitted By</th><th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="ev-name">status</td><td>Status pill</td><td class="ev-ephemeral">no</td><td>CORE</td><td>Pipeline state: Reading context... / Engine thinking... / Building queue...</td></tr>
+        <tr><td class="ev-name">coordinator</td><td>Amber bubble</td><td class="ev-persisted">yes</td><td>SAYON</td><td>SAYON ack, task list, mid-run updates, clarification questions, escalations</td></tr>
+        <tr><td class="ev-name">intent_classified</td><td>Status pill</td><td class="ev-ephemeral">no</td><td>SAYON</td><td>Intent classification complete — type, domain, routing decision visible to user</td></tr>
+        <tr><td class="ev-name">think_token</td><td>Thinking column</td><td class="ev-ephemeral">no</td><td>SAYON / SEREN</td><td>Raw thinking token streamed real-time. source: 'engine' | 'coordinator'</td></tr>
+        <tr><td class="ev-name">thinking_retry</td><td>Thinking column</td><td class="ev-ephemeral">no</td><td>CORE</td><td>Seals current thinking segment between retry attempts</td></tr>
+        <tr><td class="ev-name">output_token</td><td>Thinking column</td><td class="ev-ephemeral">no</td><td>SEREN</td><td>Engine output token pending SAYON review</td></tr>
+        <tr><td class="ev-name">thinking_complete</td><td>Thinking column</td><td class="ev-persisted">yes</td><td>CORE</td><td>Full thinking trace, collapsible by turn with model + token count</td></tr>
+        <tr><td class="ev-name">file_panel</td><td>Chat inline</td><td class="ev-persisted">yes</td><td>CORE</td><td>Staged file content — clickable, Apply button, re-applyable forever</td></tr>
+        <tr><td class="ev-name">patches_applied</td><td>Status pill</td><td class="ev-persisted">yes</td><td>CORE</td><td>File operation count + file list after apply</td></tr>
+        <tr><td class="ev-name">task_start</td><td>Status pill</td><td class="ev-ephemeral">no</td><td>CORE</td><td>Task N of M beginning, executor label</td></tr>
+        <tr><td class="ev-name">task_complete</td><td>Status pill</td><td class="ev-ephemeral">no</td><td>CORE</td><td>Task approved, patches applied</td></tr>
+        <tr><td class="ev-name">task_failed</td><td>Status pill</td><td class="ev-ephemeral">no</td><td>CORE</td><td>Task failed after 3 attempts, reason recorded</td></tr>
+        <tr><td class="ev-name">queue_update</td><td>Status pill</td><td class="ev-ephemeral">no</td><td>CORE</td><td>New tasks appended mid-run (SAYON intermediate planning)</td></tr>
+        <tr><td class="ev-name">request_context</td><td>Status pill</td><td class="ev-ephemeral">no</td><td>CORE</td><td>SEREN requested additional data — SAYON sub-task created, original task paused</td></tr>
+        <tr><td class="ev-name">validation_start</td><td>Status pill</td><td class="ev-ephemeral">no</td><td>CORE</td><td>SEREN final validation phase beginning — queue complete, holistic review in progress</td></tr>
+        <tr><td class="ev-name">validation_result</td><td>Status pill</td><td class="ev-ephemeral">no</td><td>CORE</td><td>SATISFIED / REWORK_TASKS / PARALLEL_INGEST decision from SEREN</td></tr>
+        <tr><td class="ev-name">intermediate_delivery</td><td>Chat inline</td><td class="ev-persisted">yes</td><td>SEREN</td><td>Mid-run delivery message when PARALLEL_INGEST is triggered — explains what was done and what comes next</td></tr>
+        <tr><td class="ev-name">build_result</td><td>Status pill</td><td class="ev-ephemeral">no</td><td>CORE</td><td>Build pass or fail with error output</td></tr>
+        <tr><td class="ev-name">skill_result</td><td>Status pill / chat</td><td class="ev-ephemeral">no</td><td>CORE</td><td>Skill invocation output. May become file_panel if skill writes files</td></tr>
+        <tr><td class="ev-name">review</td><td>Internal</td><td class="ev-ephemeral">no</td><td>SAYON</td><td>APPROVE / NEEDS_REVISION per task — not visible to user</td></tr>
+        <tr><td class="ev-name">image_status</td><td>Status pill / chat</td><td class="ev-ephemeral">no</td><td>CORE</td><td>Image generation progress: phase name + elapsed time (e.g. "Loading model", "Sampling step 12/20")</td></tr>
+        <tr><td class="ev-name">image_complete</td><td>Chat inline</td><td class="ev-persisted">yes</td><td>CORE</td><td>Image generation finished — PNG path delivered, displayed inline in chat. Re-viewable on history replay.</td></tr>
+        <tr><td class="ev-name">contribution_buffered</td><td>Status pill</td><td class="ev-ephemeral">no</td><td>CORE</td><td>Reasoning generation validated and added to local contribution buffer</td></tr>
+        <tr><td class="ev-name">complete</td><td>Internal</td><td class="ev-ephemeral">no</td><td>CORE</td><td>Full turn complete</td></tr>
+        <tr><td class="ev-name">error</td><td>Status pill</td><td class="ev-ephemeral">no</td><td>CORE</td><td>Unrecoverable error</td></tr>
+        <tr><td class="ev-name">done</td><td>Internal</td><td class="ev-ephemeral">no</td><td>CORE</td><td>Stream closed</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       9. IMAGE GENERATION
+  ══════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-label">09 · Image Generation Pipeline</div>
+
+    <div class="flow-grid">
+
+      <div class="flow-box">
+        <div class="flow-header">Generation Lifecycle — 9 Phases (owned by generateWithFlux())</div>
+        <div class="flow-steps">
+          <div class="flow-step"><span class="flow-step-n">1</span><div class="flow-step-content"><strong>Preliminary buildSdConfig()</strong> — device identification only. No VRAM queries yet. Establish which GPU handles image gen.</div></div>
+          <div class="flow-step"><span class="flow-step-n">2</span><div class="flow-step-content"><strong>snapshotServerOnDevice()</strong> — find which LLM server (SAYON or SEREN) is currently running on the target device.</div></div>
+          <div class="flow-step"><span class="flow-step-n">3</span><div class="flow-step-content"><strong>stopServer(snap.role)</strong> — SIGTERM the identified server, wait for process exit.</div></div>
+          <div class="flow-step"><span class="flow-step-n">4</span><div class="flow-step-content"><strong>VRAM settle poll</strong> — query nvidia-smi every 500ms until free VRAM &gt; 5 GB or 5s timeout (~1700ms typical).</div></div>
+          <div class="flow-step"><span class="flow-step-n">5</span><div class="flow-step-content"><strong>Final buildSdConfig()</strong> — real config with post-stop VRAM. T5 encoder selected: ≥16 GB → Q8_0 (5.06 GB), ≥10 GB → Q4_K_M (2.9 GB), &lt;10 GB → Q3_K_M (2.3 GB).</div></div>
+          <div class="flow-step"><span class="flow-step-n">6</span><div class="flow-step-content"><strong>Spawn sd-cli</strong> — subprocess with assembled config. SSE stream opens to frontend immediately.</div></div>
+          <div class="flow-step"><span class="flow-step-n">7</span><div class="flow-step-content"><strong>Monitor output</strong> — parse sd-cli stdout for sampling progress. Emit <code>image_status</code> SSE events per step.</div></div>
+          <div class="flow-step"><span class="flow-step-n">8</span><div class="flow-step-content"><strong>Completion</strong> — write PNG to workspace <code>images/</code> directory. Emit <code>image_complete</code> SSE with path. PNG never injected into LLM text context.</div></div>
+          <div class="flow-step"><span class="flow-step-n">9</span><div class="flow-step-content"><strong>Restart server</strong> — restart the LLM server that was stopped in Phase 3. SEREN resumes on its device.</div></div>
+        </div>
+      </div>
+
+      <div class="flow-box">
+        <div class="flow-header">VRAM / VMM Rules</div>
+        <div class="flow-steps">
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>Use total VRAM for model selection</strong> — not free VRAM. VMM-capable NVIDIA GPUs can exceed the free VRAM reported by nvidia-smi. Model selection must be based on card capacity.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>Use post-stop free VRAM for T5 selection</strong> — T5 encoder tier is chosen after the LLM server has been stopped and VRAM has settled. This is the only per-generation VRAM query that gates config.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>backendScore for GPU selection</strong> — CUDA discrete = 3, Metal = 2, discrete Vulkan = 1, UMA or index ≥ 100 = 0. Prevents AMD iGPU (large UMA pool) from outbidding a discrete CUDA card.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>Rule: caller never pre-builds config.</strong> <code>generateWithFlux()</code> owns the full lifecycle. No caller may snapshot state or build config before calling — doing so will use stale pre-stop VRAM figures.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>Workspace routing:</strong> <code>images/</code> is in <code>IGNORE_PATTERNS</code> — PNG files never appear in LLM text context. Images load via <code>GET /api/threads/:id/workspace-media</code> on thread open.</div></div>
+        </div>
+      </div>
+
+      <div class="flow-box">
+        <div class="flow-header">Model Catalogue — FLUX Architecture (runner: flux)</div>
+        <div class="flow-steps">
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>Shared aux:</strong> ae.safetensors (VAE), clip_l.safetensors (shared with SDXL), T5 GGUF (tier selected per VRAM)</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>FLUX.1-schnell Q4/Q8</strong> — 8 GB min · Apache 2.0 · Realistic <span class="tag tag-sayon">General</span></div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>FLUX.1-dev Q4/Q8</strong> — 12 GB min · FLUX-1-dev Non-Commercial · Realistic HQ <span class="tag tag-sayon">General</span></div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>Chroma1-HD Q4</strong> — 8 GB min · Apache 2.0 · NSFW Realistic <span class="tag" style="background:rgba(239,68,68,0.12);color:#ef4444;">NSFW — SHOW toggle</span></div></div>
+        </div>
+      </div>
+
+      <div class="flow-box">
+        <div class="flow-header">Model Catalogue — SDXL Architecture (runner: sdxl — planned)</div>
+        <div class="flow-steps">
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>Shared aux:</strong> clip_l (shared with FLUX), clip_g (~1.39 GB), SDXL VAE (~335 MB). SDXL runner implementation pending.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>Juggernaut XL v11 Q4</strong> — 6 GB min · creativeml-openrail-m · Realistic <span class="tag tag-sayon">General</span></div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>Pony Diffusion V6 XL Q4</strong> — 6 GB min · FAIPL-1.0-SD · Anime <span class="tag tag-sayon">General</span></div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>CyberRealistic Pony V12 Q4</strong> — 6 GB min · creativeml-openrail-m · Realistic (Pony) <span class="tag tag-sayon">General</span></div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>WAI-NSFW-Illustrious-SDXL v11 Q4</strong> — 6 GB min · creativeml-openrail-m · NSFW Anime <span class="tag" style="background:rgba(239,68,68,0.12);color:#ef4444;">NSFW — SHOW toggle</span></div></div>
+        </div>
+      </div>
+
+      <div class="flow-box">
+        <div class="flow-header">OptionalModels Panel — Frontend Architecture</div>
+        <div class="flow-steps">
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>Two-panel layout:</strong> PhobosLLMPanel renders two equal siblings — left: SAYON/SEREN GGUF catalogue; right: OptionalModels panel with own header and tab strip.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>Tabs:</strong> IMAGE MODELS (active) · AUDIO MODELS (stub — "coming soon"). Tab strip owns routing.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>ImageModelsSection:</strong> hardware-filtered recommendation card per model. File checklist with green checkmarks when downloaded. SDXL cards show "runner coming" badge.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>NSFW categories:</strong> hidden behind SHOW toggle. Toggle persisted in settings.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>OptionalModelDownloadConfirmDialog:</strong> standalone component, zero shared code with LLM DownloadConfirmDialog. Generic interface: <code>{ id, label, license, licenseUrl }[]</code>. Deduplicates by licenseUrl — one checkbox per unique licence.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>ChatInput lock:</strong> <code>imageGenerating: boolean</code> in Zustand store disables input during generation. Restored on <code>image_complete</code> or error.</div></div>
+        </div>
+      </div>
+
+      <div class="flow-box">
+        <div class="flow-header">API Routes</div>
+        <div class="flow-steps">
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><code>GET /api/phobos/image/catalogue</code> — hardware-aware model list. Returns all models with download status, VRAM requirement, runner profile, and file checklist per model.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><code>POST /api/phobos/image/download</code> — SSE stream. Emits download progress per file. Hijacks Fastify reply for CORS-safe streaming (<code>reply.hijack()</code> + raw header write with <code>Access-Control-Allow-Origin: *</code>).</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><code>DELETE /api/phobos/image/:modelId</code> — remove model files from disk, update catalogue state.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><code>POST /api/phobos/image/generate</code> — SSE stream. Runs the 9-phase lifecycle. Emits <code>image_status</code> per sampling step, <code>image_complete</code> on finish.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><code>GET /api/threads/:id/workspace-media</code> — reads <code>images/</code> directory on thread load. Returns file list for WorkspacePanel media zone.</div></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       10. INTENT ROUTING NOTE
+  ══════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-label">10 · Intent Routing — No Hardcoded Domain Bias</div>
+    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;">
+      <div style="border: 1px solid var(--border); border-radius: 6px; padding: 14px; background: var(--surface);">
+        <div style="font-family: var(--sans); font-size: 11px; font-weight: 700; color: var(--green); margin-bottom: 8px;">ANSWER_DIRECTLY (SAYON only)</div>
+        <div style="font-size: 10px; color: var(--text-mid); line-height: 1.7;">
+          Question answerable from context<br>
+          Explanation / concept<br>
+          Document edit (small)<br>
+          Conversational / status check<br>
+          KB/web lookup only<br>
+          Anything SAYON can confidently resolve without deep reasoning
+        </div>
+      </div>
+      <div style="border: 1px solid var(--border); border-radius: 6px; padding: 14px; background: var(--surface);">
+        <div style="font-family: var(--sans); font-size: 11px; font-weight: 700; color: var(--sayon); margin-bottom: 8px;">BUILD_QUEUE (SEREN plans)</div>
+        <div style="font-size: 10px; color: var(--text-mid); line-height: 1.7;">
+          Multi-file change<br>
+          Novel implementation<br>
+          Deep analysis across large context<br>
+          Research synthesis<br>
+          Complex creative generation<br>
+          Any task requiring extended reasoning
+        </div>
+      </div>
+      <div style="border: 1px solid var(--border); border-radius: 6px; padding: 14px; background: var(--surface);">
+        <div style="font-family: var(--sans); font-size: 11px; font-weight: 700; color: var(--seren); margin-bottom: 8px;">Classifier Design Rule</div>
+        <div style="font-size: 10px; color: var(--text-mid); line-height: 1.7;">
+          <strong style="color: var(--text);">No domain hardcoding.</strong><br>
+          The prompt that powers IntentClassifier must be domain-agnostic. SAYON infers structure from user intent and file types — not from a built-in assumption that "this is a coding assistant".<br><br>
+          Skills register their own trigger hints. Domain is emergent from installed skills + project context, not hardcoded system prompts.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       11. SKILLS CARTRIDGE INTERFACE
+  ══════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-label">11 · Skills Cartridge Interface — Frontend UI</div>
+
+    <div class="flow-grid">
+
+      <div class="flow-box">
+        <div class="flow-header">Header Cartridge Widget</div>
+        <div class="flow-steps">
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content">NES-style top-down cartridge rendered in the header bar, left of the SAYON status indicator. Labeled <strong>SKILLS</strong>.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content">Hover: <code>transform: translateY(-4px)</code> CSS transition — cartridge visually ejects from slot.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content">Click: toggles the Skills Menu overlay. State lives in global UI store — survives navigation within the session.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content">Badge on cartridge shows count of installed skills. Pulses when a new skill is available or a skill has an update.</div></div>
+        </div>
+      </div>
+
+      <div class="flow-box">
+        <div class="flow-header">Skills Menu — Cartridge Rack Layout</div>
+        <div class="flow-steps">
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content">Split layout: left column = vertical rack of skill cartridge slots. Right panel = configuration area for selected skill.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>Empty slots</strong>: blank cartridge shell, label reads <strong>NEW</strong>. Click → open creation form in right panel.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>Populated slots</strong>: inserted cartridge appearance. Label area styled as off-white masking tape. Skill name rendered in handwritten/marker web font. Scope badge (SAYON / SEREN / BOTH) in corner.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content">Drag to reorder slots. Slots persist order to DuckDB skills table.</div></div>
+        </div>
+      </div>
+
+      <div class="flow-box">
+        <div class="flow-header">Skill Configuration Form — .phobos-skill Schema</div>
+        <div class="flow-steps">
+          <div class="flow-step"><span class="flow-step-n">id</span><div class="flow-step-content">Unique slug. Placeholder: <code>hello-ilithria-format</code>. Auto-generated from name, user-editable.</div></div>
+          <div class="flow-step"><span class="flow-step-n">name</span><div class="flow-step-content">Display name. Updates marker-tape label on cartridge in real time.</div></div>
+          <div class="flow-step"><span class="flow-step-n">desc</span><div class="flow-step-content">Textarea. What this skill does — shown to SAYON at session start as part of its tool vocabulary.</div></div>
+          <div class="flow-step"><span class="flow-step-n">ver</span><div class="flow-step-content">Semver input. Validated on blur.</div></div>
+          <div class="flow-step"><span class="flow-step-n">scope</span><div class="flow-step-content">Multi-select toggles: <code>sayon</code> / <code>seren</code> / <code>both</code>. Controls which model can invoke the skill.</div></div>
+          <div class="flow-step"><span class="flow-step-n">trigger</span><div class="flow-step-content">Textarea for natural language trigger hints. Example: "format code, fix style, run prettier". SAYON uses these for auto-invocation matching.</div></div>
+          <div class="flow-step"><span class="flow-step-n">params</span><div class="flow-step-content">Code editor / textarea for JSON schema. Defines input parameters the model must supply when invoking.</div></div>
+          <div class="flow-step"><span class="flow-step-n">output</span><div class="flow-step-content">Code editor / textarea for JSON schema return value. Documents what the skill runner returns.</div></div>
+        </div>
+      </div>
+
+      <div class="flow-box">
+        <div class="flow-header">Skill File Tabs — Logic and Context Prompts</div>
+        <div class="flow-steps">
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>runner.ts</strong> tab (required) — the executable entry point. Receives params as JSON on stdin, returns result as JSON on stdout. Any language/runtime supported.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>sayon_context.md</strong> tab (optional) — injected into SAYON's context when skill is installed. Describes how and when to use this skill.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content"><strong>seren_context.md</strong> tab (optional) — injected into SEREN's task prompt when this skill is invoked. Tells SEREN what the skill does and how to interpret its output.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content">All file tabs use a code editor component. Saved state is local until user clicks Install — at which point CORE runs skill_install(), validates manifest, registers to DuckDB, makes available immediately. No restart needed.</div></div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="note-box">
+      <strong>Backend connection monitor:</strong> A global state hook checks PHOBOS CORE connectivity. If connection is lost or not found, the workspace is replaced with a full splash screen matching the dark terminal aesthetic. Splash shows a prominent error + a stylized <strong>"Download phobos-core"</strong> link to help the user resolve a missing backend. Reconnect is polled automatically — workspace restores when connection resumes.
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════
+       12. AUTARCH · HALCYON TRAINING SYSTEM
+  ══════════════════════════════════════ -->
+  <div class="section">
+    <div class="section-label">12 · Autarch · Halcyon Distributed Training System</div>
+
+    <div class="flow-grid">
+
+      <div class="flow-box">
+        <div class="flow-header">Autarch — Company and Platform Identity</div>
+        <div class="flow-steps">
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content">PHOBOS is an Autarch product. Autarch's focus: decentralized, community-driven model development. PHOBOS users are the primary source of high-quality training data for Autarch models.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content">The reasoning quality available through PHOBOS's dual-engine architecture makes it uniquely suited to generate elite training data — better than single-model pipelines can produce.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content">First model under development: <strong>Halcyon</strong>. Reasoning-focused. Trained on validated PHOBOS reasoning generations.</div></div>
+        </div>
+      </div>
+
+      <div class="flow-box">
+        <div class="flow-header">Contribution Flow — User Opt-In</div>
+        <div class="flow-steps">
+          <div class="flow-step"><span class="flow-step-n">1</span><div class="flow-step-content">User selects a model from the <strong>Contribute to</strong> dropdown (e.g. Halcyon). This engages reasoning training mode for that session or turn.</div></div>
+          <div class="flow-step"><span class="flow-step-n">2</span><div class="flow-step-content">SAYON and SEREN process the query as normal — TWIN SUN reasoning generates richer, validated chains than single-model approaches.</div></div>
+          <div class="flow-step"><span class="flow-step-n">3</span><div class="flow-step-content">PHOBOS CORE captures the reasoning generation (thinking tokens + output tokens + SAYON review + SEREN validation). Validates quality locally before buffering.</div></div>
+          <div class="flow-step"><span class="flow-step-n">4</span><div class="flow-step-content">Validated generations written to a <strong>local buffer</strong> on the user's machine. Buffer is flushed to a <strong>central staging buffer</strong> on Autarch's infrastructure at configurable intervals (never blocking the user's workflow).</div></div>
+        </div>
+      </div>
+
+      <div class="flow-box">
+        <div class="flow-header">Central Aggregation Pipeline</div>
+        <div class="flow-steps">
+          <div class="flow-step"><span class="flow-step-n">1</span><div class="flow-step-content">Central staging buffer receives contributions from all PHOBOS users opted into a given model.</div></div>
+          <div class="flow-step"><span class="flow-step-n">2</span><div class="flow-step-content">Aggregation server deduplicates, normalises, and runs automated quality checks across the combined dataset.</div></div>
+          <div class="flow-step"><span class="flow-step-n">3</span><div class="flow-step-content">Human or automated review flags edge cases. Cleaned dataset feeds into the training pipeline for the target model (Halcyon).</div></div>
+          <div class="flow-step"><span class="flow-step-n">4</span><div class="flow-step-content">Model versioning: each training run is tagged to the dataset snapshot. Users who contributed to a run are credited in release notes.</div></div>
+        </div>
+      </div>
+
+      <div class="flow-box">
+        <div class="flow-header">Local Validation — Quality Gate Before Contribution</div>
+        <div class="flow-steps">
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content">PHOBOS CORE validates each generation before buffering. Checks: reasoning coherence (does thinking lead to output?), task completion, SAYON review result (APPROVE only — HARD_FAIL outputs are never contributed).</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content">Minimum quality threshold is configurable per model target. Halcyon starts with a strict threshold given the reasoning focus.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content">User can review their local buffer before flush. Opt to exclude individual turns. Full data ownership.</div></div>
+          <div class="flow-step"><span class="flow-step-n">·</span><div class="flow-step-content">Implementation is elaborated post-core-development. Architecture hooks for contribution capture are built into PHOBOS CORE from the start — no retrofit needed.</div></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

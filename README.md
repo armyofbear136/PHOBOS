@@ -28,11 +28,11 @@ Every AI call stays local. PHOBOS manages the lifecycle of `llama-server` and `s
 
 ---
 
-## 55 Days. 8 Free Claudes. Zero Compromises.
+## 55 Days. 7x Free Claudes.  1x $20/mo Opus 4.7. Zero Compromises.
 
-PHOBOS was built in 55 days by one person using the free tier of Claude.
+PHOBOS was built in 55 days by one person using multiple accounts with free tiers of Claude.
 
-Not Claude Pro. Not an API key. Not a team. Eight context windows a day, a rigorous coding doctrine, and a commitment to understanding every line before moving to the next one.
+1 Claude Pro. Not an API key. Not a team. Eight claudes in parallel every 5 hours, a rigorous coding doctrine, and a commitment to understanding every line before moving to the next one.
 
 The result is a multi-modal AI operating system with: dual-pipeline LLM orchestration, image and video generation, a browser-based DAW, a self-hosted media center, a security scanner, a 2D game engine, a semantic archive system, a real-time IPTV player, 3D editors, and a custom VST3 audio host — all running on hardware you already own, with a single executable.
 

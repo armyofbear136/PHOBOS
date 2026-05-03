@@ -356,14 +356,13 @@ function buildDeps(arch: PhobosArch): Dep[] {
       isPresent: () => serviceInstalled(jellyfinDir, 'jellyfin.dll', 100_000),
       install: async (arc) => {
         await extractZip(arc, jellyfinDir);
-        // jellyfin win zip extracts to jellyfin_10.11.8/ subdir — flatten one level
-        const sub = path.join(jellyfinDir, 'jellyfin_10.11.8');
-        if (fs.existsSync(sub)) {
-          for (const f of fs.readdirSync(sub)) {
-            fs.renameSync(path.join(sub, f), path.join(jellyfinDir, f));
-          }
-          fs.rmdirSync(sub);
-        }
+        // The Windows zip extracts to a two-level path:
+        //   jellyfin_10.11.8-amd64/
+        //     jellyfin/
+        //       jellyfin.exe  ← actual files live here
+        // Find jellyfin.dll anywhere in the tree and flatten its containing
+        // directory up to jellyfinDir so the binary lands at the root.
+        flattenToDir(jellyfinDir, 'jellyfin.dll');
       },
     };
     if (isMac) return {
@@ -404,7 +403,11 @@ function buildDeps(arch: PhobosArch): Dep[] {
       id: 'kavita', label: 'Kavita Reading Server',
       file: fileMap[arch], minBytes: 70_000_000,
       isPresent: () => serviceInstalled(kavitaDir, kavitaProbe(), 50_000),
-      install: async (arc) => extractTarGz(arc, kavitaDir),
+      install: async (arc) => {
+        await extractTarGz(arc, kavitaDir);
+        // All platforms extract to a Kavita/ subdir — flatten it up to kavitaDir.
+        flattenToDir(kavitaDir, isWin ? 'API.dll' : 'Kavita');
+      },
     };
   }
 
@@ -888,6 +891,99 @@ function buildDeps(arch: PhobosArch): Dep[] {
     };
   }
 
+  // ── mpv video player ──────────────────────────────────────────────────────
+  //
+  // Windows: outer zip contains an inner date-stamped zip (zip-in-zip);
+  //   the inner zip extracts flat — mpv.exe and all DLLs land directly in mpvDir.
+  // macOS:   zip contains mpv.app bundle; binary is at mpv.app/Contents/MacOS/mpv.
+  // Linux:   static tar.gz single binary named 'mpv'.
+  function mpvDep(): Dep | null {
+    const mpvDir = path.join(SERVICES_DIR, 'mpv');
+    const exeName = isWin ? 'mpv.exe' : 'mpv';
+    const exePath = path.join(mpvDir, exeName);
+
+    const fileMap: Partial<Record<PhobosArch, string>> = {
+      'win32-x64':    'mpv-v0.41.0-x86_64-w64-mingw32.zip',
+      'darwin-arm64': 'mpv-v0.41.0-macos-26-arm.zip',
+      'darwin-x64':   'mpv-v0.41.0-macos-15-intel.zip',
+      'linux-x64':    'mpv-v0.39.0-x86_64.tar.gz',
+    };
+    const file = fileMap[arch];
+    if (!file) return null;
+
+    return {
+      id: 'mpv', label: 'MPV Video Player',
+      file, minBytes: 10_000_000,
+      isPresent: () => { try { return fs.statSync(exePath).size >= 1_000_000; } catch { return false; } },
+      install: async (arc) => {
+        fs.mkdirSync(mpvDir, { recursive: true });
+
+        if (isWin) {
+          // Outer zip → inner date-stamped zip → flat files with mpv.exe
+          await extractZip(arc, mpvDir);
+          const innerZips = (fs.readdirSync(mpvDir) as string[])
+            .filter((e: string) => e.toLowerCase().endsWith('.zip') && e.toLowerCase().startsWith('mpv'));
+          if (innerZips.length === 0) throw new Error('Inner mpv zip not found after outer extraction');
+          const innerZip = path.join(mpvDir, innerZips[0]);
+          await extractZip(innerZip, mpvDir);
+          fs.unlinkSync(innerZip);
+        } else if (isMac) {
+          // macOS zip: mpv.app/Contents/MacOS/mpv
+          const tmp = arc + '-extract';
+          fs.mkdirSync(tmp, { recursive: true });
+          await extractZip(arc, tmp);
+          const bundledBin = path.join(tmp, 'mpv.app', 'Contents', 'MacOS', 'mpv');
+          if (!fs.existsSync(bundledBin)) throw new Error('mpv binary not found in macOS app bundle');
+          fs.copyFileSync(bundledBin, exePath);
+          fs.chmodSync(exePath, 0o755);
+          fs.rmSync(tmp, { recursive: true, force: true });
+        } else {
+          // Linux static tar.gz — single binary
+          const tmp = arc + '-extract';
+          fs.mkdirSync(tmp, { recursive: true });
+          await extractTarGz(arc, tmp);
+          const found = findFile(tmp, 'mpv');
+          if (!found) throw new Error('mpv binary not found in archive');
+          fs.copyFileSync(found, exePath);
+          fs.chmodSync(exePath, 0o755);
+          fs.rmSync(tmp, { recursive: true, force: true });
+        }
+      },
+    };
+  }
+
+  // ── Blockbench web editor ─────────────────────────────────────────────────
+  //
+  // The Blockbench web build is not a GitHub release asset — it must be built
+  // from source once on a dev machine and uploaded to PHOBOS-BUILDS:
+  //
+  //   git clone --depth 1 https://github.com/JannisX11/blockbench
+  //   cd blockbench && npm install && npm run build-web
+  //   zip -r blockbench-web-5.1.4.zip .
+  //   gh release upload PHOBOS-DEPS blockbench-web-5.1.4.zip \
+  //     --repo armyofbear136/PHOBOS-BUILDS
+  //
+  // Served by Fastify static at /tools/blockbench/ from BLOCKBENCH_DIR.
+  // Platform-independent: same zip for all platforms.
+  const blockbenchDep: Dep = (() => {
+    const BB_VERSION    = '5.1.4';
+    const blockbenchDir = path.join(PHOBOS_HOME, 'editors', 'blockbench');
+    return {
+      id:       'blockbench',
+      label:    'Blockbench 3D Editor',
+      file:     `blockbench-web-${BB_VERSION}.zip`,
+      minBytes: 5_000_000,
+      isPresent: () => fs.existsSync(path.join(blockbenchDir, 'index.html')),
+      install: async (arc) => {
+        if (fs.existsSync(blockbenchDir)) fs.rmSync(blockbenchDir, { recursive: true, force: true });
+        fs.mkdirSync(blockbenchDir, { recursive: true });
+        await extractZip(arc, blockbenchDir);
+        if (!fs.existsSync(path.join(blockbenchDir, 'index.html')))
+          throw new Error('index.html not found after extracting blockbench-web zip');
+      },
+    };
+  })();
+
   // Build final list — null entries are platform-not-applicable
   const deps: Dep[] = [
     vssDep,
@@ -906,6 +1002,8 @@ function buildDeps(arch: PhobosArch): Dep[] {
     phobosHostDep(),
     phobosCrystalDep(),
     pandocDep(),
+    mpvDep(),
+    blockbenchDep,
   ].filter((d): d is Dep => d !== null);
 
   return deps;
@@ -925,6 +1023,28 @@ function findFile(dir: string, name: string): string | null {
     }
   }
   return null;
+}
+
+// Locate `sentinel` anywhere under `destDir`, then move every sibling file and
+// directory from that level up to `destDir`, removing the intermediate dirs.
+// No-op if the sentinel is already at the root of `destDir`.
+function flattenToDir(destDir: string, sentinel: string): void {
+  const found = findFile(destDir, sentinel);
+  if (!found) return;
+  const sourceDir = path.dirname(found);
+  if (path.resolve(sourceDir) === path.resolve(destDir)) return; // already flat
+  for (const entry of fs.readdirSync(sourceDir)) {
+    const src  = path.join(sourceDir, entry);
+    const dest = path.join(destDir, entry);
+    // Skip if a file with this name already exists at the root (e.g. duplicate)
+    if (!fs.existsSync(dest)) fs.renameSync(src, dest);
+  }
+  // Walk upward removing now-empty intermediate dirs until we reach destDir
+  let cur = sourceDir;
+  while (path.resolve(cur) !== path.resolve(destDir)) {
+    try { fs.rmdirSync(cur); } catch { break; }
+    cur = path.dirname(cur);
+  }
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────

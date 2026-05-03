@@ -43,12 +43,12 @@ import {
   isBinaryPresent as isJellyfinBinaryPresent,
 } from './services/JellyfinManager.js';
 import { registerToolsRoutes } from './routes/toolsRoute.js';
-import { stopBroadway, startBroadway } from './phobos/BroadwayManager.js';
 import { registerCartridgeRoutes } from './routes/cartridgeRoutes.js';
 import { CartridgeStore } from './db/CartridgeStore.js';
 import { initCartridgeManager, reconcileCartridgeSlots } from './phobos/CartridgeManager.js';
 import { startCamofox, stopCamofox, isCamofoxInstalled } from './phobos/CamofoxManager.js';
 import { stopStirling, startStirling, isBinaryPresent as isStirlingBinaryPresent } from './services/StirlingManager.js';
+import { stopOmniclip, startOmniclip, isBuildPresent as isOmniclipBuildPresent } from './services/OmniclipManager.js';
 import { ArchiveStore } from './db/ArchiveStore.js';
 import { registerArchiveRoutes } from './routes/archiveRoutes.js';
 import { registerMpvRoutes } from './routes/mpv.js';
@@ -102,7 +102,19 @@ async function buildServer() {
       }
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept-Version'],
+    exposedHeaders: ['Content-Type'],
+  });
+
+  // Stamp CORS headers onto every response, including error/503 responses.
+  // @fastify/cors only runs its hook on successful routes; error replies bypass
+  // it, leaving the browser with no Access-Control-Allow-Origin and blocking.
+  fastify.addHook('onSend', (_req, reply, _payload, done) => {
+    const origin = _req.headers.origin;
+    if (origin && !reply.hasHeader('access-control-allow-origin')) {
+      reply.header('Access-Control-Allow-Origin', origin);
+    }
+    done();
   });
 
   fastify.addContentTypeParser(
@@ -265,9 +277,6 @@ async function continueBootSequence(
   console.log('⚙️  [Boot] Phase 3: Core init...');
   setBootPhase('core_init');
 
-  // GIMP / Broadway — boot with PHOBOS, stay alive perpetually.
-  startBroadway().catch(err => console.warn('[Broadway] Startup error (non-fatal):', (err as Error).message));
-
   const memoryStore = new MemoryStore(db);
   await memoryStore.ensureTable();
 
@@ -328,6 +337,13 @@ async function continueBootSequence(
   if (isStirlingBinaryPresent()) {
     startStirling().catch(err =>
       console.warn('[Stirling] Auto-start failed (non-fatal):', (err as Error).message)
+    );
+  }
+
+// ── Omniclip ────────────────────────────────────────────────────────────
+  if (isOmniclipBuildPresent()) {
+    startOmniclip().catch(err =>
+      console.warn('[Omniclip] Auto-start failed (non-fatal):', (err as Error).message)
     );
   }
 
@@ -478,9 +494,9 @@ async function continueBootSequence(
     scheduler.stop();
     gsm.stop();
 
-    await stopBroadway().catch(() => {});
     await stopCamofox().catch(() => {});
     await stopStirling().catch(() => {});
+    await stopOmniclip().catch(() => {});
     await stopMeridian().catch(() => {});
     await stopPolaris().catch(() => {});
     await stopJellyfin().catch(() => {});

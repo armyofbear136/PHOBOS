@@ -61,6 +61,8 @@ export interface VendorEnvStatus {
   gpuAvailable: boolean;
   /** Disk usage in bytes, 0 if not installed */
   diskBytes: number;
+  /** True if the env exists but was built against an older package version — needs update */
+  stale: boolean;
 }
 
 export interface PythonEnvStatus {
@@ -86,7 +88,23 @@ interface EnvManifest {
   torchIndex: string;
   pythonVersion: string;
   timestamp: string;
+  /** Integer version stamped at install time. Missing = 1 (pre-versioning). Compared against REQUIRED_ENV_VERSION to detect stale envs. */
+  envVersion?: number;
 }
+
+// ── Required env version ──────────────────────────────────────────────────────
+// Bump this integer whenever the diffusers/transformers/torch pins change in a
+// way that requires users to rebuild their Python env. The installed env's
+// phobos-env.json stores the version it was built with. Mismatch → stale banner.
+//
+// Version history:
+//   1 — initial (diffusers <0.34, transformers <5.0)
+//   2 — diffusers >=0.36 (ZImagePipeline), transformers <4.52 (SDXL from_pretrained)
+//   3 — exact pins: diffusers==0.36.0, transformers==4.51.3, safetensors==0.4.5
+//       (cascade prevention). transformers 4.51.3 wheel had bad modeling_utils.py.
+//   4 — transformers==4.54.0: Qwen3 GGUF support lands in GGUF_CONFIG_MAPPING.
+//       DTensor import now properly guarded — no patch needed on ROCm Windows.
+const REQUIRED_ENV_VERSION = 4;
 
 // ── Module state ─────────────────────────────────────────────────────────────
 
@@ -328,6 +346,19 @@ async function checkPackagesReady(vendor: GpuVendor, timeoutMs = 30_000): Promis
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
+/** Returns true if the vendor's env exists but was built against an older package version set. */
+export function isEnvStale(vendor: GpuVendor): boolean {
+  if (vendor === 'cpu') {
+    for (const v of ['cuda', 'rocm', 'xpu', 'apple'] as const) {
+      if (isVendorReady(v)) return isEnvStale(v);
+    }
+    return false;
+  }
+  const manifest = readManifest(vendor);
+  if (!manifest) return false; // not installed — not stale
+  return (manifest.envVersion ?? 1) < REQUIRED_ENV_VERSION;
+}
+
 /** Synchronous check: is a vendor's venv ready? Reads manifest file only — no subprocess. */
 export function isVendorReady(vendor: GpuVendor): boolean {
   // CPU reuses any available GPU vendor venv — torch CPU works from all builds.
@@ -420,7 +451,7 @@ export async function getStatus(): Promise<PythonEnvStatus> {
       } catch { /* ignore */ }
     }
 
-    vendors.push({ vendor, ready, torchVersion, gpuAvailable, diskBytes });
+    vendors.push({ vendor, ready, torchVersion, gpuAvailable, diskBytes, stale: isEnvStale(vendor) });
   }
 
   return { python, vendors };
@@ -430,7 +461,7 @@ export async function getStatus(): Promise<PythonEnvStatus> {
  * Returns all GPU vendors detected on the system with their PyTorch readiness.
  * Lightweight — uses manifest checks only, no subprocess calls.
  */
-export async function getVendorReadiness(): Promise<Array<{ vendor: GpuVendor; label: string; ready: boolean; gpuName: string }>> {
+export async function getVendorReadiness(): Promise<Array<{ vendor: GpuVendor; label: string; ready: boolean; gpuName: string; stale: boolean }>> {
   const hw = await detectHardware();
   const seen = new Map<GpuVendor, string>(); // vendor → first GPU name
 
@@ -445,6 +476,7 @@ export async function getVendorReadiness(): Promise<Array<{ vendor: GpuVendor; l
     label: vendorLabel(vendor),
     ready: isVendorReady(vendor),
     gpuName,
+    stale: isEnvStale(vendor),
   }));
 }
 
@@ -578,6 +610,7 @@ export async function* install(vendor: GpuVendor): AsyncGenerator<InstallProgres
       torchIndex: indexUrl,
       pythonVersion: sysPy.version!,
       timestamp: new Date().toISOString(),
+      envVersion: REQUIRED_ENV_VERSION,
     });
 
     yield { phase: 'complete', vendor, label: `${vendorLabel(vendor)} environment ready`, progress: 1.0, done: true };
@@ -667,18 +700,31 @@ async function installTriton(
 }
 
 async function installDiffusersStack(pyBin: string): Promise<{ ok: boolean; error?: string }> {
-  return runPip(pyBin, [
+  const pipResult = await runPip(pyBin, [
     '-m', 'pip', 'install',
-    'diffusers>=0.31.0,<0.34.0',
-    'transformers>=4.39.0,<5.0.0',
+    // All three must be installed together in a single pip invocation so the
+    // resolver sees the full constraint graph and can't cascade-upgrade one
+    // package's files while leaving another's metadata stale.
+    //
+    // diffusers 0.36.0: first version with ZImagePipeline. 0.37+ requires
+    //   safetensors>=0.8.0-rc.0 which cascades into newer transformers files.
+    // transformers 4.54.0: first version with Qwen3 GGUF support in GGUF_CONFIG_MAPPING.
+    //   Earlier versions (4.51.3–4.53) don't have qwen3 in the GGUF loader, causing
+    //   "GGUF model with architecture qwen3 is not supported yet" for Z-Image/Qwen-Image.
+    //   In 4.54.0 the bare `import torch.distributed.tensor` is gone — the DTensor import
+    //   is now guarded by `if _is_dtensor_available:` which evaluates False on ROCm Windows
+    //   (torch.distributed.is_available() returns False). No patch needed, no crash.
+    //   Qwen3 model files themselves have zero torch.distributed imports.
+    // safetensors 0.4.5: compatible with diffusers 0.36 and transformers 4.54.
+    'diffusers==0.36.0',
+    'transformers==4.54.0',
+    'safetensors==0.4.5',
+    // huggingface-hub: let pip resolve within diffusers 0.36.0's declared range (>=0.34.0).
     'accelerate>=0.20.0',
-    'safetensors>=0.4.0',
     'gguf>=0.10.0',
     'sentencepiece',
     'protobuf',
     // Training deps — installed here so the venv is training-ready from setup.
-    // peft/bitsandbytes/prodigyopt are only ~100 MB combined and training is
-    // a first-class feature. ensureTrainingDeps() will be a fast no-op.
     'peft>=0.10.0',
     'bitsandbytes>=0.43.0',
     'prodigyopt>=1.0',
@@ -688,6 +734,42 @@ async function installDiffusersStack(pyBin: string): Promise<{ ok: boolean; erro
     'timm',
     'einops',
   ]);
+  if (!pipResult.ok) return pipResult;
+
+  return { ok: true };
+}
+
+/**
+ * Kept for reference — was needed when the transformers 4.51.3 PyPI wheel shipped
+ * a broken modeling_utils.py with a bare `import torch.distributed.tensor` on line 41
+ * despite the version tag. In 4.54.0 this is properly guarded and no longer needed.
+ * Do not delete — may be useful if a future wheel regression occurs.
+ */
+function _patchTransformersModelingUtils_UNUSED(pyBin: string): void {
+  try {
+    // Resolve site-packages from the python binary path
+    const sitePackages = path.join(path.dirname(pyBin), '..', 'Lib', 'site-packages');
+    const targetFile = path.join(sitePackages, 'transformers', 'modeling_utils.py');
+    if (!fs.existsSync(targetFile)) return;
+
+    const original = fs.readFileSync(targetFile, 'utf-8');
+    const patched = original
+      .split('\n')
+      .filter(line => line.trim() !== 'import torch.distributed.tensor')
+      .join('\n');
+
+    if (patched === original) {
+      console.log('[PythonEnvManager] modeling_utils.py already clean — no patch needed');
+      return;
+    }
+
+    fs.writeFileSync(targetFile, patched, 'utf-8');
+    console.log('[PythonEnvManager] Patched transformers/modeling_utils.py — removed torch.distributed.tensor import');
+  } catch (err) {
+    // Non-fatal — log and continue. Generation will fail at runtime if the import
+    // is still present, but the install itself should not be blocked.
+    console.warn(`[PythonEnvManager] Could not patch modeling_utils.py: ${err}`);
+  }
 }
 
 async function runPip(pyBin: string, args: string[]): Promise<{ ok: boolean; error?: string }> {

@@ -647,6 +647,10 @@ export async function stopAudio(audioId: number): Promise<void> {
   await requireControl().call('stopAudio', { audioId });
 }
 
+export async function setAudioFileVolume(audioId: number, gain: number): Promise<void> {
+  await requireControl().call('setAudioFileVolume', { audioId, gain });
+}
+
 export async function getAudioStatus(audioId: number): Promise<AudioStatus> {
   return await requireControl().call<AudioStatus>('getAudioStatus', { audioId });
 }

@@ -26,8 +26,8 @@ export async function registerBootEventsRoute(fastify: FastifyInstance): Promise
     });
 
     const send = (data: object) => {
-      if (raw.destroyed) return;
-      raw.write(`data: ${JSON.stringify(data)}\n\n`);
+      if (raw.destroyed || raw.writableEnded) return;
+      try { raw.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* client gone */ }
     };
 
     // Push current state immediately so the client never waits for the next event.
@@ -41,7 +41,7 @@ export async function registerBootEventsRoute(fastify: FastifyInstance): Promise
       send(s);
       if (s.phase === 'ready') {
         // Give the client one tick to read the event before closing.
-        setImmediate(() => { if (!raw.destroyed) raw.end(); });
+        setImmediate(() => { if (!raw.destroyed && !raw.writableEnded) raw.end(); });
         unsub();
       }
     });
@@ -51,9 +51,11 @@ export async function registerBootEventsRoute(fastify: FastifyInstance): Promise
     req.raw.on('error', () => { unsub(); });
 
     // Keep-alive ping every 25 s so proxies / load balancers don't close idle streams.
+    // Guard against both destroyed sockets and ended-but-not-yet-destroyed responses
+    // (writableEnded is true after raw.end(), destroyed lags behind on Windows keep-alive).
     const ping = setInterval(() => {
-      if (raw.destroyed) { clearInterval(ping); return; }
-      raw.write(': ping\n\n');
+      if (raw.destroyed || raw.writableEnded) { clearInterval(ping); return; }
+      try { raw.write(': ping\n\n'); } catch { clearInterval(ping); }
     }, 25_000);
 
     req.raw.on('close', () => clearInterval(ping));

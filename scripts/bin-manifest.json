@@ -162,6 +162,9 @@
     },
     "mpv": {
       "version": "0.41.0"
+    },
+    "blockbench": {
+      "version": "5.1.4"
     }
   }
 }

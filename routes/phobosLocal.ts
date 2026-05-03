@@ -84,6 +84,10 @@ import {
   type GpuVendor,
   type InstallProgress,
 } from '../phobos/PythonEnvManager.js';
+import {
+  convertModelToPyTorch,
+  getPytorchVariantDir,
+} from '../phobos/ImageServerManager.js';
 
 // ── Image download lock ─────────────────────────────────────────────────────
 // Prevents model deletion while a download is in progress.
@@ -709,6 +713,8 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         totalDownloadBytes: totalDownloadBytes + prereqDownloadBytes,
         profile:            spec.profile ?? null,
         gpuCompat,
+        // Pre-converted diffusers directory exists — from_pretrained path available
+        pytorchVariantReady: getPytorchVariantDir(spec.modelId) !== null,
         // CivitAI-only models: frontend shows "requires CivitAI token" when no token is set
         ...(spec.civitaiVersionId ? { civitaiVersionId: spec.civitaiVersionId } : {}),
       };
@@ -886,6 +892,80 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       }
 
       cancelImageDownload(spec, auxFiles);
+      return reply.send({ ok: true });
+    }
+  );
+
+  // ── PyTorch variant conversion routes ────────────────────────────────────────
+
+  // GET /api/phobos/image/convert?modelId=<id>
+  // SSE stream — converts a single-file model to a split diffusers directory.
+  // Shares the _imageDownloadActive lock so downloads and conversions are mutually exclusive.
+  fastify.get<{ Querystring: { modelId: string } }>(
+    '/api/phobos/image/convert',
+    async (req, reply) => {
+      const { modelId } = req.query;
+      const spec = getImageModelSpec(modelId);
+      if (!spec) {
+        return reply.status(400).send({ error: `Unknown image model: ${modelId}` });
+      }
+      if (spec.runnerProfile !== 'sdxl') {
+        return reply.status(400).send({ error: `PyTorch conversion is only supported for SDXL models (got: ${spec.runnerProfile})` });
+      }
+      if (_imageDownloadActive) {
+        return reply.status(409).send({ error: 'A download or conversion is already in progress' });
+      }
+
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        'Content-Type':                'text/event-stream',
+        'Cache-Control':               'no-cache',
+        'Connection':                  'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+      });
+
+      const send = (data: object) => {
+        try { reply.raw.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* socket closed */ }
+      };
+
+      _imageDownloadActive = true;
+      try {
+        const hw = await detectHardware();
+        const bestGpu = [...hw.gpus].sort((a, b) => b.vramGb - a.vramGb)[0] ?? null;
+        const vendor = bestGpu ? gpuToVendor(bestGpu) : 'cpu';
+
+        if (!isVendorReady(vendor)) {
+          send({ phase: 'error', pct: 0, label: 'PyTorch environment not installed', message: `PyTorch env not ready for vendor: ${vendor}` });
+          return;
+        }
+
+        const modelPath = fluxModelPath(spec);
+        console.log(`[phobosLocal] Converting ${modelId} to PyTorch variant — vendor: ${vendor}, path: ${modelPath}`);
+
+        for await (const progress of convertModelToPyTorch(modelId, modelPath, 'sdxl', vendor)) {
+          send(progress);
+          if (progress.phase === 'error') return;
+        }
+
+        send({ phase: 'done', pct: 1, label: 'Conversion complete' });
+      } catch (err) {
+        console.error(`[phobosLocal] convert error (${modelId}): ${err}`);
+        send({ phase: 'error', pct: 0, label: String(err), message: String(err) });
+      } finally {
+        _imageDownloadActive = false;
+        try { reply.raw.end(); } catch { /* already closed */ }
+      }
+    }
+  );
+
+  // DELETE /api/phobos/image/convert/cancel?modelId=<id>
+  // Best-effort abort — the SSE disconnect will kill the convert process naturally,
+  // but this endpoint lets the frontend signal intent explicitly.
+  fastify.delete<{ Querystring: { modelId: string } }>(
+    '/api/phobos/image/convert/cancel',
+    async (_req, reply) => {
+      // The convert process will exit when the SSE connection drops.
+      // _imageDownloadActive is cleared in the SSE route's finally block.
       return reply.send({ ok: true });
     }
   );

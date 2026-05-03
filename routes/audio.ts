@@ -63,6 +63,8 @@
  * POST /api/audio/player/resume         — {audioId}                      → {}
  * POST /api/audio/player/seek           — {audioId, positionMs}          → {}
  * POST /api/audio/player/stop           — {audioId}                      → {}
+ * POST /api/audio/player/volume         — {audioId, gain}                 → {}
+ * GET  /api/audio/player/session         — no params                       → PolarisSession | null
  * GET  /api/audio/player/status         — ?audioId=N                     → {playing, positionMs, durationMs, finished}
  */
 
@@ -104,6 +106,7 @@ import {
   resumeAudio,
   seekAudio,
   stopAudio,
+  setAudioFileVolume,
   getAudioStatus,
   PHOBOS_HOST_HOST,
   PHOBOS_HOST_UDP_PORT,
@@ -112,7 +115,7 @@ import {
 import { OscClient } from '../phobos/OscClient.js';
 import { aldaToMidi } from '../phobos/alda-parser/index.js';
 import { playSourceOnPhobosSynth, stopAldaSequence } from '../phobos/AldaPlayer.js';
-import { playPolarisFile } from '../phobos/PolarisHostPlayer.js';
+import { playPolarisFile, getActiveSession, clearActiveSession } from '../phobos/PolarisHostPlayer.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -845,14 +848,14 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
    * can show something more useful than a generic 500.
    */
   fastify.post<{
-    Body: { virtualPath: string; startMs?: number; loop?: boolean };
+    Body: { virtualPath: string; startMs?: number; loop?: boolean; queue?: string[]; queueIdx?: number; shuffle?: boolean; repeat?: 'none' | 'one' | 'all' };
   }>('/api/audio/player/play-polaris', async (req, reply) => {
-    const { virtualPath, startMs, loop } = req.body ?? {};
+    const { virtualPath, startMs, loop, queue, queueIdx, shuffle, repeat } = req.body ?? {};
     if (typeof virtualPath !== 'string' || virtualPath.length === 0) {
       return reply.status(400).send({ error: 'missing or empty "virtualPath"' });
     }
     try {
-      const result = await playPolarisFile({ virtualPath, startMs, loop });
+      const result = await playPolarisFile({ virtualPath, startMs, loop, queue, queueIdx, shuffle, repeat });
       return reply.send({ ok: true, ...result });
     } catch (err) {
       const message = (err as Error).message;
@@ -924,10 +927,35 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     }
     try {
       await stopAudio(audioId);
+      clearActiveSession();
       return reply.send({ ok: true });
     } catch (err) {
       return reply.status(500).send({ error: (err as Error).message });
     }
+  });
+
+  fastify.post<{
+    Body: { audioId: number; gain: number };
+  }>('/api/audio/player/volume', async (req, reply) => {
+    const { audioId, gain } = req.body ?? {};
+    if (typeof audioId !== 'number' || audioId < 0) {
+      return reply.status(400).send({ error: 'missing or invalid "audioId"' });
+    }
+    if (typeof gain !== 'number' || gain < 0) {
+      return reply.status(400).send({ error: 'missing or invalid "gain"' });
+    }
+    try {
+      await setAudioFileVolume(audioId, gain);
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  // Returns the active Polaris session so the frontend can rehydrate after a
+  // page refresh. Returns null if nothing is playing or the session was stopped.
+  fastify.get('/api/audio/player/session', async (_req, reply) => {
+    return reply.send(getActiveSession());
   });
 
   fastify.get<{

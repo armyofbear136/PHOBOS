@@ -92,6 +92,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--preview-path", default=None, help="Write latent previews here")
     p.add_argument("--preview-interval", type=int, default=1, help="Steps between previews")
 
+    # PyTorch variant (pre-converted diffusers directory)
+    p.add_argument("--pytorch-variant-dir", default=None,
+                   help="Path to pre-converted diffusers directory (from_pretrained). "
+                        "If present and valid, used instead of from_single_file for SDXL.")
+
     return p
 
 
@@ -321,10 +326,40 @@ def load_flux_gguf_pipeline(args, device: str, dtype):
 
 
 def load_sdxl_safetensors_pipeline(args, device: str, dtype):
-    """Load an SDXL model from single-file safetensors."""
+    """Load an SDXL model, preferring a pre-converted diffusers directory.
+
+    Load order:
+    1. If args.pytorch_variant_dir points to a valid diffusers directory
+       (model_index.json present), use from_pretrained — fast, works with
+       any diffusers/transformers version.
+    2. Fall back to from_single_file on the raw safetensors — works on
+       diffusers <0.36 / older transformers, but may fail on newer envs due
+       to the CLIPTextModel break in transformers >=4.52. Users should convert
+       via the "Convert to PyTorch" button in the image model settings.
+    """
     from diffusers import StableDiffusionXLPipeline
 
+    # ── Path 1: from_pretrained on converted directory ──────────────────────
+    variant_dir = getattr(args, 'pytorch_variant_dir', None)
+    if variant_dir and os.path.isdir(variant_dir) and os.path.exists(os.path.join(variant_dir, "model_index.json")):
+        log(f"loading diffusion model from pytorch variant (from_pretrained)")
+        pipe = StableDiffusionXLPipeline.from_pretrained(
+            variant_dir,
+            torch_dtype=dtype,
+            local_files_only=True,
+        )
+        if args.offload_cpu:
+            log("enabling CPU offload")
+            pipe.enable_model_cpu_offload()
+        else:
+            pipe = pipe.to(device)
+        log("loading tensors completed")
+        return pipe
+
+    # ── Path 2: from_single_file fallback ───────────────────────────────────
     log(f"loading diffusion model from {Path(args.model_path).name}")
+    log("[WARN] Loading SDXL via from_single_file — may fail with transformers >=4.52. "
+        "Convert this model via Phobos image settings for reliable loading.")
 
     pipe = StableDiffusionXLPipeline.from_single_file(
         args.model_path,
@@ -545,58 +580,89 @@ def load_kontext_pipeline(args, device: str, dtype):
 
 
 def load_zimage_pipeline(args, device: str, dtype):
-    """Load Z-Image pipeline.
+    """Load Z-Image pipeline by assembling components manually.
 
-    Z-Image support was added in Diffusers 0.37.0. Uses its own pipeline class.
-    Z-Image requires a Qwen3 text encoder loaded separately — it cannot be
-    auto-loaded from a single GGUF. The text encoder is loaded from the --llm-path
-    GGUF via the pipeline's expected encoder class.
+    ZImagePipeline.from_single_file() has a known bug in diffusers 0.36 where
+    cap_pad_token is stored as shape (dim,) in the GGUF but the model expects
+    (1, dim). This causes a ValueError on load.
 
-    IMPORTANT: SageAttention produces black images with Z-Image — always disable.
+    Fix: load the transformer via GGUFQuantizationConfig + from_pretrained on the
+    GGUF directory (same pattern as Flux/Chroma), manually unsqueeze cap_pad_token
+    after load, then assemble the pipeline from components.
     """
-    from diffusers import GGUFQuantizationConfig
-
-    log(f"loading Z-Image pipeline from {Path(args.model_path).name}")
-
-    # Try the Diffusers 0.37.0 pipeline class
     try:
         from diffusers import ZImagePipeline
+        from diffusers.models.transformers import ZImageTransformer2DModel
     except ImportError:
         raise ImportError(
             "ZImagePipeline not found in diffusers. "
-            "Requires diffusers >= 0.37.0. Run: pip install --upgrade diffusers"
+            "Requires diffusers >= 0.36.0. Run: pip install --upgrade diffusers"
         )
+
+    from diffusers import AutoencoderKL, GGUFQuantizationConfig
+    from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
+
+    log(f"loading Z-Image pipeline from {Path(args.model_path).name}")
 
     quant_config = GGUFQuantizationConfig(compute_dtype=dtype)
 
-    # Z-Image needs the LLM text encoder pre-loaded — from_single_file cannot
-    # auto-discover it from the diffusion GGUF. Load it from --llm-path.
-    load_kwargs = {
-        "torch_dtype": dtype,
-        "quantization_config": quant_config,
-    }
-
+    # ── Text encoder (Qwen3 GGUF) ────────────────────────────────────────────
     if args.llm_path:
         log(f"loading text encoder from {Path(args.llm_path).name}")
-        # Use the same GGUF quantization config for the text encoder
         from transformers import AutoModelForCausalLM, AutoTokenizer
-        if is_gguf(args.llm_path):
-            text_encoder = AutoModelForCausalLM.from_pretrained(
-                os.path.dirname(args.llm_path),
-                gguf_file=os.path.basename(args.llm_path),
-                torch_dtype=dtype,
-            )
-        else:
-            text_encoder = AutoModelForCausalLM.from_pretrained(
-                args.llm_path,
-                torch_dtype=dtype,
-            )
-        load_kwargs["text_encoder"] = text_encoder
+        llm_dir  = os.path.dirname(args.llm_path)
+        llm_file = os.path.basename(args.llm_path)
+        text_encoder = AutoModelForCausalLM.from_pretrained(
+            llm_dir,
+            gguf_file=llm_file,
+            torch_dtype=dtype,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(
+            llm_dir,
+            gguf_file=llm_file,
+        )
         log("loading text encoder completed")
+    else:
+        raise ValueError("Z-Image requires --llm-path (Qwen3 GGUF text encoder)")
 
-    pipe = ZImagePipeline.from_single_file(
+    # ── Diffusion transformer (Z-Image GGUF) ─────────────────────────────────
+    # Load via from_single_file with GGUFQuantizationConfig.
+    # cap_pad_token is stored as (dim,) in the GGUF but model expects (1, dim).
+    # Use ignore_mismatched_sizes=True to bypass the strict shape check, then
+    # unsqueeze the tensor immediately after. The trained value is preserved —
+    # unsqueezing doesn't change the data, only adds a batch dimension.
+    log(f"loading transformer from {Path(args.model_path).name}")
+    transformer = ZImageTransformer2DModel.from_single_file(
         args.model_path,
-        **load_kwargs,
+        quantization_config=quant_config,
+        torch_dtype=dtype,
+        low_cpu_mem_usage=False,
+        ignore_mismatched_sizes=True,
+    )
+
+    # Fix cap_pad_token shape: unsqueeze to (1, dim) immediately after load.
+    if hasattr(transformer, 'cap_pad_token') and transformer.cap_pad_token.ndim == 1:
+        import torch
+        with torch.no_grad():
+            transformer.cap_pad_token.data = transformer.cap_pad_token.data.unsqueeze(0)
+        log("fixed cap_pad_token shape: (dim,) → (1, dim)")
+
+    # ── VAE ──────────────────────────────────────────────────────────────────
+    vae = None
+    if args.vae_path:
+        log(f"loading vae from {Path(args.vae_path).name}")
+        vae = AutoencoderKL.from_single_file(args.vae_path, torch_dtype=dtype)
+        log("loading vae completed")
+
+    # ── Assemble pipeline ────────────────────────────────────────────────────
+    log("loading pipeline components")
+    scheduler = FlowMatchEulerDiscreteScheduler()
+    pipe = ZImagePipeline(
+        scheduler=scheduler,
+        vae=vae,
+        text_encoder=text_encoder,
+        tokenizer=tokenizer,
+        transformer=transformer,
     )
 
     if args.offload_cpu:

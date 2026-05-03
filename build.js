@@ -332,6 +332,18 @@ export async function buildForPlatform({
     }
   }
 
+  // camofox-browser — headless Firefox server used by CamofoxManager.
+  // Pure JS package (no .node binaries) so a simple copyDir is enough.
+  // CamofoxManager resolves its entry point via __dirname/../node_modules/
+  // which maps to dist/node_modules/ in the SEA build.
+  const camofoxSrc = path.join(__dirname, 'node_modules', 'camofox-browser');
+  if (fs.existsSync(camofoxSrc)) {
+    copyDir(camofoxSrc, path.join(distDir, 'node_modules', 'camofox-browser'));
+    log('  ✅ camofox-browser/');
+  } else {
+    log('  ⚠️  camofox-browser not installed — run npm install');
+  }
+
   // @imgly/background-removal-node — optional (RemoveBg node only)
   //
   // WHY WE PRE-BUNDLE instead of copyDir:

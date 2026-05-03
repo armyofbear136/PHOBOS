@@ -159,6 +159,34 @@ export function resolvePolarisLocalPath(virtualPath: string): string | null {
   return path.join(match.source, rel);
 }
 
+
+// ── Active session state ─────────────────────────────────────────────────────
+//
+// Tracks the currently playing Polaris session so the frontend can rehydrate
+// after a page refresh without losing queue/position context. Written on every
+// playPolarisFile call; cleared when stop is called. positionMs is NOT tracked
+// here — the frontend polls /api/audio/player/status for that live.
+
+export interface PolarisSession {
+  audioId:    number;
+  virtualPath: string;
+  durationMs: number;
+  queue:      string[];   // virtualPaths in order
+  queueIdx:   number;
+  shuffle:    boolean;
+  repeat:     'none' | 'one' | 'all';
+}
+
+let activeSession: PolarisSession | null = null;
+
+export function getActiveSession(): PolarisSession | null {
+  return activeSession;
+}
+
+export function clearActiveSession(): void {
+  activeSession = null;
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 export interface PlayPolarisResult {
@@ -182,6 +210,10 @@ export async function playPolarisFile(args: {
   virtualPath: string;
   startMs?:    number;
   loop?:       boolean;
+  queue?:      string[];
+  queueIdx?:   number;
+  shuffle?:    boolean;
+  repeat?:     'none' | 'one' | 'all';
 }): Promise<PlayPolarisResult> {
   const local = resolvePolarisLocalPath(args.virtualPath);
   if (local === null) {
@@ -200,6 +232,16 @@ export async function playPolarisFile(args: {
     startMs: args.startMs,
     loop:    args.loop,
   });
+
+  activeSession = {
+    audioId:     result.audioId,
+    virtualPath: args.virtualPath,
+    durationMs:  result.durationMs,
+    queue:       args.queue    ?? [args.virtualPath],
+    queueIdx:    args.queueIdx ?? 0,
+    shuffle:     args.shuffle  ?? false,
+    repeat:      args.repeat   ?? 'none',
+  };
 
   return {
     audioId:    result.audioId,

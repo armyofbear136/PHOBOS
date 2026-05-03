@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import {
   resolveSdServerBin,
@@ -667,6 +668,148 @@ function resolvePhobosScript(): string {
   );
 }
 
+function resolveConvertScript(): string {
+  const seaDir = path.dirname(process.execPath);
+  const candidates = [
+    path.join(seaDir, 'phobos-convert.py'),
+    path.join(_ismDir, 'phobos-convert.py'),
+    path.join(_ismDir, '..', 'phobos', 'phobos-convert.py'),
+    path.join(process.cwd(), 'phobos', 'phobos-convert.py'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  throw new Error(
+    'phobos-convert.py not found. Searched:\n  ' + candidates.join('\n  ')
+  );
+}
+
+/**
+ * Returns the pre-converted diffusers directory for a model if it exists,
+ * or null if the conversion hasn't been done yet.
+ * Convention: ~/.phobos/models/image/pytorch/<modelId>/
+ */
+export function getPytorchVariantDir(modelId: string): string | null {
+  const dir = path.join(os.homedir(), '.phobos', 'models', 'image', 'pytorch', modelId);
+  if (fs.existsSync(path.join(dir, 'model_index.json'))) return dir;
+  return null;
+}
+
+/** Returns the root directory where pytorch variants are stored. */
+function pytorchVariantRoot(): string {
+  return path.join(os.homedir(), '.phobos', 'models', 'image', 'pytorch');
+}
+
+export interface ConvertProgress {
+  phase: 'loading' | 'saving' | 'done' | 'error';
+  pct: number;
+  label: string;
+  message?: string; // error message
+}
+
+/**
+ * Converts a single-file model (GGUF/safetensors) to a split diffusers directory.
+ * Yields ConvertProgress events. Caller is responsible for locking download/convert slot.
+ */
+export async function* convertModelToPyTorch(
+  modelId:   string,
+  modelPath: string,
+  modelType: 'sdxl',
+  vendor:    'cuda' | 'rocm' | 'xpu' | 'apple' | 'cpu',
+): AsyncGenerator<ConvertProgress> {
+  const pyBin = (await import('./PythonEnvManager.js')).getPythonPath(vendor);
+  if (!pyBin) {
+    yield { phase: 'error', pct: 0, label: 'Python env not installed', message: `No PyTorch env for vendor: ${vendor}` };
+    return;
+  }
+
+  let convertScript: string;
+  try {
+    convertScript = resolveConvertScript();
+  } catch (e) {
+    yield { phase: 'error', pct: 0, label: 'Convert script not found', message: (e as Error).message };
+    return;
+  }
+
+  const outRoot = pytorchVariantRoot();
+  const args = [
+    convertScript,
+    '--model-path', modelPath,
+    '--model-type', modelType,
+    '--model-id',   modelId,
+    '--output-dir', outRoot,
+    '--dtype',      'bfloat16',
+  ];
+
+  console.log(`[ImageServerManager] Converting ${modelId} → ${outRoot}/${modelId}`);
+  console.log(`[ImageServerManager] ${pyBin} ${args.join(' ')}`);
+
+  const proc = spawn(pyBin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+  let stderr = '';
+  proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+
+  // Buffer stdout and yield parsed JSON progress events line by line
+  let buf = '';
+  const queue: ConvertProgress[] = [];
+  let done = false;
+  let resolveNext: (() => void) | null = null;
+
+  proc.stdout.on('data', (chunk: Buffer) => {
+    buf += chunk.toString();
+    const lines = buf.split('\n');
+    buf = lines.pop() ?? '';
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t) continue;
+      try {
+        const evt = JSON.parse(t) as { phase: string; pct?: number; label?: string; message?: string };
+        queue.push({
+          phase:   evt.phase as ConvertProgress['phase'],
+          pct:     evt.pct ?? 0,
+          label:   evt.label ?? '',
+          message: evt.message,
+        });
+        resolveNext?.();
+      } catch { /* non-JSON noise */ }
+    }
+  });
+
+  proc.stdout.on('end', () => {
+    done = true;
+    resolveNext?.();
+  });
+
+  while (!done || queue.length > 0) {
+    if (queue.length === 0) {
+      await new Promise<void>(r => { resolveNext = r; });
+      resolveNext = null;
+    }
+    while (queue.length > 0) {
+      const evt = queue.shift()!;
+      yield evt;
+      if (evt.phase === 'error') return;
+    }
+  }
+
+  await new Promise<void>((resolve) => proc.on('close', resolve));
+
+  if (proc.exitCode !== 0) {
+    const msg = stderr.trim() || `phobos-convert.py exited ${proc.exitCode}`;
+    yield { phase: 'error', pct: 0, label: 'Conversion failed', message: msg };
+    return;
+  }
+
+  // Verify output exists
+  const variantDir = path.join(outRoot, modelId);
+  if (!fs.existsSync(path.join(variantDir, 'model_index.json'))) {
+    yield { phase: 'error', pct: 1, label: 'Conversion output missing', message: `model_index.json not found in ${variantDir}` };
+    return;
+  }
+
+  yield { phase: 'done', pct: 1, label: `Conversion complete → ${variantDir}` };
+}
+
 /**
  * Decides whether to use PyTorch (phobos-diffusers.py) or sd-cli for a given model + GPU.
  *
@@ -824,6 +967,13 @@ function buildPyTorchArgs(
   if (opts.controlImage)              args.push('--control-image', opts.controlImage);
   if (opts.controlScale !== undefined) args.push('--control-scale', String(opts.controlScale));
   if (opts.refImage)                  args.push('--ref-image', opts.refImage);
+
+  // SDXL: pass pre-converted diffusers directory if present — from_pretrained
+  // is faster and works with any transformers version. Falls back to from_single_file.
+  if (cfg.modelType === 'sdxl') {
+    const variantDir = getPytorchVariantDir(spec.modelId);
+    if (variantDir) args.push('--pytorch-variant-dir', variantDir);
+  }
 
   // Artist Plugin System — multi-adapter LoRA loading
   // Colon-delimited lists: --lora-paths p1:p2 --lora-weights 0.8:0.6 --lora-names plugin_0:plugin_1

@@ -36,7 +36,9 @@ function resolveNodeBin(): string {
 // tsx ESM dev runs where __dirname may be undefined.
 function resolveServerBin(): string {
   if (typeof __dirname !== 'undefined') {
-    return path.resolve(__dirname, '../node_modules/camofox-browser/bin/camofox-browser.js');
+    // In the CJS/SEA build __dirname is the dist/ folder.
+    // build.js stages camofox-browser into dist/node_modules/ (same dir).
+    return path.resolve(__dirname, './node_modules/camofox-browser/bin/camofox-browser.js');
   }
   return path.resolve(process.cwd(), 'node_modules/camofox-browser/bin/camofox-browser.js');
 }
@@ -55,11 +57,10 @@ let _proc: ManagedProcess = makeManagedProcess({
   env: {
     PORT:     String(CAMOFOX_PORT),
     NODE_ENV: 'production',
-    // Idle browser shutdown after 10 min — PHOBOS keeps the server running
-    // perpetually but allows the Firefox process itself to sleep between tasks.
     BROWSER_IDLE_TIMEOUT_MS: '600000',
-    // Generous heap — PHOBOS runs on dev-grade hardware.
     MAX_OLD_SPACE_SIZE: '512',
+    // deps are self-contained in node_modules/camofox-browser/node_modules/
+    // via npm install run by build.js at staging time — no NODE_PATH needed.
   },
 });
 

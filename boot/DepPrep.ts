@@ -423,7 +423,8 @@ function buildDeps(arch: PhobosArch): Dep[] {
         await execFileAsync('msiexec', [
           '/a', arc, '/qn', `TARGETDIR=${polarisDir}`,
         ], { timeout: 120_000 });
-        // The CLI binary ends up at <polarisDir>/polaris-cli.exe — already correct.
+        // msiexec /a puts binaries at <polarisDir>\Permafrost\Polaris\ — flatten up.
+        flattenToDir(polarisDir, 'polaris-cli.exe');
       },
     };
     // Linux / macOS: pre-built binary uploaded by you
@@ -978,8 +979,92 @@ function buildDeps(arch: PhobosArch): Dep[] {
         if (fs.existsSync(blockbenchDir)) fs.rmSync(blockbenchDir, { recursive: true, force: true });
         fs.mkdirSync(blockbenchDir, { recursive: true });
         await extractZip(arc, blockbenchDir);
+        // If the zip was packed with a root folder, index.html lands in a subdir.
+        // flattenToDir is a no-op when index.html is already at the root.
+        flattenToDir(blockbenchDir, 'index.html');
         if (!fs.existsSync(path.join(blockbenchDir, 'index.html')))
           throw new Error('index.html not found after extracting blockbench-web zip');
+      },
+    };
+  })();
+
+  // ── SculptGL web editor ───────────────────────────────────────────────────
+  //
+  // SculptGL (stephomi/sculptgl, MIT) is archived — no versioned releases.
+  // Built once from source on a dev machine, version string is the commit hash:
+  //
+  //   git clone --depth 1 https://github.com/stephomi/sculptgl
+  //   cd sculptgl
+  //   git rev-parse --short HEAD          # → version string
+  //   npm install
+  //   # Node 17+ requires legacy OpenSSL provider for this old webpack:
+  //   $env:NODE_OPTIONS="--openssl-legacy-provider"   # PowerShell
+  //   # export NODE_OPTIONS=--openssl-legacy-provider  # bash
+  //   npx webpack --env release           # output lands in app/
+  //   cd app
+  //   zip -r ../sculptgl-web-<hash>.zip . # zip app/ contents flat
+  //   gh release upload PHOBOS-DEPS sculptgl-web-<hash>.zip \
+  //     --repo armyofbear136/PHOBOS-BUILDS
+  //
+  // Served by Fastify static at /tools/sculptgl/ from SCULPTGL_DIR.
+  // Platform-independent: same zip for all platforms.
+  const sculptglDep: Dep = (() => {
+    const SGL_VERSION = '8e45daf';
+    const sculptglDir = path.join(PHOBOS_HOME, 'editors', 'sculptgl');
+    return {
+      id:       'sculptgl',
+      label:    'SculptGL 3D Sculpting Editor',
+      file:     `sculptgl-web-${SGL_VERSION}.zip`,
+      minBytes: 3_000_000,
+      isPresent: () => fs.existsSync(path.join(sculptglDir, 'index.html')),
+      install: async (arc) => {
+        if (fs.existsSync(sculptglDir)) fs.rmSync(sculptglDir, { recursive: true, force: true });
+        fs.mkdirSync(sculptglDir, { recursive: true });
+        await extractZip(arc, sculptglDir);
+        if (!fs.existsSync(path.join(sculptglDir, 'index.html')))
+          throw new Error('index.html not found after extracting sculptgl-web zip');
+      },
+    };
+  })();
+
+  // ── Godot 4.6.2 web editor ────────────────────────────────────────────────
+  //
+  // Godot ships an official web editor zip as a GitHub release asset. PHOBOS
+  // downloads it, patches telemetry calls out of godot.editor.js, re-zips,
+  // and uploads the patched set to PHOBOS-BUILDS:
+  //
+  //   curl -L -O https://github.com/godotengine/godot/releases/download/4.6.2-stable/Godot_v4.6.2-stable_web_editor.zip
+  //   mkdir godot-patched
+  //   unzip Godot_v4.6.2-stable_web_editor.zip -d godot-patched/
+  //   node -e "
+  //     const fs=require('fs'),p='godot-patched/godot.editor.js';
+  //     let s=fs.readFileSync(p,'utf8');
+  //     s=s.replace(/fetch\s*\(\s*[\"']https:\/\/godotengine\.org\/version\.json[\"']\s*\)[^;]*;/g,'Promise.resolve();');
+  //     s=s.replace(/fetch\s*\(\s*[\"']https:\/\/godotengine\.org\/[^\"']*[\"']\s*\)[^;]*;/g,'Promise.resolve();');
+  //     fs.writeFileSync(p,s);console.log('patched');
+  //   "
+  //   cd godot-patched && zip -r ../godot-web-editor-4.6.2.zip . && cd ..
+  //   gh release upload PHOBOS-DEPS godot-web-editor-4.6.2.zip \
+  //     --repo armyofbear136/PHOBOS-BUILDS
+  //
+  // Entry point: godot.editor.html (NOT index.html)
+  // Requires COOP/COEP globally on server — see server bootstrap + toolsRoute.ts.
+  // Platform-independent: same zip for all platforms.
+  const godotDep: Dep = (() => {
+    const GODOT_VERSION = '4.6.2';
+    const godotDir      = path.join(PHOBOS_HOME, 'editors', 'godot');
+    return {
+      id:       'godot',
+      label:    'Godot 4.6.2 Web Editor',
+      file:     `godot-web-editor-${GODOT_VERSION}.zip`,
+      minBytes: 20_000_000,
+      isPresent: () => fs.existsSync(path.join(godotDir, 'godot.editor.html')),
+      install: async (arc) => {
+        if (fs.existsSync(godotDir)) fs.rmSync(godotDir, { recursive: true, force: true });
+        fs.mkdirSync(godotDir, { recursive: true });
+        await extractZip(arc, godotDir);
+        if (!fs.existsSync(path.join(godotDir, 'godot.editor.html')))
+          throw new Error('godot.editor.html not found after extracting godot-web-editor zip');
       },
     };
   })();
@@ -1004,6 +1089,8 @@ function buildDeps(arch: PhobosArch): Dep[] {
     pandocDep(),
     mpvDep(),
     blockbenchDep,
+    sculptglDep,
+    godotDep,
   ].filter((d): d is Dep => d !== null);
 
   return deps;

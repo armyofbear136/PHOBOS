@@ -165,6 +165,12 @@
     },
     "blockbench": {
       "version": "5.1.4"
+    },
+    "sculptgl": {
+      "version": "8e45daf"
+    },
+    "godot": {
+      "version": "4.6.2"
     }
   }
 }

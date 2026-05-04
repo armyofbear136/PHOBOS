@@ -333,13 +333,26 @@ export async function buildForPlatform({
   }
 
   // camofox-browser — headless Firefox server used by CamofoxManager.
-  // Pure JS package (no .node binaries) so a simple copyDir is enough.
-  // CamofoxManager resolves its entry point via __dirname/../node_modules/
-  // which maps to dist/node_modules/ in the SEA build.
+  // Must use fs.cpSync, NOT copyDir — copyDir skips 'src' directories but
+  // camofox-browser's compiled output lives at dist/src/server.js which
+  // bin/camofox-browser.js requires directly. No .node binaries to worry about.
   const camofoxSrc = path.join(__dirname, 'node_modules', 'camofox-browser');
   if (fs.existsSync(camofoxSrc)) {
-    copyDir(camofoxSrc, path.join(distDir, 'node_modules', 'camofox-browser'));
+    const camofoxDest = path.join(distDir, 'node_modules', 'camofox-browser');
+    fs.cpSync(camofoxSrc, camofoxDest, { recursive: true });
     log('  ✅ camofox-browser/');
+    // camofox-browser's deps (express, camoufox-js, playwright-core and their
+    // transitive trees) are hoisted by npm to the project root during development.
+    // In dist the portable node binary resolves modules relative to its own
+    // node_modules only — the project root hoisting is invisible to it.
+    // Running npm install inside the staged package installs the full dep tree
+    // locally, self-contained, with no manual enumeration required.
+    // --ignore-scripts skips playwright-core's browser download hooks.
+    execSync(
+      'npm install --omit=dev --ignore-scripts --no-audit --no-fund --loglevel=error',
+      { cwd: camofoxDest, stdio: 'inherit' }
+    );
+    log('  ✅ camofox-browser/node_modules/ (deps installed)');
   } else {
     log('  ⚠️  camofox-browser not installed — run npm install');
   }
@@ -497,8 +510,8 @@ export async function buildForPlatform({
     log('  ⚠️  @imgly/background-removal-node not installed — RemoveBg node unavailable');
   }
 
-  if (fs.existsSync(path.join(__dirname, '.env'))) {
-    fs.copyFileSync(path.join(__dirname, '.env'), path.join(distDir, '.env'));
+  if (fs.existsSync(path.join(__dirname, '.env.build'))) {
+    fs.copyFileSync(path.join(__dirname, '.env.build'), path.join(distDir, '.env'));
     log('  ✅ .env (copied from source)');
   } else if (process.env.PHOBOS_LICENSE_SEED) {
     // CI build: generate .env from environment variables

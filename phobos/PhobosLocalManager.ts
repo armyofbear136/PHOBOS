@@ -4328,3 +4328,352 @@ export function deleteModel(modelId: string): boolean {
   if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
   return true;
 }
+
+// ── Audio Model Catalogue ─────────────────────────────────────────────────────
+//
+// Generative audio pipeline — offline render, GPU-bound (except whisper which
+// is CPU-only). Storage root: ~/.phobos/models/audio/<runnerProfile>/
+//
+// Runner profiles map 1:1 to Python scripts in phobos/:
+//   kokoro       → phobos-tts-kokoro.py
+//   f5-tts       → phobos-tts-f5.py
+//   ace-step     → phobos-music-acestep.py  (persistent server on :8001)
+//   musicgen     → phobos-music-musicgen.py
+//   stable-audio → phobos-sfx-stable.py
+//   whisper      → whisper.cpp binary (CPU, no GPU, no Python)
+//   csm          → phobos-tts-csm.py        (deferred)
+//   yue          → phobos-music-yue.py      (deferred)
+//
+// Index positions within AudioModelSpec are a permanent wire contract.
+// New fields MUST append only — never reorder.
+
+export type AudioRunnerProfile =
+  | 'kokoro'
+  | 'f5-tts'
+  | 'ace-step'
+  | 'musicgen'
+  | 'stable-audio'
+  | 'whisper'
+  | 'csm'
+  | 'yue';
+
+export type AudioModelCategory = 'tts' | 'music' | 'sfx' | 'stt';
+
+export interface AudioModelSpec {
+  /** Stable unique identifier — permanent wire contract. */
+  modelId: string;
+  /** Full display name shown in the panel header. */
+  label: string;
+  /** Short name for cards and compact views. */
+  displayName: string;
+  runnerProfile: AudioRunnerProfile;
+  category: AudioModelCategory;
+  /** HuggingFace repo slug, e.g. "hexgrad/Kokoro-82M". */
+  hfRepo: string;
+  /**
+   * Primary model file path within the repo.
+   * For multi-file models (ACE-Step, MusicGen) this is the root directory
+   * identifier — the Python script clones the full repo via snapshot_download.
+   * For single-file models (Kokoro, Whisper) this is the exact filename.
+   */
+  hfFile: string;
+  /** Compressed download size in bytes. Used for progress display + completion check. */
+  sizeBytes: number;
+  /**
+   * Peak VRAM in MB during inference. 0 for CPU-only models (whisper).
+   * Used by the hardware recommendation engine to check contention with LLMs
+   * and image models before allowing a generation request.
+   */
+  vramMb: number;
+  /** True for models that run exclusively on CPU — no GPU scheduling needed. */
+  cpuOnly: boolean;
+  /** SPDX license identifier. */
+  license: string;
+  /** URL to the full license text shown in the panel consent dialog. */
+  licenseUrl: string;
+  /**
+   * When true the model is hidden behind a consent dialog at download time.
+   * Use for non-Apache/MIT licenses (Stability Community, CC-BY-NC).
+   */
+  requiresConsent: boolean;
+  /**
+   * When true the model is present in the catalogue but not downloadable.
+   * Shown in the panel as "Coming Soon". Deferred models still get an entry
+   * so their future addition requires no schema migration.
+   */
+  blocked: boolean;
+  /** Estimated real-time factor on RTX 3080 (CUDA). 1.0 = real-time. <1.0 = faster than real-time. */
+  rtfCuda: number;
+  /** Estimated real-time factor on CPU (Ryzen AI 9 class). */
+  rtfCpu: number;
+  /** Optional: second repo to snapshot_download for models split across repos. */
+  auxHfRepo?: string;
+}
+
+// ── Directory helper ──────────────────────────────────────────────────────────
+
+export function AUDIO_MODELS_DIR(): string {
+  return path.join(ModelPathStore.getBasePath(), 'audio');
+}
+
+export function audioModelDir(spec: AudioModelSpec): string {
+  return path.join(AUDIO_MODELS_DIR(), spec.runnerProfile, spec.modelId);
+}
+
+// ── Catalogue entries ─────────────────────────────────────────────────────────
+
+/** TTS — Kokoro 82M. Apache 2.0. Primary voice synthesis. CPU + GPU. */
+export const KOKORO_CATALOGUE: AudioModelSpec[] = [
+  {
+    modelId:        'kokoro-82m',
+    label:          'Kokoro 82M',
+    displayName:    'Kokoro 82M',
+    runnerProfile:  'kokoro',
+    category:       'tts',
+    hfRepo:         'hexgrad/Kokoro-82M',
+    hfFile:         'kokoro-v1_0.pth',
+    sizeBytes:      327_000_000,
+    vramMb:         800,
+    cpuOnly:        false,
+    license:        'Apache-2.0',
+    licenseUrl:     'https://www.apache.org/licenses/LICENSE-2.0',
+    requiresConsent: false,
+    blocked:        false,
+    rtfCuda:        0.05,
+    rtfCpu:         0.3,
+  },
+];
+
+/** TTS — F5-TTS v1. Apache 2.0. Zero-shot voice cloning via flow matching. */
+export const F5TTS_CATALOGUE: AudioModelSpec[] = [
+  {
+    modelId:        'f5-tts-v1-base',
+    label:          'F5-TTS v1 Base',
+    displayName:    'F5-TTS v1',
+    runnerProfile:  'f5-tts',
+    category:       'tts',
+    hfRepo:         'SWivid/F5-TTS',
+    hfFile:         'F5TTS_v1_Base/model_1250000.safetensors',
+    sizeBytes:      1_200_000_000,
+    vramMb:         4_000,
+    cpuOnly:        false,
+    license:        'Apache-2.0',
+    licenseUrl:     'https://www.apache.org/licenses/LICENSE-2.0',
+    requiresConsent: false,
+    blocked:        false,
+    rtfCuda:        0.15,
+    rtfCpu:         2.5,
+  },
+];
+
+/**
+ * Music — ACE-Step v1.5. Apache 2.0. Primary music generation.
+ * Runs as a persistent server on :8001 via `uv run acestep-api`.
+ * snapshot_download pulls the full model repo — hfFile is the sentinel
+ * file checked for download completion.
+ */
+export const ACE_STEP_CATALOGUE: AudioModelSpec[] = [
+  {
+    modelId:        'ace-step-v1.5',
+    label:          'ACE-Step v1.5',
+    displayName:    'ACE-Step 1.5',
+    runnerProfile:  'ace-step',
+    category:       'music',
+    hfRepo:         'ACE-Step/ACE-Step-v1.5',
+    hfFile:         'model_index.json',
+    sizeBytes:      8_500_000_000,
+    vramMb:         3_800,
+    cpuOnly:        false,
+    license:        'Apache-2.0',
+    licenseUrl:     'https://www.apache.org/licenses/LICENSE-2.0',
+    requiresConsent: false,
+    blocked:        false,
+    rtfCuda:        0.4,
+    rtfCpu:         12.0,
+  },
+];
+
+/**
+ * Music — MusicGen Medium (Meta). CC-BY-NC 4.0.
+ * Gated behind requiresConsent due to non-commercial license.
+ * Fallback for hardware where ACE-Step cannot run.
+ */
+export const MUSICGEN_CATALOGUE: AudioModelSpec[] = [
+  {
+    modelId:        'musicgen-medium',
+    label:          'MusicGen Medium',
+    displayName:    'MusicGen Medium',
+    runnerProfile:  'musicgen',
+    category:       'music',
+    hfRepo:         'facebook/musicgen-medium',
+    hfFile:         'pytorch_model.bin',
+    sizeBytes:      3_100_000_000,
+    vramMb:         6_000,
+    cpuOnly:        false,
+    license:        'CC-BY-NC-4.0',
+    licenseUrl:     'https://creativecommons.org/licenses/by-nc/4.0/',
+    requiresConsent: true,
+    blocked:        false,
+    rtfCuda:        0.6,
+    rtfCpu:         8.0,
+  },
+];
+
+/**
+ * SFX — Stable Audio Open 1.0. Stability AI Community License.
+ * Gated behind requiresConsent — commercial use requires a separate license.
+ * Peak VRAM ~14.5 GB with chunk decoding via diffusers StableAudioPipeline.
+ */
+export const STABLE_AUDIO_CATALOGUE: AudioModelSpec[] = [
+  {
+    modelId:        'stable-audio-open-1b',
+    label:          'Stable Audio Open 1.0',
+    displayName:    'Stable Audio Open',
+    runnerProfile:  'stable-audio',
+    category:       'sfx',
+    hfRepo:         'stabilityai/stable-audio-open-1.0',
+    hfFile:         'model.safetensors',
+    sizeBytes:      3_900_000_000,
+    vramMb:         14_500,
+    cpuOnly:        false,
+    license:        'Stability-AI-Community',
+    licenseUrl:     'https://huggingface.co/stabilityai/stable-audio-open-1.0/blob/main/LICENSE',
+    requiresConsent: true,
+    blocked:        true,
+    rtfCuda:        0.8,
+    rtfCpu:         20.0,
+  },
+];
+
+/**
+ * STT — Whisper large-v3. MIT. CPU-only via whisper.cpp binary.
+ * Managed by DepPrep, not downloaded through this catalogue's SSE stream.
+ * Entry present for panel display and hardware status only.
+ * hfFile is the ggml model filename fetched by whisper.cpp's download helper.
+ */
+export const WHISPER_CATALOGUE: AudioModelSpec[] = [
+  {
+    modelId:        'whisper-large-v3',
+    label:          'Whisper Large v3',
+    displayName:    'Whisper Large v3',
+    runnerProfile:  'whisper',
+    category:       'stt',
+    hfRepo:         'ggerganov/whisper.cpp',
+    hfFile:         'ggml-large-v3.bin',
+    sizeBytes:      3_090_000_000,
+    vramMb:         0,
+    cpuOnly:        true,
+    license:        'MIT',
+    licenseUrl:     'https://opensource.org/licenses/MIT',
+    requiresConsent: false,
+    blocked:        false,
+    rtfCuda:        0.0,
+    rtfCpu:         0.25,
+  },
+];
+
+/**
+ * TTS — CSM 1B (Sesame). Apache 2.0. Conversational speech model.
+ * Deferred — reserved for voice copilot (SAYON/SEREN spoken output).
+ * Llama backbone + Mimi audio codes; designed for interruptions and pauses.
+ */
+export const CSM_CATALOGUE: AudioModelSpec[] = [
+  {
+    modelId:        'csm-1b',
+    label:          'CSM 1B (Conversational)',
+    displayName:    'CSM 1B',
+    runnerProfile:  'csm',
+    category:       'tts',
+    hfRepo:         'sesame/csm-1b',
+    hfFile:         'model.safetensors',
+    sizeBytes:      2_000_000_000,
+    vramMb:         4_000,
+    cpuOnly:        false,
+    license:        'Apache-2.0',
+    licenseUrl:     'https://www.apache.org/licenses/LICENSE-2.0',
+    requiresConsent: false,
+    blocked:        true,
+    rtfCuda:        0.2,
+    rtfCpu:         3.0,
+  },
+];
+
+/**
+ * Music — YuE (M-A-P / HKUST). Apache 2.0. Best-in-class vocal quality.
+ * Deferred — 12 GB int8 minimum; not viable on RTX 3080 without offload.
+ * Primary target: AMD 890M (48 GB UMA) running native fp16.
+ */
+export const YUE_CATALOGUE: AudioModelSpec[] = [
+  {
+    modelId:        'yue-s',
+    label:          'YuE-S (Vocal)',
+    displayName:    'YuE-S',
+    runnerProfile:  'yue',
+    category:       'music',
+    hfRepo:         'm-a-p/YuE-S',
+    hfFile:         'model.safetensors',
+    sizeBytes:      12_000_000_000,
+    vramMb:         12_000,
+    cpuOnly:        false,
+    license:        'Apache-2.0',
+    licenseUrl:     'https://www.apache.org/licenses/LICENSE-2.0',
+    requiresConsent: false,
+    blocked:        true,
+    rtfCuda:        2.0,
+    rtfCpu:         99.0,
+  },
+];
+
+// ── Combined catalogue ────────────────────────────────────────────────────────
+
+/** All audio models across all runner profiles, v1 first then deferred. */
+export const AUDIO_MODEL_CATALOGUE: AudioModelSpec[] = [
+  ...KOKORO_CATALOGUE,
+  ...F5TTS_CATALOGUE,
+  ...ACE_STEP_CATALOGUE,
+  ...MUSICGEN_CATALOGUE,
+  ...STABLE_AUDIO_CATALOGUE,
+  ...WHISPER_CATALOGUE,
+  ...CSM_CATALOGUE,
+  ...YUE_CATALOGUE,
+];
+
+// ── Lookup helpers ────────────────────────────────────────────────────────────
+
+export function getAudioModelSpec(modelId: string): AudioModelSpec | undefined {
+  return AUDIO_MODEL_CATALOGUE.find(s => s.modelId === modelId);
+}
+
+/**
+ * Returns true when the model's sentinel file is present and at least 90% of
+ * its declared sizeBytes. The 90% threshold tolerates minor version drift in
+ * declared sizes without marking a complete model as missing.
+ */
+export function isAudioModelDownloaded(spec: AudioModelSpec): boolean {
+  const sentinelPath = path.join(audioModelDir(spec), spec.hfFile);
+  if (!fs.existsSync(sentinelPath)) return false;
+  return fs.statSync(sentinelPath).size >= spec.sizeBytes * 0.9;
+}
+
+/**
+ * Whisper is managed by DepPrep via the whisper.cpp binary's own download
+ * mechanism. Its sentinel file lives in the services directory, not models/audio.
+ */
+export function isWhisperDownloaded(): boolean {
+  const whisperModelPath = path.join(
+    ModelPathStore.getBasePath().replace(/models$/, ''),
+    'services', 'whisper', 'ggml-large-v3.bin',
+  );
+  return fs.existsSync(whisperModelPath) &&
+    fs.statSync(whisperModelPath).size >= WHISPER_CATALOGUE[0].sizeBytes * 0.9;
+}
+
+export function deleteAudioModel(modelId: string): boolean {
+  const spec = getAudioModelSpec(modelId);
+  if (!spec) throw new Error(`Unknown audio model ID: ${modelId}`);
+  if (spec.runnerProfile === 'whisper') throw new Error('Whisper is managed by DepPrep — delete via services directory');
+  const dir = audioModelDir(spec);
+  if (!fs.existsSync(dir)) return false;
+  fs.rmSync(dir, { recursive: true, force: true });
+  return true;
+}

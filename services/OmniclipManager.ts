@@ -61,7 +61,39 @@ export function installedVersion(): string | null {
   } catch { return null; }
 }
 
-// ── MIME types ─────────────────────────────────────────────────────────────────
+// ── Stubs for broken upstream dependencies ─────────────────────────────────────
+// These paths are referenced in Omniclip's importmap but either don't exist
+// in the installed npm package or have unresolvable transitive deps.
+// Serving empty ESM stubs prevents main.js from throwing on import.
+const MODULE_STUBS: Record<string, string> = {
+  // posthog-js ships dist/es.js in newer versions but not in the version
+  // installed by npm (it has array.js etc. but not es.js).
+  '/node_modules/posthog-js/dist/es.js':
+    'export default {}; export const posthog = {};',
+
+  // sparrow-rtc's x/ build imports @e280/stz and @e280/renraku which are
+  // not in the importmap and not installed — stub sparrow-rtc entirely.
+  '/node_modules/sparrow-rtc/x/index.js':
+    'export default {};',
+  '/node_modules/sparrow-rtc/x/tools/id.js':
+    'export default {};',
+  '/node_modules/sparrow-rtc/x/browser/std/cable.js':
+    'export default {};',
+  '/node_modules/sparrow-rtc/x/browser/utils/data-channeller.js':
+    'export default {};',
+  '/node_modules/sparrow-rtc/x/browser/connect.js':
+    'export default {};',
+  '/node_modules/sparrow-rtc/x/browser/join.js':
+    'export default {};',
+  '/node_modules/sparrow-rtc/x/browser/api.js':
+    'export default {};',
+  '/node_modules/sparrow-rtc/x/browser/utils/gather-ice.js':
+    'export default {};',
+  '/node_modules/sparrow-rtc/x/browser/utils/wait-for-connection.js':
+    'export default {};',
+};
+
+
 // wasm must be application/wasm — browsers reject instantiation with octet-stream.
 
 const MIME: Record<string, string> = {
@@ -108,12 +140,25 @@ function serveStatic(
     urlPath = rawPath;
   }
 
+  // Serve stubs for broken upstream deps before hitting the filesystem.
+  if (MODULE_STUBS[urlPath]) {
+    const body = MODULE_STUBS[urlPath];
+    res.writeHead(200, {
+      ...COI_HEADERS,
+      'Content-Type':   'application/javascript; charset=utf-8',
+      'Content-Length': Buffer.byteLength(body),
+      'Cache-Control':  'public, max-age=3600',
+    });
+    res.end(body);
+    return;
+  }
+
   // Omniclip's main.js uses bare absolute /node_modules/* imports.
   // buildDir is: <project>/node_modules/@omnimedia/omniclip/x
   // node_modules lives at: <project>/node_modules
   // So we need to go up 3 levels from x/ to reach the project root,
   // then back into node_modules/.
-  const projectRoot  = path.resolve(buildDir, '../../..');
+  const projectRoot  = path.resolve(buildDir, '../../../..');
   const isNodeModules = urlPath.startsWith('/node_modules/');
   const rootDir = isNodeModules ? projectRoot : buildDir;
 

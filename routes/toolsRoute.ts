@@ -18,9 +18,16 @@ import {
 } from '../services/OmniclipManager.js';
 import {
   getBlockbenchStatus,
-  isBuildPresent,
   BLOCKBENCH_DIR,
 } from '../services/BlockbenchManager.js';
+import {
+  getSculptGLStatus,
+  SCULPTGL_DIR,
+} from '../services/SculptGLManager.js';
+import {
+  getGodotStatus,
+  GODOT_DIR,
+} from '../services/GodotManager.js';
 import fastifyStatic from '@fastify/static';
 
 export async function registerToolsRoutes(fastify: FastifyInstance): Promise<void> {
@@ -188,17 +195,52 @@ export async function registerToolsRoutes(fastify: FastifyInstance): Promise<voi
     return reply.send(getBlockbenchStatus());
   });
  
-  // Only register the static route when the build is present. If it isn't,
-  // the status endpoint above tells the frontend, which shows the install prompt.
-  if (isBuildPresent()) {
-    await fastify.register(fastifyStatic, {
-      root:       BLOCKBENCH_DIR,
-      prefix:     '/tools/blockbench/',
-      decorateReply: false,  // avoid conflicts with other static registrations
-    });
-  }
+  // Registered unconditionally — the directory always exists after DepPrep runs.
+  // The status endpoint tells the frontend when the build isn't present yet.
+  // Gating on isBuildPresent() caused the route to never register when DepPrep
+  // ran its install after registerToolsRoutes had already executed at startup.
+  await fastify.register(fastifyStatic, {
+    root:          BLOCKBENCH_DIR,
+    prefix:        '/tools/blockbench/',
+    decorateReply: false,
+  });
 
- 
+  // ── SculptGL static serving ───────────────────────────────────────────────
+  // GET /api/tools/sculptgl/status → SculptGLStatus
+  // GET /tools/sculptgl/*          → static files from SCULPTGL_DIR
 
+  fastify.get('/api/tools/sculptgl/status', async (_req, reply) => {
+    return reply.send(getSculptGLStatus());
+  });
+
+  await fastify.register(fastifyStatic, {
+    root:          SCULPTGL_DIR,
+    prefix:        '/tools/sculptgl/',
+    decorateReply: false,
+  });
+
+  // ── Godot 4.6.2 Web Editor ────────────────────────────────────────────────
+  // GET /api/tools/godot/status → GodotStatus
+  // GET /tools/godot/*          → static files from GODOT_DIR
+  //
+  // Godot requires SharedArrayBuffer (Wasm threads), which requires the page to
+  // be cross-origin isolated. COOP/COEP headers are applied globally in the
+  // server bootstrap so the PHOBOS parent page is also cross-origin isolated.
+  // The setHeaders hook here is belt-and-suspenders for the /tools/godot/ prefix.
+
+  fastify.get('/api/tools/godot/status', async (_req, reply) => {
+    return reply.send(getGodotStatus());
+  });
+
+  await fastify.register(fastifyStatic, {
+    root:          GODOT_DIR,
+    prefix:        '/tools/godot/',
+    decorateReply: false,
+    setHeaders: (res) => {
+      res.setHeader('Cross-Origin-Opener-Policy',   'same-origin');
+      res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+      res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    },
+  });
 
 }

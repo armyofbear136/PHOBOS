@@ -67,6 +67,7 @@ import { registerMeridianIngestRoutes } from './routes/meridianIngestRoutes.js';
 import { registerBootEventsRoute } from './routes/bootEvents.js';
 import { runDepPrep, isPrepComplete } from './boot/DepPrep.js';
 import { setBootPhase, setBootProgress, snapshot as bootSnapshot } from './boot/BootState.js';
+import { waitForServicesToSettle } from './boot/waitForServices.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -84,6 +85,9 @@ async function buildServer() {
     logger: {
       level: process.env.LOG_LEVEL ?? 'info',
     },
+    // Without this, fastify.close() waits indefinitely for keep-alive connections
+    // (SSE streams, polled API clients) to drain on their own.
+    forceCloseConnections: true,
   });
 
   await fastify.register(cors, {
@@ -466,8 +470,13 @@ async function continueBootSequence(
   }, CHECKPOINT_INTERVAL_MS);
   checkpointTimer.unref();
 
-  // ── PHASE 4: Ready ─────────────────────────────────────────────────────────
-  // Signal the frontend — it will do a full page reload to enter PHOBOS.
+  // ── PHASE 4: Services wait → Ready ────────────────────────────────────────
+  // All service start() calls above are fire-and-forgot. Give them up to 5
+  // minutes to come online. The frontend holds the splash screen open and shows
+  // a live per-service checklist. When every tracked service has settled (or the
+  // deadline passes), we advance to 'ready', which triggers a full page reload —
+  // ensuring sprites and proxied routes load against a fully warm server.
+  await waitForServicesToSettle();
   setBootPhase('ready');
 
   console.log(`\n🚀  PHOBOS Engine running on http://localhost:${PORT}`);

@@ -1,52 +1,52 @@
 #!/usr/bin/env node
-// scripts/fetch-blockbench.js — Download the pre-built Blockbench web editor for PHOBOS.
+// scripts/fetch-sculptgl.js — Download the pre-built SculptGL web editor for PHOBOS.
 //
-// Blockbench ships an official pre-built web release zip on every GitHub release.
-// PHOBOS downloads that zip and serves the extracted static files via Fastify.
-// No npm, no git, no build step — same pattern as fetch-stirling.js.
+// SculptGL (stephomi/sculptgl, MIT) is a WebGL sculpting app — archived January 2026.
+// The upstream repo has no versioned releases, so PHOBOS builds it once from source
+// and uploads the result to armyofbear136/PHOBOS-BUILDS under the PHOBOS-DEPS tag.
 //
-//   node scripts/fetch-blockbench.js
-//   node scripts/fetch-blockbench.js --check   (check only, no download)
+//   node scripts/fetch-sculptgl.js
+//   node scripts/fetch-sculptgl.js --check   (check only, no download)
 //
-// Destination: ~/.phobos/editors/blockbench/
-//              Entry point: ~/.phobos/editors/blockbench/index.html
+// Destination: ~/.phobos/editors/sculptgl/
+//              Entry point: ~/.phobos/editors/sculptgl/index.html
+//
+// ── One-time build and upload (per version bump) ──────────────────────────────
+//
+//   git clone --depth 1 https://github.com/stephomi/sculptgl
+//   cd sculptgl
+//   git rev-parse --short HEAD          # → commit hash, use as version string
+//   npm install
+//   # Node 17+ requires the legacy OpenSSL provider for this old webpack version:
+//   $env:NODE_OPTIONS="--openssl-legacy-provider"   # PowerShell
+//   # export NODE_OPTIONS=--openssl-legacy-provider  # bash
+//   npx webpack --env release           # output lands in app/
+//   cd app
+//   zip -r ../sculptgl-web-<hash>.zip . # zip app/ contents, not the repo root
+//   cd ..
+//   gh release upload PHOBOS-DEPS sculptgl-web-<hash>.zip \
+//     --repo armyofbear136/PHOBOS-BUILDS
+//
+// Update SGL_VERSION below and in scripts/bin-manifest.json when bumping.
 
-import fs     from 'node:fs';
-import https  from 'node:https';
-import http   from 'node:http';
-import path   from 'node:path';
-import os     from 'node:os';
-import zlib   from 'node:zlib';
+import fs    from 'node:fs';
+import https from 'node:https';
+import http  from 'node:http';
+import path  from 'node:path';
+import os    from 'node:os';
+import zlib  from 'node:zlib';
 
 // ── Release config ────────────────────────────────────────────────────────────
-// Blockbench's web build is not a GitHub release asset — it's built from source
-// and uploaded to armyofbear136/PHOBOS-BUILDS. Bump BB_VERSION here and in
-// scripts/bin-manifest.json when updating, then upload the new zip to PHOBOS-DEPS.
-//
-// To build and upload a new version:
-//   git clone --depth 1 https://github.com/JannisX11/blockbench
-//   cd blockbench && npm install && npm run build-web
-//
-//   # Pack ONLY the web-serving files — not the full repo.
-//   # dist/bundle.js is the compiled app; the rest are static assets.
-//   zip blockbench-web-5.1.4.zip index.html manifest.webmanifest manifest-beta.webmanifest favicon.png
-//   zip -r blockbench-web-5.1.4.zip dist/bundle.js css/ lang/ lib/ font/ themes/ icons/ content/ assets/
-//
-//   # Do NOT use: zip -r blockbench-web-5.1.4.zip .
-//   # That packs node_modules/, electron/, build/, source .ts files etc. — ~500 MB of junk.
-//
-//   gh release upload PHOBOS-DEPS blockbench-web-5.1.4.zip \
-//     --repo armyofbear136/PHOBOS-BUILDS
 
-const BB_VERSION = '5.1.4';
-const DEPS_BASE  = 'https://github.com/armyofbear136/PHOBOS-BUILDS/releases/download/PHOBOS-DEPS';
-const ASSET_NAME = `blockbench-web-${BB_VERSION}.zip`;
-const ASSET_URL  = `${DEPS_BASE}/${ASSET_NAME}`;
-const MIN_BYTES  = 5_000_000; // real zip is ~20 MB
+const SGL_VERSION = '8e45daf';
+const DEPS_BASE   = 'https://github.com/armyofbear136/PHOBOS-BUILDS/releases/download/PHOBOS-DEPS';
+const ASSET_NAME  = `sculptgl-web-${SGL_VERSION}.zip`;
+const ASSET_URL   = `${DEPS_BASE}/${ASSET_NAME}`;
+const MIN_BYTES   = 3_000_000; // real zip is ~5.4 MB
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
-const DEST_DIR = path.join(os.homedir(), '.phobos', 'editors', 'blockbench');
+const DEST_DIR = path.join(os.homedir(), '.phobos', 'editors', 'sculptgl');
 const TMP_DIR  = path.join(os.homedir(), '.phobos', 'dep-prep-downloads');
 const ZIP_PATH = path.join(TMP_DIR, ASSET_NAME);
 
@@ -72,7 +72,7 @@ function httpsGet(url, headers = {}) {
           hostname: parsed.hostname,
           port:     parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
           path:     parsed.pathname + parsed.search,
-          headers:  { 'User-Agent': 'phobos-fetch-blockbench/1.0', ...headers },
+          headers:  { 'User-Agent': 'phobos-fetch-sculptgl/1.0', ...headers },
         },
         res => {
           if ([301, 302, 307, 308].includes(res.statusCode) && res.headers.location) {
@@ -125,8 +125,7 @@ async function downloadFile(url, destPath) {
 }
 
 // Minimal ZIP extractor using only node:zlib — no external deps.
-// Reads local file headers sequentially; sufficient for flat zips like
-// Blockbench's web release.
+// Reads central directory sequentially; sufficient for SculptGL's flat release zip.
 async function extractZip(zipPath, destDir) {
   const buf = fs.readFileSync(zipPath);
 
@@ -160,7 +159,6 @@ async function extractZip(zipPath, destDir) {
       continue;
     }
 
-    // Jump to local file header to get the actual data start offset
     const localNameLen  = buf.readUInt16LE(localOffset + 26);
     const localExtraLen = buf.readUInt16LE(localOffset + 28);
     const dataOffset    = localOffset + 30 + localNameLen + localExtraLen;
@@ -185,23 +183,23 @@ async function extractZip(zipPath, destDir) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-console.log('\n🧱 Blockbench Web Editor for PHOBOS');
+console.log('\n🗿 SculptGL Web Editor for PHOBOS');
 console.log('─'.repeat(52));
-console.log(`   Version:     ${BB_VERSION}`);
+console.log(`   Version:     ${SGL_VERSION}`);
 console.log(`   Destination: ${DEST_DIR}`);
 
 if (checkOnly) {
   if (isBuildPresent()) {
-    console.log(`\n✅ Blockbench ${BB_VERSION} web build present.`);
+    console.log(`\n✅ SculptGL ${SGL_VERSION} web build present.`);
   } else {
-    console.log(`\n❌ Blockbench web build not found.`);
-    console.log(`   Run: node scripts/fetch-blockbench.js`);
+    console.log(`\n❌ SculptGL web build not found.`);
+    console.log(`   Run: node scripts/fetch-sculptgl.js`);
   }
   process.exit(isBuildPresent() ? 0 : 1);
 }
 
 if (isBuildPresent()) {
-  console.log(`\n✅ Blockbench web build already present.`);
+  console.log(`\n✅ SculptGL web build already present.`);
   console.log(`   Enable in PHOBOS → CREATE → 3D.\n`);
   process.exit(0);
 }
@@ -209,7 +207,7 @@ if (isBuildPresent()) {
 fs.mkdirSync(TMP_DIR,  { recursive: true });
 fs.mkdirSync(DEST_DIR, { recursive: true });
 
-console.log(`\n📥 Downloading Blockbench ${BB_VERSION} web release…`);
+console.log(`\n📥 Downloading SculptGL ${SGL_VERSION} web release…`);
 console.log(`   ${ASSET_URL}`);
 
 try {
@@ -242,5 +240,5 @@ if (!isBuildPresent()) {
 
 try { fs.rmSync(ZIP_PATH); } catch { /* non-fatal */ }
 
-console.log(`\n✅ Blockbench ${BB_VERSION} web build ready.`);
+console.log(`\n✅ SculptGL ${SGL_VERSION} web build ready.`);
 console.log(`   Enable in PHOBOS → CREATE → 3D.\n`);

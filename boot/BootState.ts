@@ -12,16 +12,27 @@ export type BootPhase =
   | 'prep_deps'      // downloading / extracting PHOBOS-DEPS
   | 'db_init'        // database initialising
   | 'core_init'      // services, schedulers, cartridges, LLMs starting
+  | 'services_wait'  // waiting for media/browser services to come online (5 min max)
   | 'ready';         // fully initialised — frontend may enter
 
+export type ServiceReadyState = 'waiting' | 'ready' | 'failed';
+
+export interface ServiceStatus {
+  name:  string;
+  state: ServiceReadyState;
+}
+
 export interface BootProgress {
-  dep?:       string;   // current dep label
-  file?:      string;   // current filename
-  bytes?:     number;
-  total?:     number;
-  pct?:       number;
-  depsTotal?: number;
-  depsDone?:  number;
+  dep?:          string;   // current dep label
+  file?:         string;   // current filename
+  bytes?:        number;
+  total?:        number;
+  pct?:          number;
+  depsTotal?:    number;
+  depsDone?:     number;
+  // services_wait phase
+  services?:     ServiceStatus[];
+  waitDeadline?: number;   // epoch ms when the 5-min window expires
 }
 
 export interface BootState {
@@ -59,13 +70,15 @@ export function setBootPhase(phase: BootPhase): void {
 
 export function setBootProgress(progress: BootProgress): void {
   // Mutate in place — no spread, no new object on the hot path.
-  if (progress.dep       !== undefined) state.progress.dep       = progress.dep;
-  if (progress.file      !== undefined) state.progress.file      = progress.file;
-  if (progress.bytes     !== undefined) state.progress.bytes     = progress.bytes;
-  if (progress.total     !== undefined) state.progress.total     = progress.total;
-  if (progress.pct       !== undefined) state.progress.pct       = progress.pct;
-  if (progress.depsTotal !== undefined) state.progress.depsTotal = progress.depsTotal;
-  if (progress.depsDone  !== undefined) state.progress.depsDone  = progress.depsDone;
+  if (progress.dep          !== undefined) state.progress.dep          = progress.dep;
+  if (progress.file         !== undefined) state.progress.file         = progress.file;
+  if (progress.bytes        !== undefined) state.progress.bytes        = progress.bytes;
+  if (progress.total        !== undefined) state.progress.total        = progress.total;
+  if (progress.pct          !== undefined) state.progress.pct          = progress.pct;
+  if (progress.depsTotal    !== undefined) state.progress.depsTotal    = progress.depsTotal;
+  if (progress.depsDone     !== undefined) state.progress.depsDone     = progress.depsDone;
+  if (progress.services     !== undefined) state.progress.services     = progress.services;
+  if (progress.waitDeadline !== undefined) state.progress.waitDeadline = progress.waitDeadline;
   notify();
 }
 
@@ -78,9 +91,15 @@ export function setBootError(error: string): void {
 
 export function snapshot(): BootState {
   return {
-    phase:    state.phase,
-    error:    state.error,
-    progress: { ...state.progress },
+    phase: state.phase,
+    error: state.error,
+    progress: {
+      ...state.progress,
+      // Shallow-copy the services array so listeners get a stable snapshot.
+      services: state.progress.services
+        ? state.progress.services.map(s => ({ name: s.name, state: s.state }))
+        : undefined,
+    },
   };
 }
 

@@ -112,7 +112,9 @@ export function spawnProcess(
   let stderrBuf = '';
 
   child.stdout?.on('data', (chunk: Buffer) => {
-    stdoutBuf += chunk.toString();
+    const text = chunk.toString();
+    stdoutBuf += text;
+    process.stdout.write(`[${label}] ${text}`);
   });
   child.stderr?.on('data', (chunk: Buffer) => {
     const text = chunk.toString();

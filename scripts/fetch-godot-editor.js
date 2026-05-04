@@ -1,52 +1,77 @@
 #!/usr/bin/env node
-// scripts/fetch-blockbench.js — Download the pre-built Blockbench web editor for PHOBOS.
+// scripts/fetch-godot-editor.js — Download the Godot 4.6.2 web editor for PHOBOS.
 //
-// Blockbench ships an official pre-built web release zip on every GitHub release.
-// PHOBOS downloads that zip and serves the extracted static files via Fastify.
-// No npm, no git, no build step — same pattern as fetch-stirling.js.
+// Godot 4.6.2 (godotengine/godot, MIT) ships an official web editor as a
+// release asset. PHOBOS downloads the upstream zip, patches telemetry calls
+// out of godot.editor.js, re-zips, and uploads to armyofbear136/PHOBOS-BUILDS
+// under the PHOBOS-DEPS release tag.
 //
-//   node scripts/fetch-blockbench.js
-//   node scripts/fetch-blockbench.js --check   (check only, no download)
+//   node scripts/fetch-godot-editor.js
+//   node scripts/fetch-godot-editor.js --check   (check only, no download)
 //
-// Destination: ~/.phobos/editors/blockbench/
-//              Entry point: ~/.phobos/editors/blockbench/index.html
+// Destination: ~/.phobos/editors/godot/
+//              Entry point: ~/.phobos/editors/godot/godot.editor.html
+//
+// ── One-time patch and upload (per version bump) ──────────────────────────────
+//
+//   # 1. Download upstream zip:
+//   curl -L -O https://github.com/godotengine/godot/releases/download/4.6.2-stable/Godot_v4.6.2-stable_web_editor.zip
+//
+//   # 2. Extract, patch godot.editor.js, re-zip:
+//   mkdir godot-patched
+//   unzip Godot_v4.6.2-stable_web_editor.zip -d godot-patched/
+//   node -e "
+//     const fs = require('fs');
+//     const p = 'godot-patched/godot.editor.js';
+//     let s = fs.readFileSync(p, 'utf8');
+//     s = s.replace(/fetch\s*\(\s*[\"']https:\/\/godotengine\.org\/version\.json[\"']\s*\)[^;]*;/g, 'Promise.resolve();');
+//     s = s.replace(/fetch\s*\(\s*[\"']https:\/\/godotengine\.org\/[^\"']*[\"']\s*\)[^;]*;/g, 'Promise.resolve();');
+//     fs.writeFileSync(p, s);
+//     console.log('patched');
+//   "
+//   cd godot-patched && zip -r ../godot-web-editor-4.6.2.zip . && cd ..
+//
+//   # 3. Upload to PHOBOS-BUILDS:
+//   gh release upload PHOBOS-DEPS godot-web-editor-4.6.2.zip \
+//     --repo armyofbear136/PHOBOS-BUILDS
+//
+// Update GODOT_VERSION below and in scripts/bin-manifest.json when bumping.
+//
+// ── COOP/COEP headers ─────────────────────────────────────────────────────────
+//
+// Godot's web editor requires SharedArrayBuffer (Wasm threads), which requires
+// the page to be cross-origin isolated. ALL responses from the Fastify server —
+// including PHOBOS's own frontend — must include:
+//
+//   Cross-Origin-Opener-Policy:  same-origin
+//   Cross-Origin-Embedder-Policy: require-corp
+//
+// These are set globally in the server bootstrap via a Fastify onSend hook.
+// The /tools/godot/ static registration in toolsRoute.ts also sets them via
+// setHeaders as a belt-and-suspenders measure.
+//
+// Impact: COEP require-corp blocks any cross-origin resource that does not
+// respond with Cross-Origin-Resource-Policy: cross-origin (or same-site).
+// All current PHOBOS assets are same-origin. Audit any future external resources.
 
-import fs     from 'node:fs';
-import https  from 'node:https';
-import http   from 'node:http';
-import path   from 'node:path';
-import os     from 'node:os';
-import zlib   from 'node:zlib';
+import fs    from 'node:fs';
+import https from 'node:https';
+import http  from 'node:http';
+import path  from 'node:path';
+import os    from 'node:os';
+import zlib  from 'node:zlib';
 
 // ── Release config ────────────────────────────────────────────────────────────
-// Blockbench's web build is not a GitHub release asset — it's built from source
-// and uploaded to armyofbear136/PHOBOS-BUILDS. Bump BB_VERSION here and in
-// scripts/bin-manifest.json when updating, then upload the new zip to PHOBOS-DEPS.
-//
-// To build and upload a new version:
-//   git clone --depth 1 https://github.com/JannisX11/blockbench
-//   cd blockbench && npm install && npm run build-web
-//
-//   # Pack ONLY the web-serving files — not the full repo.
-//   # dist/bundle.js is the compiled app; the rest are static assets.
-//   zip blockbench-web-5.1.4.zip index.html manifest.webmanifest manifest-beta.webmanifest favicon.png
-//   zip -r blockbench-web-5.1.4.zip dist/bundle.js css/ lang/ lib/ font/ themes/ icons/ content/ assets/
-//
-//   # Do NOT use: zip -r blockbench-web-5.1.4.zip .
-//   # That packs node_modules/, electron/, build/, source .ts files etc. — ~500 MB of junk.
-//
-//   gh release upload PHOBOS-DEPS blockbench-web-5.1.4.zip \
-//     --repo armyofbear136/PHOBOS-BUILDS
 
-const BB_VERSION = '5.1.4';
-const DEPS_BASE  = 'https://github.com/armyofbear136/PHOBOS-BUILDS/releases/download/PHOBOS-DEPS';
-const ASSET_NAME = `blockbench-web-${BB_VERSION}.zip`;
-const ASSET_URL  = `${DEPS_BASE}/${ASSET_NAME}`;
-const MIN_BYTES  = 5_000_000; // real zip is ~20 MB
+const GODOT_VERSION = '4.6.2';
+const DEPS_BASE     = 'https://github.com/armyofbear136/PHOBOS-BUILDS/releases/download/PHOBOS-DEPS';
+const ASSET_NAME    = `godot-web-editor-${GODOT_VERSION}.zip`;
+const ASSET_URL     = `${DEPS_BASE}/${ASSET_NAME}`;
+const MIN_BYTES     = 20_000_000; // upstream zip is ~30 MB
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
-const DEST_DIR = path.join(os.homedir(), '.phobos', 'editors', 'blockbench');
+const DEST_DIR = path.join(os.homedir(), '.phobos', 'editors', 'godot');
 const TMP_DIR  = path.join(os.homedir(), '.phobos', 'dep-prep-downloads');
 const ZIP_PATH = path.join(TMP_DIR, ASSET_NAME);
 
@@ -58,7 +83,7 @@ const checkOnly = args.includes('--check');
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function isBuildPresent() {
-  return fs.existsSync(path.join(DEST_DIR, 'index.html'));
+  return fs.existsSync(path.join(DEST_DIR, 'godot.editor.html'));
 }
 
 function httpsGet(url, headers = {}) {
@@ -72,7 +97,7 @@ function httpsGet(url, headers = {}) {
           hostname: parsed.hostname,
           port:     parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
           path:     parsed.pathname + parsed.search,
-          headers:  { 'User-Agent': 'phobos-fetch-blockbench/1.0', ...headers },
+          headers:  { 'User-Agent': 'phobos-fetch-godot-editor/1.0', ...headers },
         },
         res => {
           if ([301, 302, 307, 308].includes(res.statusCode) && res.headers.location) {
@@ -124,13 +149,10 @@ async function downloadFile(url, destPath) {
   fs.renameSync(tmpPath, destPath);
 }
 
-// Minimal ZIP extractor using only node:zlib — no external deps.
-// Reads local file headers sequentially; sufficient for flat zips like
-// Blockbench's web release.
+// Minimal ZIP extractor — same implementation as fetch-blockbench / fetch-sculptgl.
 async function extractZip(zipPath, destDir) {
   const buf = fs.readFileSync(zipPath);
 
-  // Find End of Central Directory record (signature 0x06054b50)
   let eocdOffset = -1;
   for (let i = buf.length - 22; i >= 0; i--) {
     if (buf.readUInt32LE(i) === 0x06054b50) { eocdOffset = i; break; }
@@ -160,7 +182,6 @@ async function extractZip(zipPath, destDir) {
       continue;
     }
 
-    // Jump to local file header to get the actual data start offset
     const localNameLen  = buf.readUInt16LE(localOffset + 26);
     const localExtraLen = buf.readUInt16LE(localOffset + 28);
     const dataOffset    = localOffset + 30 + localNameLen + localExtraLen;
@@ -185,23 +206,23 @@ async function extractZip(zipPath, destDir) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-console.log('\n🧱 Blockbench Web Editor for PHOBOS');
+console.log('\n🎮 Godot Web Editor for PHOBOS');
 console.log('─'.repeat(52));
-console.log(`   Version:     ${BB_VERSION}`);
+console.log(`   Version:     ${GODOT_VERSION}`);
 console.log(`   Destination: ${DEST_DIR}`);
 
 if (checkOnly) {
   if (isBuildPresent()) {
-    console.log(`\n✅ Blockbench ${BB_VERSION} web build present.`);
+    console.log(`\n✅ Godot ${GODOT_VERSION} web editor present.`);
   } else {
-    console.log(`\n❌ Blockbench web build not found.`);
-    console.log(`   Run: node scripts/fetch-blockbench.js`);
+    console.log(`\n❌ Godot web editor not found.`);
+    console.log(`   Run: node scripts/fetch-godot-editor.js`);
   }
   process.exit(isBuildPresent() ? 0 : 1);
 }
 
 if (isBuildPresent()) {
-  console.log(`\n✅ Blockbench web build already present.`);
+  console.log(`\n✅ Godot web editor already present.`);
   console.log(`   Enable in PHOBOS → CREATE → 3D.\n`);
   process.exit(0);
 }
@@ -209,7 +230,7 @@ if (isBuildPresent()) {
 fs.mkdirSync(TMP_DIR,  { recursive: true });
 fs.mkdirSync(DEST_DIR, { recursive: true });
 
-console.log(`\n📥 Downloading Blockbench ${BB_VERSION} web release…`);
+console.log(`\n📥 Downloading Godot ${GODOT_VERSION} web editor…`);
 console.log(`   ${ASSET_URL}`);
 
 try {
@@ -234,13 +255,12 @@ try {
 }
 
 if (!isBuildPresent()) {
-  console.error(`\n❌ Extraction completed but index.html not found in ${DEST_DIR}.`);
-  console.error(`   The release zip structure may have changed — check asset contents at:`);
-  console.error(`   ${ASSET_URL}`);
+  console.error(`\n❌ Extraction completed but godot.editor.html not found in ${DEST_DIR}.`);
+  console.error(`   The release zip structure may have changed — check asset contents.`);
   process.exit(1);
 }
 
 try { fs.rmSync(ZIP_PATH); } catch { /* non-fatal */ }
 
-console.log(`\n✅ Blockbench ${BB_VERSION} web build ready.`);
+console.log(`\n✅ Godot ${GODOT_VERSION} web editor ready.`);
 console.log(`   Enable in PHOBOS → CREATE → 3D.\n`);

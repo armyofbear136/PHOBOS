@@ -417,8 +417,9 @@ export async function startKavita(cfg: KavitaStartConfig): Promise<{ refreshToke
 
     service.process = proc;
 
-    // First boot includes DB migration — allow up to 120s.
-    const portTimeout = cfg.firstBoot ? 120_000 : 30_000;
+    // Both first boot (DB creation) and subsequent boots (possible upgrade migrations)
+    // can take significant time on slower machines — always allow 120s.
+    const portTimeout = 120_000;
     await waitForPort(KAVITA_PORT, portTimeout);
 
     const refreshToken = await bootstrap(cfg.adminPassword, cfg.refreshToken);

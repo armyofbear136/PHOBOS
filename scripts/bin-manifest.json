@@ -174,6 +174,15 @@
     },
     "phobos-app": {
       "version": "1.2.2"
+    },
+    "kokoro-82m": {
+      "version": "1.2.1"
+    },
+    "whisper-cli": {
+      "version": "whisper.cpp-1.7.5"
+    },
+    "ace-step": {
+      "version": "acestep.cpp-e0c8d75"
     }
   }
 }

@@ -63,6 +63,8 @@ export interface VendorEnvStatus {
   diskBytes: number;
   /** True if the env exists but was built against an older package version — needs update */
   stale: boolean;
+  /** True if SageAttention ≥2.1.1 is installed and importable in this vendor's venv */
+  sageReady: boolean;
 }
 
 export interface PythonEnvStatus {
@@ -73,7 +75,7 @@ export interface PythonEnvStatus {
 }
 
 export interface InstallProgress {
-  phase: 'detect' | 'venv' | 'torch' | 'packages' | 'verify' | 'configs' | 'complete' | 'error';
+  phase: 'detect' | 'venv' | 'torch' | 'packages' | 'sage' | 'verify' | 'configs' | 'complete' | 'error';
   vendor: GpuVendor;
   label: string;
   /** 0.0–1.0 within current phase, -1 for indeterminate */
@@ -104,7 +106,12 @@ interface EnvManifest {
 //       (cascade prevention). transformers 4.51.3 wheel had bad modeling_utils.py.
 //   4 — transformers==4.54.0: Qwen3 GGUF support lands in GGUF_CONFIG_MAPPING.
 //       DTensor import now properly guarded — no patch needed on ROCm Windows.
-const REQUIRED_ENV_VERSION = 4;
+//   5 — CUDA index bumped from cu121 (torch ~2.6) to cu128 (torch 2.7.0 stable).
+//       SageAttention post4 ABI3 wheel now installs automatically on CUDA.
+//       triton-windows added to CUDA install on Windows (was missing, only Linux CUDA
+//       wheels bundle triton).
+//  6 - incrementing during testing
+const REQUIRED_ENV_VERSION = 17; // v17: hf_xet in Pass 1; fix patch path for compiled exe; torchvision+mistral_common in ensureCartridgeDeps
 
 // ── Module state ─────────────────────────────────────────────────────────────
 
@@ -243,7 +250,7 @@ const AMD_ROCM_WIN_BASE = 'https://repo.radeon.com/rocm/windows/rocm-rel-7.2';
  *  the Linux index URL for ROCm (used on Linux only). */
 function vendorIndexUrl(vendor: GpuVendor): string {
   switch (vendor) {
-    case 'cuda':  return 'https://download.pytorch.org/whl/cu121';
+    case 'cuda':  return 'https://download.pytorch.org/whl/cu128';
     case 'rocm':  return process.platform === 'win32'
                     ? AMD_ROCM_WIN_BASE  // stored in manifest for reference only
                     : 'https://download.pytorch.org/whl/rocm7.2';
@@ -451,7 +458,8 @@ export async function getStatus(): Promise<PythonEnvStatus> {
       } catch { /* ignore */ }
     }
 
-    vendors.push({ vendor, ready, torchVersion, gpuAvailable, diskBytes, stale: isEnvStale(vendor) });
+    const sageReady = ready ? await checkSageReady(vendor) : false;
+    vendors.push({ vendor, ready, torchVersion, gpuAvailable, diskBytes, stale: isEnvStale(vendor), sageReady });
   }
 
   return { python, vendors };
@@ -513,35 +521,46 @@ export async function* install(vendor: GpuVendor): AsyncGenerator<InstallProgres
     yield { phase: 'detect', vendor, label: `Python ${sysPy.version} — ${vendorLabel(vendor)}`, progress: 1.0, done: false };
 
     // ── Phase: venv ────────────────────────────────────────────────────────
+    // Always wipe and recreate — never attempt to install into an existing
+    // directory. A partial or aborted previous install leaves the venv in an
+    // indeterminate state: pip, torch, or diffusers may be half-written,
+    // .dist-info directories may be inconsistent, and `python -m venv` on an
+    // existing directory silently skips recreation. Wiping first guarantees a
+    // clean slate regardless of how the previous attempt ended.
     const dir = vendorDir(vendor);
     const pyBin = vendorPython(vendor);
 
-    if (!fs.existsSync(pyBin)) {
-      yield { phase: 'venv', vendor, label: 'Creating virtual environment…', progress: 0, done: false };
-      fs.mkdirSync(dir, { recursive: true });
+    yield { phase: 'venv', vendor, label: 'Creating virtual environment…', progress: 0, done: false };
 
+    if (fs.existsSync(dir)) {
       try {
-        await execFileAsync(sysPy.path, ['-m', 'venv', dir], { timeout: 60_000 });
+        await fsPromises.rm(dir, { recursive: true, force: true });
       } catch (err) {
-        const msg = `Failed to create venv: ${(err as Error).message}. ` +
-          (process.platform === 'linux'
-            ? 'You may need: sudo apt install python3-venv'
-            : 'Check that your Python installation includes the venv module.');
-        yield { phase: 'error', vendor, label: msg, progress: -1, done: true, error: msg };
-        return;
+        console.warn(`[PythonEnvManager] Could not remove existing dir ${dir}: ${err}`);
       }
-
-      if (!fs.existsSync(pyBin)) {
-        const msg = 'venv created but Python binary not found';
-        yield { phase: 'error', vendor, label: msg, progress: -1, done: true, error: msg };
-        return;
-      }
-
-      console.log(`[PythonEnvManager] venv created at ${dir}`);
-      yield { phase: 'venv', vendor, label: 'Virtual environment created', progress: 1.0, done: false };
-    } else {
-      yield { phase: 'venv', vendor, label: 'Virtual environment exists', progress: 1.0, done: false };
     }
+
+    fs.mkdirSync(dir, { recursive: true });
+
+    try {
+      await execFileAsync(sysPy.path, ['-m', 'venv', dir], { timeout: 60_000 });
+    } catch (err) {
+      const msg = `Failed to create venv: ${(err as Error).message}. ` +
+        (process.platform === 'linux'
+          ? 'You may need: sudo apt install python3-venv'
+          : 'Check that your Python installation includes the venv module.');
+      yield { phase: 'error', vendor, label: msg, progress: -1, done: true, error: msg };
+      return;
+    }
+
+    if (!fs.existsSync(pyBin)) {
+      const msg = 'venv created but Python binary not found';
+      yield { phase: 'error', vendor, label: msg, progress: -1, done: true, error: msg };
+      return;
+    }
+
+    console.log(`[PythonEnvManager] venv created at ${dir}`);
+    yield { phase: 'venv', vendor, label: 'Virtual environment created', progress: 1.0, done: false };
 
     // Upgrade pip
     try {
@@ -564,12 +583,59 @@ export async function* install(vendor: GpuVendor): AsyncGenerator<InstallProgres
     // ── Phase: packages ────────────────────────────────────────────────────
     yield { phase: 'packages', vendor, label: 'Installing diffusers stack…', progress: -1, done: false };
 
-    const pkgResult = await installDiffusersStack(pyBin);
+    const pkgResult = await installDiffusersStack(pyBin, indexUrl);
     if (!pkgResult.ok) {
       yield { phase: 'error', vendor, label: pkgResult.error!, progress: -1, done: true, error: pkgResult.error! };
       return;
     }
     yield { phase: 'packages', vendor, label: 'Diffusers stack installed', progress: 1.0, done: false };
+
+    // ── Phase: sage ────────────────────────────────────────────────────────
+    // CUDA only. Fully isolated try/catch — any failure (pip error, DLL load
+    // issue, network timeout, SSE socket drop during the long compile) must
+    // never propagate out of this block. Manifest write happens after this.
+    if (vendor === 'cuda') {
+      yield { phase: 'sage', vendor, label: 'Installing SageAttention…', progress: -1, done: false };
+      try {
+        const sageResult = await installSageAttention(pyBin, vendor);
+        if (sageResult.skipped) {
+          yield { phase: 'sage', vendor, label: 'SageAttention: skipped (not applicable for this platform)', progress: 1.0, done: false };
+        } else if (!sageResult.ok) {
+          console.warn(`[PythonEnvManager] SageAttention install failed (non-fatal): ${sageResult.error}`);
+          yield { phase: 'sage', vendor, label: `SageAttention: install failed — ${sageResult.error ?? 'unknown error'} (generation will still work)`, progress: 1.0, done: false };
+        } else {
+          yield { phase: 'sage', vendor, label: 'SageAttention ready', progress: 1.0, done: false };
+        }
+      } catch (sageErr) {
+        console.warn(`[PythonEnvManager] SageAttention phase threw (non-fatal): ${(sageErr as Error).message}`);
+        yield { phase: 'sage', vendor, label: 'SageAttention: skipped (unexpected error — generation will still work)', progress: 1.0, done: false };
+      }
+    }
+
+    // ── Phase: patch ───────────────────────────────────────────────────────
+    // Apply torchaudio/_torchcodec.py soundfile fallback LAST — after all pip
+    // installs (including sage) complete. Any pip install that touches torchaudio
+    // resets the file to the original. Running here ensures the patch is always
+    // the final write to that file before the venv is used.
+    // Resolve patch source — works in dev (tsx) and prod (compiled exe).
+    // build.js stages _torchcodec.py to dist/ root so it lands next to the exe.
+    const patchCandidates: string[] = [
+      path.join(path.dirname(__filename), '_torchcodec.py'),
+      path.join(path.dirname(__filename), 'phobos', '_torchcodec.py'),
+      path.join(process.execPath.replace(/[\/][^\/]+$/, ''), '_torchcodec.py'),
+    ];
+    if (process.env['PHOBOS_BIN_DIR']) {
+      patchCandidates.unshift(path.join(process.env['PHOBOS_BIN_DIR'], '_torchcodec.py'));
+    }
+    const patchSrc = patchCandidates.find(p => fs.existsSync(p)) ?? '';
+    const torchaudioPkg = path.join(path.dirname(pyBin), '..', 'Lib', 'site-packages', 'torchaudio');
+    const patchDest = path.join(torchaudioPkg, '_torchcodec.py');
+    if (patchSrc && fs.existsSync(torchaudioPkg)) {
+      fs.copyFileSync(patchSrc, patchDest);
+      console.log('[PythonEnvManager] Applied torchaudio/_torchcodec.py patch from', patchSrc);
+    } else {
+      console.warn('[PythonEnvManager] _torchcodec.py patch source not found — F5-TTS may fail without FFmpeg');
+    }
 
     // ── Phase: verify ──────────────────────────────────────────────────────
     yield { phase: 'verify', vendor, label: 'Verifying…', progress: 0, done: false };
@@ -689,7 +755,12 @@ async function installTriton(
 
   switch (vendor) {
     case 'cuda':
-      return { ok: true }; // ships with CUDA wheels
+      // On Linux, triton is bundled with the CUDA torch wheel — nothing to do.
+      // On Windows, triton is not bundled; install triton-windows from PyPI.
+      // triton-windows bundles its own CUDA toolchain (≥3.2.0.post11) and TinyCC
+      // (≥3.2.0.post13) — no VS Build Tools or CUDA Toolkit required on the host.
+      if (process.platform !== 'win32') return { ok: true };
+      return runPip(pyBin, ['-m', 'pip', 'install', 'triton-windows']);
     case 'rocm':
       return runPip(pyBin, ['-m', 'pip', 'install', 'pytorch-triton-rocm', '--index-url', indexUrl]);
     case 'xpu':
@@ -699,44 +770,187 @@ async function installTriton(
   }
 }
 
-async function installDiffusersStack(pyBin: string): Promise<{ ok: boolean; error?: string }> {
+async function installDiffusersStack(
+  pyBin: string,
+  indexUrl: string,
+): Promise<{ ok: boolean; error?: string }> {
+  // ── Pass 1: core image-gen stack with pinned versions ─────────────────────
+  // All pins must be in one invocation so pip's resolver sees the full constraint
+  // graph simultaneously. Installing separately allows later calls to override pins.
+  //
+  // diffusers 0.36.0: first version with ZImagePipeline.
+  // transformers 4.54.0: first version with Qwen3 GGUF support. f5-tts pulls
+  //   transformers>=5.x. It is installed in Pass 2 and transformers is immediately
+  //   force-repinned to 4.54.0 after.
+  // safetensors 0.4.5: compatible with diffusers 0.36 and transformers 4.54.
+  // torchvision/timm/einops are NOT included here — torchvision must come from
+  //   the vendor index (cu128/rocm) not PyPI or it installs a CPU-only wheel.
+  //   timm and einops are Florence-2 caption deps, not needed for image gen.
   const pipResult = await runPip(pyBin, [
     '-m', 'pip', 'install',
-    // All three must be installed together in a single pip invocation so the
-    // resolver sees the full constraint graph and can't cascade-upgrade one
-    // package's files while leaving another's metadata stale.
-    //
-    // diffusers 0.36.0: first version with ZImagePipeline. 0.37+ requires
-    //   safetensors>=0.8.0-rc.0 which cascades into newer transformers files.
-    // transformers 4.54.0: first version with Qwen3 GGUF support in GGUF_CONFIG_MAPPING.
-    //   Earlier versions (4.51.3–4.53) don't have qwen3 in the GGUF loader, causing
-    //   "GGUF model with architecture qwen3 is not supported yet" for Z-Image/Qwen-Image.
-    //   In 4.54.0 the bare `import torch.distributed.tensor` is gone — the DTensor import
-    //   is now guarded by `if _is_dtensor_available:` which evaluates False on ROCm Windows
-    //   (torch.distributed.is_available() returns False). No patch needed, no crash.
-    //   Qwen3 model files themselves have zero torch.distributed imports.
-    // safetensors 0.4.5: compatible with diffusers 0.36 and transformers 4.54.
     'diffusers==0.36.0',
     'transformers==4.54.0',
     'safetensors==0.4.5',
-    // huggingface-hub: let pip resolve within diffusers 0.36.0's declared range (>=0.34.0).
     'accelerate>=0.20.0',
     'gguf>=0.10.0',
     'sentencepiece',
     'protobuf',
-    // Training deps — installed here so the venv is training-ready from setup.
     'peft>=0.10.0',
     'bitsandbytes>=0.43.0',
     'prodigyopt>=1.0',
-    'torchvision',
     'Pillow',
-    // Caption deps — Florence-2 requires timm and einops.
-    'timm',
     'einops',
+    // soundfile: audio I/O used by the torchcodec fallback patch and directly
+    // by audio processing paths. Declared here to ensure it is present regardless
+    // of f5-tts install order.
+    'soundfile',
+    // hf_xet: Xet storage accelerator for HuggingFace downloads. Optional but
+    // eliminates the warning on model downloads. Pure Python, no conflicts.
+    'hf_xet',
+    // tokenizers must be pinned alongside transformers. transformers==4.54.0
+    // requires tokenizers>=0.21,<0.22. f5-tts/trl/datasets install 0.22.x which
+    // makes transformers unimportable. Pin it here so the resolver sees the
+    // constraint in the same pass as transformers==4.54.0.
+    'tokenizers>=0.21,<0.22',
   ]);
   if (!pipResult.ok) return pipResult;
 
+  // ── Pass 2: F5-TTS full install + immediate transformers re-pin ──────────
+  // f5-tts is installed normally so all its deps (hydra-core, omegaconf, etc.)
+  // resolve correctly. It will upgrade transformers to >=5.x. We immediately
+  // re-pin transformers==4.54.0 in a follow-up call to restore the required
+  // version. pip accepts this because 4.54.0 satisfies our explicit constraint
+  // even if f5-tts nominally wants >=5.x — the pin wins at runtime.
+  const f5Result = await runPip(pyBin, ['-m', 'pip', 'install', 'f5-tts']);
+  if (!f5Result.ok) {
+    console.warn(`[PythonEnvManager] f5-tts install failed (non-fatal): ${f5Result.error}`);
+  } else {
+    // Re-pin transformers after f5-tts upgraded it. Force-reinstall to ensure
+    // the 4.54.0 wheel is written even if pip thinks 5.x satisfies the spec.
+    const repin = await runPip(pyBin, [
+      '-m', 'pip', 'install', '--force-reinstall', '--no-deps',
+      'transformers==4.54.0',
+      'tokenizers>=0.21,<0.22',
+    ]);
+    if (!repin.ok) {
+      console.warn(`[PythonEnvManager] transformers re-pin failed: ${repin.error}`);
+    }
+  }
+
   return { ok: true };
+}
+
+// ── SageAttention wheel index ─────────────────────────────────────────────────
+// woct0rdho/SageAttention v2.2.0-windows.post4 ships two universal ABI3 wheels:
+//   - cu128: for torch built against CUDA 12.x (covers torch ≥2.7 in practice)
+//   - cu130: for torch built against CUDA 13.x (Blackwell sm_120)
+//
+// The "torch2.9.0andhigher" label in the filename is the maintainer's strict
+// guarantee. In practice both wheels work with torch 2.7+ due to libtorch
+// stable ABI — confirmed by Wan2GP, DazzleML installer, and the woct0rdho README.
+//
+// Post4 dropped per-torch-minor wheels entirely. No cu121/cu124/cu126 wheels
+// exist in this release — hence the CUDA index bump to cu128.
+//
+// Cannot be published to PyPI because PyPI disallows per-torch-version variants.
+// Update SAGE_WHEEL_RELEASE tag and entries when woct0rdho publishes a new release.
+const SAGE_WHEEL_RELEASE = 'v2.2.0-windows.post4';
+const SAGE_WHEEL_BASE = `https://github.com/woct0rdho/SageAttention/releases/download/${SAGE_WHEEL_RELEASE}`;
+const SAGE_WHEEL_INDEX: Record<string, { win: string; linux: string }> = {
+  // CUDA 12.x builds (cu126, cu128, cu129 — all resolve to this wheel)
+  'cu128': {
+    win:   `${SAGE_WHEEL_BASE}/sageattention-2.2.0%2Bcu128torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl`,
+    linux: `${SAGE_WHEEL_BASE}/sageattention-2.2.0%2Bcu128torch2.9.0andhigher.post4-cp39-abi3-linux_x86_64.whl`,
+  },
+  // CUDA 13.x builds (cu130 — Blackwell sm_120, RTX 50-series)
+  'cu130': {
+    win:   `${SAGE_WHEEL_BASE}/sageattention-2.2.0%2Bcu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl`,
+    linux: `${SAGE_WHEEL_BASE}/sageattention-2.2.0%2Bcu130torch2.9.0andhigher.post4-cp39-abi3-linux_x86_64.whl`,
+  },
+};
+
+/**
+ * Selects the SageAttention wheel key from the installed torch version string.
+ * torch.__version__ looks like '2.7.0+cu128' — we extract the cu1XX suffix.
+ * Defaults to 'cu128' (CUDA 12.x) for any unrecognised suffix.
+ */
+function sageWheelKey(torchVersion: string): string {
+  const match = torchVersion.match(/\+(cu\d+)/);
+  if (!match) return 'cu128'; // no CUDA suffix — shouldn't happen for CUDA vendor
+  const suffix = match[1]; // e.g. 'cu128', 'cu129', 'cu130'
+  return suffix in SAGE_WHEEL_INDEX ? suffix : 'cu128';
+}
+
+/**
+ * Installs SageAttention 2.x into the vendor venv using a prebuilt ABI3 wheel.
+ * Non-fatal: returns { ok: true, skipped: true } on non-CUDA vendors or macOS.
+ * No system build tools required — the wheel is precompiled.
+ */
+async function installSageAttention(
+  pyBin: string,
+  vendor: GpuVendor,
+): Promise<{ ok: boolean; skipped: boolean; error?: string }> {
+  // SageAttention prebuilt wheels are CUDA-only.
+  if (vendor !== 'cuda') return { ok: true, skipped: true };
+
+  // macOS has no Metal backend in SageAttention.
+  if (process.platform === 'darwin') return { ok: true, skipped: true };
+
+  // Read the installed torch version string to determine the CUDA build suffix.
+  // On Windows, NTFS metadata and Defender scans can cause a brief window where
+  // newly written .dist-info directories are not yet visible to the import system
+  // immediately after pip exits. Retry up to 3 times with a 1s delay.
+  let torchVersion = '';
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 1_000));
+    try {
+      const { stdout } = await execFileAsync(
+        pyBin,
+        ['-c', 'import torch; print(torch.__version__)'],
+        { timeout: 15_000 },
+      );
+      torchVersion = stdout.trim(); // e.g. '2.11.0+cu128'
+      break;
+    } catch (err) {
+      if (attempt === 3) {
+        console.warn(`[PythonEnvManager] SageAttention: could not read torch version after ${attempt} attempts — skipping: ${err}`);
+        return { ok: true, skipped: true };
+      }
+      console.warn(`[PythonEnvManager] SageAttention: torch version read attempt ${attempt} failed, retrying…`);
+    }
+  }
+
+  const key = sageWheelKey(torchVersion);
+  const platform = process.platform === 'win32' ? 'win' : 'linux';
+  const wheelUrl = SAGE_WHEEL_INDEX[key][platform];
+
+  console.log(`[PythonEnvManager] Installing SageAttention (${key}, ${platform}, torch ${torchVersion})…`);
+
+  const result = await runPip(pyBin, ['-m', 'pip', 'install', wheelUrl]);
+  if (!result.ok) {
+    return { ok: false, skipped: false, error: result.error };
+  }
+
+  return { ok: true, skipped: false };
+}
+
+/**
+ * Returns true if SageAttention ≥2.1.1 is installed and importable in the venv.
+ * Used by getStatus() to populate VendorEnvStatus.sageReady.
+ */
+export async function checkSageReady(vendor: GpuVendor): Promise<boolean> {
+  if (vendor !== 'cuda') return false;
+  // Some sageattention wheel builds omit __version__. Treat a successful import
+  // as sufficient — if it imports, it's installed. Only gate on version when the
+  // attribute is present (it will be ≥2.1.1 since that's what we install).
+  const script = [
+    'import sageattention',
+    'from packaging.version import Version',
+    'v = getattr(sageattention, "__version__", None)',
+    'ok = v is None or Version(v) >= Version("2.1.1")',
+    'print("ok" if ok else "old")',
+  ].join('; ');
+  return (await runVenvCheck(vendor, script, 15_000)) === 'ok';
 }
 
 /**
@@ -971,4 +1185,103 @@ export async function* downloadAndInstallPython(): AsyncGenerator<PythonInstallP
     progress: 1.0,
     done: true,
   };
+}
+
+// ── Cartridge training deps ───────────────────────────────────────────────────
+
+// Non-torch deps installed first (no build-time torch dependency).
+const CARTRIDGE_BASE_DEPS = [
+  // tokenizers must stay pinned to <0.22 — transformers==4.54.0 requires it.
+  // ensureCartridgeDeps installs trl/datasets which want 0.22.x; this pin
+  // prevents them from upgrading it and breaking the transformers import.
+  'tokenizers>=0.21,<0.22',
+  // All cartridge training deps installed with --no-deps to prevent any of
+  // them from upgrading torch, transformers, or tokenizers.
+  'trl>=0.12.0',
+  'datasets>=2.18.0',
+  'huggingface_hub>=0.23.0',
+  'sentencepiece>=0.2.0',
+  'protobuf>=3.20.0',
+  'pypdf>=4.0.0',
+  'markdown-it-py>=3.0',
+];
+
+// Unsloth installed separately without the [cu124-torch250] extras bracket.
+// The extras bracket causes pip to pull xformers which tries to build from
+// source and fails because torch is not present in the pip build environment
+// (even though it is in the venv). Torch is already installed by the main
+// PyTorch setup step — unsloth will detect and use it automatically.
+const UNSLOTH_DEP = 'unsloth>=2025.3.0';
+
+/**
+ * Installs unsloth + cartridge training deps into the existing inference venv.
+ * Idempotent: does a fast import check first, installs only if needed.
+ * Called by CartridgeTrainer.ts before spawning phobos-lm-trainer.py.
+ *
+ * Install order matters:
+ *   1. Base deps (trl, datasets, etc.) — no torch build dependency
+ *   2. unsloth (no extras) — torch already present from PyTorch setup step
+ */
+export async function ensureCartridgeDeps(vendor: GpuVendor): Promise<void> {
+  const pyBin = getPythonPath(vendor);
+  if (!pyBin) throw new Error(`No Python venv for vendor '${vendor}' — run PyTorch setup first`);
+
+  // Unsloth patches torch internals at import time — takes ~20s on first run.
+  // PYTHONUTF8=1 required: trl reads Jinja templates with no encoding arg,
+  // which defaults to cp1252 on Windows and fails on non-ASCII characters.
+  const importEnv = { ...process.env, PYTHONUTF8: '1' };
+
+  try {
+    await execFileAsync(
+      pyBin,
+      ['-c', 'import unsloth, trl, safetensors, huggingface_hub; print("ok")'],
+      { timeout: 60_000, env: importEnv },
+    );
+    return; // already installed
+  } catch { /* install needed */ }
+
+  // Step 0: torchvision from cu128 index — unsloth requires it at import time.
+  if (vendor === 'cuda') {
+    await execFileAsync(
+      pyBin,
+      ['-m', 'pip', 'install', '--quiet', '--no-deps',
+       'torchvision', '--index-url', 'https://download.pytorch.org/whl/cu128'],
+      { timeout: 5 * 60 * 1000, maxBuffer: 50 * 1024 * 1024 },
+    );
+  }
+
+  // Step 1: base deps + mistral_common (pre-install prevents unsloth's internal
+  // pip call during save_pretrained_merged from failing on locked numpy DLLs).
+  await execFileAsync(
+    pyBin,
+    ['-m', 'pip', 'install', '--quiet', ...CARTRIDGE_BASE_DEPS, 'mistral_common'],
+    { timeout: 10 * 60 * 1000, maxBuffer: 50 * 1024 * 1024 },
+  );
+
+  // Step 2: unsloth without extras bracket and --no-deps so it cannot
+  // downgrade torch or upgrade tokenizers/transformers.
+  await execFileAsync(
+    pyBin,
+    ['-m', 'pip', 'install', '--quiet', '--no-deps', UNSLOTH_DEP],
+    { timeout: 10 * 60 * 1000, maxBuffer: 50 * 1024 * 1024 },
+  );
+
+  // Step 2b: unsloth_zoo — required by unsloth at import time, also --no-deps
+  await execFileAsync(
+    pyBin,
+    ['-m', 'pip', 'install', '--quiet', '--no-deps', 'unsloth_zoo'],
+    { timeout: 5 * 60 * 1000, maxBuffer: 50 * 1024 * 1024 },
+  );
+
+  // Step 3: patch trl/chat_template_utils.py — read_text() calls use the system
+  // codepage on Windows (cp1252) which cannot decode the DeepSeek v3 Jinja template
+  // (contains byte 0x81). Replace all read_text() calls with read_text(encoding="utf-8").
+  const trlChatUtils = path.join(
+    path.dirname(pyBin), '..', 'Lib', 'site-packages', 'trl', 'chat_template_utils.py',
+  );
+  if (fs.existsSync(trlChatUtils)) {
+    const src = fs.readFileSync(trlChatUtils, 'utf-8');
+    const patched = src.replaceAll('.read_text()', '.read_text(encoding="utf-8")');
+    if (patched !== src) fs.writeFileSync(trlChatUtils, patched, 'utf-8');
+  }
 }

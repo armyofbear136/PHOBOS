@@ -5,11 +5,20 @@
  * existing downloaded models. Exercises the full TypeScript → Python → GPU path.
  *
  * Usage:
- *   npx tsx test-pytorch-gen.ts                       — Chroma on default GPU (CUDA preferred)
- *   npx tsx test-pytorch-gen.ts --vendor rocm         — Chroma on AMD ROCm GPU (890M)
- *   npx tsx test-pytorch-gen.ts --gpu 100             — Chroma on GPU index 100 (890M)
- *   npx tsx test-pytorch-gen.ts sdxl                  — first downloaded SDXL
- *   npx tsx test-pytorch-gen.ts --prompt "a cat"      — custom prompt
+ *   npx tsx test-pytorch-gen.ts                          — Chroma on default GPU (CUDA preferred)
+ *   npx tsx test-pytorch-gen.ts --vendor rocm            — Chroma on AMD ROCm GPU
+ *   npx tsx test-pytorch-gen.ts --gpu 100                — Chroma on GPU index 100
+ *   npx tsx test-pytorch-gen.ts sdxl                     — first downloaded SDXL
+ *   npx tsx test-pytorch-gen.ts flux                     — first downloaded FLUX.1
+ *   npx tsx test-pytorch-gen.ts kontext --ref-image ./test-outputs/reference.png
+ *   npx tsx test-pytorch-gen.ts flux2                    — FLUX.2-klein-4B
+ *   npx tsx test-pytorch-gen.ts z-image                  — Z-Image Turbo
+ *   npx tsx test-pytorch-gen.ts qwen-image               — Qwen-Image
+ *   npx tsx test-pytorch-gen.ts wan                      — Wan 2.1 T2V 1.3B (fastest)
+ *   npx tsx test-pytorch-gen.ts --prompt "a cat"         — custom prompt
+ *   npx tsx test-pytorch-gen.ts --no-offload             — skip offload even on small VRAM cards
+ *   npx tsx test-pytorch-gen.ts --sage-attention         — enable SageAttention backend
+ *   npx tsx test-pytorch-gen.ts --torch-compile          — enable torch.compile
  */
 
 import * as fs from 'fs';
@@ -28,6 +37,14 @@ import {
   FLUX_CLIP_L,
   FLUX_T5_Q3,
   FLUX_T5_Q4,
+  FLUX2_VAE,
+  ZIMAGE_LLM_Q4,
+  FLUX2_LLM_9B_Q4,
+  QWEN_IMAGE_VAE,
+  QWEN_IMAGE_LLM_Q4,
+  WAN_VAE,
+  WAN_T5_Q5,
+  WAN_CLIP_VISION,
   IMAGE_MODEL_CATALOGUE,
 } from './phobos/PhobosLocalManager.js';
 import { getPythonPath, gpuToVendor, isVendorReady } from './phobos/PythonEnvManager.js';
@@ -42,6 +59,10 @@ let modelType = 'chroma';
 let customPrompt: string | null = null;
 let forceVendor: string | null = null;
 let forceGpuIdx: number | null = null;
+let noOffload = false;
+let sageAttention = false;
+let torchCompile = false;
+let refImage: string | null = null;
 
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
@@ -51,6 +72,14 @@ for (let i = 2; i < process.argv.length; i++) {
     forceVendor = process.argv[++i];
   } else if (arg === '--gpu' && process.argv[i + 1]) {
     forceGpuIdx = Number(process.argv[++i]);
+  } else if (arg === '--no-offload') {
+    noOffload = true;
+  } else if (arg === '--sage-attention') {
+    sageAttention = true;
+  } else if (arg === '--torch-compile') {
+    torchCompile = true;
+  } else if (arg === '--ref-image' && process.argv[i + 1]) {
+    refImage = process.argv[++i];
   } else if (!arg.startsWith('--')) {
     modelType = arg;
   }
@@ -118,13 +147,49 @@ let spec = (() => {
     return getImageModelSpec('chroma-q4');
   }
   if (modelType === 'sdxl') {
-    // Find first downloaded SDXL
     const sdxl = IMAGE_MODEL_CATALOGUE.filter(m =>
       m.runnerProfile === 'sdxl' && isImageModelDownloaded(m)
     );
     return sdxl[0] ?? null;
   }
-  // Try direct modelId
+  if (modelType === 'flux') {
+    const flux = IMAGE_MODEL_CATALOGUE.filter(m =>
+      m.runnerProfile === 'flux' && m.variant !== 'chroma' && isImageModelDownloaded(m)
+    );
+    return flux[0] ?? null;
+  }
+  if (modelType === 'kontext') {
+    const k = IMAGE_MODEL_CATALOGUE.filter(m =>
+      m.runnerProfile === 'flux1-kontext' && isImageModelDownloaded(m)
+    );
+    return k[0] ?? null;
+  }
+  if (modelType === 'flux2') {
+    const f2 = IMAGE_MODEL_CATALOGUE.filter(m =>
+      m.runnerProfile === 'flux2' && isImageModelDownloaded(m)
+    );
+    return f2[0] ?? null;
+  }
+  if (modelType === 'z-image') {
+    const zi = IMAGE_MODEL_CATALOGUE.filter(m =>
+      m.runnerProfile === 'z-image' && isImageModelDownloaded(m)
+    );
+    return zi[0] ?? null;
+  }
+  if (modelType === 'qwen-image') {
+    const qi = IMAGE_MODEL_CATALOGUE.filter(m =>
+      m.runnerProfile === 'qwen-image' && isImageModelDownloaded(m)
+    );
+    return qi[0] ?? null;
+  }
+  if (modelType === 'wan') {
+    // Prefer 1.3B for quick testing, fall back to whatever is downloaded
+    return getImageModelSpec('wan21-t2v-1.3b-q4') ??
+      IMAGE_MODEL_CATALOGUE.filter(m =>
+        m.runnerProfile === 'wan' && isImageModelDownloaded(m)
+      )[0] ?? null;
+  }
+  // Direct model ID fallback
   return getImageModelSpec(modelType) ?? null;
 })();
 
@@ -146,15 +211,31 @@ console.log(`  Path:    ${modelPath}`);
 console.log('\nStep 4: Building args…');
 
 const timestamp = Date.now();
-const outPath = path.join(OUT_DIR, `pytorch-${modelType}-${timestamp}.png`);
+const isVideoRunner = spec.runnerProfile === 'wan';
+const outExt = isVideoRunner ? '.avi' : '.png';
+const outPath = path.join(OUT_DIR, `pytorch-${modelType}-${timestamp}${outExt}`);
 fs.mkdirSync(OUT_DIR, { recursive: true });
 
 const prompt = customPrompt ?? 'a majestic bear walking through a misty forest at dawn, golden light, photorealistic';
 
+// ── model-type mapping ────────────────────────────────────────────────────────
+const diffusersModelType = (() => {
+  switch (spec.runnerProfile) {
+    case 'flux':          return spec.variant === 'chroma' ? 'chroma' : 'flux';
+    case 'flux1-kontext': return 'kontext';
+    case 'flux2':         return 'flux2';
+    case 'z-image':       return 'z-image';
+    case 'qwen-image':    return 'qwen-image';
+    case 'wan':           return 'wan';
+    case 'sdxl':          return 'sdxl';
+    default:              return 'flux';
+  }
+})();
+
 const args: string[] = [
   SCRIPT,
   '--model-path', modelPath,
-  '--model-type', spec.variant === 'chroma' ? 'chroma' : spec.runnerProfile === 'sdxl' ? 'sdxl' : 'flux',
+  '--model-type', diffusersModelType,
   '--prompt', prompt,
   '--steps', String(spec.profile?.defaultSteps ?? 20),
   '--width', String(spec.profile?.defaultWidth ?? 1024),
@@ -216,8 +297,9 @@ let t5Pick: ReturnType<typeof recommendT5Encoder> | null = null;
 // total usage past physical VRAM into WDDM shared paging, which is 10-50x
 // slower. The only reliable path is offload — load one component at a time.
 // This matches sd-cli's cuBLASLt workspace suppression threshold (≤12 GB).
-const alwaysOffload = (vendor === 'cuda' && !bestGpu.unifiedMemory && bestGpu.vramGb <= 12)
-                   || isApple;
+const alwaysOffload = !noOffload && (
+  (vendor === 'cuda' && !bestGpu.unifiedMemory && bestGpu.vramGb <= 12) || isApple
+);
 
 if (alwaysOffload) {
   useOffload = true;
@@ -305,10 +387,11 @@ if (useOffload) {
   args.push('--offload-cpu');
 }
 
-// Aux files for FLUX/Chroma
-if (spec.runnerProfile === 'flux' || spec.variant === 'chroma') {
-  const vaePath = fluxAuxPath(FLUX_VAE);
+// ── Aux files by runner ───────────────────────────────────────────────────────
 
+if (spec.runnerProfile === 'flux' || spec.runnerProfile === 'flux1-kontext') {
+  // FLUX.1 and Kontext: VAE + T5 + CLIP-L (Chroma skips CLIP-L)
+  const vaePath = fluxAuxPath(FLUX_VAE);
   if (fs.existsSync(vaePath)) {
     args.push('--vae-path', vaePath);
     console.log(`  VAE:     ${path.basename(vaePath)}`);
@@ -324,7 +407,6 @@ if (spec.runnerProfile === 'flux' || spec.variant === 'chroma') {
     }
   }
 
-  // CLIP-L — only for non-Chroma FLUX
   if (spec.variant !== 'chroma') {
     const clipPath = fluxAuxPath(FLUX_CLIP_L);
     if (fs.existsSync(clipPath)) {
@@ -332,10 +414,110 @@ if (spec.runnerProfile === 'flux' || spec.variant === 'chroma') {
       console.log(`  CLIP-L:  ${path.basename(clipPath)}`);
     }
   }
+
+  // Kontext requires a reference image for editing
+  if (spec.runnerProfile === 'flux1-kontext') {
+    if (!refImage) {
+      console.error('FAIL: kontext requires --ref-image <path>');
+      console.error('  Example: npx tsx test-pytorch-gen.ts kontext --ref-image ./test-outputs/reference.png');
+      process.exit(1);
+    }
+    if (!fs.existsSync(refImage)) {
+      console.error(`FAIL: ref-image not found: ${refImage}`);
+      process.exit(1);
+    }
+    args.push('--ref-image', refImage);
+    console.log(`  Ref:     ${refImage}`);
+  }
+
+} else if (spec.runnerProfile === 'flux2') {
+  // FLUX.2: flux2-vae + LLM encoder (Qwen3-4B for 4B, Qwen3-8B for 9B)
+  const vaePath = fluxAuxPath(FLUX2_VAE);
+  if (fs.existsSync(vaePath)) {
+    args.push('--vae-path', vaePath);
+    console.log(`  VAE:     ${path.basename(vaePath)}`);
+  }
+  const llmAux = spec.modelId.includes('9b') ? FLUX2_LLM_9B_Q4 : ZIMAGE_LLM_Q4;
+  const llmPath = fluxAuxPath(llmAux);
+  if (fs.existsSync(llmPath)) {
+    args.push('--llm-path', llmPath);
+    console.log(`  LLM:     ${llmAux.label}`);
+  } else {
+    console.warn(`  LLM:     ${llmAux.label} — NOT DOWNLOADED`);
+  }
+
+} else if (spec.runnerProfile === 'z-image') {
+  // Z-Image: FLUX.1 VAE + Qwen3-4B LLM
+  const vaePath = fluxAuxPath(FLUX_VAE);
+  if (fs.existsSync(vaePath)) {
+    args.push('--vae-path', vaePath);
+    console.log(`  VAE:     ${path.basename(vaePath)}`);
+  }
+  const llmPath = fluxAuxPath(ZIMAGE_LLM_Q4);
+  if (fs.existsSync(llmPath)) {
+    args.push('--llm-path', llmPath);
+    console.log(`  LLM:     ${ZIMAGE_LLM_Q4.label}`);
+  } else {
+    console.warn(`  LLM:     ${ZIMAGE_LLM_Q4.label} — NOT DOWNLOADED`);
+  }
+
+} else if (spec.runnerProfile === 'qwen-image') {
+  // Qwen-Image: unique VAE + Qwen2.5-VL-7B LLM
+  const vaePath = fluxAuxPath(QWEN_IMAGE_VAE);
+  if (fs.existsSync(vaePath)) {
+    args.push('--vae-path', vaePath);
+    console.log(`  VAE:     ${path.basename(vaePath)}`);
+  }
+  const llmPath = fluxAuxPath(QWEN_IMAGE_LLM_Q4);
+  if (fs.existsSync(llmPath)) {
+    args.push('--llm-path', llmPath);
+    console.log(`  LLM:     ${QWEN_IMAGE_LLM_Q4.label}`);
+  } else {
+    console.warn(`  LLM:     ${QWEN_IMAGE_LLM_Q4.label} — NOT DOWNLOADED`);
+  }
+  // flow-shift default for Qwen-Image
+  args.push('--flow-shift', '3');
+
+} else if (spec.runnerProfile === 'wan') {
+  // Wan: WAN_VAE + WAN_T5 (UMT5-XXL, not FLUX T5) + optional CLIP Vision for I2V
+  const vaePath = fluxAuxPath(WAN_VAE);
+  if (fs.existsSync(vaePath)) {
+    args.push('--vae-path', vaePath);
+    console.log(`  VAE:     ${path.basename(vaePath)}`);
+  }
+  const t5Path = fluxAuxPath(WAN_T5_Q5);
+  if (fs.existsSync(t5Path)) {
+    args.push('--t5-path', t5Path);
+    console.log(`  T5:      ${WAN_T5_Q5.label}`);
+  } else {
+    console.warn(`  T5:      ${WAN_T5_Q5.label} — NOT DOWNLOADED`);
+  }
+  // I2V models need CLIP Vision — skip if not downloaded, log a note
+  if (spec.modelId.includes('i2v')) {
+    const clipVisionPath = fluxAuxPath(WAN_CLIP_VISION);
+    if (fs.existsSync(clipVisionPath)) {
+      args.push('--clip-path', clipVisionPath);
+      console.log(`  CLIP-V:  ${path.basename(clipVisionPath)}`);
+    } else {
+      console.warn(`  CLIP-V:  ${WAN_CLIP_VISION.label} — NOT DOWNLOADED (I2V will fail)`);
+    }
+  }
+  // Wan-specific generation flags
+  args.push('--num-frames', '49');
+  args.push('--fps', '12');
+  // Wan 2.2 MoE dual-expert needs flow-shift
+  if (spec.modelId.startsWith('wan22')) {
+    args.push('--flow-shift', '3.0');
+  }
+  console.log(`  Frames:  49 @ 12fps (4s)`);
 }
 
 console.log(`  Prompt:  "${prompt}"`);
 console.log(`  Output:  ${outPath}`);
+
+// Performance flags
+if (sageAttention) { args.push('--sage-attention'); console.log('  Sage:    enabled'); }
+if (torchCompile)  { args.push('--torch-compile');  console.log('  Compile: enabled'); }
 
 // Step 5: Spawn
 console.log('\nStep 5: Generating image (PyTorch)…\n');
@@ -396,15 +578,23 @@ try {
 const elapsedMs = Date.now() - startMs;
 
 console.log('');
-if (!fs.existsSync(outPath)) {
+// Wan outputs .avi which may be transcoded to .mp4, or falls back to PNG frames
+let finalOutput = outPath;
+if (isVideoRunner && !fs.existsSync(outPath)) {
+  const mp4 = outPath.replace('.avi', '.mp4');
+  const png = outPath.replace('.avi', '-frame0000.png');
+  if (fs.existsSync(mp4))      finalOutput = mp4;
+  else if (fs.existsSync(png)) finalOutput = png;
+}
+
+if (!fs.existsSync(finalOutput)) {
   console.error('FAIL: Process exited 0 but output file not found');
   process.exit(1);
 }
 
-const fileSizeKb = Math.round(fs.statSync(outPath).size / 1024);
-
+const sizeKb = Math.round(fs.statSync(finalOutput).size / 1024);
 console.log('=== PASS ===');
-console.log(`  Output: ${outPath} (${fileSizeKb} KB)`);
+console.log(`  Output: ${finalOutput} (${sizeKb} KB)`);
 console.log(`  Seed:   42`);
 console.log(`  Time:   ${(elapsedMs / 1000).toFixed(1)}s`);
 console.log('');

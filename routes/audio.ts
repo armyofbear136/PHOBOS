@@ -86,6 +86,7 @@ import {
   getStatus as getHostStatus,
   ping as hostPing,
   scanVst3Path as hostScanVst3Path,
+  scanFile as hostScanFile,
   loadPlugin as hostLoadPlugin,
   unloadPlugin as hostUnloadPlugin,
   setPluginActive as hostSetPluginActive,
@@ -116,6 +117,20 @@ import { OscClient } from '../phobos/OscClient.js';
 import { aldaToMidi } from '../phobos/alda-parser/index.js';
 import { playSourceOnPhobosSynth, stopAldaSequence } from '../phobos/AldaPlayer.js';
 import { playPolarisFile, getActiveSession, clearActiveSession } from '../phobos/PolarisHostPlayer.js';
+import {
+  generateKokoro,
+  generateAceStep,
+  generateF5Tts,
+  transcribe,
+  ensureAudioWorkspace,
+} from '../phobos/AudioServerManager.js';
+import {
+  isAudioModelDownloaded,
+  getAudioModelSpec,
+  isWhisperDownloaded,
+  AUDIO_MODEL_CATALOGUE,
+} from '../phobos/PhobosLocalManager.js';
+import crypto from 'crypto';
 
 const execFileAsync = promisify(execFile);
 
@@ -194,6 +209,39 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
   await effectRack.ensureTable();
   await dawProjects.ensureTable();
   await pluginScanner.ensureTable();
+
+  // Deep-probe hook — promotes shallow rows (moduleinfo missing) to deep
+  // by asking PhobosHost to load the .vst3 factory and read PClassInfo.
+  // Best-effort: if the host isn't running, ensureHostRunning kicks it off,
+  // and probe failures (broken plugin, host crash) leave the row shallow
+  // for the next list() to retry.
+  pluginScanner.setDeepProbe(async (vst3Path: string) => {
+    try {
+      await ensureHostRunning();
+      const result = await hostScanFile(vst3Path);
+      if (result.failed || result.plugins.length === 0) return null;
+      // The .vst3 may declare multiple classes (multi-plugin bundles), but
+      // bundle-level Instrument-vs-Effect identity is dictated by the FIRST
+      // class — that's what JUCE's PluginDescription represents and what
+      // Ableton/Reaper key off too.
+      const first = result.plugins[0];
+      return { category: first.category, isInstrument: first.isInstrument };
+    } catch {
+      return null;
+    }
+  });
+
+  // Fire a background plugin scan immediately after boot so the catalog is
+  // ready by the time the user opens the chain modal. Non-blocking — boot
+  // continues, the scan runs in the background. The deep-probe will lazy-
+  // start PhobosHost on first plugin needing promotion. Errors are logged
+  // and swallowed; any failure leaves the cache untouched and the modal's
+  // own loadIfStale() will retry on demand.
+  setImmediate(() => {
+    pluginScanner.list().catch((err) => {
+      console.warn('[audio] background plugin scan failed:', (err as Error).message);
+    });
+  });
 
   // EffectRackStore is registered for read/write (presets list/upsert/delete).
   // The activate path is a stub in Session 4 — see route comment below.
@@ -1045,4 +1093,536 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
       return reply.status(500).send({ error: (err as Error).message });
     }
   });
+
+  // ── Generative audio — temp dir helpers ────────────────────────────────────
+  //
+  // Capture dir: push-to-talk recordings from the browser, never in workspaces.
+  // Uploads dir: reference audio for F5-TTS cloning, cleaned up after synthesis.
+  // Both are created once at route registration time and reused for the process
+  // lifetime — same pattern as sessionsDir() above.
+
+  const audioCaptureDir = (() => {
+    const d = path.join(os.homedir(), '.phobos', 'audio-capture');
+    fs.mkdirSync(d, { recursive: true });
+    return d;
+  })();
+
+  const audioUploadsDir = (() => {
+    const d = path.join(os.homedir(), '.phobos', 'audio-uploads');
+    fs.mkdirSync(d, { recursive: true });
+    return d;
+  })();
+
+  // ── Resolve the dist/ binary dir — mirrors AudioServerManager.resolveBinDir ─
+
+  function resolveBinDir(): string {
+    if (process.env.PHOBOS_BIN_DIR) return process.env.PHOBOS_BIN_DIR;
+    return path.dirname(process.execPath);
+  }
+
+  // ── SSE helpers ────────────────────────────────────────────────────────────
+  //
+  // Follows the same SSE contract as the image gen routes.
+  // The client reads lines until it receives a `done` or `error` event.
+
+  function sseHeaders(reply: any): void {
+    reply.raw.writeHead(200, {
+      'Content-Type':  'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection':    'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+  }
+
+  function sseWrite(reply: any, payload: Record<string, unknown>): void {
+    reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+  }
+
+  // ── GET /api/audio/voices ──────────────────────────────────────────────────
+  //
+  // Lists installed Kokoro voice profiles by scanning dist/kokoro/voices/*.bin.
+  // Returns the stem names (e.g. 'af_heart') — the client passes these back
+  // as the `voice` param on /api/audio/tts.
+
+  fastify.get('/api/audio/voices', async (_req, reply) => {
+    const voicesDir = path.join(resolveBinDir(), 'kokoro', 'voices');
+    try {
+      if (!fs.existsSync(voicesDir)) return reply.send({ voices: ['af_heart'] });
+      const files = fs.readdirSync(voicesDir)
+        .filter(f => f.endsWith('.bin'))
+        .map(f => f.replace(/\.bin$/, ''))
+        .sort();
+      return reply.send({ voices: files.length > 0 ? files : ['af_heart'] });
+    } catch {
+      return reply.send({ voices: ['af_heart'] });
+    }
+  });
+
+  // ── GET /api/audio/dep-status ──────────────────────────────────────────────
+  //
+  // Reports presence of the three binary deps managed by DepPrep.
+  // Used by the frontend to disable buttons when deps are not yet installed.
+
+  fastify.get('/api/audio/dep-status', async (_req, reply) => {
+    const binDir = resolveBinDir();
+    const ext    = process.platform === 'win32' ? '.exe' : '';
+    return reply.send({
+      kokoro:  fs.existsSync(path.join(binDir, 'kokoro', 'onnx', 'model_quantized.onnx')),
+      whisper: fs.existsSync(path.join(binDir, `whisper-cli${ext}`)),
+      aceStep: fs.existsSync(path.join(binDir, 'ace-step', `ace-lm${ext}`)),
+    });
+  });
+
+  // ── GET /api/audio/model-status ────────────────────────────────────────────
+  //
+  // Reports presence of the large user-downloaded models in ~/.phobos/models/audio/.
+  // Binary deps (Kokoro ONNX, whisper-cli) are covered by /api/audio/dep-status.
+
+  fastify.get('/api/audio/model-status', async (_req, reply) => {
+    const whisperSpec  = getAudioModelSpec('whisper-large-v3');
+    const aceStepSpec  = getAudioModelSpec('ace-step-v1.5');
+    const f5TtsSpec    = getAudioModelSpec('f5-tts-v1-base');
+    return reply.send({
+      whisperLargeV3: isWhisperDownloaded(),
+      aceStepModels:  aceStepSpec  ? isAudioModelDownloaded(aceStepSpec)  : false,
+      f5tts:          f5TtsSpec    ? isAudioModelDownloaded(f5TtsSpec)    : false,
+    });
+  });
+
+  // ── GET /api/audio/output ──────────────────────────────────────────────────
+  //
+  // Streams a generated WAV from an absolute path on disk to the browser.
+  // Used by the frontend AudioContext to decode audio for in-browser preview
+  // and copilot TTS playback (browser mode). Only serves paths inside the
+  // ~/.phobos/ tree as a basic safety guard.
+
+  fastify.get<{ Querystring: { path: string } }>('/api/audio/output', async (req, reply) => {
+    const filePath = req.query.path;
+    if (typeof filePath !== 'string' || filePath.length === 0) {
+      return reply.status(400).send({ error: 'path query param required' });
+    }
+    // Safety: only serve files inside the user data dir
+    const homePhobos = path.join(os.homedir(), '.phobos');
+    const resolved   = path.resolve(filePath);
+    if (!resolved.startsWith(homePhobos)) {
+      return reply.status(403).send({ error: 'path outside .phobos directory' });
+    }
+    if (!fs.existsSync(resolved)) {
+      return reply.status(404).send({ error: 'file not found' });
+    }
+    const stat = fs.statSync(resolved);
+    reply.header('Content-Type', 'audio/wav');
+    reply.header('Content-Length', String(stat.size));
+    reply.header('Cache-Control', 'no-store');
+    return reply.send(fs.createReadStream(resolved));
+  });
+
+  // ── POST /api/audio/tts ────────────────────────────────────────────────────
+  //
+  // Synthesizes speech via Kokoro (in-process ONNX, ~1–2s).
+  // Streams SSE progress events; final event carries outputPath.
+  //
+  // Body:
+  //   text      string   — text to synthesize (required)
+  //   voice     string?  — voice stem, e.g. 'af_heart' (default: 'af_heart')
+  //   speed     number?  — playback speed multiplier (default: 1.0)
+  //   threadId  string   — workspace thread for output path (required)
+  //   playback  string?  — 'browser' (default) | 'host'
+  //                        'host' also plays via PhobosHost player after synthesis
+  //
+  // SSE events:
+  //   { type: 'progress', message: string }
+  //   { type: 'done', outputPath: string, elapsedMs: number, audioId?: number }
+  //   { type: 'error', message: string }
+
+  fastify.post<{
+    Body: {
+      text: string;
+      voice?: string;
+      speed?: number;
+      threadId: string;
+      playback?: 'browser' | 'host';
+    };
+  }>('/api/audio/tts', async (req, reply) => {
+    const { text, voice, speed, threadId, playback } = req.body ?? {};
+
+    if (typeof text !== 'string' || text.trim().length === 0) {
+      return reply.status(400).send({ error: '"text" is required' });
+    }
+    if (typeof threadId !== 'string' || threadId.length === 0) {
+      return reply.status(400).send({ error: '"threadId" is required' });
+    }
+
+    sseHeaders(reply);
+    ensureAudioWorkspace(threadId);
+
+    const abort = new AbortController();
+    req.raw.on('close', () => abort.abort());
+
+    try {
+      const result = await generateKokoro({
+        threadId,
+        text: text.trim(),
+        voice:  voice  ?? 'af_heart',
+        speed:  typeof speed === 'number' ? speed : 1.0,
+        label:  'copilot-tts',
+        signal: abort.signal,
+        onProgress: (line) => {
+          if (!abort.signal.aborted) sseWrite(reply, { type: 'progress', message: line });
+        },
+      });
+
+      // Optional host playback — route through PhobosHost player so Crystal FX applies
+      let audioId: number | undefined;
+      if (playback === 'host') {
+        try {
+          const pr = await playAudioFile({ path: result.outputPath });
+          audioId = pr.audioId;
+        } catch {
+          // Non-fatal — synthesis succeeded, playback failure logged but not surfaced
+        }
+      }
+
+      sseWrite(reply, { type: 'done', outputPath: result.outputPath, elapsedMs: result.elapsedMs, audioId });
+    } catch (err) {
+      const message = (err as Error).message;
+      if (!message.includes('cancelled')) {
+        sseWrite(reply, { type: 'error', message });
+      }
+    } finally {
+      reply.raw.end();
+    }
+  });
+
+  // ── POST /api/audio/transcribe ─────────────────────────────────────────────
+  //
+  // Transcribes a WAV recording via Whisper large-v3 (~24s on CPU).
+  // Accepts base64-encoded audio data — no multipart needed.
+  // Writes a temp file to ~/.phobos/audio-capture/, cleans up after Whisper exits.
+  //
+  // Body:
+  //   audioData  string  — base64-encoded WAV (required)
+  //   language   string? — ISO 639-1 language code hint (optional)
+  //
+  // Response:
+  //   { text: string }
+  //
+  // This endpoint is NOT streaming — it blocks for the duration of Whisper inference.
+  // The client must show its own waiting indicator.
+
+  fastify.post<{
+    Body: { audioData: string; language?: string };
+  }>('/api/audio/transcribe', async (req, reply) => {
+    const { audioData, language } = req.body ?? {};
+
+    if (typeof audioData !== 'string' || audioData.length === 0) {
+      return reply.status(400).send({ error: '"audioData" (base64 WAV) is required' });
+    }
+
+    const tempPath = path.join(audioCaptureDir, `${crypto.randomUUID()}.wav`);
+    try {
+      const buf = Buffer.from(audioData, 'base64');
+      fs.writeFileSync(tempPath, buf);
+
+      const text = await transcribe({
+        audioPath: tempPath,
+        language:  language ?? undefined,
+      });
+
+      return reply.send({ text: text.trim() });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    } finally {
+      // Always clean up — leave no audio data on disk
+      try { fs.unlinkSync(tempPath); } catch { /* best-effort */ }
+    }
+  });
+
+  // ── POST /api/audio/music ──────────────────────────────────────────────────
+  //
+  // Generates a music clip via ACE-Step (C++ two-pass: LM then DiT synthesis).
+  // Streams SSE progress events mapped from ACE-Step's stdout protocol.
+  // On CPU this takes ~40× real-time; the client shows an estimated time.
+  //
+  // Body:
+  //   prompt       string   — style/mood description (required)
+  //   threadId     string   — workspace thread for output path (required)
+  //   lyrics       string?  — optional song lyrics
+  //   duration     number?  — clip length in seconds (default: 30, range: 5–120)
+  //   steps        number?  — DiT denoising steps (default: 50)
+  //   cfgStrength  number?  — guidance strength (default: 7.0)
+  //   seed         number?  — -1 = random (default: -1)
+  //   label        string?  — output filename suffix
+  //
+  // SSE events:
+  //   { type: 'phase',    phase: 'lm' | 'synth' | 'decode', pct: number }
+  //   { type: 'progress', step: number, total: number, pct: number }
+  //   { type: 'done',     outputPath: string, elapsedMs: number, rtf: number }
+  //   { type: 'error',    message: string }
+
+  // Parses '[DiT] Step N/M' lines emitted on stderr by ace-synth.
+  const DIT_STEP_RE = /\[DiT\]\s+Step\s+(\d+)\/(\d+)/i;
+
+  fastify.post<{
+    Body: {
+      prompt:      string;
+      threadId:    string;
+      lyrics?:     string;
+      duration?:   number;
+      steps?:      number;
+      cfgStrength?: number;
+      seed?:       number;
+      label?:      string;
+    };
+  }>('/api/audio/music', async (req, reply) => {
+    const {
+      prompt, threadId, lyrics,
+      duration, steps, cfgStrength, seed, label,
+    } = req.body ?? {};
+
+    if (typeof prompt !== 'string' || prompt.trim().length === 0) {
+      return reply.status(400).send({ error: '"prompt" is required' });
+    }
+    if (typeof threadId !== 'string' || threadId.length === 0) {
+      return reply.status(400).send({ error: '"threadId" is required' });
+    }
+
+    const clampedDuration = Math.min(120, Math.max(5, typeof duration === 'number' ? duration : 30));
+
+    sseHeaders(reply);
+    ensureAudioWorkspace(threadId);
+
+    const abort = new AbortController();
+    req.raw.on('close', () => abort.abort());
+
+    // Phase tracking — mutated by onProgress, read nowhere else in this closure
+    let synthPhaseStarted = false;
+
+    try {
+      const result = await generateAceStep({
+        threadId,
+        prompt:      prompt.trim(),
+        lyrics:      typeof lyrics === 'string' ? lyrics : undefined,
+        duration:    clampedDuration,
+        steps:       typeof steps      === 'number' ? steps      : 50,
+        cfgStrength: typeof cfgStrength === 'number' ? cfgStrength : 7.0,
+        seed:        typeof seed       === 'number' ? seed       : -1,
+        label:       typeof label      === 'string' ? label      : 'music',
+        signal:      abort.signal,
+        onProgress: (line) => {
+          if (abort.signal.aborted) return;
+
+          // LM pass starts
+          if (line.includes('ACE-Step pass 1/2')) {
+            sseWrite(reply, { type: 'phase', phase: 'lm', pct: 5 });
+            return;
+          }
+          // Synth pass starts
+          if (line.includes('ACE-Step pass 2/2')) {
+            synthPhaseStarted = true;
+            sseWrite(reply, { type: 'phase', phase: 'synth', pct: 40 });
+            return;
+          }
+          // DiT step progress within synth pass
+          if (synthPhaseStarted) {
+            const m = DIT_STEP_RE.exec(line);
+            if (m) {
+              const step  = parseInt(m[1], 10);
+              const total = parseInt(m[2], 10);
+              const pct   = total > 0 ? Math.round(40 + (step / total) * 55) : 40;
+              sseWrite(reply, { type: 'progress', step, total, pct });
+              return;
+            }
+          }
+          // VAE decode / final step
+          if (line.toLowerCase().includes('vae') || line.toLowerCase().includes('decode')) {
+            sseWrite(reply, { type: 'phase', phase: 'decode', pct: 97 });
+            return;
+          }
+          // Forward all other [INFO] lines as generic progress
+          if (line.startsWith('[INFO')) {
+            sseWrite(reply, { type: 'progress', message: line, pct: synthPhaseStarted ? 42 : 10 });
+          }
+        },
+      });
+
+      const rtf = clampedDuration > 0 ? result.elapsedMs / (clampedDuration * 1000) : 0;
+      sseWrite(reply, { type: 'done', outputPath: result.outputPath, elapsedMs: result.elapsedMs, rtf });
+    } catch (err) {
+      const message = (err as Error).message;
+      if (!message.includes('cancelled')) {
+        sseWrite(reply, { type: 'error', message });
+      }
+    } finally {
+      reply.raw.end();
+    }
+  });
+
+  // ── POST /api/audio/tts-clone ──────────────────────────────────────────────
+  //
+  // Zero-shot voice cloning via F5-TTS.
+  // Accepts a base64-encoded reference audio clip (3–15s of clean speech) and
+  // the text to synthesize in that voice.
+  //
+  // If refText is empty, Whisper transcribes the reference audio first (sequential:
+  // transcribe → F5-TTS). Both steps emit SSE phase events so the client can
+  // show a two-step progress indicator.
+  //
+  // Body:
+  //   text          string   — text to synthesize (required)
+  //   threadId      string   — workspace thread for output path (required)
+  //   refAudioData  string   — base64-encoded reference WAV/MP3/FLAC (required)
+  //   refText       string?  — transcript of the reference audio (optional)
+  //   speed         number?  — synthesis speed (default: 1.0)
+  //   steps         number?  — 16 | 32 | 64 (default: 32)
+  //
+  // SSE events:
+  //   { type: 'phase',    phase: 'transcribe' | 'synthesize', message?: string }
+  //   { type: 'progress', message: string }
+  //   { type: 'done',     outputPath: string, elapsedMs: number }
+  //   { type: 'error',    message: string }
+
+  fastify.post<{
+    Body: {
+      text:         string;
+      threadId:     string;
+      refAudioData: string;
+      refText?:     string;
+      speed?:       number;
+      steps?:       number;
+    };
+  }>('/api/audio/tts-clone', async (req, reply) => {
+    const { text, threadId, refAudioData, refText, speed, steps } = req.body ?? {};
+
+    if (typeof text !== 'string' || text.trim().length === 0) {
+      return reply.status(400).send({ error: '"text" is required' });
+    }
+    if (typeof threadId !== 'string' || threadId.length === 0) {
+      return reply.status(400).send({ error: '"threadId" is required' });
+    }
+    if (typeof refAudioData !== 'string' || refAudioData.length === 0) {
+      return reply.status(400).send({ error: '"refAudioData" (base64) is required' });
+    }
+
+    sseHeaders(reply);
+    ensureAudioWorkspace(threadId);
+
+    const abort  = new AbortController();
+    req.raw.on('close', () => abort.abort());
+
+    // Write ref audio to a temp path — cleaned up in finally regardless of outcome
+    const refAudioPath = path.join(audioUploadsDir, `${crypto.randomUUID()}.wav`);
+
+    const startMs = Date.now();
+
+    try {
+      fs.writeFileSync(refAudioPath, Buffer.from(refAudioData, 'base64'));
+
+      // Step 1 — transcribe ref audio if refText not provided
+      let resolvedRefText = typeof refText === 'string' ? refText.trim() : '';
+      if (!resolvedRefText) {
+        sseWrite(reply, { type: 'phase', phase: 'transcribe', message: 'Transcribing reference audio…' });
+        resolvedRefText = await transcribe({ audioPath: refAudioPath, signal: abort.signal });
+        if (abort.signal.aborted) return;
+        sseWrite(reply, { type: 'progress', message: `Reference transcript: "${resolvedRefText.slice(0, 80)}"` });
+      }
+
+      // Step 2 — F5-TTS voice cloning
+      sseWrite(reply, { type: 'phase', phase: 'synthesize', message: 'Synthesizing cloned voice…' });
+
+      const result = await generateF5Tts({
+        threadId,
+        text:     text.trim(),
+        mode:     'clone',
+        refAudio: refAudioPath,
+        refText:  resolvedRefText,
+        speed:    typeof speed === 'number' ? speed : 1.0,
+        steps:    typeof steps === 'number' ? steps : 32,
+        label:    'f5-clone',
+        signal:   abort.signal,
+        onProgress: (line) => {
+          if (!abort.signal.aborted) sseWrite(reply, { type: 'progress', message: line });
+        },
+      });
+
+      sseWrite(reply, { type: 'done', outputPath: result.outputPath, elapsedMs: Date.now() - startMs });
+    } catch (err) {
+      const message = (err as Error).message;
+      if (!message.includes('cancelled')) {
+        sseWrite(reply, { type: 'error', message });
+      }
+    } finally {
+      // Always remove the uploaded reference audio
+      try { fs.unlinkSync(refAudioPath); } catch { /* best-effort */ }
+      reply.raw.end();
+    }
+  });
+
+  // ── POST /api/workspace/export-audio ──────────────────────────────────────
+  //
+  // Copies a generated audio file from its temp output path into the thread's
+  // workspace audio/ directory. Naming convention mirrors save-batch-output:
+  //   {label}-{N}.wav
+  // where N is auto-incremented from whatever already exists in the audio dir.
+  //
+  // Body:
+  //   sourcePath  string  — absolute path to the generated WAV (required)
+  //   threadId    string  — target workspace thread (required)
+  //   label       string? — filename prefix (default: 'audio')
+  //
+  // Response:
+  //   { ok: true, destPath: string, filename: string }
+
+  function resolveWorkspacesRoot(): string {
+    return process.env.WORKSPACES_ROOT
+      ? path.resolve(process.env.WORKSPACES_ROOT)
+      : path.resolve(process.cwd(), 'workspaces');
+  }
+
+  fastify.post<{
+    Body: { sourcePath: string; threadId: string; label?: string };
+  }>('/api/workspace/export-audio', async (req, reply) => {
+    const { sourcePath, threadId, label } = req.body ?? {};
+
+    if (typeof sourcePath !== 'string' || sourcePath.length === 0) {
+      return reply.status(400).send({ error: '"sourcePath" is required' });
+    }
+    if (typeof threadId !== 'string' || threadId.length === 0) {
+      return reply.status(400).send({ error: '"threadId" is required' });
+    }
+
+    // Safety: only serve files inside the user data dir
+    const homePhobos = path.join(os.homedir(), '.phobos');
+    const resolved   = path.resolve(sourcePath);
+    if (!resolved.startsWith(homePhobos)) {
+      return reply.status(403).send({ error: 'sourcePath outside .phobos directory' });
+    }
+    if (!fs.existsSync(resolved)) {
+      return reply.status(404).send({ error: 'Source file not found' });
+    }
+
+    const audioDir = path.join(resolveWorkspacesRoot(), threadId, 'audio');
+    fs.mkdirSync(audioDir, { recursive: true });
+
+    const prefix  = `${(label ?? 'audio').replace(/[^a-z0-9_\-]/gi, '_').slice(0, 48)}-`;
+    const ext     = '.wav';
+
+    // Auto-increment: find the highest existing N for this prefix
+    let maxN = 0;
+    try {
+      for (const f of fs.readdirSync(audioDir)) {
+        if (f.startsWith(prefix) && f.endsWith(ext)) {
+          const n = parseInt(f.slice(prefix.length, -ext.length), 10);
+          if (!isNaN(n) && n > maxN) maxN = n;
+        }
+      }
+    } catch { /* dir may be empty on first export */ }
+
+    const filename = `${prefix}${maxN + 1}${ext}`;
+    const destPath = path.join(audioDir, filename);
+    fs.copyFileSync(resolved, destPath);
+
+    return reply.send({ ok: true, destPath, filename });
+  });
+
 }

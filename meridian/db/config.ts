@@ -36,7 +36,7 @@ export function defaultConfig(): MeridianConfig {
   const base = path.join(os.homedir(), '.phobos', 'services', 'meridian');
   return {
     port:          16320,
-    phobosLibPath: path.join(os.homedir(), '.phobos', 'media', 'photos'),
+    phobosLibPath: path.join(os.homedir(), '.phobos', 'media', 'meridian', 'phobosPhotos'),
     userLibPaths:  [],
     userId:        'default',
     thumbCacheDir: path.join(base, 'thumbs'),

@@ -28,6 +28,8 @@ import { albumRoutes }           from './routes/albums.js';
 import { libraryRoutes }         from './routes/libraries.js';
 import { searchRoutes }          from './routes/search.js';
 import { syncRoutes }            from './routes/sync.js';
+import { UploadDispatcher }      from './staging/UploadDispatcher.js';
+import { SyncCleanupJob }        from './staging/SyncCleanupJob.js';
 import type { MeridianConfig }   from './db/config.js';
 
 export interface MeridianStartOpts {
@@ -50,7 +52,9 @@ let _error:   string | null = null;
 let _config:  MeridianConfig | null = null;
 let _fastify: ReturnType<typeof Fastify> | null = null;
 let _watcher: InstanceType<typeof LibraryWatcher> | null = null;
-let _classifier: InstanceType<typeof IdleClassifier> | null = null;
+let _classifier:  InstanceType<typeof IdleClassifier> | null  = null;
+let _dispatcher:  UploadDispatcher | null                     = null;
+let _cleanupJob:  SyncCleanupJob   | null                     = null;
 
 export const MERIDIAN_PORT = 16320;
 
@@ -86,8 +90,24 @@ export async function startMeridianServer(
       'utf8',
     );
 
+    // ── Path migration: rewrite legacy phobosLibPath values on first boot ─────
+    // Old defaults: ~/.phobos/media/photos  or  ~/.phobos/media/phobosPictures
+    // Canonical:    ~/.phobos/media/meridian/phobosPhotos
+    const legacySuffixes = ['media/photos', 'media/phobosPictures'];
+    const normalised = cfg.phobosLibPath.replace(/\\/g, '/');
+    if (legacySuffixes.some(s => normalised.endsWith(s))) {
+      cfg.phobosLibPath = path.join(os.homedir(), '.phobos', 'media', 'meridian', 'phobosPhotos');
+      fs.writeFileSync(
+        path.join(configDir, 'config.json'),
+        JSON.stringify(cfg, null, 2),
+        'utf8',
+      );
+      console.log(`[Meridian] Migrated phobosLibPath → ${cfg.phobosLibPath}`);
+    }
+
     // Ensure required directories exist.
     fs.mkdirSync(cfg.thumbCacheDir, { recursive: true });
+    fs.mkdirSync(cfg.phobosLibPath, { recursive: true });
 
     // Use the already-open DatabaseManager from the main process — no second open.
     const db = new MeridianDB(dbManager);
@@ -129,10 +149,12 @@ export async function startMeridianServer(
       await db.deleteLibrary(staleLib.id);
     }
 
-    // Build scanner, watcher, classifier.
+    // Build scanner, watcher, classifier, dispatcher, cleanup job.
     const scanner    = new Scanner(db, cfg);
     _watcher         = new LibraryWatcher(scanner);
     _classifier      = new IdleClassifier(db, cfg);
+    _dispatcher      = new UploadDispatcher(db, cfg, scanner);
+    _cleanupJob      = new SyncCleanupJob(db);
 
     // Build Fastify instance on port 16320.
     _fastify = Fastify({ logger: false });
@@ -150,17 +172,24 @@ export async function startMeridianServer(
       if (origin) {
         reply.header('Access-Control-Allow-Origin', origin);
         reply.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
-        reply.header('Access-Control-Allow-Headers', 'Content-Type');
+        reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Phobos-Library, X-Phobos-Filename, X-Phobos-Hash, X-Phobos-Taken-At, X-Phobos-Size, X-Phobos-Upload-Id, X-Phobos-Chunk-Index, X-Phobos-Chunk-Total');
       }
       if (req.method === 'OPTIONS') return reply.status(204).send();
     });
+
+    // Required for POST /api/sync/upload — Fastify does not parse octet-stream by default.
+    _fastify.addContentTypeParser(
+      'application/octet-stream',
+      { parseAs: 'buffer', bodyLimit: 2 * 1024 * 1024 * 1024 },
+      (_req: import('fastify').FastifyRequest, body: Buffer, done: (err: Error | null, body: Buffer) => void) => done(null, body),
+    );
 
     await _fastify.register(statusRoutes,  { scanner, db, config: cfg });
     await _fastify.register(fileRoutes,    { db, config: cfg });
     await _fastify.register(albumRoutes,   { db, config: cfg });
     await _fastify.register(libraryRoutes, { db, config: cfg, scanner });
     await _fastify.register(searchRoutes,  { db, config: cfg });
-    await _fastify.register(syncRoutes);
+    await _fastify.register(syncRoutes, { db, config: cfg, scanner, dispatcher: _dispatcher });
 
     await _fastify.listen({ port: cfg.port, host: '127.0.0.1' });
     console.log(`[Meridian] Listening on :${cfg.port}`);
@@ -169,6 +198,7 @@ export async function startMeridianServer(
 
     // Non-blocking initial scan + watcher startup.
     _classifier.start();
+    _cleanupJob.start();
     setIdle(false);
     for (const lib of allLibs.filter(l => l.enabled)) {
       console.log(`[Meridian] Starting scan: ${lib.path}`);
@@ -201,6 +231,7 @@ export async function stopMeridianServer(): Promise<void> {
 
   try {
     _classifier?.stop();
+    _cleanupJob?.stop();
     _watcher?.unwatchAll();
     await _fastify?.close();
   } catch (err) {
@@ -209,6 +240,8 @@ export async function stopMeridianServer(): Promise<void> {
     _fastify    = null;
     _watcher    = null;
     _classifier = null;
+    _dispatcher = null;
+    _cleanupJob = null;
     _config     = null;
   }
 }

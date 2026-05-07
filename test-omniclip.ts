@@ -188,8 +188,13 @@ async function testStaticServer(): Promise<void> {
   // 2. COOP + COEP headers on every response
   const coop = htmlRes.headers.get('cross-origin-opener-policy');
   const coep = htmlRes.headers.get('cross-origin-embedder-policy');
+  const corp = htmlRes.headers.get('cross-origin-resource-policy');
   check('COOP header: same-origin',    coop === 'same-origin',    coop ?? 'missing');
   check('COEP header: require-corp',   coep === 'require-corp',   coep ?? 'missing');
+  // CORP must be cross-origin so the PHOBOS parent (different port = different
+  // origin) can embed Omniclip in an iframe. same-origin causes the broken-image
+  // grey box in the panel even though localhost:16345 loads fine on its own.
+  check('CORP header: cross-origin',   corp === 'cross-origin',   corp ?? 'missing');
 
   // 3. main.bundle.min.js — primary app bundle
   const bundleRes = await fetch(`${OMNI_URL}/main.bundle.min.js`);
@@ -235,6 +240,34 @@ async function testStaticServer(): Promise<void> {
       `HTTP ${r.status} — ${ct}`);
     await r.body?.cancel();
   }
+
+  // 6b. Stub correctness — posthog stub must export posthog.init as a function.
+  //     main.ts calls posthog.init(...) on boot; if the export is a plain object
+  //     with no init() the call throws TypeError and stalls the loading screen.
+  console.log('\n── Stub correctness');
+  const posthogStubRes = await fetch(`${OMNI_URL}/node_modules/posthog-js/dist/es.js`);
+  check('posthog stub /dist/es.js returns 200',
+    posthogStubRes.status === 200,
+    String(posthogStubRes.status));
+  const posthogBody = await posthogStubRes.text();
+  check('posthog stub exports init (no-op)',
+    posthogBody.includes('init()'),
+    posthogBody.slice(0, 120));
+
+  // 6c. coi-serviceworker.js stub — must be a no-op script served with no-store
+  //     so the browser never caches it and cannot install the real SW that would
+  //     intercept fetch events and break loading.
+  const coiRes = await fetch(`${OMNI_URL}/coi-serviceworker.js`);
+  check('coi-serviceworker.js returns 200',
+    coiRes.status === 200,
+    String(coiRes.status));
+  check('coi-serviceworker.js Cache-Control is no-store',
+    (coiRes.headers.get('cache-control') ?? '').includes('no-store'),
+    coiRes.headers.get('cache-control') ?? 'missing');
+  const coiBody = await coiRes.text();
+  check('coi-serviceworker.js body is no-op (no addEventListener)',
+    !coiBody.includes('addEventListener'),
+    coiBody.slice(0, 80));
 
   // 7. SPA fallback — unknown route should serve index.html, not 404
   const spaRes = await fetch(`${OMNI_URL}/some-unknown-spa-route`);

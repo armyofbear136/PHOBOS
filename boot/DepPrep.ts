@@ -1116,6 +1116,99 @@ function buildDeps(arch: PhobosArch): Dep[] {
     };
   }
 
+
+  // ── Audio generative pipeline ─────────────────────────────────────────────
+  //
+  // Three binary deps ship with phobos-core.exe in dist/:
+  //   kokoro/       — Kokoro 82M ONNX TTS model + tokenizer + af_heart voice
+  //   ace-step/     — ACE-Step v1.5 C++ binaries (ace-lm + ace-synth + ggml DLLs)
+  //   whisper-cli   — Whisper STT binary + whisper.dll
+  //
+  // Large model files (GGUFs, safetensors) are fetched separately by
+  // fetch-audio-deps.js into ~/.phobos/models/audio/ — not managed here.
+  //
+  // Upload commands (one-time, already done):
+  //   gh release upload PHOBOS-DEPS kokoro-82m-onnx.zip --repo armyofbear136/PHOBOS-BUILDS
+  //   gh release upload PHOBOS-DEPS whisper-cli-win32-x64.zip --repo armyofbear136/PHOBOS-BUILDS
+  //   gh release upload PHOBOS-DEPS ace-step-win32-x64.zip --repo armyofbear136/PHOBOS-BUILDS
+
+  const kokoro82mDep: Dep | null = (() => {
+    if (!isWin) return null;  // ONNX model is platform-neutral but binaries are Win-only for now
+    const kokoroDir = path.join(BIN_DIR, 'kokoro');
+    return {
+      id:        'kokoro-82m',
+      label:     'Kokoro 82M TTS (ONNX)',
+      file:      'kokoro-82m-onnx.zip',
+      minBytes:  85_000_000,
+      isPresent: () => {
+        try { return fs.statSync(path.join(kokoroDir, 'onnx', 'model_quantized.onnx')).size >= 85_000_000; }
+        catch { return false; }
+      },
+      install: async (arc) => {
+        if (fs.existsSync(kokoroDir)) fs.rmSync(kokoroDir, { recursive: true, force: true });
+        fs.mkdirSync(kokoroDir, { recursive: true });
+        await extractZip(arc, kokoroDir);
+        if (!fs.existsSync(path.join(kokoroDir, 'onnx', 'model_quantized.onnx')))
+          throw new Error('model_quantized.onnx not found after extracting kokoro-82m-onnx.zip');
+      },
+    };
+  })();
+
+  const whisperCliBinDep: Dep | null = (() => {
+    if (!isWin) return null;  // Linux/macOS build paths TBD
+    const whisperExe = path.join(BIN_DIR, 'whisper-cli.exe');
+    const whisperDll = path.join(BIN_DIR, 'whisper.dll');
+    return {
+      id:        'whisper-cli',
+      label:     'Whisper STT CLI',
+      file:      'whisper-cli-win32-x64.zip',
+      minBytes:  1_500_000,
+      isPresent: () => {
+        try {
+          return fs.statSync(whisperExe).size >= 400_000 &&
+                 fs.statSync(whisperDll).size >= 1_000_000;
+        } catch { return false; }
+      },
+      install: async (arc) => {
+        // Extracts whisper-cli.exe and whisper.dll flat into BIN_DIR.
+        // ggml-base.dll / ggml-cpu.dll / ggml.dll are NOT in this zip —
+        // they are owned by the llama dep and must not be overwritten.
+        fs.mkdirSync(BIN_DIR, { recursive: true });
+        await extractZip(arc, BIN_DIR);
+        if (!fs.existsSync(whisperExe))
+          throw new Error('whisper-cli.exe not found after extracting whisper-cli-win32-x64.zip');
+      },
+    };
+  })();
+
+  const aceStepBinDep: Dep | null = (() => {
+    if (!isWin) return null;  // Linux/macOS build paths TBD
+    const aceStepDir  = path.join(BIN_DIR, 'ace-step');
+    const aceLmExe    = path.join(aceStepDir, 'ace-lm.exe');
+    const aceSynthExe = path.join(aceStepDir, 'ace-synth.exe');
+    return {
+      id:        'ace-step',
+      label:     'ACE-Step v1.5 Music Generation',
+      file:      'ace-step-win32-x64.zip',
+      minBytes:  1_500_000,
+      isPresent: () => {
+        try {
+          return fs.statSync(aceLmExe).size   >= 300_000 &&
+                 fs.statSync(aceSynthExe).size >= 400_000;
+        } catch { return false; }
+      },
+      install: async (arc) => {
+        // Extracts ace-lm.exe, ace-synth.exe, and their own ggml DLLs into
+        // dist/ace-step/ — isolated to avoid conflicting with llama's ggml builds.
+        if (fs.existsSync(aceStepDir)) fs.rmSync(aceStepDir, { recursive: true, force: true });
+        fs.mkdirSync(aceStepDir, { recursive: true });
+        await extractZip(arc, aceStepDir);
+        if (!fs.existsSync(aceLmExe))
+          throw new Error('ace-lm.exe not found after extracting ace-step-win32-x64.zip');
+      },
+    };
+  })();
+
   // Build final list — null entries are platform-not-applicable
   const deps: Dep[] = [
     vssDep,
@@ -1139,6 +1232,10 @@ function buildDeps(arch: PhobosArch): Dep[] {
     sculptglDep,
     godotDep,
     phobosAppDep(),
+    // Audio generative pipeline binaries
+    kokoro82mDep,
+    whisperCliBinDep,
+    aceStepBinDep,
   ].filter((d): d is Dep => d !== null);
 
   return deps;

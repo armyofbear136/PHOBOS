@@ -1,3 +1,4 @@
+import * as fs from 'node:fs';
 import { type FastifyInstance } from 'fastify';
 import * as http from 'http';
 import {
@@ -120,6 +121,9 @@ export async function registerToolsRoutes(fastify: FastifyInstance): Promise<voi
               reply.header(k, v as string);
             }
           }
+          // CORP: cross-origin lets the Vite parent (different port = different
+          // origin) embed Stirling resources. Spring Boot doesn't set this header.
+          reply.header('Cross-Origin-Resource-Policy', 'cross-origin');
           const chunks: Buffer[] = [];
           upstream.on('data', (c: Buffer) => chunks.push(c));
           upstream.on('end', () => {
@@ -199,10 +203,17 @@ export async function registerToolsRoutes(fastify: FastifyInstance): Promise<voi
   // The status endpoint tells the frontend when the build isn't present yet.
   // Gating on isBuildPresent() caused the route to never register when DepPrep
   // ran its install after registerToolsRoutes had already executed at startup.
+  fs.mkdirSync(BLOCKBENCH_DIR, { recursive: true });
   await fastify.register(fastifyStatic, {
     root:          BLOCKBENCH_DIR,
     prefix:        '/tools/blockbench/',
     decorateReply: false,
+    setHeaders: (res) => {
+      // CORP: cross-origin required — Vite parent is :5173, this serves from
+      // :3001. Different port = different origin. Parent COEP: require-corp
+      // blocks any cross-origin resource that doesn't declare CORP.
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    },
   });
 
   // ── SculptGL static serving ───────────────────────────────────────────────
@@ -213,10 +224,14 @@ export async function registerToolsRoutes(fastify: FastifyInstance): Promise<voi
     return reply.send(getSculptGLStatus());
   });
 
+  fs.mkdirSync(SCULPTGL_DIR, { recursive: true });
   await fastify.register(fastifyStatic, {
     root:          SCULPTGL_DIR,
     prefix:        '/tools/sculptgl/',
     decorateReply: false,
+    setHeaders: (res) => {
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    },
   });
 
   // ── Godot 4.6.2 Web Editor ────────────────────────────────────────────────
@@ -232,6 +247,24 @@ export async function registerToolsRoutes(fastify: FastifyInstance): Promise<voi
     return reply.send(getGodotStatus());
   });
 
+  fs.mkdirSync(GODOT_DIR, { recursive: true });
+
+  // Intercept Godot's service worker BEFORE @fastify/static serves the real file.
+  // Godot ships service.worker.js to add COOP/COEP headers to its own fetches.
+  // Under the Vite proxy with COEP: require-corp already set globally, the SW's
+  // internal fetch() calls fail (COEP rejects opaque SW responses), producing
+  // "FetchEvent resulted in a network error" and crashing the godot iframe.
+  // A no-op SW installs immediately, does nothing, and lets the browser's normal
+  // fetch pipeline (which already has the right headers from the server) handle all
+  // requests. Cache-Control: no-store prevents any stale copy from persisting.
+  fastify.get('/tools/godot/service.worker.js', async (_req, reply) => {
+    reply
+      .header('Content-Type',              'text/javascript; charset=utf-8')
+      .header('Cache-Control',             'no-store')
+      .header('Cross-Origin-Resource-Policy', 'cross-origin')
+      .send('// no-op: COOP/COEP headers are already set by the Fastify static server.\n');
+  });
+
   await fastify.register(fastifyStatic, {
     root:          GODOT_DIR,
     prefix:        '/tools/godot/',
@@ -239,7 +272,7 @@ export async function registerToolsRoutes(fastify: FastifyInstance): Promise<voi
     setHeaders: (res) => {
       res.setHeader('Cross-Origin-Opener-Policy',   'same-origin');
       res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
-      res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     },
   });
 

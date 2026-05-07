@@ -32,7 +32,10 @@ const execFileAsync = promisify(execFile);
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
 const TRAINING_ROOT = path.join(os.homedir(), '.phobos', 'plugin-training');
-const TRAINER_SCRIPT = path.join(path.dirname(new URL(import.meta.url).pathname), 'phobos-trainer.py');
+const TRAINER_SCRIPT = path.join(
+  path.dirname(typeof __filename !== 'undefined' ? __filename : path.join(process.cwd(), 'x')),
+  'phobos-trainer.py',
+);
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

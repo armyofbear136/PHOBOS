@@ -194,6 +194,11 @@ export function getPolarisStatus(): PolarisStatus {
            binaryPresent: isBinaryPresent(), libraryPath: service.config?.libraryPath ?? null };
 }
 
+export function getLibraryPath(): string {
+  return service.config?.libraryPath
+    ?? path.join(os.homedir(), '.phobos', 'media', 'polaris', 'phobosMusic');
+}
+
 let _token: string | null = null;
 
 async function acquireToken(password: string): Promise<string> {

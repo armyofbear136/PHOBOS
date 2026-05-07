@@ -1060,6 +1060,15 @@ export interface GGUFSpec {
     hfFile: string;
     sizeBytes: number;
   };
+  /**
+   * HuggingFace repo ID for the full-precision safetensors base model used
+   * by CartridgeTrainer when training a LoRA. Populated only for dense models
+   * with a known public HF repo. MoE, vision, and distill-only models omit this.
+   * When a user has an uncensored variant active (file replaced in-place by
+   * downloadVariantModel), this field is unaffected — training always loads
+   * from the canonical upstream HF repo, not the variant GGUF on disk.
+   */
+  trainingHfId?: string;
 }
 
 export const GGUF_CATALOGUE: GGUFSpec[] = [
@@ -1095,6 +1104,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'sayon', thinkingTokens: false, jinjaTemplate: false,
     hfRepo: 'bartowski/Meta-Llama-3.1-8B-Instruct-GGUF',
     hfFile: 'Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf',
+    trainingHfId: 'meta-llama/Llama-3.1-8B-Instruct',
     sizeBytes: 4_920_000_000, ramRequiredGb: 6, contextWindow: 131072,
     kvCacheMbPer1kTokens: 128,  // 32 layers x 8 KV heads x 128 head_dim x 2 x F16
     activeParamsB: 8.0, sayonQuality: 3, speedClass: 'medium',
@@ -1114,6 +1124,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'sayon', thinkingTokens: false, jinjaTemplate: false,
     hfRepo: 'bartowski/google_gemma-3-4b-it-GGUF',
     hfFile: 'google_gemma-3-4b-it-Q4_K_M.gguf',
+    trainingHfId: 'google/gemma-3-4b-it',
     sizeBytes: 2_530_000_000, ramRequiredGb: 3, contextWindow: 131072,
     kvCacheMbPer1kTokens: 72,   // 18 layers x 4 KV heads x 256 head_dim x 2 x F16
     activeParamsB: 4.0, sayonQuality: 3, speedClass: 'fast',
@@ -1123,6 +1134,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'sayon', thinkingTokens: false, jinjaTemplate: false,
     hfRepo: 'bartowski/google_gemma-3-12b-it-GGUF',
     hfFile: 'google_gemma-3-12b-it-Q4_K_M.gguf',
+    trainingHfId: 'google/gemma-3-12b-it',
     sizeBytes: 7_800_000_000, ramRequiredGb: 10, contextWindow: 131072,
     kvCacheMbPer1kTokens: 224,  // 28 layers x 8 KV heads x 256 head_dim x 2 x F16
     activeParamsB: 12.0, sayonQuality: 4, speedClass: 'medium',
@@ -1141,6 +1153,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3.5-4B-GGUF',
     hfFile: 'Qwen_Qwen3.5-4B-Q4_K_M.gguf',
+    trainingHfId: 'Qwen/Qwen3.5-4B-Instruct',
     sizeBytes: 2_600_000_000, ramRequiredGb: 3, contextWindow: 262144,
     kvCacheMbPer1kTokens: 112,  // hybrid attention (GDN + sparse) — effective KV cost lower than Qwen3
     activeParamsB: 5.0, serenQuality: 2, speedClass: 'fast',  // GDN+sparse adds ~25% overhead vs Qwen3
@@ -1154,6 +1167,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3.5-9B-GGUF',
     hfFile: 'Qwen_Qwen3.5-9B-Q4_K_M.gguf',
+    trainingHfId: 'Qwen/Qwen3.5-9B-Instruct',
     sizeBytes: 5_500_000_000, ramRequiredGb: 7, contextWindow: 262144,
     kvCacheMbPer1kTokens: 144,  // estimated from Qwen3-8B baseline, hybrid attention reduces effective cost
     activeParamsB: 11.0, serenQuality: 4, speedClass: 'medium',  // GDN+sparse adds ~25% overhead vs Qwen3
@@ -1165,6 +1179,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3.5-27B-GGUF',
     hfFile: 'Qwen_Qwen3.5-27B-Q4_K_M.gguf',
+    trainingHfId: 'Qwen/Qwen3.5-27B-Instruct',
     sizeBytes: 16_000_000_000, ramRequiredGb: 18, contextWindow: 262144,
     kvCacheMbPer1kTokens: 224,  // dense 27B — similar KV structure to Gemma 3 12B but more layers
     activeParamsB: 34.0, serenQuality: 5, speedClass: 'slow',  // GDN+sparse adds ~25% overhead vs dense
@@ -1270,25 +1285,23 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     kvCacheMbPer1kTokens: 96,   // MoE: 17B active params, efficient KV footprint
     activeParamsB: 17.0, serenQuality: 5, speedClass: 'slow',
   },
-  // ── Trinity-Large-Thinking ───────────────────────────────────────────────────
-  // Arcee AI's reasoning model fine-tune. Apache 2.0.
-  // Based on Qwen3.5 architecture. Produces <think> tokens via deepseek format.
-  // Optimised for agentic reasoning and structured output.
-  {
-    modelId: 'trinity-large-thinking-q4', label: 'Trinity Large Thinking Q4', family: 'Trinity',
-    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
-    hfRepo: 'arcee-ai/Trinity-Large-Thinking',
-    hfFile: 'Trinity-Large-Thinking-Q4_K_M.gguf',
-    sizeBytes: 16_500_000_000, ramRequiredGb: 18, contextWindow: 131072,
-    kvCacheMbPer1kTokens: 224,  // Qwen3.5-27B base — dense GQA cost
-    activeParamsB: 27.0, serenQuality: 5, speedClass: 'medium',
-  },
   // ── DeepSeek-R1 family ───────────────────────────────────────────────────────
+  {
+    modelId: 'deepseek-r1-1.5b-q4', label: 'DeepSeek-R1 1.5B Q4', family: 'DeepSeek-R1',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF',
+    hfFile: 'DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf',
+    trainingHfId: 'deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B',
+    sizeBytes: 1_100_000_000, ramRequiredGb: 2, contextWindow: 131072,
+    kvCacheMbPer1kTokens: 28,  // 28 layers x 2 KV heads x 128 head_dim x 2 x F16
+    activeParamsB: 1.5, serenQuality: 1, speedClass: 'fast',
+  },
   {
     modelId: 'deepseek-r1-8b-q4', label: 'DeepSeek-R1 8B Q4', family: 'DeepSeek-R1',
     role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/deepseek-ai_DeepSeek-R1-0528-Qwen3-8B-GGUF',
     hfFile: 'deepseek-ai_DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf',
+    trainingHfId: 'deepseek-ai/DeepSeek-R1-0528-Qwen3-8B',
     sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 131072,
     kvCacheMbPer1kTokens: 144,  // 36 layers x 8 KV heads x 128 head_dim x 2 x F16
     activeParamsB: 8.0, serenQuality: 3, speedClass: 'medium',
@@ -1298,6 +1311,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF',
     hfFile: 'DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf',
+    trainingHfId: 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B',
     sizeBytes: 9_050_000_000, ramRequiredGb: 11, contextWindow: 131072,
     kvCacheMbPer1kTokens: 192,  // 48 layers x 8 KV heads x 128 head_dim x 2 x F16
     activeParamsB: 14.0, serenQuality: 4, speedClass: 'slow',
@@ -1468,6 +1482,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'sayon', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/google_gemma-4-E4B-it-GGUF',
     hfFile: 'google_gemma-4-E4B-it-Q4_K_M.gguf',
+    trainingHfId: 'google/gemma-4-e4b-it',
     sizeBytes: 2_600_000_000, ramRequiredGb: 4, contextWindow: 131072,
     kvCacheMbPer1kTokens: 96,   // MatFormer MoE E4B — 4B effective params, efficient KV
     activeParamsB: 4.0, sayonQuality: 5, speedClass: 'fast',

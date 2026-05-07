@@ -2,7 +2,7 @@ import 'dotenv/config';
 import Fastify, { type FastifyError } from 'fastify';
 import cors from '@fastify/cors';
 import os from 'node:os';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync as fsExistsSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseManager } from './db/DatabaseManager.js';
 import { threadsRoute } from './routes/threads.js';
@@ -24,7 +24,11 @@ import { syncScheduledTasks, registerSecurityHandlers } from './security/Securit
 import { initScheduler } from './scheduling/Scheduler.js';
 import { ScheduledTaskStore } from './db/ScheduledTaskStore.js';
 import { scanOnStartup as scanUserSkills } from './db/UserSkillManager.js';
-import { stopAllServers, startSybil } from './phobos/LlamaServerManager.js';
+import { stopAllServers, startSybil, coordinatorOwnsProcesses } from './phobos/LlamaServerManager.js';
+import { fork }                    from 'node:child_process';
+import { fileURLToPath }           from 'node:url';
+import { S, SHARED_BUFFER_BYTE_LENGTH } from './coordinator/SharedState.js';
+import { coordinatorPipe }         from './PipeClient.js';
 import { MemoryStore } from './db/MemoryStore.js';
 import { reconfigureClients, COORDINATOR_MODEL, ENGINE_MODEL } from './ai/clients.js';
 import * as ModelPathStore from './db/ModelPathStore.js';
@@ -44,6 +48,7 @@ import {
 } from './services/JellyfinManager.js';
 import { registerToolsRoutes } from './routes/toolsRoute.js';
 import { registerCartridgeRoutes } from './routes/cartridgeRoutes.js';
+import { registerTrainingRoutes }  from './routes/trainingRoutes.js';
 import { CartridgeStore } from './db/CartridgeStore.js';
 import { initCartridgeManager, reconcileCartridgeSlots } from './phobos/CartridgeManager.js';
 import { startCamofox, stopCamofox, isCamofoxInstalled } from './phobos/CamofoxManager.js';
@@ -159,6 +164,7 @@ async function buildServer() {
   await registerAudioRoutes(fastify);
   await registerToolsRoutes(fastify);
   await registerCartridgeRoutes(fastify);
+  await registerTrainingRoutes(fastify);
   await registerArchiveRoutes(fastify);
   await registerKavitaIngestRoutes(fastify);
   await registerJellyfinIngestRoutes(fastify);
@@ -470,6 +476,78 @@ async function continueBootSequence(
   }, CHECKPOINT_INTERVAL_MS);
   checkpointTimer.unref();
 
+  // ── Coordinator process ────────────────────────────────────────────────────
+  // Fork before waitForServicesToSettle so the coordinator is up and holding
+  // the pipe socket before we declare 'ready'. The fork is non-blocking — the
+  // await is only for the COORDINATOR_READY IPC message (timeout: 10s).
+  const sharedBuffer = new SharedArrayBuffer(SHARED_BUFFER_BYTE_LENGTH);
+  const sharedState  = new Int32Array(sharedBuffer);
+
+  // Expose on globalThis so routes/status.ts can read SAYON/SEREN state via
+  // Atomics.load without creating a circular import (server → routes → server).
+  (globalThis as Record<string, unknown>).__phobosSharedState = sharedState;
+
+  // Seed FASTIFY_HEARTBEAT so the coordinator can detect this process.
+  Atomics.store(sharedState, S.FASTIFY_HEARTBEAT, Math.floor(Date.now() / 1000));
+
+  // Resolve coordinator entry point: dist/coordinator.cjs in SEA, or
+  // coordinator/coordinator.ts via tsx in dev (tsx resolves .ts from .js imports).
+  const _dirname_server: string = (() => {
+    try {
+      if (typeof import.meta?.url === 'string') return path.dirname(fileURLToPath(import.meta.url));
+    } catch { /* CJS bundle */ }
+    return typeof __dirname === 'string' ? __dirname : process.cwd();
+  })();
+
+  const coordinatorPath = (() => {
+    const seaPath = path.join(path.dirname(process.execPath), 'coordinator.cjs');
+    if (fsExistsSync(seaPath)) return seaPath;
+    return path.join(_dirname_server, 'coordinator', 'coordinator.js');
+  })();
+
+  let coordinatorProc = fork(coordinatorPath, [], {
+    env: { ...process.env, PHOBOS_COORDINATOR: '1' },
+  });
+
+  const coordinatorReady = new Promise<void>((resolve) => {
+    const timeout = setTimeout(() => {
+      console.warn('[Boot] Coordinator did not send READY within 10s — continuing anyway');
+      resolve();
+    }, 10_000);
+    coordinatorProc.once('message', (msg: unknown) => {
+      if (msg && typeof msg === 'object' && (msg as Record<string, unknown>).type === 'COORDINATOR_READY') {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+  });
+
+  coordinatorProc.send({ type: 'INIT_SHARED_BUFFER', buffer: sharedBuffer });
+  await coordinatorReady;
+
+  // Keep FASTIFY_HEARTBEAT alive every 5s so the coordinator detects Fastify crashes.
+  const fastifyHeartbeatTimer = setInterval(() => {
+    Atomics.store(sharedState, S.FASTIFY_HEARTBEAT, Math.floor(Date.now() / 1000));
+  }, 5_000);
+  fastifyHeartbeatTimer.unref();
+
+  // Reconnect logic: if coordinator crashes, respawn after 2s.
+  const onCoordinatorExit = (code: number | null, signal: NodeJS.Signals | null) => {
+    if (code === 0) return; // clean shutdown
+    console.warn(`[Coordinator] Process exited code=${code} signal=${signal} — respawning in 2s`);
+    setTimeout(() => {
+      coordinatorProc = fork(coordinatorPath, [], {
+        env: { ...process.env, PHOBOS_COORDINATOR: '1' },
+      });
+      coordinatorProc.send({ type: 'INIT_SHARED_BUFFER', buffer: sharedBuffer });
+      coordinatorProc.on('exit', onCoordinatorExit);
+    }, 2_000);
+  };
+  coordinatorProc.on('exit', onCoordinatorExit);
+
+  // Connect the Fastify-side pipe client.
+  coordinatorPipe.connect();
+
   // ── PHASE 4: Services wait → Ready ────────────────────────────────────────
   // All service start() calls above are fire-and-forgot. Give them up to 5
   // minutes to come online. The frontend holds the splash screen open and shows
@@ -503,6 +581,7 @@ async function continueBootSequence(
     scheduler.stop();
     gsm.stop();
 
+    clearInterval(fastifyHeartbeatTimer);
     await stopCamofox().catch(() => {});
     await stopStirling().catch(() => {});
     await stopOmniclip().catch(() => {});
@@ -511,7 +590,14 @@ async function continueBootSequence(
     await stopJellyfin().catch(() => {});
     await stopKavita().catch(() => {});
     await stopMpv().catch(() => {});
-    await stopAllServers().catch(() => {});
+    // Only stop llama-server processes if the Coordinator hasn't taken ownership.
+    // After C1 handoff, the Coordinator owns SAYON/SEREN lifecycle — killing them
+    // here would defeat the purpose of coordinator crash isolation.
+    if (!coordinatorOwnsProcesses()) {
+      await stopAllServers().catch(() => {});
+    }
+    coordinatorProc.kill('SIGTERM');
+    coordinatorPipe.disconnect();
     await fastify.close().catch(() => {});
 
     process.exit(0);

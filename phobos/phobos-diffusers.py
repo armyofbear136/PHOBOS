@@ -97,6 +97,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Path to pre-converted diffusers directory (from_pretrained). "
                         "If present and valid, used instead of from_single_file for SDXL.")
 
+    # Performance optimisations (opt-in, CUDA Ampere+ recommended for sage)
+    p.add_argument("--sage-attention", action="store_true",
+                   help="Enable SageAttention 2.x attention backend (requires sageattention ≥2.1.1)")
+    p.add_argument("--torch-compile", action="store_true",
+                   help="Compile transformer with torch.compile reduce-overhead (first run ~2 min warm-up)")
+
     return p
 
 
@@ -713,6 +719,114 @@ def load_pipeline(args, device: str, dtype):
     raise ValueError(f"Unsupported model type: {model_type}")
 
 
+# ── Post-load optimisations ───────────────────────────────────────────────────
+
+# Models where SageAttention is known to produce broken output.
+# Z-Image: produces black images. Quantised Wan: NaN in query tensors.
+_SAGE_BLOCKED_TYPES: frozenset = frozenset({"z-image"})
+
+
+def _is_wan_quantised(args) -> bool:
+    """True when the active model is a quantised (GGUF) Wan checkpoint."""
+    return args.model_type == "wan" and is_gguf(args.model_path)
+
+
+def apply_optimizations(pipe, args, device: str) -> None:
+    """Apply SageAttention and/or torch.compile after pipeline load.
+
+    Both are opt-in via CLI flags. Neither raises on failure — a warning is
+    logged and generation continues with the default attention backend.
+    """
+    if args.sage_attention:
+        _apply_sage_attention(pipe, args, device)
+    if args.torch_compile:
+        _apply_torch_compile(pipe, args)
+
+
+def _apply_sage_attention(pipe, args, device: str) -> None:
+    """Set SageAttention 2.x as the attention backend.
+
+    Diffusers 0.36 reads DIFFUSERS_ATTN_BACKEND at the start of each
+    attention forward() call — setting it here after load is safe and
+    affects all subsequent inference steps.
+    """
+    import importlib.util
+
+    if args.model_type in _SAGE_BLOCKED_TYPES:
+        log(f"[INFO ] SageAttention skipped — not supported for model type '{args.model_type}'")
+        return
+
+    if _is_wan_quantised(args):
+        log("[INFO ] SageAttention skipped — quantised Wan model (NaN risk in query tensors)")
+        return
+
+    if not (device.startswith("cuda") or device.startswith("rocm")):
+        log(f"[INFO ] SageAttention skipped — not supported on device '{device}'")
+        return
+
+    if importlib.util.find_spec("sageattention") is None:
+        log("[WARN] --sage-attention set but sageattention package not installed — skipping")
+        return
+
+    try:
+        import sageattention
+        from packaging.version import Version
+
+        raw_ver = getattr(sageattention, "__version__", None)
+        if raw_ver is not None and Version(raw_ver) < Version("2.1.1"):
+            log(f"[WARN] SageAttention {raw_ver} < 2.1.1 required — skipping")
+            return
+
+        os.environ["DIFFUSERS_ATTN_BACKEND"] = "sage_attn"
+        ver_str = raw_ver if raw_ver else "unknown version"
+        log(f"[INFO ] SageAttention {ver_str} enabled")
+
+    except Exception as e:
+        log(f"[WARN] SageAttention setup failed — falling back to SDPA: {e}")
+
+
+def _apply_torch_compile(pipe, args) -> None:
+    """Compile the diffusion transformer with torch.compile reduce-overhead.
+
+    Traces the graph once and emits CUDA graphs for subsequent steps.
+    Cache lives in ~/.triton/cache/ — reused across runs for the same model.
+
+    Skipped on non-CUDA (no Triton backend) and Wan video (dynamic latent
+    shapes change per call, causing retrace on every denoising step).
+    Skipped when --offload-cpu is set — torch.compile and CPU offload are
+    incompatible in PyTorch <2.5; guard kept for correctness on all versions.
+    """
+    import torch
+
+    if args.model_type == "wan":
+        log("[INFO ] torch.compile skipped — Wan video uses dynamic latent shapes")
+        return
+
+    if args.offload_cpu:
+        log("[INFO ] torch.compile skipped — incompatible with --offload-cpu")
+        return
+
+    if not torch.cuda.is_available():
+        log("[INFO ] torch.compile skipped — requires CUDA")
+        return
+
+    transformer = getattr(pipe, "transformer", None) or getattr(pipe, "unet", None)
+    if transformer is None:
+        log("[WARN] torch.compile: no transformer/unet found on pipeline — skipping")
+        return
+
+    try:
+        log("[INFO ] torch.compile: compiling transformer (first run ~2 min, cached after)…")
+        compiled = torch.compile(transformer, mode="reduce-overhead", fullgraph=False)
+        if hasattr(pipe, "transformer"):
+            pipe.transformer = compiled
+        else:
+            pipe.unet = compiled
+        log("[INFO ] torch.compile: ready")
+    except Exception as e:
+        log(f"[WARN] torch.compile failed — running uncompiled: {e}")
+
+
 # ── Callback for step progress ───────────────────────────────────────────────
 
 class ProgressCallback:
@@ -1071,6 +1185,9 @@ def main():
     pipe = load_pipeline(args, device, dtype)
     load_elapsed = time.time() - load_start
     log(f"[INFO ] Model loaded in {load_elapsed:.1f}s")
+
+    # Apply post-load optimisations (sage attention, torch.compile)
+    apply_optimizations(pipe, args, device)
 
     # Generate
     if args.model_type == "wan":

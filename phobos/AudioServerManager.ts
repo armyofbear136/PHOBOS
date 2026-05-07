@@ -69,6 +69,9 @@ function resolveAceBin(name: 'ace-lm' | 'ace-synth'): string {
   const file = `${name}${ext}`;
   const binDir = resolveBinDir();
   const candidates = [
+    path.join(binDir, 'ace-step', file),
+    path.join(_thisDir, '..', 'ace-step', file),
+    path.join(process.cwd(), 'dist', 'ace-step', file),
     path.join(binDir, file),
     path.join(_thisDir, '..', file),
     path.join(process.cwd(), 'dist', file),
@@ -77,7 +80,7 @@ function resolveAceBin(name: 'ace-lm' | 'ace-synth'): string {
     if (fs.existsSync(c)) return c;
   }
   throw new Error(
-    `${file} not found. Expected in dist/ alongside phobos-core.exe.\n` +
+    `${file} not found. Expected in dist/ace-step/ alongside phobos-core.exe.\n` +
     `Build from: https://github.com/ace-step/acestep.cpp\n` +
     `Searched:\n  ${candidates.join('\n  ')}`,
   );
@@ -128,7 +131,7 @@ function resolveKokoroModelDir(): string {
     path.join(process.cwd(), 'dist', 'kokoro'),
   ];
   for (const c of candidates) {
-    if (fs.existsSync(path.join(c, 'model_quantized.onnx'))) return c;
+    if (fs.existsSync(path.join(c, 'onnx', 'model_quantized.onnx'))) return c;
   }
   return path.join(binDir, 'kokoro'); // return primary even if absent — caller checks
 }
@@ -203,9 +206,13 @@ function runProcess(
   args:       string[],
   outputPath: string,
   opts:       AudioRunOptions = {},
+  extraEnv?:  Record<string, string>,
 ): Promise<string> {
   return new Promise<string>((resolve, reject) => {
-    const proc = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const spawnEnv = extraEnv
+      ? { ...process.env, ...extraEnv }
+      : process.env;
+    const proc = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv });
 
     if (opts.signal) {
       const abort = () => { try { proc.kill('SIGTERM'); } catch { /**/ } };
@@ -278,7 +285,7 @@ export interface KokoroOptions extends AudioRunOptions {
 
 export async function generateKokoro(opts: KokoroOptions): Promise<AudioGenerateResult> {
   const modelDir  = resolveKokoroModelDir();
-  const modelFile = path.join(modelDir, 'model_quantized.onnx');
+  const modelFile = path.join(modelDir, 'onnx', 'model_quantized.onnx');
 
   // If local model dir doesn't have the full set of files kokoro-js needs,
   // fall back to the HF repo ID so the library fetches + caches automatically.
@@ -312,7 +319,7 @@ export async function generateKokoro(opts: KokoroOptions): Promise<AudioGenerate
     speed: opts.speed ?? 1.0,
   });
 
-  audio.save(outputPath);
+  await audio.save(outputPath);
 
   if (!fs.existsSync(outputPath)) {
     throw new Error('Kokoro synthesis completed but output file not found');
@@ -368,7 +375,15 @@ export async function generateF5Tts(opts: F5TtsOptions): Promise<AudioGenerateRe
   if (opts.refText)  args.push('--ref-text',  opts.refText);
 
   console.log(`[AudioServerManager] F5-TTS: ${pythonBin} ${args.join(' ')}`);
-  await runProcess(pythonBin, args, outputPath, opts);
+  // Prepend Jellyfin's ffmpeg to PATH so torchcodec can load its DLLs.
+  // torchcodec (required by f5-tts for audio loading) needs ffmpeg DLLs at runtime.
+  const jellyfinDir = path.join(os.homedir(), '.phobos', 'services', 'jellyfin');
+  const pathSep     = process.platform === 'win32' ? ';' : ':';
+  const extraEnv    = fs.existsSync(path.join(jellyfinDir, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'))
+    ? { PATH: `${jellyfinDir}${pathSep}${process.env.PATH ?? ''}` }
+    : undefined;
+
+  await runProcess(pythonBin, args, outputPath, opts, extraEnv);
   return { outputPath, elapsedMs: Date.now() - startMs };
 }
 
@@ -482,16 +497,27 @@ or: ${altPath}`
     : requestPath.replace(/\.json$/, '0.json');
 
   // Pass 2 — ace-synth: audio codes → WAV
+  // ace-synth defaults to MP3; --wav forces WAV output.
+  // Output filename is derived from the request JSON name: request0.json -> request0.wav
   const synthArgs = [
     '--request',   synthRequestPath,
     '--embedding', embedModel,
     '--dit',       ditModel,
     '--vae',       vaeModel,
+    '--wav',
   ];
+
+  // ace-synth writes output alongside the request JSON, named <requestBasename>.wav
+  // e.g. 20260504-test-acestep.request0.json -> 20260504-test-acestep.request0.wav
+  // ace-synth appends a track index '0' before the extension: request0.json -> request00.wav
+  const synthOutputPath = synthRequestPath.replace(/\.json$/, '0.wav');
 
   opts.onProgress?.('[INFO ] ACE-Step pass 2/2: synthesis');
   console.log(`[AudioServerManager] ace-synth: ${aceSynth} ${synthArgs.join(' ')}`);
-  await runProcess(aceSynth, synthArgs, outputPath, opts);
+  await runProcess(aceSynth, synthArgs, synthOutputPath, opts);
+
+  // Move the generated WAV to the canonical timestamped output path
+  fs.renameSync(synthOutputPath, outputPath);
 
   // Clean up temp request files
   for (const p of [requestPath, synthRequestPath]) {

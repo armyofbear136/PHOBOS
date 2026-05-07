@@ -3,7 +3,7 @@ import { checkBackendHealth, reconfigureClients, COORDINATOR_MODEL, ENGINE_MODEL
 import { CORE_VERSION } from '../version';
 import { isImageGenerating } from './workflows.js';
 import { isRelocating } from './phobosLocal.js';
-import { getServerStatus } from '../phobos/LlamaServerManager.js';
+import { S, ProcessState } from '../coordinator/SharedState.js';
 import { DispatchLogStore } from '../db/DispatchLogStore.js';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 import { ModelConfigStore, PROVIDERS, getCoordinatorModels, getEngineModels } from '../db/ModelConfigStore.js';
@@ -31,7 +31,13 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
   // GET /api/status
   fastify.get('/api/status', async (_req, reply) => {
     const health = await checkBackendHealth();
-    const phobos = getServerStatus();
+
+    // Read SAYON/SEREN process state directly from SharedArrayBuffer — zero IPC cost.
+    // Falls back to ProcessState.STOPPED (0) if the buffer is not yet initialised
+    // (e.g. coordinator has not sent INIT_SHARED_BUFFER yet on first boot).
+    const sharedBuf = (globalThis as Record<string, unknown>).__phobosSharedState as Int32Array | undefined;
+    const sayonState = sharedBuf ? Atomics.load(sharedBuf, S.SAYON_STATE)  : ProcessState.STOPPED;
+    const serenState = sharedBuf ? Atomics.load(sharedBuf, S.SEREN_STATE)  : ProcessState.STOPPED;
 
     // Config optimal check — only for phobos provider, cached 60s
     let configOptimal: boolean | null = null;
@@ -71,8 +77,8 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
       isGenerating: isImageGenerating(),
       isRelocating: isRelocating(),
       // Server lifecycle — lets the frontend block input during model switches
-      coordinatorStarting: phobos.sayon.state === 'starting',
-      engineStarting:      phobos.seren.state === 'starting',
+      coordinatorStarting: sayonState === ProcessState.STARTING,
+      engineStarting:      serenState === ProcessState.STARTING,
       // Config optimality — lets the frontend show mismatch indicators
       configOptimal,
       recommendedSayon,

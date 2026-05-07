@@ -66,10 +66,20 @@ export function installedVersion(): string | null {
 // in the installed npm package or have unresolvable transitive deps.
 // Serving empty ESM stubs prevents main.js from throwing on import.
 const MODULE_STUBS: Record<string, string> = {
-  // posthog-js ships dist/es.js in newer versions but not in the version
-  // installed by npm (it has array.js etc. but not es.js).
+  // posthog-js: stub the missing es.js path AND provide a no-op posthog object.
+  // main.ts calls posthog.init(...) — the stub must expose init as a no-op or
+  // the call throws TypeError and stalls the loading screen.
   '/node_modules/posthog-js/dist/es.js':
-    'export default {}; export const posthog = {};',
+    'export const posthog = { init() {}, capture() {}, identify() {}, reset() {} }; export default posthog;',
+
+  // coi-serviceworker.js — Omniclip ships this as a COOP/COEP shim for hosts
+  // that can't set real headers. We set real headers on every response, so the
+  // service worker is not needed. When it runs anyway it intercepts fetch events
+  // and fails (TypeError: Failed to fetch / Failed to convert value to Response)
+  // which blocks the initial page load. Return a no-op script so the browser
+  // installs nothing and fetch events are never intercepted.
+  '/coi-serviceworker.js':
+    '// no-op: COOP/COEP headers are set by the static server.',
 
   // sparrow-rtc's x/ build imports @e280/stz and @e280/renraku which are
   // not in the importmap and not installed — stub sparrow-rtc entirely.
@@ -121,7 +131,7 @@ function mimeFor(filePath: string): string {
 const COI_HEADERS: Record<string, string> = {
   'Cross-Origin-Opener-Policy':   'same-origin',
   'Cross-Origin-Embedder-Policy': 'require-corp',
-  'Cross-Origin-Resource-Policy': 'same-origin',
+  'Cross-Origin-Resource-Policy': 'cross-origin',
 };
 
 // ── Static file handler ────────────────────────────────────────────────────────
@@ -143,11 +153,20 @@ function serveStatic(
   // Serve stubs for broken upstream deps before hitting the filesystem.
   if (MODULE_STUBS[urlPath]) {
     const body = MODULE_STUBS[urlPath];
+    // coi-serviceworker.js must never be cached — the browser may have a real
+    // version installed from a previous run. no-store forces re-fetch every time
+    // so the no-op stub is always what gets registered (or rather, doesn't).
+    // Service worker scripts also require text/javascript specifically.
+    const isSwFile     = urlPath === '/coi-serviceworker.js';
+    const contentType  = isSwFile
+      ? 'text/javascript; charset=utf-8'
+      : 'application/javascript; charset=utf-8';
+    const cacheControl = isSwFile ? 'no-store' : 'public, max-age=3600';
     res.writeHead(200, {
       ...COI_HEADERS,
-      'Content-Type':   'application/javascript; charset=utf-8',
+      'Content-Type':   contentType,
       'Content-Length': Buffer.byteLength(body),
-      'Cache-Control':  'public, max-age=3600',
+      'Cache-Control':  cacheControl,
     });
     res.end(body);
     return;

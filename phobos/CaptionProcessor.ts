@@ -106,7 +106,10 @@ export async function* caption(opts: CaptionOptions): AsyncGenerator<CaptionProg
     return;
   }
 
-  const scriptPath = path.resolve(path.dirname(new URL(import.meta.url).pathname), 'phobos-caption.py');
+  const scriptPath = path.resolve(
+    path.dirname(typeof __filename !== 'undefined' ? __filename : path.join(process.cwd(), 'x')),
+    'phobos-caption.py',
+  );
   if (!fs.existsSync(scriptPath)) {
     yield { type: 'error', message: `Caption script not found: ${scriptPath}` };
     return;

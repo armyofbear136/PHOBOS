@@ -21,6 +21,8 @@ import * as fs   from 'fs';
 import * as path from 'path';
 import * as os   from 'os';
 import AdmZip    from 'adm-zip';
+import archiver  from 'archiver';
+import { createWriteStream } from 'fs';
 import { DatabaseManager } from './DatabaseManager.js';
 import {
   PHOBOS_DEFAULT_CART_PASSWORD,
@@ -175,6 +177,9 @@ function readManifestAndSig(archivePath: string): { manifest: CartridgeManifest;
   return { manifest, sig };
 }
 
+// NOTE: rewriteSigInArchive loads the full archive into memory via adm-zip.
+// For large cartridges (8B+) this will OOM. Replace with a streaming
+// copy-and-replace implementation before shipping license unlock on large models.
 function rewriteSigInArchive(archivePath: string, newSig: CartridgeSig): void {
   const zip = new AdmZip(archivePath);
   zip.deleteFile('sig.json');
@@ -553,25 +558,31 @@ export class CartridgeStore {
       hmac:                computeManifestHmac(manifest, createdAt, passwordHash, fp),
     };
 
-    const zip = new AdmZip();
-    zip.addFile('cartridge.json', Buffer.from(JSON.stringify(manifest, null, 2), 'utf-8'));
-    zip.addFile('sig.json',       Buffer.from(JSON.stringify(sig, null, 2), 'utf-8'));
-    zip.addLocalFile(loraGgufPath, '', 'lora.gguf');
-
     // Optional: safetensors for training resume (if present alongside the gguf).
     const stPath = loraGgufPath.replace(/\.gguf$/, '.safetensors');
-    if (fs.existsSync(stPath)) zip.addLocalFile(stPath, '', 'lora.safetensors');
 
-    for (let i = 0; i < Math.min(samplePaths.length, 6); i++) {
-      const sp = samplePaths[i];
-      if (fs.existsSync(sp)) zip.addLocalFile(sp, 'samples/', `0${i + 1}.txt`);
-    }
-
-    const installPath    = path.join(CARTRIDGES_DIR, manifest.id);
+    const installPath     = path.join(CARTRIDGES_DIR, manifest.id);
     const archiveDestPath = path.join(installPath, 'cartridge-archive.cartridge');
-    const loraDestPath   = path.join(installPath, 'lora.gguf');
+    const loraDestPath    = path.join(installPath, 'lora.gguf');
     fs.mkdirSync(installPath, { recursive: true });
-    zip.writeZip(archiveDestPath);
+
+    // ZIP64 required — merged fp16 GGUFs exceed 2 GB for models 1.5B+.
+    await new Promise<void>((resolve, reject) => {
+      const output  = createWriteStream(archiveDestPath);
+      const archive = archiver('zip', { zlib: { level: 0 }, forceZip64: true });
+      archive.on('error', reject);
+      output.on('close', resolve);
+      archive.pipe(output);
+      archive.append(Buffer.from(JSON.stringify(manifest, null, 2), 'utf-8'), { name: 'cartridge.json' });
+      archive.append(Buffer.from(JSON.stringify(sig, null, 2), 'utf-8'),      { name: 'sig.json' });
+      archive.file(loraGgufPath, { name: 'lora.gguf' });
+      if (fs.existsSync(stPath)) archive.file(stPath, { name: 'lora.safetensors' });
+      for (let i = 0; i < Math.min(samplePaths.length, 6); i++) {
+        const sp = samplePaths[i];
+        if (fs.existsSync(sp)) archive.file(sp, { name: `samples/0${i + 1}.txt` });
+      }
+      archive.finalize();
+    });
     fs.writeFileSync(loraDestPath, loraBytes);
 
     return this._insert({

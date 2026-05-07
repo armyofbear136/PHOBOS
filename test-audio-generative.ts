@@ -36,7 +36,6 @@
 //   npm install kokoro-js   (for Kokoro in-process test)
 
 import * as fs   from 'node:fs';
-import * as os   from 'node:os';
 import * as path from 'node:path';
 
 import {
@@ -63,9 +62,17 @@ function shouldRun(name: string): boolean {
 }
 
 // ── Test workspace ────────────────────────────────────────────────────────────
+// All test output stays under ./test-outputs/audiogen/ — never touches the user
+// home directory. WORKSPACES_ROOT is set here so AudioServerManager writes to
+// the same location.
 
 const TEST_THREAD_ID = `audio-test-${Date.now()}`;
-const TEST_DIR = path.join(os.homedir(), '.phobos', 'audiogentest', TEST_THREAD_ID);
+const TEST_OUTPUTS_ROOT = path.join(process.cwd(), 'test-outputs', 'audiogen');
+const TEST_DIR = path.join(TEST_OUTPUTS_ROOT, TEST_THREAD_ID);
+
+// Point AudioServerManager at the same root so all generated files land in
+// test-outputs/audiogen/<id>/audio/{tts,music,sfx} — not the user workspace.
+process.env.WORKSPACES_ROOT = TEST_OUTPUTS_ROOT;
 
 // ── Phase harness (matches test-phobos-host.ts pattern) ──────────────────────
 
@@ -176,9 +183,7 @@ async function main(): Promise<void> {
       // Use the Kokoro output if available, otherwise use a known test WAV.
       const audioPath = kokoroOutputPath ?? (() => {
         // Check if there's any existing TTS wav in the workspace we can reuse
-        const ttsDir = path.join(
-          os.homedir(), '.phobos', 'workspaces', TEST_THREAD_ID, 'audio', 'tts'
-        );
+        const ttsDir = path.join(TEST_OUTPUTS_ROOT, TEST_THREAD_ID, 'audio', 'tts');
         const wavs = fs.existsSync(ttsDir)
           ? fs.readdirSync(ttsDir).filter(f => f.endsWith('.wav'))
           : [];

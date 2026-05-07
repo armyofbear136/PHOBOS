@@ -92,6 +92,34 @@ export async function buildForPlatform({
   if (fs.existsSync(distDir)) fs.rmSync(distDir, { recursive: true, force: true });
   fs.mkdirSync(distDir, { recursive: true });
 
+  // ── 1a. Bundle coordinator process ────────────────────────────────────────
+  // The coordinator runs as a forked child process — it cannot live inside the
+  // SEA bundle (phobos.cjs) because fork() needs a separate file on disk.
+  // Same externals and aliases as the main bundle.
+  log('📦 Bundling coordinator...');
+  const coordinatorPath = path.join(distDir, 'coordinator.cjs');
+  await esbuild({
+    entryPoints: ['coordinator/coordinator.ts'],
+    bundle:   true,
+    platform: 'node',
+    target:   'node22',
+    format:   'cjs',
+    outfile:  coordinatorPath,
+    alias: {
+      'duckdb':      './sea-native-duckdb.cjs',
+      'tree-sitter': './sea-native-treesitter.cjs',
+    },
+    external: [
+      'onnxruntime-node',
+      '@xenova/transformers',
+      '@imgly/background-removal-node',
+      'sharp',
+      'tree-sitter-javascript',
+      'tree-sitter-typescript',
+    ],
+  });
+  log('✅ Coordinator bundle complete');
+
   // ── 1. Bundle JS ────────────────────────────────────────────────────────────
   log('📦 Bundling TypeScript...');
   const bundlePath = path.join(distDir, 'phobos.cjs');
@@ -578,13 +606,21 @@ export async function buildForPlatform({
   }
 
   // ── PyTorch script + bundled model configs ─────────────────────────────────
-  // phobos-diffusers.py is spawned by ImageServerManager for PyTorch generation.
-  // The bundled configs/ dir contains transformer config.json files for models
-  // whose HuggingFace repos are gated or need architecture-specific overrides.
-  const pyScript = path.join(__dirname, 'phobos', 'phobos-diffusers.py');
-  if (fs.existsSync(pyScript)) {
-    fs.copyFileSync(pyScript, path.join(distDir, 'phobos-diffusers.py'));
-    log('  ✅ phobos-diffusers.py (PyTorch generation script)');
+  // Python scripts spawned by PHOBOS managers.
+  // phobos-diffusers.py — ImageServerManager (PyTorch image generation)
+  // phobos-lm-trainer.py — CartridgeTrainer (LLM LoRA training)
+  // _torchcodec.py — PythonEnvManager patches torchaudio with this after install
+  const pyScripts = [
+    ['phobos-diffusers.py', 'phobos-diffusers.py', 'PyTorch generation script'],
+    ['phobos-lm-trainer.py', 'phobos-lm-trainer.py', 'LLM LoRA training script'],
+    ['_torchcodec.py', '_torchcodec.py', 'torchaudio soundfile fallback patch'],
+  ];
+  for (const [src, dst, label] of pyScripts) {
+    const pyScript = path.join(__dirname, 'phobos', src);
+    if (fs.existsSync(pyScript)) {
+      fs.copyFileSync(pyScript, path.join(distDir, dst));
+      log(`  ✅ ${dst} (${label})`);
+    }
   }
   // Shared recursive directory copy -- used for configs/ and phobos/skills/
   const copyDirRec = (src, dst) => {

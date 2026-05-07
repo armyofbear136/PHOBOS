@@ -42,7 +42,7 @@ export type PluginSource = 'phobos' | 'system';
 export interface PluginEntry {
   /** Stable id — source-prefixed bundle-basename. e.g. "phobos:PhobosCrystal" */
   id:       string;
-  /** Human-readable name, from moduleinfo.json or the bundle name. */
+  /** Human-readable name, from moduleinfo.json, deep-probe, or the bundle name. */
   name:     string;
   /** Absolute path to the .vst3 directory (or .vst3 file on Windows). */
   path:     string;
@@ -50,8 +50,25 @@ export interface PluginEntry {
   source:   PluginSource;
   /** Platform this entry was cached on — used to invalidate cross-platform rows. */
   platform: string;
-  /** Subcategory from moduleinfo.json if available, else ''. */
+  /** Subcategory string. From moduleinfo.json or the host deep-probe. */
   category: string;
+  /**
+   * Authoritative instrument-vs-effect flag, populated by the host's
+   * deep-probe (juce::PluginDescription::isInstrument). False until a deep
+   * scan succeeds — callers MUST gate UI categorization on scanState ===
+   * 'deep' before trusting this field. For shallow entries the only signal
+   * is `category`, which is empty for plugins that don't ship moduleinfo.
+   */
+  isInstrument: boolean;
+  /**
+   * 'shallow' — only moduleinfo.json was read (or nothing — moduleinfo absent).
+   * 'deep'    — the host's PluginScanner.scanFile was called and category +
+   *             isInstrument were populated authoritatively.
+   * Shallow entries are re-probed on every list() call until they succeed
+   * (or the host stays offline). Deep entries are trusted forever (until
+   * the user manually rescans).
+   */
+  scanState: 'shallow' | 'deep';
   /** ISO timestamp of the scan. */
   last_scanned: string;
 }
@@ -174,7 +191,9 @@ function readModuleInfo(pluginPath: string): { name?: string; category?: string 
 
 /**
  * Build a PluginEntry from a filesystem path. Derives name from moduleinfo
- * or falls back to the bundle basename.
+ * or falls back to the bundle basename. The entry starts as 'shallow' —
+ * a deep-probe must run before isInstrument and (in the moduleinfo-less
+ * case) category are trustworthy.
  */
 function makeEntry(pluginPath: string, source: PluginSource): PluginEntry {
   const basename = path.basename(pluginPath, '.vst3');
@@ -186,6 +205,8 @@ function makeEntry(pluginPath: string, source: PluginSource): PluginEntry {
     source,
     platform:     process.platform,
     category:     info.category ?? '',
+    isInstrument: false,                          // unknown until deep-probe
+    scanState:    'shallow',
     last_scanned: new Date().toISOString(),
   };
 }
@@ -217,17 +238,40 @@ export function scanSystemPlugins(): PluginEntry[] {
 
 interface RawRow {
   id: string; name: string; path: string; source: string;
-  platform: string; category: string; last_scanned: string;
+  platform: string; category: string;
+  is_instrument: boolean | number;              // duckdb may emit 0/1 or boolean
+  scan_state:    string;                          // 'shallow' | 'deep'
+  last_scanned: string;
 }
 
 export class PluginScanner {
   private db: DatabaseManager;
+  /**
+   * Optional deep-probe hook. Set by callers that have access to the host
+   * (PhobosHostManager.scanFile) so the scanner can promote shallow rows.
+   * Left null when the host isn't reachable — shallow rows simply remain
+   * shallow until a future scan finds the host running.
+   */
+  private deepProbe: ((vst3Path: string) => Promise<{ category: string; isInstrument: boolean } | null>) | null = null;
 
   constructor(db: DatabaseManager) {
     this.db = db;
   }
 
+  /**
+   * Wire a deep-probe function. The scanner will call this for every
+   * shallow entry on each list() / rescan() pass; results promote the
+   * row to 'deep'. The function should return null on probe failure
+   * (broken plugin, host crash) — those rows stay shallow and the next
+   * pass tries again.
+   */
+  setDeepProbe(fn: ((vst3Path: string) => Promise<{ category: string; isInstrument: boolean } | null>) | null): void {
+    this.deepProbe = fn;
+  }
+
   async ensureTable(): Promise<void> {
+    // Base table — original schema. Created on first run of any version.
+    
     await this.db.run(`
       CREATE TABLE IF NOT EXISTS vst3_plugin_cache (
         id           VARCHAR PRIMARY KEY,
@@ -239,11 +283,34 @@ export class PluginScanner {
         last_scanned TIMESTAMP NOT NULL
       )
     `);
+
+    // DuckDB does NOT accept constraints on ALTER TABLE ADD COLUMN (parser
+    // rejects NOT NULL / DEFAULT clauses). Pattern is: add the column nullable,
+    // then UPDATE legacy rows to populate. The application layer guarantees
+    // these fields are non-null on all subsequent inserts/updates, so the
+    // missing NOT NULL constraint is enforced upstream.
+    //
+    // The IF NOT EXISTS clause makes both ADD COLUMN and UPDATE safe to run
+    // on every boot — first run adds + backfills, subsequent runs are no-ops.
+
+    await this.db.run(`ALTER TABLE vst3_plugin_cache ADD COLUMN IF NOT EXISTS is_instrument BOOLEAN`);
+    await this.db.run(`ALTER TABLE vst3_plugin_cache ADD COLUMN IF NOT EXISTS scan_state VARCHAR`);
+
+    // Backfill any rows where the new columns are still NULL (legacy rows that
+    // existed before the column was added). Idempotent — once backfilled, the
+    // WHERE clause matches nothing on subsequent boots.
+    await this.db.run(`UPDATE vst3_plugin_cache SET is_instrument = FALSE WHERE is_instrument IS NULL`);
+    await this.db.run(`UPDATE vst3_plugin_cache SET scan_state    = 'shallow' WHERE scan_state    IS NULL`);
   }
 
   /**
    * Return cached entries. If the cache is older than the staleness window
    * (or empty, or force-refresh requested), rescan the filesystem first.
+   * Then attempt a deep-probe pass on any rows still in 'shallow' state —
+   * one moduleinfo-less plugin without category/isInstrument is benign in
+   * isolation, but the chain modal needs that data to filter Instruments
+   * vs FX correctly. Promotion is idempotent and host-availability-tolerant
+   * (no host = leave shallow, retry next list()).
    */
   async list(options: { refresh?: boolean } = {}): Promise<PluginListing> {
     await this.ensureTable();
@@ -252,8 +319,12 @@ export class PluginScanner {
       await this.rescan();
     }
 
+    // Deep-probe pass — runs on every list() until all rows are 'deep' or
+    // the host is unreachable. Cheap when there's nothing to promote.
+    await this.promoteShallow();
+
     const rows = await this.db.query<RawRow>(
-      `SELECT id, name, path, source, platform, category, last_scanned
+      `SELECT id, name, path, source, platform, category, is_instrument, scan_state, last_scanned
          FROM vst3_plugin_cache
          WHERE platform = ?
          ORDER BY source, name`,
@@ -270,12 +341,52 @@ export class PluginScanner {
         source:       row.source === 'phobos' ? 'phobos' : 'system',
         platform:     row.platform,
         category:     row.category,
+        isInstrument: !!row.is_instrument,         // duckdb may emit 0/1
+        scanState:    row.scan_state === 'deep' ? 'deep' : 'shallow',
         last_scanned: row.last_scanned,
       };
       if (entry.source === 'phobos') phobos.push(entry);
       else                           system.push(entry);
     }
     return { phobos, system };
+  }
+
+  /**
+   * Walk shallow rows and ask the host to deep-probe each one. On success,
+   * write back category + isInstrument and flip scan_state to 'deep'. On
+   * failure, leave the row shallow (next list() will retry).
+   *
+   * If no deep-probe hook is wired (host not booted yet), this is a no-op.
+   * That keeps the scanner usable in environments where the host is not
+   * reachable — categories simply won't be populated for moduleinfo-less
+   * plugins until the host comes online.
+   */
+  private async promoteShallow(): Promise<void> {
+    if (!this.deepProbe) return;
+
+    const shallow = await this.db.query<{ id: string; path: string }>(
+      `SELECT id, path FROM vst3_plugin_cache
+        WHERE platform = ? AND scan_state = 'shallow'`,
+      [process.platform],
+    );
+    if (shallow.length === 0) return;
+
+    for (const row of shallow) {
+      let probeResult: { category: string; isInstrument: boolean } | null = null;
+      try {
+        probeResult = await this.deepProbe(row.path);
+      } catch {
+        probeResult = null;                       // host crashed/timed out — try later
+      }
+      if (!probeResult) continue;                 // shallow row stays shallow
+
+      await this.db.run(
+        `UPDATE vst3_plugin_cache
+            SET category = ?, is_instrument = ?, scan_state = 'deep', last_scanned = ?
+          WHERE id = ?`,
+        [probeResult.category, probeResult.isInstrument, new Date().toISOString(), row.id],
+      );
+    }
   }
 
   private async isStale(): Promise<boolean> {
@@ -306,15 +417,18 @@ export class PluginScanner {
     );
     for (const entry of all) {
       await this.db.run(
-        `INSERT INTO vst3_plugin_cache (id, name, path, source, platform, category, last_scanned)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO vst3_plugin_cache (id, name, path, source, platform, category, is_instrument, scan_state, last_scanned)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
-           name = excluded.name,
-           path = excluded.path,
-           source = excluded.source,
-           category = excluded.category,
-           last_scanned = excluded.last_scanned`,
-        [entry.id, entry.name, entry.path, entry.source, entry.platform, entry.category, entry.last_scanned],
+           name          = excluded.name,
+           path          = excluded.path,
+           source        = excluded.source,
+           category      = excluded.category,
+           is_instrument = excluded.is_instrument,
+           scan_state    = excluded.scan_state,
+           last_scanned  = excluded.last_scanned`,
+        [entry.id, entry.name, entry.path, entry.source, entry.platform,
+         entry.category, entry.isInstrument, entry.scanState, entry.last_scanned],
       );
     }
     return { phobos: phobos.length, system: system.length };

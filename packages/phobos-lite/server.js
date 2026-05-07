@@ -89,6 +89,7 @@ const MODEL_CATALOGUE = [
     // Validated against b8777: think probe PASS on E4B (with <|think|> system token) and 26B.
     reasoningFormat:  'none',      // tag-path: <|channel>thought stays in delta.content
     alwaysThink:      false,       // has enable_thinking toggle — do NOT force --reasoning on
+    extraBodyThink:   { reasoning_format: 'none' },
     extraBodyNoThink: { reasoning_format: 'none', chat_template_kwargs: { enable_thinking: false } },
   },
   {

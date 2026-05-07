@@ -14,14 +14,12 @@
 
 import {
   getStatus,
-  getVendorReadiness,
   install,
   uninstallVendor,
   uninstallAll,
   isVendorReady,
   getPythonPath,
   getEnvRoot,
-  getDiskUsage,
   detectPython,
   invalidatePythonCache,
   vendorLabel,
@@ -65,16 +63,16 @@ async function showStatus(): Promise<void> {
   }
 
   console.log('\n  Vendor Environments:');
-  const readiness = await getVendorReadiness();
-  if (readiness.length === 0) {
+  const status = await getStatus();
+  if (status.vendors.length === 0) {
     console.log('    (no PyTorch-capable GPUs detected)');
   }
-  for (const r of readiness) {
-    const usage = r.ready ? await getDiskUsage(r.vendor) : 0;
-    const usageStr = usage > 0 ? ` (${(usage / (1024 ** 3)).toFixed(2)} GB)` : '';
+  for (const r of status.vendors) {
+    const usageStr = r.diskBytes > 0 ? ` (${(r.diskBytes / (1024 ** 3)).toFixed(2)} GB)` : '';
     const pyPath = getPythonPath(r.vendor);
     console.log(`    ${r.vendor}: ${r.ready ? '✓ READY' : '○ NOT INSTALLED'}${usageStr}`);
-    console.log(`      GPU:    ${r.gpuName}`);
+    if (r.torchVersion) console.log(`      torch:  ${r.torchVersion}`);
+    if (r.vendor === 'cuda' && r.ready) console.log(`      sage:   ${r.sageReady ? '✓ installed' : '○ not installed'}`);
     if (pyPath) console.log(`      Python: ${pyPath}`);
   }
 
@@ -145,7 +143,7 @@ async function runCheck(vendor: string): Promise<void> {
 import sys, json
 r = {"python": sys.version, "torch": None, "cuda_available": False, "cuda_device": None,
      "xpu_available": False, "xpu_device": None, "mps_available": False,
-     "diffusers": None, "transformers": None, "gguf": None}
+     "diffusers": None, "transformers": None, "gguf": None, "sageattention": None}
 try:
     import torch
     r["torch"] = torch.__version__
@@ -164,20 +162,24 @@ except Exception as e: r["transformers_error"] = str(e)
 try:
     import gguf; r["gguf"] = getattr(gguf, "__version__", "installed")
 except Exception as e: r["gguf_error"] = str(e)
+try:
+    import sageattention; r["sageattention"] = getattr(sageattention, "__version__", "installed")
+except Exception as e: r["sageattention_error"] = str(e)
 print(json.dumps(r, indent=2))
 `;
 
   try {
     const { stdout } = await exec(pyPath, ['-c', checkScript], { timeout: 60_000 });
     const d = JSON.parse(stdout);
-    console.log(`  Python:       ${d.python}`);
-    console.log(`  torch:        ${d.torch ?? `ERROR: ${d.torch_error}`}`);
-    console.log(`  CUDA:         ${d.cuda_available ? `yes — ${d.cuda_device}` : 'no'}`);
-    console.log(`  XPU:          ${d.xpu_available ? `yes — ${d.xpu_device}` : 'no'}`);
-    console.log(`  MPS:          ${d.mps_available ? 'yes' : 'no'}`);
-    console.log(`  diffusers:    ${d.diffusers ?? `ERROR: ${d.diffusers_error}`}`);
-    console.log(`  transformers: ${d.transformers ?? `ERROR: ${d.transformers_error}`}`);
-    console.log(`  gguf:         ${d.gguf ?? `ERROR: ${d.gguf_error}`}`);
+    console.log(`  Python:         ${d.python}`);
+    console.log(`  torch:          ${d.torch ?? `ERROR: ${d.torch_error}`}`);
+    console.log(`  CUDA:           ${d.cuda_available ? `yes — ${d.cuda_device}` : 'no'}`);
+    console.log(`  XPU:            ${d.xpu_available ? `yes — ${d.xpu_device}` : 'no'}`);
+    console.log(`  MPS:            ${d.mps_available ? 'yes' : 'no'}`);
+    console.log(`  diffusers:      ${d.diffusers ?? `ERROR: ${d.diffusers_error}`}`);
+    console.log(`  transformers:   ${d.transformers ?? `ERROR: ${d.transformers_error}`}`);
+    console.log(`  gguf:           ${d.gguf ?? `ERROR: ${d.gguf_error}`}`);
+    console.log(`  sageattention:  ${d.sageattention ?? `not installed (${d.sageattention_error ?? 'no module'})`}`);
   } catch (err) {
     console.error(`  Check failed: ${(err as Error).message}`);
     process.exit(1);

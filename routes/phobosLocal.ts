@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import * as https from 'https';
 import { findUncensoredVariants } from '../phobos/UncensoredFinder.js';
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
@@ -58,6 +59,11 @@ import {
   type ImageModelSpec,
   getCivitaiToken,
   setCivitaiToken,
+  getAudioModelSpec,
+  isAudioModelDownloaded,
+  isWhisperDownloaded,
+  audioModelDir,
+  AUDIO_MODEL_CATALOGUE,
 } from '../phobos/PhobosLocalManager.js';
 import {
   prefetchVisionModels,
@@ -74,6 +80,7 @@ import {
   getVendorReadiness,
   detectPython,
   install as installPythonEnv,
+  uninstallVendor,
   isVendorReady,
   isInstallingVendor,
   getPythonPath,
@@ -1648,12 +1655,63 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       try { reply.raw.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* socket closed */ }
     };
 
+    // Heartbeat — pip install operations for torch/ROCm can take 5-15 minutes
+    // with no output. Without this the browser SSE connection times out (~2 min)
+    // and the UI reverts while the install continues silently on the server.
+    const heartbeat = setInterval(() => {
+      try { reply.raw.write(': heartbeat\n\n'); } catch { /* socket closed */ }
+    }, 30_000);
+
     try {
       for await (const progress of installPythonEnv(vendor)) {
         emit(progress as unknown as Record<string, unknown>);
       }
     } catch (err) {
       emit({ phase: 'error', vendor, label: err instanceof Error ? err.message : String(err), progress: -1, done: true, error: String(err) });
+    } finally {
+      clearInterval(heartbeat);
+    }
+
+    reply.raw.end();
+  });
+
+  // POST /api/phobos/python-env/reinstall
+  // SSE stream — wipes the existing vendor env then runs a full fresh install.
+  // Used by the "Update PyTorch env" button when isEnvStale() is true.
+  // Identical SSE shape to /install so the frontend hook is reused unchanged.
+  fastify.post<{
+    Body: { vendor: string };
+  }>('/api/phobos/python-env/reinstall', async (req, reply) => {
+    const vendor = req.body?.vendor as GpuVendor;
+    if (!vendor || !['cuda', 'rocm', 'xpu', 'apple'].includes(vendor)) {
+      return reply.status(400).send({ error: `Invalid vendor: ${vendor}` });
+    }
+
+    reply.raw.writeHead(200, {
+      'Content-Type':                'text/event-stream',
+      'Cache-Control':               'no-cache',
+      'Connection':                  'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+    });
+
+    const emit = (data: Record<string, unknown>) => {
+      try { reply.raw.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* socket closed */ }
+    };
+
+    const heartbeat = setInterval(() => {
+      try { reply.raw.write(': heartbeat\n\n'); } catch { /* socket closed */ }
+    }, 30_000);
+
+    try {
+      emit({ phase: 'detect', vendor, label: 'Removing existing environment…', progress: 0, done: false });
+      await uninstallVendor(vendor);
+      for await (const progress of installPythonEnv(vendor)) {
+        emit(progress as unknown as Record<string, unknown>);
+      }
+    } catch (err) {
+      emit({ phase: 'error', vendor, label: err instanceof Error ? err.message : String(err), progress: -1, done: true, error: String(err) });
+    } finally {
+      clearInterval(heartbeat);
     }
 
     reply.raw.end();
@@ -1729,4 +1787,186 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
     const python = await detectPython();
     return reply.send({ python, isPython312: isPython312(python) });
   });
+
+  // ── POST /api/phobos/audio-model/download ─────────────────────────────────
+  //
+  // Downloads a single audio model by modelId using direct HTTPS.
+  // Mirrors the downloadFluxFileGen pattern: resume-capable, progress-emitting,
+  // SSE-streamed to the client.
+  //
+  // Multi-file models (ACE-Step, F5-TTS) use hfRepo snapshot_download via a
+  // Python subprocess (requires PyTorch env). Single-file models (Whisper large)
+  // are downloaded directly via Node https.
+  //
+  // Body: { modelId: string }
+  //
+  // SSE events:
+  //   { type: 'progress', bytesReceived, bytesTotal, pct }
+  //   { type: 'done' }
+  //   { type: 'error', message }
+
+  fastify.post<{ Body: { modelId: string } }>(
+    '/api/phobos/audio-model/download',
+    async (req, reply) => {
+      const { modelId } = req.body ?? {};
+      if (!modelId) return reply.status(400).send({ error: '"modelId" required' });
+
+      const spec = getAudioModelSpec(modelId);
+      if (!spec) return reply.status(400).send({ error: `Unknown audio model: ${modelId}` });
+      if (spec.blocked) return reply.status(400).send({ error: `Model ${modelId} is not yet available` });
+
+      // Whisper is managed by DepPrep — not downloadable through this route
+      if (spec.runnerProfile === 'whisper') {
+        return reply.status(400).send({ error: 'Whisper is installed via DepPrep, not this route' });
+      }
+
+      reply.raw.writeHead(200, {
+        'Content-Type':  'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection':    'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+
+      const emit = (payload: Record<string, unknown>) => {
+        try { reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`); } catch { /* socket closed */ }
+      };
+
+      const abort = new AbortController();
+      req.raw.on('close', () => abort.abort());
+
+      try {
+        fs.mkdirSync(audioModelDir(spec), { recursive: true });
+
+        // Multi-file models: use Python huggingface_hub.snapshot_download
+        // Single-file models: download directly via Node https
+        if (spec.runnerProfile === 'ace-step' || spec.runnerProfile === 'f5-tts'
+            || spec.runnerProfile === 'musicgen' || spec.runnerProfile === 'yue') {
+          // Spawn Python to run snapshot_download — requires active PyTorch env
+          const { spawn } = await import('child_process');
+          const destDir   = audioModelDir(spec);
+          const script    = [
+            'from huggingface_hub import snapshot_download, hf_hub_download',
+            'import sys, json',
+            `repo = ${JSON.stringify(spec.hfRepo)}`,
+            `dest = ${JSON.stringify(destDir)}`,
+            'snapshot_download(repo_id=repo, local_dir=dest)',
+            'print(json.dumps({"type":"done"}))',
+          ].join('\n');
+
+          await new Promise<void>((resolve, reject) => {
+            const proc = spawn('python3', ['-c', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+            let buf = '';
+            proc.stdout.on('data', (chunk: Buffer) => {
+              buf += chunk.toString();
+              const lines = buf.split('\n');
+              buf = lines.pop() ?? '';
+              for (const line of lines) {
+                const t = line.trim();
+                if (!t) continue;
+                try {
+                  const evt = JSON.parse(t) as Record<string, unknown>;
+                  emit(evt);
+                } catch { /* non-JSON line — ignore */ }
+              }
+            });
+            proc.stderr.on('data', (chunk: Buffer) => {
+              // Emit stderr progress lines that match tqdm/HF hub patterns
+              const lines = chunk.toString().split('\n');
+              for (const line of lines) {
+                const t = line.trim();
+                if (t.match(/\d+%|downloading|fetching/i)) {
+                  emit({ type: 'progress', message: t });
+                }
+              }
+            });
+            proc.on('close', (code) => {
+              if (code === 0) resolve();
+              else reject(new Error(`snapshot_download exited with code ${code}`));
+            });
+            abort.signal.addEventListener('abort', () => proc.kill('SIGTERM'));
+          });
+        } else {
+          // Single-file download via Node https with resume support
+          const THROTTLE_MS    = 250;
+          const THROTTLE_BYTES = 2_097_152; // 2 MB
+
+          const destPath = path.join(audioModelDir(spec), spec.hfFile);
+          const tmpPath  = destPath + '.part';
+
+          const existingBytes = fs.existsSync(tmpPath) ? fs.statSync(tmpPath).size : 0;
+          let bytesReceived   = existingBytes;
+          let bytesTotal      = spec.sizeBytes;
+          let lastEmitBytes   = existingBytes;
+          let lastEmitTime    = Date.now();
+
+          const reqHeaders: Record<string, string> = {
+            'User-Agent': 'PHOBOS/1.0 (audio-model-downloader)',
+          };
+          if (existingBytes > 0) reqHeaders['Range'] = `bytes=${existingBytes}-`;
+
+          const hfUrl = `https://huggingface.co/${spec.hfRepo}/resolve/main/${spec.hfFile}`;
+
+          await new Promise<void>((resolve, reject) => {
+            const follow = (url: string, hops = 0) => {
+              if (hops > 10) { reject(new Error('Too many redirects')); return; }
+              if (abort.signal.aborted) { resolve(); return; }
+              const parsed = new URL(url);
+              const req2   = https.get(
+                { hostname: parsed.hostname, path: parsed.pathname + parsed.search, headers: reqHeaders },
+                (res) => {
+                  if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) {
+                    follow(res.headers.location!, hops + 1); return;
+                  }
+                  if (res.statusCode !== 200 && res.statusCode !== 206) {
+                    reject(new Error(`HTTP ${res.statusCode}`)); return;
+                  }
+                  if (res.statusCode === 206) {
+                    bytesTotal = existingBytes + parseInt(res.headers['content-length'] ?? '0', 10);
+                  } else {
+                    bytesTotal = parseInt(res.headers['content-length'] ?? String(spec.sizeBytes), 10);
+                  }
+                  const fd = fs.createWriteStream(tmpPath, { flags: existingBytes > 0 ? 'a' : 'w' });
+                  res.on('data', (chunk: Buffer) => {
+                    if (abort.signal.aborted) { res.destroy(); fd.destroy(); resolve(); return; }
+                    bytesReceived += chunk.length;
+                    fd.write(chunk);
+                    const now = Date.now();
+                    if (now - lastEmitTime >= THROTTLE_MS || bytesReceived - lastEmitBytes >= THROTTLE_BYTES) {
+                      lastEmitTime  = now;
+                      lastEmitBytes = bytesReceived;
+                      const pct = bytesTotal > 0 ? Math.round((bytesReceived / bytesTotal) * 100) : 0;
+                      emit({ type: 'progress', bytesReceived, bytesTotal, pct });
+                    }
+                  });
+                  res.on('end', () => {
+                    fd.end(() => {
+                      try { fs.renameSync(tmpPath, destPath); } catch {
+                        try { fs.copyFileSync(tmpPath, destPath); fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+                      }
+                      resolve();
+                    });
+                  });
+                  res.on('error', reject);
+                },
+              );
+              req2.on('error', reject);
+              abort.signal.addEventListener('abort', () => req2.destroy());
+            };
+            follow(hfUrl);
+          });
+        }
+
+        if (!abort.signal.aborted) {
+          emit({ type: 'done' });
+        }
+      } catch (err) {
+        if ((err as Error).name !== 'AbortError') {
+          emit({ type: 'error', message: (err as Error).message });
+        }
+      } finally {
+        reply.raw.end();
+      }
+    },
+  );
+
 }

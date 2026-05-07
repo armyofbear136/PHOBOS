@@ -53,7 +53,7 @@ let _proc: ManagedProcess = makeManagedProcess({
   cmd:            process.execPath, // overwritten in startCamofox()
   args:           [SERVER_BIN],
   port:           CAMOFOX_PORT,
-  readyTimeoutMs: 30_000,
+  readyTimeoutMs: 90_000,  // Firefox profile init can take 60s+ on first/cold start
   env: {
     PORT:     String(CAMOFOX_PORT),
     NODE_ENV: 'production',

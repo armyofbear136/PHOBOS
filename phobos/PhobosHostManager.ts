@@ -459,6 +459,25 @@ export async function scanVst3Path(scanPath: string): Promise<ScanResult> {
 }
 
 /**
+ * Single-file deep probe — used by the TS-side filesystem scanner to fill in
+ * `category` and `isInstrument` for plugins whose moduleinfo.json was missing
+ * or didn't carry the metadata. The host's JUCE deep-probe
+ * (findAllTypesForFile) loads the bundle, instantiates the IPluginFactory,
+ * walks classes, and unloads — milliseconds per plugin in practice.
+ *
+ * Returns an empty `plugins` array and `failed: true` if the file isn't a
+ * loadable VST3 (broken bundle, wrong arch, etc.). Callers should treat that
+ * as "this plugin is not usable" and exclude it from listings.
+ */
+export async function scanFile(vst3Path: string): Promise<{ plugins: HostPluginEntry[]; failed: boolean }> {
+  const result = await requireControl().call<{
+    plugins: HostPluginEntry[];
+    failed:  boolean;
+  }>('scanFile', { path: vst3Path }, 30_000);     // single-file probe is fast
+  return result;
+}
+
+/**
  * Instantiate a plugin into a channel chain. Returns the host-assigned slotId
  * (monotonically increasing, never reused). The mapping is also recorded in
  * the in-memory channelSlots map for instrument loads, so subsequent ops on

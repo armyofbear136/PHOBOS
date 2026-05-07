@@ -57,6 +57,11 @@ CREATE TABLE IF NOT EXISTS game_buildings (
   state       VARCHAR DEFAULT 'placed',
   placed_at   TIMESTAMP DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS game_minerals (
+  node_id       VARCHAR PRIMARY KEY,  -- stable seeded id, e.g. 'lumite_0'
+  harvested_at  TIMESTAMP             -- NULL = available to harvest
+);
 `;
 
 /** Migrate old schema — add columns that may be missing. */
@@ -79,6 +84,8 @@ ALTER TABLE game_inventory ADD COLUMN IF NOT EXISTS data VARCHAR DEFAULT '{}';
 ALTER TABLE game_buildings ADD COLUMN IF NOT EXISTS config VARCHAR DEFAULT '{}';
 ALTER TABLE game_buildings ADD COLUMN IF NOT EXISTS last_collected_at TIMESTAMP;
 ALTER TABLE game_buildings ADD COLUMN IF NOT EXISTS state VARCHAR DEFAULT 'blueprint';
+CREATE TABLE IF NOT EXISTS game_minerals (node_id VARCHAR PRIMARY KEY, harvested_at TIMESTAMP);
+ALTER TABLE game_player ADD COLUMN IF NOT EXISTS current_hp REAL DEFAULT NULL;
 `;
 
 /** XP required to reach a given level (cumulative total). Formula: 100 * level^1.5 per level. */
@@ -111,6 +118,8 @@ export interface GamePlayer {
   unlocked_nodes: string;
   ether_held: number;
   ether_banked: number;
+  /** Persisted HP between sessions. NULL means full HP (use hpMax from build). */
+  current_hp: number | null;
   created_at: string;
 }
 
@@ -195,7 +204,7 @@ export class GameStore {
     'name' | 'element' | 'weapon' | 'laser_color' | 'player_class' | 'body_type' |
     'phobos_coins' | 'level' | 'experience' | 'unspent_points' |
     'bonus_str' | 'bonus_dex' | 'bonus_int' | 'bonus_agi' | 'bonus_vit' |
-    'skill_points' | 'unlocked_nodes' | 'ether_held' | 'ether_banked'
+    'skill_points' | 'unlocked_nodes' | 'ether_held' | 'ether_banked' | 'current_hp'
   >>): Promise<GamePlayer> {
     const sets: string[] = [];
     const vals: unknown[] = [];
@@ -479,6 +488,45 @@ export class GameStore {
       `SELECT * FROM game_buildings WHERE id = ?`, [id]
     );
     return { units, building: updated[0] };
+  }
+
+  // ── Minerals ─────────────────────────────────────────────────────────────
+
+  /** Returns harvested_at for all nodes that have a record (NULL rows not stored). */
+  async getMineralStatus(nodeIds: string[]): Promise<Record<string, string | null>> {
+    if (nodeIds.length === 0) return {};
+    const placeholders = nodeIds.map(() => '?').join(', ');
+    const rows = await this.db.query<{ node_id: string; harvested_at: string | null }>(
+      `SELECT node_id, harvested_at FROM game_minerals WHERE node_id IN (${placeholders})`,
+      nodeIds
+    );
+    const result: Record<string, string | null> = {};
+    for (const row of rows) result[row.node_id] = row.harvested_at;
+    return result;
+  }
+
+  /**
+   * Record a harvest. Returns { ok: false } if the node was harvested within
+   * the last hour (respawn not ready). Returns { ok: true, harvested_at } on success.
+   */
+  async harvestMineral(nodeId: string): Promise<{ ok: boolean; harvested_at?: string }> {
+    const RESPAWN_MS = 60 * 60 * 1000; // 1 hour
+    const rows = await this.db.query<{ harvested_at: string | null }>(
+      `SELECT harvested_at FROM game_minerals WHERE node_id = ?`, [nodeId]
+    );
+    if (rows.length > 0 && rows[0].harvested_at !== null) {
+      const elapsed = Date.now() - new Date(rows[0].harvested_at).getTime();
+      if (elapsed < RESPAWN_MS) return { ok: false };
+    }
+    await this.db.run(
+      `INSERT INTO game_minerals (node_id, harvested_at) VALUES (?, now())
+       ON CONFLICT (node_id) DO UPDATE SET harvested_at = now()`,
+      [nodeId]
+    );
+    const updated = await this.db.query<{ harvested_at: string }>(
+      `SELECT harvested_at FROM game_minerals WHERE node_id = ?`, [nodeId]
+    );
+    return { ok: true, harvested_at: updated[0].harvested_at };
   }
 
   

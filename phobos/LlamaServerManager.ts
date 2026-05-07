@@ -508,6 +508,36 @@ export async function stopAllServers(): Promise<void> {
 }
 
 /**
+ * transferOwnership() — called by the Coordinator process after it receives
+ * the INIT_SHARED_BUFFER message from Fastify.
+ *
+ * C1: no-op beyond a log line. The `servers` module-scope object is shared via
+ * the CommonJS module cache within the same process — the Coordinator imports
+ * this module and has the same handles. In C2, when the Coordinator spawns
+ * llama-servers directly, this function will set an `_ownerIsCoordinator` flag
+ * that gates startServer()/stopServer() so Fastify can no longer call them.
+ *
+ * The key invariant C1 establishes: Fastify's shutdown path calls stopAllServers()
+ * ONLY if the Coordinator has not yet taken ownership. After transferOwnership()
+ * fires, the Coordinator owns the process lifecycle and Fastify's shutdown does
+ * not kill the llama-server processes.
+ */
+export function transferOwnership(): void {
+  _coordinatorOwnsProcesses = true;
+  console.log('[LlamaServerManager] Ownership transferred to Coordinator');
+}
+
+/**
+ * Returns true after the Coordinator has called transferOwnership().
+ * Fastify checks this in its shutdown path to skip stopAllServers().
+ */
+export function coordinatorOwnsProcesses(): boolean {
+  return _coordinatorOwnsProcesses;
+}
+
+let _coordinatorOwnsProcesses = false;
+
+
 /**
  * Start SYBIL — the embedding persona (nomic-embed-text-v1.5, CPU-only, port 16315).
  *

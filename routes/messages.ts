@@ -14,7 +14,8 @@ import { ChatSummaryStore } from '../db/ChatSummaryStore.js';
 import { ModelConfigStore } from '../db/ModelConfigStore.js';
 import { KnowledgeStore } from '../db/KnowledgeStore.js';
 import { IntentClassifier } from '../ai/IntentClassifier.js';
-import { LoopController } from '../ai/LoopController.js';
+import { CoordinatorBridge } from '../CoordinatorBridge.js';
+import type { AttemptResult } from '../ai/LoopController.js';
 import { ThreadWorkspace } from '../context/ThreadWorkspace.js';
 import { ThinkingStripper } from '../context/ThinkingStripper.js';
 import type { IntentType } from '../ai/IntentClassifier.js';
@@ -180,7 +181,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   );
 
   // GET /api/threads/:id/workspace-media
-  // Returns image and video files from the thread's images/ and videos/ subdirectories.
+  // Returns image, video, and audio files from the thread's workspace subdirectories.
   // Used on conversation load to restore media thumbnails without replaying SSE events.
   fastify.get<{ Params: { id: string } }>(
     '/api/threads/:id/workspace-media',
@@ -192,6 +193,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
 
       const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
       const VIDEO_EXTS = new Set(['.avi', '.mp4', '.mov', '.webm']);
+      const AUDIO_EXTS = new Set(['.wav', '.mp3', '.flac', '.ogg', '.m4a']);
 
       const readDir = (subdir: string) => {
         const dir = path.join(workspacesRoot, threadId, subdir);
@@ -201,7 +203,10 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
             .filter((e) => e.isFile())
             .map((e) => {
               const ext = path.extname(e.name).toLowerCase();
-              const mediaType = VIDEO_EXTS.has(ext) ? 'video' : 'image';
+              const mediaType: 'image' | 'video' | 'audio' =
+                AUDIO_EXTS.has(ext) ? 'audio'
+                : VIDEO_EXTS.has(ext) ? 'video'
+                : 'image';
               return {
                 filename:     e.name,
                 absolutePath: path.join(dir, e.name),
@@ -210,13 +215,21 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
                 createdAt:    fs.statSync(path.join(dir, e.name)).mtime.toISOString(),
               };
             })
-            .filter((e) => IMAGE_EXTS.has(path.extname(e.filename).toLowerCase()) || VIDEO_EXTS.has(path.extname(e.filename).toLowerCase()));
+            .filter((e) =>
+              IMAGE_EXTS.has(path.extname(e.filename).toLowerCase()) ||
+              VIDEO_EXTS.has(path.extname(e.filename).toLowerCase()) ||
+              AUDIO_EXTS.has(path.extname(e.filename).toLowerCase())
+            );
         } catch { return []; }
       };
 
       const files = [
         ...readDir('images'),
         ...readDir('videos'),
+        // Generated audio: three sub-categories all land in the media grid
+        ...readDir('audio/tts'),
+        ...readDir('audio/music'),
+        ...readDir('audio/sfx'),
       ].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
       return reply.send({ files });
@@ -848,104 +861,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
         };
 
         const loopSegIds: Record<string, string | null> = { coordinator: null, engine: null };
-        const loopController = new LoopController({
-          buildCommand: build_command ?? extractBuildCommand(docs.claudeMd),
-          projectRoot: workspaceDir,
-          workspaceDir: workspaceDir,
-          threadId: threadId,
-          skipBuild: skip_build ?? !hasBuildCommand(docs.claudeMd),
-          maxAttempts: 3,
-          persistEvent: async (eventType, payload) => {
-            await eventStore.insert(threadId, eventType as any, payload, assistantMsg.id);
-          },
-          // Real-time segment writes — one segment per thinking phase, appended per token.
-          // segmentStore tracks the active segment ID internally per (messageId, source) pair.
-          onThinkChunk: async (content: string, source: 'coordinator' | 'engine') => {
-            // Don't open or write a segment for whitespace-only tokens (e.g. SmolLM3 emits
-            // "<think>\n\n</think>" — the \n\n is the entire think content, creating empty segments).
-            if (!content.trim()) return;
-            if (!loopSegIds[source]) {
-              loopSegIds[source] = await segmentStore.openSegment(threadId, assistantMsg.id, source);
-            }
-            await segmentStore.appendToken(loopSegIds[source]!, content);
-          },
-          onThinkPhaseComplete: async (source: 'coordinator' | 'engine') => {
-            // Called by LoopController when a thinking phase ends — close the segment
-            // We don't have the segment ID here so we close by message+phase
-            await segmentStore.closeLatestSegment(assistantMsg.id, source);
-            // Reset the segment ID so the next phase for this source opens a new segment
-            // rather than appending to the now-closed one.
-            loopSegIds[source] = null;
-          },
-          onOutputChunk: async (_content) => {
-            // output chunks no longer need separate persistence — messages table is the canonical record
-          },
-          onAgentState: (event) => {
-            // agent_state already written to SSE by AgentStateManager — persist for replay
-            eventStore.insert(threadId, 'agent_state', event, assistantMsg.id).catch(() => {});
-          },
-          onDispatch: async (info) => {
-            // Log the full SEREN system prompt + task prompt for each dispatched task.
-            // This makes execution prompts visible in the export transcript.
-            try {
-              const { PromptLogStore: PLS } = await import('../db/PromptLogStore.js');
-              const { DatabaseManager: DM } = await import('../db/DatabaseManager.js');
-              const pls = new PLS(DM.getInstance());
-              const who = info.assignedTo === 'sayon' ? 'sayon' : 'seren';
-              const promptText =
-                `### SYSTEM
-${info.systemPrompt}
 
-` +
-                `### USER (Task ${info.taskIndex}/${info.total}: ${info.title})
-${info.userPrompt}`;
-              await pls.insert({
-                threadId,
-                messageId: info.messageId ?? assistantMsg.id,
-                role: who,
-                stage: 'dispatch',
-                model: who === 'sayon' ? (process.env.COORDINATOR_MODEL ?? 'coordinator') : (process.env.ENGINE_MODEL ?? 'engine'),
-                prompt: promptText,
-                response: `[dispatched — op=${info.operation} file="${info.targetFile}"]`,
-                latencyMs: 0,
-              });
-            } catch { /* never crash the pipeline */ }
-          },
-          onImageStatus: (status) => {
-            // Stream image generation phase updates to frontend as they happen.
-            // 'generating' phase locks chat input; 'done'/'error' unlocks it.
-            sendEvent({ type: 'image_status', phase: status.phase, message: status.message, estSeconds: status.estSeconds });
-            if (status.phase === 'done' && status.result) {
-              sendEvent({
-                type: 'image_complete',
-                outputPath: status.result.outputPath,
-                seed: status.result.seed,
-                elapsedMs: status.result.elapsedMs,
-              });
-              // Persist for replay
-              eventStore.insert(threadId, 'image_complete', {
-                type: 'image_complete',
-                outputPath: status.result.outputPath,
-                seed: status.result.seed,
-                elapsedMs: status.result.elapsedMs,
-              }, assistantMsg.id).catch(() => {});
-            }
-          },
-          onExecuteResult: (result) => {
-            // Stream execute/simulate result card to frontend immediately after the run.
-            sendEvent({
-              type: 'execute_result',
-              taskIndex: result.taskIndex,
-              exitCode: result.exitCode,
-              durationMs: result.durationMs,
-              timedOut: result.timedOut,
-              stdoutPreview: result.stdoutPreview,
-              mode: result.mode,
-            });
-          },
-        });
-
-        // ── Phase 1 reply pre-fill ───────────────────────────────────────────
         // When the user is replying to a Phase 1 question, backfill their reply
         // into the log BEFORE passing to LoopController. Without this, ContextIngester
         // sees an empty userReply, skips synthesis, and rewrites only the latest
@@ -960,28 +876,96 @@ ${info.userPrompt}`;
         const startTime = Date.now();
         gsm.setPersonaState('sayon', 'coordinating');
         gsm.setPersonaState('seren', 'decomposing_tasks');
-        const attempts = await loopController.run(reply, {
-          userMessage: fullUserMessage,
-          intentType: intent.type as IntentType,
-          claudeMd: docs.claudeMd,
-          userDirectivesMd: docs.userDirectivesMd,
-          projectMd: docs.projectMd,
-          chatMd: docs.chatMd,
-          chatSummary: chatSummaryRow?.summary,
-          conversationHistory: priorHistory,
-          repoMap: workspaceIndex,
-          loadedFiles: loadedAttachmentFiles,
-          knowledgeContext: knowledgeResults.length > 0 ? knowledgeResults : undefined,
-          clarificationIteration: pendingClarity ? pendingClarity.count : undefined,
-          clarificationLog: pendingClarity ? pendingClarity.log : undefined,
-          phase1ClarificationLog: phase1LogForLoop,
-          phase1OriginalRequest: pendingPhase1?.originalRequest,
-          serenPlanningContext: pendingClarity?.planningContext,
-          imageAttachments: imageAttachmentsForEngine.length > 0 ? imageAttachmentsForEngine : undefined,
-        }, assistantMsg.id);
+
+        const { attempts, lastPlanningContext: loopLastPlanningContext } = await CoordinatorBridge.enqueue({
+          reply,
+          composeInput: {
+            userMessage: fullUserMessage,
+            intentType: intent.type as IntentType,
+            claudeMd: docs.claudeMd,
+            userDirectivesMd: docs.userDirectivesMd,
+            projectMd: docs.projectMd,
+            chatMd: docs.chatMd,
+            chatSummary: chatSummaryRow?.summary,
+            conversationHistory: priorHistory,
+            repoMap: workspaceIndex,
+            loadedFiles: loadedAttachmentFiles,
+            knowledgeContext: knowledgeResults.length > 0 ? knowledgeResults : undefined,
+            clarificationIteration: pendingClarity ? pendingClarity.count : undefined,
+            clarificationLog: pendingClarity ? pendingClarity.log : undefined,
+            phase1ClarificationLog: phase1LogForLoop,
+            phase1OriginalRequest: pendingPhase1?.originalRequest,
+            serenPlanningContext: pendingClarity?.planningContext,
+            imageAttachments: imageAttachmentsForEngine.length > 0 ? imageAttachmentsForEngine : undefined,
+          },
+          loopOptions: {
+            buildCommand: build_command ?? extractBuildCommand(docs.claudeMd),
+            projectRoot:  workspaceDir,
+            workspaceDir: workspaceDir,
+            threadId:     threadId,
+            skipBuild:    skip_build ?? !hasBuildCommand(docs.claudeMd),
+            maxAttempts:  3,
+          },
+          messageId: assistantMsg.id,
+          priority: 'local',
+          callbacks: {
+            persistEvent: async (eventType, payload) => {
+              await eventStore.insert(threadId, eventType as any, payload as object, assistantMsg.id);
+            },
+            onThinkChunk: async (content: string, source: 'coordinator' | 'engine') => {
+              if (!content.trim()) return;
+              if (!loopSegIds[source]) {
+                loopSegIds[source] = await segmentStore.openSegment(threadId, assistantMsg.id, source);
+              }
+              await segmentStore.appendToken(loopSegIds[source]!, content);
+            },
+            onThinkPhaseComplete: async (source: 'coordinator' | 'engine') => {
+              await segmentStore.closeLatestSegment(assistantMsg.id, source);
+              loopSegIds[source] = null;
+            },
+            onAgentState: (event) => {
+              eventStore.insert(threadId, 'agent_state', event as object, assistantMsg.id).catch(() => {});
+            },
+            onDispatch: async (info) => {
+              try {
+                const { PromptLogStore: PLS } = await import('../db/PromptLogStore.js');
+                const { DatabaseManager: DM } = await import('../db/DatabaseManager.js');
+                const pls = new PLS(DM.getInstance());
+                const i = info as any;
+                const who = i.assignedTo === 'sayon' ? 'sayon' : 'seren';
+                const promptText =
+                  `### SYSTEM\n${i.systemPrompt}\n\n` +
+                  `### USER (Task ${i.taskIndex}/${i.total}: ${i.title})\n${i.userPrompt}`;
+                await pls.insert({
+                  threadId,
+                  messageId: i.messageId ?? assistantMsg.id,
+                  role: who,
+                  stage: 'dispatch',
+                  model: who === 'sayon' ? (process.env.COORDINATOR_MODEL ?? 'coordinator') : (process.env.ENGINE_MODEL ?? 'engine'),
+                  prompt: promptText,
+                  response: `[dispatched — op=${i.operation} file="${i.targetFile}"]`,
+                  latencyMs: 0,
+                });
+              } catch { /* never crash the pipeline */ }
+            },
+            onImageStatus: (status) => {
+              const s = status as any;
+              sendEvent({ type: 'image_status', phase: s.phase, message: s.message, estSeconds: s.estSeconds });
+              if (s.phase === 'done' && s.result) {
+                sendEvent({ type: 'image_complete', outputPath: s.result.outputPath, seed: s.result.seed, elapsedMs: s.result.elapsedMs });
+                eventStore.insert(threadId, 'image_complete', { type: 'image_complete', outputPath: s.result.outputPath, seed: s.result.seed, elapsedMs: s.result.elapsedMs }, assistantMsg.id).catch(() => {});
+              }
+            },
+            onExecuteResult: (result) => {
+              const r = result as any;
+              sendEvent({ type: 'execute_result', taskIndex: r.taskIndex, exitCode: r.exitCode, durationMs: r.durationMs, timedOut: r.timedOut, stdoutPreview: r.stdoutPreview, mode: r.mode });
+            },
+          },
+        });
+
 
         // ── Post-loop state tracking ─────────────────────────────────────────
-        const lastAttempt = attempts[attempts.length - 1];
+        const lastAttempt = (attempts as AttemptResult[])[attempts.length - 1];
 
         // Phase 1 clarification (SAYON asked before SEREN):
         // - Fresh Phase 1 exit → record questions, store pending state
@@ -1027,7 +1011,7 @@ ${info.userPrompt}`;
 
           // Cache SAYON's planning context from this run so the next re-entry can skip
           // Steps 1+2 (discovery + extraction) and go straight to decomposeTasks.
-          const planCtx = loopController.lastPlanningContext ?? pendingClarity?.planningContext;
+          const planCtx = (loopLastPlanningContext as any) ?? pendingClarity?.planningContext;
 
           pendingClarification.set(threadId, {
             originalIntent: intent.type as IntentType,

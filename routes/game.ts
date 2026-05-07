@@ -98,6 +98,19 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
     return reply.send(result);
   });
 
+  // ── Player HP persistence ──────────────────────────────────────────────
+  // POST /api/game/player/hp  { hp: number | null }
+  //   hp: null  → full HP (cleared on respawn / session start)
+  //   hp: float → current HP to persist between sessions
+  fastify.post<{
+    Body: { hp: number | null };
+  }>('/api/game/player/hp', async (req, reply) => {
+    const { hp } = req.body;
+    const value = (hp === null || hp === undefined) ? null : Math.max(0, Number(hp));
+    await store.updatePlayer({ current_hp: value });
+    return reply.send({ ok: true, current_hp: value });
+  });
+
   // ── Coin Collection ────────────────────────────────────────────────────
   fastify.post<{
     Body: { amount: number };
@@ -212,6 +225,41 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   }>('/api/game/decorations/:id', async (req, reply) => {
     await store.removeDecoration(req.params.id);
     return reply.send({ ok: true });
+  });
+
+  // ── Minerals ───────────────────────────────────────────────────────────────
+  // GET  /api/game/minerals/status?nodes=lumite_0,ferrite_1,...
+  //   Returns { node_id: harvested_at | null } for the requested node ids.
+  //   Nodes with no record (never harvested) are omitted — client treats missing as available.
+  //
+  // POST /api/game/minerals/harvest  { node_id }
+  //   Records a harvest. Rejects with 409 if the node was harvested < 1 hour ago.
+  //   On success, adds one crystal bar item to inventory and returns the item.
+
+  fastify.get<{
+    Querystring: { nodes?: string };
+  }>('/api/game/minerals/status', async (req, reply) => {
+    const ids = (req.query.nodes ?? '').split(',').map(s => s.trim()).filter(Boolean);
+    const status = await store.getMineralStatus(ids);
+    return reply.send(status);
+  });
+
+  fastify.post<{
+    Body: { node_id: string; bar_item_id: string };
+  }>('/api/game/minerals/harvest', async (req, reply) => {
+    const { node_id, bar_item_id } = req.body;
+    if (!node_id || !bar_item_id) {
+      return reply.status(400).send({ error: 'node_id and bar_item_id required' });
+    }
+    const result = await store.harvestMineral(node_id);
+    if (!result.ok) {
+      return reply.status(409).send({ error: 'node not ready', harvested_at: result.harvested_at });
+    }
+    const item = await store.addItem(
+      bar_item_id, 'player', 'material', 0,
+      JSON.stringify({ materialId: bar_item_id })
+    );
+    return reply.send({ ok: true, harvested_at: result.harvested_at, item });
   });
 
   // ── Buildings ──────────────────────────────────────────────────────────────

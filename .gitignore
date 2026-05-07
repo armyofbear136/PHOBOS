@@ -13,6 +13,7 @@ output/
 #testing files
 test-*/
 godot-docs/
+unsloth_compiled_cache/
 
 *.duckdb.*
 

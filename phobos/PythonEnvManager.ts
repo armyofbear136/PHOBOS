@@ -111,7 +111,7 @@ interface EnvManifest {
 //       triton-windows added to CUDA install on Windows (was missing, only Linux CUDA
 //       wheels bundle triton).
 //  6 - incrementing during testing
-const REQUIRED_ENV_VERSION = 17; // v17: hf_xet in Pass 1; fix patch path for compiled exe; torchvision+mistral_common in ensureCartridgeDeps
+const REQUIRED_ENV_VERSION = 19; // v19: trl==1.3.0 pin; CARTRIDGE_BASE_DEPS installed with --no-deps to bypass tokenizers resolver conflict
 
 // ── Module state ─────────────────────────────────────────────────────────────
 
@@ -1197,7 +1197,8 @@ const CARTRIDGE_BASE_DEPS = [
   'tokenizers>=0.21,<0.22',
   // All cartridge training deps installed with --no-deps to prevent any of
   // them from upgrading torch, transformers, or tokenizers.
-  'trl>=0.12.0',
+  // trl must be exactly 1.3.0 — chat_template_utils.py removed in later versions.
+  'trl==1.3.0',
   'datasets>=2.18.0',
   'huggingface_hub>=0.23.0',
   'sentencepiece>=0.2.0',
@@ -1250,12 +1251,21 @@ export async function ensureCartridgeDeps(vendor: GpuVendor): Promise<void> {
     );
   }
 
-  // Step 1: base deps + mistral_common (pre-install prevents unsloth's internal
-  // pip call during save_pretrained_merged from failing on locked numpy DLLs).
+  // Step 1a: base deps with --no-deps. trl==1.3.0 wants tokenizers<0.22 and
+  // huggingface_hub>=0.23.0 wants tokenizers with no upper bound — pip's resolver
+  // rejects them together. --no-deps bypasses the check; packages work at runtime.
   await execFileAsync(
     pyBin,
-    ['-m', 'pip', 'install', '--quiet', ...CARTRIDGE_BASE_DEPS, 'mistral_common'],
+    ['-m', 'pip', 'install', '--quiet', '--no-deps', ...CARTRIDGE_BASE_DEPS],
     { timeout: 10 * 60 * 1000, maxBuffer: 50 * 1024 * 1024 },
+  );
+
+  // Step 1b: mistral_common separately — prevents unsloth's internal pip call
+  // during save_pretrained_merged from failing on locked numpy DLLs on Windows.
+  await execFileAsync(
+    pyBin,
+    ['-m', 'pip', 'install', '--quiet', '--no-deps', 'mistral_common'],
+    { timeout: 5 * 60 * 1000, maxBuffer: 50 * 1024 * 1024 },
   );
 
   // Step 2: unsloth without extras bracket and --no-deps so it cannot
@@ -1273,15 +1283,15 @@ export async function ensureCartridgeDeps(vendor: GpuVendor): Promise<void> {
     { timeout: 5 * 60 * 1000, maxBuffer: 50 * 1024 * 1024 },
   );
 
-  // Step 3: patch trl/chat_template_utils.py — read_text() calls use the system
-  // codepage on Windows (cp1252) which cannot decode the DeepSeek v3 Jinja template
-  // (contains byte 0x81). Replace all read_text() calls with read_text(encoding="utf-8").
-  const trlChatUtils = path.join(
-    path.dirname(pyBin), '..', 'Lib', 'site-packages', 'trl', 'chat_template_utils.py',
-  );
-  if (fs.existsSync(trlChatUtils)) {
-    const src = fs.readFileSync(trlChatUtils, 'utf-8');
-    const patched = src.replaceAll('.read_text()', '.read_text(encoding="utf-8")');
-    if (patched !== src) fs.writeFileSync(trlChatUtils, patched, 'utf-8');
-  }
+  // // Step 3: patch trl/chat_template_utils.py — read_text() calls use the system
+  // // codepage on Windows (cp1252) which cannot decode the DeepSeek v3 Jinja template
+  // // (contains byte 0x81). Replace all read_text() calls with read_text(encoding="utf-8").
+  // const trlChatUtils = path.join(
+  //   path.dirname(pyBin), '..', 'Lib', 'site-packages', 'trl', 'chat_template_utils.py',
+  // );
+  // if (fs.existsSync(trlChatUtils)) {
+  //   const src = fs.readFileSync(trlChatUtils, 'utf-8');
+  //   const patched = src.replaceAll('.read_text()', '.read_text(encoding="utf-8")');
+  //   if (patched !== src) fs.writeFileSync(trlChatUtils, patched, 'utf-8');
+  // }
 }

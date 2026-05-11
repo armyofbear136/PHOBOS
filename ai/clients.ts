@@ -24,17 +24,37 @@ export function clearLogContext(): void {
   _logCtx = null;
 }
 
-async function writePromptLog(opts: {
-  role: 'sayon' | 'seren';
-  stage: PromptStage;
-  model: string;
-  prompt: string;
-  response: string;
+/**
+ * Optional sink for prompt-log entries. When set (by the coordinator worker
+ * during init), writePromptLog routes through this instead of DuckDB. The
+ * worker does not have DB access; main thread receives the postMessage and
+ * persists. If unset (main thread / tests), writePromptLog falls back to the
+ * direct DB write.
+ */
+export interface PromptLogSinkEntry {
+  role:      'sayon' | 'seren';
+  stage:     PromptStage;
+  model:     string;
+  prompt:    string;
+  response:  string;
   latencyMs: number;
-}): Promise<void> {
+}
+
+let _promptLogSink: ((entry: PromptLogSinkEntry) => void) | null = null;
+
+export function setPromptLogSink(sink: (entry: PromptLogSinkEntry) => void): void {
+  _promptLogSink = sink;
+}
+
+async function writePromptLog(opts: PromptLogSinkEntry): Promise<void> {
+  if (_promptLogSink) {
+    // Coordinator worker — postMessage to main, no local DB touch.
+    _promptLogSink(opts);
+    return;
+  }
   if (!_logCtx) return; // no context set — skip silently
   try {
-    const db = DatabaseManager.getInstance();
+    const db = DatabaseManager.getUserDb();
     const store = new PromptLogStore(db);
     await store.insert({
       threadId:  _logCtx.threadId,
@@ -136,6 +156,39 @@ export async function reconfigureClients(): Promise<void> {
   }).catch(err => {
     console.error(`[reconfigureClients] reconcilePhobosServers error: ${err.message}`);
   });
+}
+
+/**
+ * Coordinator-worker variant of reconfigureClients. Sets the OpenAI client
+ * endpoints and the model/provider strings from a config payload pushed by
+ * main. Does NOT read DuckDB and does NOT call reconcilePhobosServers — the
+ * main thread owns llama-server lifecycle. Used by the worker when it
+ * receives INIT_CONFIG and MODEL_CONFIG_UPDATE postMessages.
+ */
+export interface ClientRoleConfigInput {
+  provider:    string;
+  model:       string;
+  endpoint:    string;
+  apiKey?:     string | null;
+}
+
+export function applyClientsConfig(cfg: {
+  coordinator: ClientRoleConfigInput;
+  engine:      ClientRoleConfigInput;
+}): void {
+  coordinatorClient = new OpenAI({
+    baseURL: cfg.coordinator.endpoint,
+    apiKey:  cfg.coordinator.apiKey ?? 'not-required',
+  });
+  COORDINATOR_MODEL    = cfg.coordinator.model;
+  COORDINATOR_PROVIDER = cfg.coordinator.provider;
+
+  engineClient = new OpenAI({
+    baseURL: cfg.engine.endpoint,
+    apiKey:  cfg.engine.apiKey ?? 'not-required',
+  });
+  ENGINE_MODEL    = cfg.engine.model;
+  ENGINE_PROVIDER = cfg.engine.provider;
 }
 
 export async function checkBackendHealth(): Promise<{

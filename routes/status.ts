@@ -11,6 +11,7 @@ import { isConfigOptimal, detectHardware } from '../phobos/PhobosLocalManager.js
 import { getSandboxExecutorEnabled, setSandboxExecutorEnabled } from '../db/ModelPathStore.js';
 import { getCamofoxStatus } from '../phobos/CamofoxManager.js';
 import { snapshot as bootSnapshot } from '../boot/BootState.js';
+import { CoordinatorBridge } from '../CoordinatorBridge.js';
 
 // ── Config optimal cache — avoids running the scoring engine on every 5s poll ──
 let _optimalCache: { optimal: boolean; recommendedSayon: string; recommendedSeren: string } | null = null;
@@ -19,9 +20,10 @@ let _optimalCacheTime = 0;
 const OPTIMAL_CACHE_TTL_MS = 60_000;
 
 export async function statusRoute(fastify: FastifyInstance): Promise<void> {
-  const db = DatabaseManager.getInstance();
-  const dispatchStore = new DispatchLogStore(db);
-  const configStore = new ModelConfigStore(db);
+  const systemDb      = DatabaseManager.getInstance();
+  const userDb        = DatabaseManager.getUserDb();
+  const dispatchStore = new DispatchLogStore(userDb);
+  const configStore   = new ModelConfigStore(systemDb);
 
   // GET /api/version
   fastify.get('/api/version', async (_req, reply) => {
@@ -84,7 +86,7 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
       recommendedSayon,
       recommendedSeren,
       visionCapability: getModelVisionCapability(),
-      sandboxExecutorEnabled: await getSandboxExecutorEnabled(db),
+      sandboxExecutorEnabled: await getSandboxExecutorEnabled(systemDb),
       camofox: getCamofoxStatus(),
       bootPhase:    bootSnapshot().phase,
       bootProgress: bootSnapshot().progress,
@@ -176,6 +178,30 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
     }
     await reconfigureClients();
     const updated = await configStore.getAll();
+
+    // Push the new client endpoints to the coordinator worker so its OpenAI
+    // clients track the change without reading DuckDB.
+    CoordinatorBridge.updateModelConfig(
+      {
+        provider:    updated.coordinator.provider,
+        model:       updated.coordinator.model,
+        endpoint:    updated.coordinator.endpoint,
+        apiKey:      updated.coordinator.apiKey ?? null,
+        deviceIndex: updated.coordinator.deviceIndex ?? null,
+        gpuBackend:  updated.coordinator.gpuBackend  ?? null,
+        gpuLayers:   updated.coordinator.gpuLayers   ?? null,
+      },
+      {
+        provider:    updated.engine.provider,
+        model:       updated.engine.model,
+        endpoint:    updated.engine.endpoint,
+        apiKey:      updated.engine.apiKey ?? null,
+        deviceIndex: updated.engine.deviceIndex ?? null,
+        gpuBackend:  updated.engine.gpuBackend  ?? null,
+        gpuLayers:   updated.engine.gpuLayers   ?? null,
+      },
+    );
+
     return reply.send({
       ok: true,
       coordinator: {
@@ -198,7 +224,8 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
     if (typeof enabled !== 'boolean') {
       return reply.status(400).send({ error: 'enabled must be a boolean' });
     }
-    await setSandboxExecutorEnabled(db, enabled);
+    await setSandboxExecutorEnabled(systemDb, enabled);
+    CoordinatorBridge.updateExecutorFlag(enabled);
     return reply.send({ ok: true, sandboxExecutorEnabled: enabled });
   });
 

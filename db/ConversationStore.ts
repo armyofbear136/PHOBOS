@@ -2,9 +2,10 @@
 //
 // Persistent VSS index over PHOBOS conversation history.
 //
-// Lives at ~/.phobos/conversations.duckdb — completely separate from the user's
-// archive vault (~/.phobos/archive/*.duckdb). No ArchiveStore domain taxonomy,
-// no ArchiveIntentClassifier routing. The only callers are:
+// Lives at ~/.phobos/users/{user}/conversations.duckdb (per-user, E1) — completely
+// separate from the system archive vault (~/.phobos/archive/*.duckdb).
+// No ArchiveStore domain taxonomy, no ArchiveIntentClassifier routing.
+// The only callers are:
 //   - ConversationRAGClient (thread-scoped semantic search)
 //   - Copilot "investigate conversation / investigate system" branch
 //
@@ -18,17 +19,15 @@
 import Database from 'duckdb-async';
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 import { randomUUID } from 'crypto';
-import { BUNDLED_EXTENSION_DIR } from './DatabaseManager.js';
+import { BUNDLED_EXTENSION_DIR, userDir, getActiveUser } from './DatabaseManager.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-// Respect PHOBOS_DATA_DIR if set (dev mode uses project root, production uses ~/.phobos).
-// Must be computed lazily so the env var set by server.ts at startup is visible.
+// Conversations DB is per-user (E1). Lives at ~/.phobos/users/{user}/conversations.duckdb.
+// Path is computed lazily so PHOBOS_ACTIVE_USER set at startup is visible.
 function resolveConversationDbPath(): string {
-  const dataDir = process.env.PHOBOS_DATA_DIR ?? path.join(os.homedir(), '.phobos');
-  return path.join(dataDir, 'conversations.duckdb');
+  return path.join(userDir(getActiveUser()), 'conversations.duckdb');
 }
 
 export const CONVERSATION_DB_PATH = resolveConversationDbPath();

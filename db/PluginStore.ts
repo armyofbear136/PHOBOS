@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import AdmZip from 'adm-zip';
-import { DatabaseManager } from './DatabaseManager.js';
+import { DatabaseManager, userDir, getActiveUser } from './DatabaseManager.js';
 import {
   type PluginManifest,
   type PluginRecord,
@@ -28,7 +28,7 @@ const SCRYPT_KEYLEN = 32;
 // ── License helpers ───────────────────────────────────────────────────────────
 
 function readLicenseKey(): string | null {
-  const keyPath = path.join(os.homedir(), '.phobos', 'license.key');
+  const keyPath = path.join(userDir(getActiveUser()), 'license.key');
   try {
     const content = fs.readFileSync(keyPath, 'utf-8');
     const lines   = content.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));

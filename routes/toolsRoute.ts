@@ -18,10 +18,14 @@ import {
   getOmniclipStatus,
 } from '../services/OmniclipManager.js';
 import {
+  startBlockbench,
+  stopBlockbench,
   getBlockbenchStatus,
   BLOCKBENCH_DIR,
 } from '../services/BlockbenchManager.js';
 import {
+  startSculptGL,
+  stopSculptGL,
   getSculptGLStatus,
   SCULPTGL_DIR,
 } from '../services/SculptGLManager.js';
@@ -115,14 +119,32 @@ export async function registerToolsRoutes(fastify: FastifyInstance): Promise<voi
           const HOP_BY_HOP = new Set([
             'transfer-encoding', 'connection', 'keep-alive',
             'proxy-authenticate', 'proxy-authorization', 'te', 'trailers', 'upgrade',
+            // content-encoding must be stripped: Node's http.IncomingMessage automatically
+            // decompresses gzip/deflate bodies when reading chunks. If we forward the
+            // content-encoding header (e.g. 'gzip') but the body is already decompressed,
+            // the browser tries to decompress again and gets ERR_CONTENT_DECODING_FAILED.
+            'content-encoding',
+            // content-length must be stripped: Spring Boot sends the compressed byte count.
+            // After decompression the body is larger, so forwarding the original length
+            // causes the browser to truncate the response body, producing a corrupted page.
+            // Fastify will set the correct content-length after reply.send(body).
+            'content-length',
           ]);
           for (const [k, v] of Object.entries(upstream.headers)) {
             if (v !== undefined && !HOP_BY_HOP.has(k.toLowerCase())) {
               reply.header(k, v as string);
             }
           }
-          // CORP: cross-origin lets the Vite parent (different port = different
-          // origin) embed Stirling resources. Spring Boot doesn't set this header.
+          // COOP+COEP+CORP: Stirling is cross-origin from the Vite parent (:5173
+          // vs :3001). The parent has COEP: require-corp (for Godot SharedArrayBuffer).
+          // For the iframe to load, the response must carry CORP: cross-origin.
+          // COOP+COEP also declare the iframe itself as cross-origin isolated,
+          // satisfying Chrome's requirement that sandboxed allow-same-origin iframes
+          // in a COEP parent be themselves cross-origin isolated — same pattern
+          // as Blockbench, SculptGL, and Omniclip.
+          // Spring Boot sets none of these headers, so the proxy injects them.
+          reply.header('Cross-Origin-Opener-Policy',   'same-origin');
+          reply.header('Cross-Origin-Embedder-Policy', 'require-corp');
           reply.header('Cross-Origin-Resource-Policy', 'cross-origin');
           const chunks: Buffer[] = [];
           upstream.on('data', (c: Buffer) => chunks.push(c));
@@ -133,9 +155,8 @@ export async function registerToolsRoutes(fastify: FastifyInstance): Promise<voi
             // Rewrite absolute paths in HTML so the SPA works under our prefix
             if (ct.includes('html')) {
               const patched = body.toString('utf8')
-                .replace(/(href|src|action)="\//g, `$1="/api/tools/stirling/app/`);
+                .replace(/(href|src|action)="\/"/g, `$1="/api/tools/stirling/app/`);
               body = Buffer.from(patched, 'utf8');
-              reply.header('content-length', body.length);
             }
 
             reply.send(body);
@@ -161,14 +182,15 @@ export async function registerToolsRoutes(fastify: FastifyInstance): Promise<voi
     });
   });
 
+  // ── Omniclip routes ───────────────────────────────────────────────────────
   // GET  /api/tools/omniclip/status   → OmniclipStatus
   // POST /api/tools/omniclip/start    → start static server
   // POST /api/tools/omniclip/stop     → stop static server
- 
+
   fastify.get('/api/tools/omniclip/status', async (_req, reply) => {
     return reply.send(getOmniclipStatus());
   });
- 
+
   fastify.post('/api/tools/omniclip/start', async (_req, reply) => {
     const status = getOmniclipStatus();
     if (status.state === 'running') {
@@ -181,7 +203,7 @@ export async function registerToolsRoutes(fastify: FastifyInstance): Promise<voi
       return reply.status(500).send({ ok: false, ...getOmniclipStatus(), error: (err as Error).message });
     }
   });
- 
+
   fastify.post('/api/tools/omniclip/stop', async (_req, reply) => {
     try {
       await stopOmniclip();
@@ -190,19 +212,51 @@ export async function registerToolsRoutes(fastify: FastifyInstance): Promise<voi
       return reply.status(500).send({ ok: false, error: (err as Error).message });
     }
   });
-  
+
   // ── Blockbench static serving ─────────────────────────────────────────────
-  // GET /api/tools/blockbench/status → BlockbenchStatus
-  // GET /tools/blockbench/*          → static files from BLOCKBENCH_DIR
- 
+  // GET  /api/tools/blockbench/status → BlockbenchStatus
+  // POST /api/tools/blockbench/start  → start (noop if already running via auto-start)
+  // POST /api/tools/blockbench/stop   → stop
+  // GET  /tools/blockbench/*          → static files from BLOCKBENCH_DIR
+  //
+  // Static files are served by Fastify on :3001, not Vite on :5173.
+  // vite.config.ts no longer proxies /tools/blockbench — the iframe src points
+  // to /tools/blockbench/ which routes directly to :3001 via the /api proxy.
+  //
+  // Wait — /tools/blockbench is NOT under /api. The iframe src must use the
+  // Vite /tools/godot pattern: vite.config.ts proxies /tools/godot to :3001.
+  // Blockbench and SculptGL use the same /tools/* prefix and are served by
+  // @fastify/static on :3001 — reached via the Vite /tools/godot proxy ONLY
+  // for godot. For blockbench/sculptgl the iframe src is an absolute URL:
+  // http://localhost:3001/tools/blockbench/ — bypassing Vite entirely.
+  // CORP: cross-origin on the response satisfies the parent page's COEP.
+
   fastify.get('/api/tools/blockbench/status', async (_req, reply) => {
     return reply.send(getBlockbenchStatus());
   });
- 
-  // Registered unconditionally — the directory always exists after DepPrep runs.
-  // The status endpoint tells the frontend when the build isn't present yet.
-  // Gating on isBuildPresent() caused the route to never register when DepPrep
-  // ran its install after registerToolsRoutes had already executed at startup.
+
+  fastify.post('/api/tools/blockbench/start', async (_req, reply) => {
+    const status = getBlockbenchStatus();
+    if (status.state === 'running') {
+      return reply.send({ ok: true, message: 'Already running', ...status });
+    }
+    try {
+      await startBlockbench();
+      return reply.send({ ok: true, ...getBlockbenchStatus() });
+    } catch (err) {
+      return reply.status(500).send({ ok: false, ...getBlockbenchStatus(), error: (err as Error).message });
+    }
+  });
+
+  fastify.post('/api/tools/blockbench/stop', async (_req, reply) => {
+    try {
+      await stopBlockbench();
+      return reply.send({ ok: true, ...getBlockbenchStatus() });
+    } catch (err) {
+      return reply.status(500).send({ ok: false, error: (err as Error).message });
+    }
+  });
+
   fs.mkdirSync(BLOCKBENCH_DIR, { recursive: true });
   await fastify.register(fastifyStatic, {
     root:          BLOCKBENCH_DIR,
@@ -217,11 +271,35 @@ export async function registerToolsRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   // ── SculptGL static serving ───────────────────────────────────────────────
-  // GET /api/tools/sculptgl/status → SculptGLStatus
-  // GET /tools/sculptgl/*          → static files from SCULPTGL_DIR
+  // GET  /api/tools/sculptgl/status → SculptGLStatus
+  // POST /api/tools/sculptgl/start  → start
+  // POST /api/tools/sculptgl/stop   → stop
+  // GET  /tools/sculptgl/*          → static files from SCULPTGL_DIR
 
   fastify.get('/api/tools/sculptgl/status', async (_req, reply) => {
     return reply.send(getSculptGLStatus());
+  });
+
+  fastify.post('/api/tools/sculptgl/start', async (_req, reply) => {
+    const status = getSculptGLStatus();
+    if (status.state === 'running') {
+      return reply.send({ ok: true, message: 'Already running', ...status });
+    }
+    try {
+      await startSculptGL();
+      return reply.send({ ok: true, ...getSculptGLStatus() });
+    } catch (err) {
+      return reply.status(500).send({ ok: false, ...getSculptGLStatus(), error: (err as Error).message });
+    }
+  });
+
+  fastify.post('/api/tools/sculptgl/stop', async (_req, reply) => {
+    try {
+      await stopSculptGL();
+      return reply.send({ ok: true, ...getSculptGLStatus() });
+    } catch (err) {
+      return reply.status(500).send({ ok: false, error: (err as Error).message });
+    }
   });
 
   fs.mkdirSync(SCULPTGL_DIR, { recursive: true });

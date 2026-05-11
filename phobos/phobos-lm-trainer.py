@@ -251,6 +251,21 @@ def train(cfg: dict) -> None:
         steps            = max(500, min(8000, pair_count * repeats * target_ep_steps))
         emit(f"PHASE Auto-computed {steps} training steps from {pair_count} pairs")
 
+    # ── Derive max_seq_length from available VRAM ─────────────────────────────
+    # Cards with ≤12 GB total VRAM cannot sustain 2048-token packed sequences
+    # across 2 gradient accumulation steps without fragmentation-induced illegal
+    # access errors mid-run.  Use 1024 on those cards; 2048 everywhere else.
+    max_seq_length = 2048
+    if device != "cpu":
+        try:
+            props      = torch.cuda.get_device_properties(0)
+            total_gb   = props.total_memory / (1024 ** 3)
+            if total_gb <= 12.0:
+                max_seq_length = 1024
+                emit(f"PHASE VRAM {total_gb:.1f} GB ≤ 12 GB — using max_seq_length=1024")
+        except Exception:
+            pass  # non-CUDA path or query failed — keep 2048
+
     # ── Load model via unsloth ────────────────────────────────────────────────
     emit(f"PHASE Downloading/loading {training_hf_id} (4-bit quantized)")
 
@@ -261,7 +276,7 @@ def train(cfg: dict) -> None:
     try:
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name          = training_hf_id,
-            max_seq_length      = 2048,
+            max_seq_length      = max_seq_length,
             dtype               = None,          # auto
             load_in_4bit        = True,
             device_map          = "auto" if device == "cuda:0" else device,
@@ -327,7 +342,7 @@ def train(cfg: dict) -> None:
     emit("PHASE Training")
 
     batch_size        = 1
-    grad_accum_steps  = 4
+    grad_accum_steps  = 2   # 4 caused CUDA illegal access at ~600 steps on 10 GB cards
 
     training_args = SFTConfig(
         output_dir                  = str(output_dir),
@@ -366,6 +381,11 @@ def train(cfg: dict) -> None:
         total = trainer.state.max_steps
         loss  = logs.get("loss", logs.get("train_loss", 0.0))
         emit(f"STEP {step}/{total} loss={loss:.4f}")
+        # Return cached-but-freed CUDA blocks to the driver every 100 steps.
+        # Prevents allocator fragmentation from accumulating into an illegal
+        # memory access on long runs (observed at ~600/8000 steps on 10 GB cards).
+        if device != "cpu" and step % 100 == 0:
+            torch.cuda.empty_cache()
     trainer.log = _patched_log  # type: ignore[method-assign]
 
     try:

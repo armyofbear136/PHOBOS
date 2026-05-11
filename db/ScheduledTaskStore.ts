@@ -2,7 +2,21 @@ import { DatabaseManager } from './DatabaseManager.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type TaskType = 'conversation' | 'background';
+/**
+ * Task type drives how the scheduler and handler registry interpret this task.
+ *
+ *   conversation — signals _pending; frontend polls and opens a thread.
+ *   background   — generic headless handler; runs without a frontend.
+ *   security     — background task managed by SecurityScanManager.
+ *   ha           — Home Assistant watch duty; task_parameters carries approval rules.
+ *
+ * task_parameters is a JSON blob whose shape is type-specific:
+ *   ha:          string[]  — HA service patterns that require user approval before
+ *                            execution, e.g. ["lock.lock","climate.*","all_writes"].
+ *                            Services not in the list fire automatically.
+ *   others:      reserved — null for now; will gain meaning when Phase 3 expands.
+ */
+export type TaskType = 'conversation' | 'background' | 'security' | 'ha';
 
 export interface ScheduledTask {
   id:               string;
@@ -12,6 +26,12 @@ export interface ScheduledTask {
   prompt:           string;
   task_type:        TaskType;
   handler:          string | null;
+  /**
+   * Type-specific parameters stored as a JSON array/object.
+   * For 'ha' tasks: string[] of HA service patterns requiring approval.
+   * For other types: null (reserved for future use).
+   */
+  task_parameters:  string[] | null;
   enabled:          boolean;
   last_run_at:      string | null;
   last_run_status:  'success' | 'error' | 'pending' | null;
@@ -19,6 +39,15 @@ export interface ScheduledTask {
   next_run_at:      string | null;
   created_at:       string;
   updated_at:       string;
+  /**
+   * Pinned model overrides for scheduled task execution.
+   * When set, the scheduler loads these instead of the active RoleConfig.
+   * Null = use whatever model is currently active.
+   */
+  pinned_sayon_model:  string | null;
+  pinned_seren_model:  string | null;
+  /** Cartridge ID to insert before execution. Null = no cartridge override. */
+  pinned_cartridge_id: string | null;
 }
 
 export interface ScheduledTaskRun {
@@ -70,6 +99,26 @@ export class ScheduledTaskStore {
     `);
 
     await this.db.run(`
+      ALTER TABLE scheduled_tasks
+      ADD COLUMN IF NOT EXISTS pinned_sayon_model VARCHAR
+    `);
+
+    await this.db.run(`
+      ALTER TABLE scheduled_tasks
+      ADD COLUMN IF NOT EXISTS pinned_seren_model VARCHAR
+    `);
+
+    await this.db.run(`
+      ALTER TABLE scheduled_tasks
+      ADD COLUMN IF NOT EXISTS pinned_cartridge_id VARCHAR
+    `);
+
+    await this.db.run(`
+      ALTER TABLE scheduled_tasks
+      ADD COLUMN IF NOT EXISTS task_parameters JSON
+    `);
+
+    await this.db.run(`
       CREATE TABLE IF NOT EXISTS scheduled_task_runs (
         id             VARCHAR PRIMARY KEY,
         task_id        VARCHAR NOT NULL,
@@ -116,21 +165,27 @@ export class ScheduledTaskStore {
   }
 
   async create(
-    fields: Omit<ScheduledTask, 'id' | 'created_at' | 'updated_at' | 'last_run_at' | 'last_run_status' | 'last_run_error' | 'task_type' | 'handler'>
-      & { task_type?: TaskType; handler?: string | null }
+    fields: Omit<ScheduledTask, 'id' | 'created_at' | 'updated_at' | 'last_run_at' | 'last_run_status' | 'last_run_error' | 'task_type' | 'handler' | 'task_parameters' | 'pinned_sayon_model' | 'pinned_seren_model' | 'pinned_cartridge_id'>
+      & { task_type?: TaskType; handler?: string | null; task_parameters?: string[] | null; pinned_sayon_model?: string | null; pinned_seren_model?: string | null; pinned_cartridge_id?: string | null }
   ): Promise<ScheduledTask> {
     const id  = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
     const now = new Date().toISOString();
     await this.db.run(
       `INSERT INTO scheduled_tasks
          (id, name, description, cron_expression, prompt, task_type, handler,
-          enabled, next_run_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          task_parameters, enabled, next_run_at, pinned_sayon_model, pinned_seren_model,
+          pinned_cartridge_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id, fields.name, fields.description ?? null,
         fields.cron_expression, fields.prompt,
         fields.task_type ?? 'conversation', fields.handler ?? null,
-        fields.enabled, fields.next_run_at ?? null, now, now,
+        fields.task_parameters ? JSON.stringify(fields.task_parameters) : null,
+        fields.enabled, fields.next_run_at ?? null,
+        fields.pinned_sayon_model    ?? null,
+        fields.pinned_seren_model    ?? null,
+        fields.pinned_cartridge_id   ?? null,
+        now, now,
       ]
     );
     return (await this.getById(id))!;
@@ -152,19 +207,29 @@ export class ScheduledTaskStore {
     const last_run_status = fields.last_run_status !== undefined ? fields.last_run_status : task.last_run_status;
     const last_run_error  = fields.last_run_error  !== undefined ? fields.last_run_error  : task.last_run_error;
     const next_run_at     = fields.next_run_at     !== undefined ? fields.next_run_at     : task.next_run_at;
+    const pinned_sayon_model    = fields.pinned_sayon_model    !== undefined ? fields.pinned_sayon_model    : task.pinned_sayon_model;
+    const pinned_seren_model    = fields.pinned_seren_model    !== undefined ? fields.pinned_seren_model    : task.pinned_seren_model;
+    const pinned_cartridge_id   = fields.pinned_cartridge_id   !== undefined ? fields.pinned_cartridge_id   : task.pinned_cartridge_id;
+    const task_parameters       = fields.task_parameters       !== undefined ? fields.task_parameters       : task.task_parameters;
 
     await this.db.run(
       `UPDATE scheduled_tasks SET
          name = ?, description = ?, cron_expression = ?, prompt = ?,
-         task_type = ?, handler = ?, enabled = ?,
+         task_type = ?, handler = ?, task_parameters = ?, enabled = ?,
          last_run_at = ?, last_run_status = ?, last_run_error = ?,
-         next_run_at = ?, updated_at = ?
+         next_run_at = ?,
+         pinned_sayon_model = ?, pinned_seren_model = ?, pinned_cartridge_id = ?,
+         updated_at = ?
        WHERE id = ?`,
       [
         name, description, cron_expression, prompt,
-        task_type, handler, enabled,
+        task_type, handler,
+        task_parameters ? JSON.stringify(task_parameters) : null,
+        enabled,
         last_run_at, last_run_status, last_run_error,
-        next_run_at, now, id,
+        next_run_at,
+        pinned_sayon_model, pinned_seren_model, pinned_cartridge_id,
+        now, id,
       ]
     );
   }
@@ -205,5 +270,25 @@ export class ScheduledTaskStore {
       `SELECT * FROM scheduled_task_runs WHERE task_id = ? ORDER BY started_at DESC LIMIT ?`,
       [taskId, limit]
     );
+  }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Safely parse task_parameters from a ScheduledTask.
+ * DuckDB returns JSON columns as strings; this normalises to string[] | null.
+ * Used by type-specific handlers to read their parameters without
+ * repeating the parse/guard logic.
+ */
+export function parseTaskParameters(task: ScheduledTask): string[] | null {
+  const raw = task.task_parameters;
+  if (!raw) return null;
+  if (Array.isArray(raw)) return raw as string[];
+  try {
+    const parsed = JSON.parse(raw as unknown as string);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
   }
 }

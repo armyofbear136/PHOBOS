@@ -23,7 +23,7 @@ import * as os   from 'os';
 import AdmZip    from 'adm-zip';
 import archiver  from 'archiver';
 import { createWriteStream } from 'fs';
-import { DatabaseManager } from './DatabaseManager.js';
+import { DatabaseManager, userDir, getActiveUser } from './DatabaseManager.js';
 import {
   PHOBOS_DEFAULT_CART_PASSWORD,
   type CartridgeManifest,
@@ -51,7 +51,7 @@ const SCRYPT_KEYLEN = 32;
 // ── License helpers (mirror PluginStore) ──────────────────────────────────────
 
 function readLicenseKey(): string | null {
-  const keyPath = path.join(os.homedir(), '.phobos', 'license.key');
+  const keyPath = path.join(userDir(getActiveUser()), 'license.key');
   try {
     const lines = fs.readFileSync(keyPath, 'utf-8')
       .split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
@@ -240,8 +240,9 @@ export class CartridgeStore {
     for (const persona of ['sayon', 'seren']) {
       await this.db.run(
         `INSERT INTO cartridge_slots (persona, cartridge_id, weight)
-         VALUES (?, NULL, 1.0) ON CONFLICT (persona) DO NOTHING`,
-        [persona],
+         SELECT ?, NULL, 1.0
+         WHERE NOT EXISTS (SELECT 1 FROM cartridge_slots WHERE persona = ?)`,
+        [persona, persona],
       );
     }
   }

@@ -138,7 +138,9 @@ export class MeridianDB {
   }
 
   async upsertFile(f: MeridianFile): Promise<void> {
-    await this.db.run(`
+    // ON CONFLICT ... DO UPDATE hits DuckDB 1.4.x's prepare-path binder bug.
+    // Use execWithParams (conn.exec with inlined literals) to bypass it.
+    await this.db.execWithParams(`
       INSERT INTO meridian_files
         (id,path,filename,ext,type,size_bytes,width,height,duration_ms,
          taken_at,mtime,thumb_ready,thumb_path,exif_json,album_ids,user_id,library_id)
@@ -225,6 +227,13 @@ export class MeridianDB {
     return this.db.query<Row>(sql, params);
   }
 
+  /** Like rawQuery but routes through conn.exec() to bypass DuckDB 1.4.x's
+   *  prepare-path binder bug on ON CONFLICT DML. Use for INSERT/UPDATE/DELETE
+   *  with ON CONFLICT clauses. Returns no rows (write-only path). */
+  async execQuery(sql: string, params: unknown[] = []): Promise<void> {
+    return this.db.execWithParams(sql, params);
+  }
+
   // ── Libraries ──────────────────────────────────────────────────────────────
 
   async getLibrary(id: string): Promise<MeridianLibrary | null> {
@@ -243,7 +252,7 @@ export class MeridianDB {
   }
 
   async upsertLibrary(lib: MeridianLibrary): Promise<void> {
-    await this.db.run(`
+    await this.db.execWithParams(`
       INSERT INTO meridian_libraries (id,path,label,enabled,user_id)
       VALUES (?,?,?,?,?)
       ON CONFLICT (id) DO UPDATE SET path=excluded.path,label=excluded.label,enabled=excluded.enabled

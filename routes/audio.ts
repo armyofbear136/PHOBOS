@@ -202,10 +202,11 @@ async function readSessionMeta(filePath: string): Promise<{ title: string; modif
 // ── Route registration ────────────────────────────────────────────────────────
 
 export async function registerAudioRoutes(fastify: FastifyInstance): Promise<void> {
-  const db             = DatabaseManager.getInstance();
-  const effectRack     = new EffectRackStore(db);
-  const dawProjects    = new DawProjectStore(db);
-  const pluginScanner  = new PluginScanner(db);
+  const userDb         = DatabaseManager.getUserDb();
+  const systemDb       = DatabaseManager.getInstance();
+  const effectRack     = new EffectRackStore(userDb);
+  const dawProjects    = new DawProjectStore(userDb);
+  const pluginScanner  = new PluginScanner(systemDb);
   await effectRack.ensureTable();
   await dawProjects.ensureTable();
   await pluginScanner.ensureTable();
@@ -1125,13 +1126,21 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
   // Follows the same SSE contract as the image gen routes.
   // The client reads lines until it receives a `done` or `error` event.
 
-  function sseHeaders(reply: any): void {
-    reply.raw.writeHead(200, {
-      'Content-Type':  'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection':    'keep-alive',
+  function sseHeaders(req: any, reply: any): void {
+    // `reply.raw.writeHead` bypasses Fastify's onSend hooks (including
+    // @fastify/cors), so we must stamp the CORS header manually here.
+    // Mirror the same logic as the global onSend hook in server.ts.
+    const origin = req.headers?.origin;
+    const headers: Record<string, string> = {
+      'Content-Type':      'text/event-stream',
+      'Cache-Control':     'no-cache',
+      'Connection':        'keep-alive',
       'X-Accel-Buffering': 'no',
-    });
+    };
+    if (origin) {
+      headers['Access-Control-Allow-Origin'] = origin;
+    }
+    reply.raw.writeHead(200, headers);
   }
 
   function sseWrite(reply: any, payload: Record<string, unknown>): void {
@@ -1253,7 +1262,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
       return reply.status(400).send({ error: '"threadId" is required' });
     }
 
-    sseHeaders(reply);
+    sseHeaders(req, reply);
     ensureAudioWorkspace(threadId);
 
     const abort = new AbortController();
@@ -1296,12 +1305,15 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
 
   // ── POST /api/audio/transcribe ─────────────────────────────────────────────
   //
-  // Transcribes a WAV recording via Whisper large-v3 (~24s on CPU).
-  // Accepts base64-encoded audio data — no multipart needed.
-  // Writes a temp file to ~/.phobos/audio-capture/, cleans up after Whisper exits.
+  // Transcribes audio via Whisper large-v3 (~24s on CPU).
+  // Accepts base64-encoded audio — browser MediaRecorder typically emits
+  // audio/webm;codecs=opus, not WAV. Whisper requires 16kHz mono WAV.
+  // This route detects the actual format from magic bytes, writes a temp file
+  // with the correct extension, converts to WAV via ffmpeg if needed, then
+  // passes the WAV to Whisper. Both temp files are cleaned up after exit.
   //
   // Body:
-  //   audioData  string  — base64-encoded WAV (required)
+  //   audioData  string  — base64-encoded audio (WAV, WebM, or OGG)
   //   language   string? — ISO 639-1 language code hint (optional)
   //
   // Response:
@@ -1310,22 +1322,61 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
   // This endpoint is NOT streaming — it blocks for the duration of Whisper inference.
   // The client must show its own waiting indicator.
 
+  // Returns the file extension (without dot) for a raw audio buffer based on
+  // magic bytes. Covers WAV (RIFF), WebM (0x1A45DFA3), and OGG (OggS).
+  function detectAudioExt(buf: Buffer): string {
+    if (buf.length >= 4 && buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46) return 'wav';
+    if (buf.length >= 4 && buf[0] === 0x1A && buf[1] === 0x45 && buf[2] === 0xDF && buf[3] === 0xA3) return 'webm';
+    if (buf.length >= 4 && buf[0] === 0x4F && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53) return 'ogg';
+    // Fallback — let ffmpeg figure it out; it probes the container itself.
+    return 'webm';
+  }
+
+  // Returns the ffmpeg binary path: Jellyfin-bundled first (already proven to
+  // exist on this machine), system ffmpeg as fallback.
+  function resolveFfmpegBin(): string {
+    const jellyfinDir = path.join(os.homedir(), '.phobos', 'services', 'jellyfin');
+    const ext         = process.platform === 'win32' ? '.exe' : '';
+    const bundled     = path.join(jellyfinDir, `ffmpeg${ext}`);
+    if (fs.existsSync(bundled)) return bundled;
+    return `ffmpeg${ext}`;  // rely on PATH
+  }
+
   fastify.post<{
     Body: { audioData: string; language?: string };
   }>('/api/audio/transcribe', async (req, reply) => {
     const { audioData, language } = req.body ?? {};
 
     if (typeof audioData !== 'string' || audioData.length === 0) {
-      return reply.status(400).send({ error: '"audioData" (base64 WAV) is required' });
+      return reply.status(400).send({ error: '"audioData" (base64 audio) is required' });
     }
 
-    const tempPath = path.join(audioCaptureDir, `${crypto.randomUUID()}.wav`);
+    const id       = crypto.randomUUID();
+    const buf      = Buffer.from(audioData, 'base64');
+    const ext      = detectAudioExt(buf);
+    const srcPath  = path.join(audioCaptureDir, `${id}.${ext}`);
+    const wavPath  = path.join(audioCaptureDir, `${id}.wav`);
+
     try {
-      const buf = Buffer.from(audioData, 'base64');
-      fs.writeFileSync(tempPath, buf);
+      fs.writeFileSync(srcPath, buf);
+
+      // Convert to 16kHz mono WAV regardless of source format.
+      // -y          overwrite output without prompt
+      // -ar 16000   resample to Whisper's native rate
+      // -ac 1       downmix to mono
+      // -f wav      force WAV container
+      // ffmpeg auto-detects the input container so no -f input flag needed.
+      await execFileAsync(resolveFfmpegBin(), [
+        '-y',
+        '-i',  srcPath,
+        '-ar', '16000',
+        '-ac', '1',
+        '-f',  'wav',
+        wavPath,
+      ]);
 
       const text = await transcribe({
-        audioPath: tempPath,
+        audioPath: wavPath,
         language:  language ?? undefined,
       });
 
@@ -1334,7 +1385,8 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
       return reply.status(500).send({ error: (err as Error).message });
     } finally {
       // Always clean up — leave no audio data on disk
-      try { fs.unlinkSync(tempPath); } catch { /* best-effort */ }
+      try { fs.unlinkSync(srcPath); } catch { /* best-effort */ }
+      try { fs.unlinkSync(wavPath); } catch { /* best-effort */ }
     }
   });
 
@@ -1389,7 +1441,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
 
     const clampedDuration = Math.min(120, Math.max(5, typeof duration === 'number' ? duration : 30));
 
-    sseHeaders(reply);
+    sseHeaders(req, reply);
     ensureAudioWorkspace(threadId);
 
     const abort = new AbortController();
@@ -1504,7 +1556,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
       return reply.status(400).send({ error: '"refAudioData" (base64) is required' });
     }
 
-    sseHeaders(reply);
+    sseHeaders(req, reply);
     ensureAudioWorkspace(threadId);
 
     const abort  = new AbortController();

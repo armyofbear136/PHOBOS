@@ -92,10 +92,14 @@ export async function buildForPlatform({
   if (fs.existsSync(distDir)) fs.rmSync(distDir, { recursive: true, force: true });
   fs.mkdirSync(distDir, { recursive: true });
 
-  // ── 1a. Bundle coordinator process ────────────────────────────────────────
-  // The coordinator runs as a forked child process — it cannot live inside the
-  // SEA bundle (phobos.cjs) because fork() needs a separate file on disk.
-  // Same externals and aliases as the main bundle.
+  // ── 1a. Bundle coordinator worker_thread ──────────────────────────────────
+  // The coordinator runs as a worker_thread sibling .cjs to the SEA binary.
+  // Worker spawn uses the normal Node module loader to read this file, which
+  // works regardless of whether the host process is a SEA. Same externals and
+  // aliases as the main bundle, but with a strict guard: the coordinator must
+  // never reach DatabaseManager — all DB-bound work routes back to main via
+  // postMessage. We enforce this by scanning the bundle output and failing
+  // the build if `class DatabaseManager` appears.
   log('📦 Bundling coordinator...');
   const coordinatorPath = path.join(distDir, 'coordinator.cjs');
   await esbuild({
@@ -118,6 +122,20 @@ export async function buildForPlatform({
       'tree-sitter-typescript',
     ],
   });
+
+  // Post-bundle DB-import guard. If anyone reintroduces a DatabaseManager
+  // import to the coordinator's reachable graph, the bundle will contain the
+  // class definition and this check will fail the build immediately.
+  {
+    const bundleSrc = fs.readFileSync(coordinatorPath, 'utf8');
+    if (bundleSrc.includes('class DatabaseManager')) {
+      throw new Error(
+        '[build] coordinator.cjs contains DatabaseManager — coordinator must not import DB. ' +
+        'Check ai/clients.ts, ai/LoopController.ts, ai/DispatchComposer.ts, ai/TaskPlanner.ts ' +
+        'and any newly added files in their import graph for DatabaseManager references.',
+      );
+    }
+  }
   log('✅ Coordinator bundle complete');
 
   // ── 1. Bundle JS ────────────────────────────────────────────────────────────
@@ -267,6 +285,19 @@ export async function buildForPlatform({
     } else {
       log(`  ⚠️  ${grammarPkg} not installed — code audit will degrade gracefully`);
     }
+  }
+
+  // argon2.wasm — raw Argon2 WASM binary for PHOBOS Vault KDBX4 support.
+  // VaultCrypto.ts loads this directly via WebAssembly.instantiate + fs.readFileSync.
+  // No argon2-browser JS wrapper is used — only the compiled WASM binary is needed.
+  const argon2WasmSrc = path.join(__dirname, 'node_modules', 'argon2-browser', 'dist', 'argon2.wasm');
+  if (fs.existsSync(argon2WasmSrc)) {
+    const argon2WasmDest = path.join(distDir, 'node_modules', 'argon2-browser', 'dist');
+    fs.mkdirSync(argon2WasmDest, { recursive: true });
+    fs.copyFileSync(argon2WasmSrc, path.join(argon2WasmDest, 'argon2.wasm'));
+    log('  ✅ argon2-browser/dist/argon2.wasm');
+  } else {
+    log('  ⚠️  argon2.wasm not found — Vault KDBX4 unlock will fail');
   }
 
   // onnxruntime-node — native ONNX runtime (VisionProcessor face/hand/depth detection)

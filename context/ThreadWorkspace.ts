@@ -287,12 +287,14 @@ export class ThreadWorkspace {
     for (const f of sourceFiles) {
       const id = crypto.randomUUID();
       const now = new Date().toISOString();
-      await this.db.run(
-        `INSERT OR IGNORE INTO workspace_files
+      await this.db.execWithParams(
+        `INSERT INTO workspace_files
            (id, thread_id, filename, language, size_bytes, note, last_written_by, content_hash, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+         WHERE NOT EXISTS (SELECT 1 FROM workspace_files WHERE thread_id = ? AND filename = ?)`,
         [id, targetThreadId, f.filename, f.language, f.size_bytes, f.note,
-         f.last_written_by, f.content_hash, now, now]
+         f.last_written_by, f.content_hash, now, now,
+         targetThreadId, f.filename]
       );
     }
   }

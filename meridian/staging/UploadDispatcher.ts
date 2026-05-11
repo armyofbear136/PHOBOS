@@ -66,7 +66,7 @@ export class UploadDispatcher {
     fs.mkdirSync(destDir, { recursive: true });
     fs.writeFileSync(destPath, payload.buffer);
 
-    await this._db.rawQuery(
+    await this._db.execQuery(
       `INSERT INTO phobos_sync_manifest
          (content_hash, library, original_name, dest_path, size_bytes, taken_at, device_id)
        VALUES (?, ?, ?, ?, ?, ?, ?)

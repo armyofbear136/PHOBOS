@@ -160,7 +160,8 @@ export function buildCopilotSystemPrompt(
   persona: CopilotPersona,
   systemOverview: string,
   memoryContext: string,
-  relationship?: RelationshipContext
+  relationship?: RelationshipContext,
+  haSnapshot?: string | null
 ): string {
   const identity = persona === 'sayon' ? SAYON_IDENTITY : SEREN_IDENTITY;
   const partner = persona === 'sayon' ? 'SEREN' : 'SAYON';
@@ -218,6 +219,26 @@ export function buildCopilotSystemPrompt(
 
   if (systemOverview) {
     parts.push(`## SYSTEM OVERVIEW\nThis is the current state of all active workspaces:\n${systemOverview}`);
+  }
+
+  if (haSnapshot) {
+    parts.push(
+      `## HOME ASSISTANT — LIVE STATE\n` +
+      `The user has a Home Assistant instance connected. ` +
+      `Below is a live snapshot of their home entities. ` +
+      `Use this to answer questions about their home naturally. ` +
+      `Do not recite the full list unprompted — only reference relevant entities in context.\n\n` +
+      haSnapshot +
+      `\n\n## HOME ASSISTANT — WATCH DUTY\n` +
+      `When the user asks you to check on their home, run a watch duty analysis, or monitor home state, ` +
+      `emit the following tag on its own line at the end of your response:\n\n` +
+      `  [HA_WATCH: <your analysis prompt here>]\n\n` +
+      `Replace the placeholder with a specific, focused prompt describing what to analyse. ` +
+      `The system will run the analysis against the live entity snapshot and inject the result ` +
+      `back into this conversation automatically. ` +
+      `Emit [HA_WATCH: ...] once per response — do not emit it multiple times. ` +
+      `Do not describe what you are about to check — just emit the tag and let the result speak.`
+    );
   }
 
   parts.push(RESPONSE_FORMAT);

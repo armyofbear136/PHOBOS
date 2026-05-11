@@ -153,7 +153,7 @@ export async function syncRoutes(
       );
       for (const def of DEFAULT_POLICIES) {
         const id = policyId(deviceId, def.library);
-        await db.rawQuery(
+        await db.execQuery(
           `INSERT INTO phobos_sync_policies (id, device_id, library, enabled, retain_days, upload_mode)
            VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT (id) DO NOTHING`,
@@ -308,7 +308,7 @@ export async function syncRoutes(
 
     for (const p of policies) {
       const id = policyId(deviceId, p.library);
-      await db.rawQuery(
+      await db.execQuery(
         `INSERT INTO phobos_sync_policies (id, device_id, library, enabled, retain_days, upload_mode, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, now())
          ON CONFLICT (id) DO UPDATE SET
@@ -331,7 +331,7 @@ export async function syncRoutes(
     }
     for (const ex of exclusions) {
       const id = exclusionId(ex.policy_id, ex.path);
-      await db.rawQuery(
+      await db.execQuery(
         `INSERT INTO phobos_sync_exclusions (id, policy_id, path, scope) VALUES (?, ?, ?, ?)
          ON CONFLICT (id) DO NOTHING`,
         [id, ex.policy_id, ex.path, ex.scope],

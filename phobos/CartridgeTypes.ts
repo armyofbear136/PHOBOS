@@ -14,7 +14,7 @@
  */
 
 export type CartridgePersona   = 'sayon' | 'seren' | 'both';
-export type CartridgeCategory  = 'expertise' | 'persona' | 'style' | 'domain' | 'task';
+export type CartridgeCategory  = 'expertise' | 'persona' | 'style' | 'domain' | 'task' | 'weclone';
 export type CartridgeLicense   = 'personal' | 'commercial' | 'community';
 export type CartridgeKind      = 'cartridge' | 'raw_lora';
 
@@ -140,4 +140,5 @@ export const CATEGORY_LABELS: Record<CartridgeCategory, string> = {
   style:     'Style',
   domain:    'Domain',
   task:      'Task',
+  weclone:   'Digital Clone',
 };

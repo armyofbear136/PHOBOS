@@ -1,11 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { ThreadStore } from '../db/ThreadStore.js';
-import { DatabaseManager } from '../db/DatabaseManager.js';
+import { DatabaseManager, userDir, getActiveUser } from '../db/DatabaseManager.js';
 import fs   from 'node:fs';
 import path from 'node:path';
 
 export async function threadsRoute(fastify: FastifyInstance): Promise<void> {
-  const db = DatabaseManager.getInstance();
+  const db = DatabaseManager.getUserDb();
   const store = new ThreadStore(db);
 
   // GET /api/threads
@@ -87,7 +87,7 @@ export async function threadsRoute(fastify: FastifyInstance): Promise<void> {
       // Clean up workspace directory on disk
       try {
         const workspacesRoot = process.env.WORKSPACES_ROOT
-          ?? path.join(process.env.PHOBOS_DATA_DIR ?? path.join(process.env.HOME ?? '', '.phobos'), 'workspaces');
+          ?? path.join(userDir(getActiveUser()), 'workspaces');
         const dir = path.join(workspacesRoot, req.params.id);
         if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
       } catch { /* non-fatal — DB record is gone, disk cleanup is best-effort */ }

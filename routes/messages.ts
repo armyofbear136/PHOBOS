@@ -30,25 +30,27 @@ import { gsm } from '../game/GameStateManager.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { exec, execFile, spawn } from 'child_process';
+import { getHaSnapshot } from '../services/HAManager.js';
 
 export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
-  const db = DatabaseManager.getInstance();
-  const messageStore = new MessageStore(db);
-  const threadStore = new ThreadStore(db);
-  const documentStore = new DocumentStore(db);
-  const dispatchLogStore = new DispatchLogStore(db);
-  const eventStore = new MessageEventStore(db);
-  const segmentStore = new ThinkingSegmentStore(db);
-  const summaryStore = new ChatSummaryStore(db);
-  const configStore = new ModelConfigStore(db);
-  const knowledgeStore = new KnowledgeStore(db);
+  const systemDb = DatabaseManager.getInstance();
+  const userDb   = DatabaseManager.getUserDb();
+  const messageStore = new MessageStore(userDb);
+  const threadStore = new ThreadStore(userDb);
+  const documentStore = new DocumentStore(userDb);
+  const dispatchLogStore = new DispatchLogStore(userDb);
+  const eventStore = new MessageEventStore(userDb);
+  const segmentStore = new ThinkingSegmentStore(userDb);
+  const summaryStore = new ChatSummaryStore(userDb);
+  const configStore = new ModelConfigStore(systemDb);
+  const knowledgeStore = new KnowledgeStore(userDb);
   const classifier = new IntentClassifier();
   const stripper = new ThinkingStripper();
 
   // Workspace is a module-level singleton —
   // it caches internally so no per-request filesystem walks.
-  const workspace = new ThreadWorkspace(db);
-  const attachmentStore = new MessageAttachmentStore(db);
+  const workspace = new ThreadWorkspace(userDb);
+  const attachmentStore = new MessageAttachmentStore(userDb);
   await attachmentStore.ensureTable();
 
   // Tracks threads that are mid-clarification. When the user responds to a
@@ -316,7 +318,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
     const { attachmentId } = req.params;
     const { message_id } = req.body;
     if (!message_id) return reply.status(400).send({ error: 'message_id required' });
-    await db.run(
+    await userDb.run(
       `UPDATE message_attachments SET message_id = ? WHERE id = ?`,
       [message_id, attachmentId]
     );
@@ -604,7 +606,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
 
       for (const att of validAttachRecs) {
         // Link attachment to the now-created message
-        await db.run(
+        await userDb.run(
           `UPDATE message_attachments SET message_id = ? WHERE id = ?`,
           [userMsg.id, att.id]
         );
@@ -897,6 +899,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
             phase1OriginalRequest: pendingPhase1?.originalRequest,
             serenPlanningContext: pendingClarity?.planningContext,
             imageAttachments: imageAttachmentsForEngine.length > 0 ? imageAttachmentsForEngine : undefined,
+            haSnapshot: getHaSnapshot(),
           },
           loopOptions: {
             buildCommand: build_command ?? extractBuildCommand(docs.claudeMd),
@@ -930,7 +933,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
               try {
                 const { PromptLogStore: PLS } = await import('../db/PromptLogStore.js');
                 const { DatabaseManager: DM } = await import('../db/DatabaseManager.js');
-                const pls = new PLS(DM.getInstance());
+                const pls = new PLS(DM.getUserDb());
                 const i = info as any;
                 const who = i.assignedTo === 'sayon' ? 'sayon' : 'seren';
                 const promptText =
@@ -1034,7 +1037,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
         const isClarificationReturn = attempts.length === 1 &&
           (attempts[0].needsClarification || attempts[0].isPhase1Clarification);
         if (isClarificationReturn) {
-          await db.run('DELETE FROM messages WHERE id = ?', [assistantMsg.id]).catch(() => {});
+          await userDb.run('DELETE FROM messages WHERE id = ?', [assistantMsg.id]).catch(() => {});
         } else {
           const bestAttempt = attempts.reduce(
             (best, curr) => (curr.reviewScore > best.reviewScore ? curr : best),
@@ -1047,7 +1050,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
             const distilled = distillAssistantContent(finalContent);
 
             // Update the pre-created assistant message with final content + distilled prose
-            await db.run(
+            await userDb.run(
               `UPDATE messages SET content = ?, distilled_content = ?, thinking_trace = ?, attempt_number = ?, review_score = ?
                WHERE id = ?`,
               [
@@ -1586,7 +1589,7 @@ async function handleDirectResponse(
     try {
       const { PromptLogStore } = await import('../db/PromptLogStore.js');
       const { DatabaseManager } = await import('../db/DatabaseManager.js');
-      const _pls = new PromptLogStore(DatabaseManager.getInstance());
+      const _pls = new PromptLogStore(DatabaseManager.getUserDb());
       const _promptText = coordMessages.map(m => `### ${m.role.toUpperCase()}\n${m.content}`).join('\n\n');
       await _pls.insert({
         threadId,

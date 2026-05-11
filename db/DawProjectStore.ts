@@ -122,13 +122,11 @@ export class DawProjectStore {
     threadId:  string | null = null,
   ): Promise<DawProject> {
     await this.db.run(
+      `DELETE FROM daw_projects WHERE id = ?`, [id]
+    );
+    await this.db.run(
       `INSERT INTO daw_projects (id, thread_id, name, xtk_json)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT (id) DO UPDATE SET
-         thread_id  = EXCLUDED.thread_id,
-         name       = EXCLUDED.name,
-         xtk_json   = EXCLUDED.xtk_json,
-         updated_at = now()`,
+       VALUES (?, ?, ?, ?)`,
       [id, threadId, name, xtkJson],
     );
     const loaded = await this.get(id);

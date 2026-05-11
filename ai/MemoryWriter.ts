@@ -63,7 +63,7 @@ export async function embedCopilotExchange(
 ): Promise<void> {
   try {
     gsm.setPersonaState('sybil', 'embedding');
-    const db    = DatabaseManager.getInstance();
+    const db    = DatabaseManager.getUserDb();
     const store = new MemoryStore(db);
     const scope: MemoryScope = `copilot-${persona}`;
 
@@ -100,7 +100,7 @@ export async function embedTaskCompletion(
 ): Promise<void> {
   try {
     gsm.setPersonaState('sybil', 'embedding');
-    const db    = DatabaseManager.getInstance();
+    const db    = DatabaseManager.getUserDb();
     const store = new MemoryStore(db);
 
     const sentences = extractEmbeddableSentences(output);
@@ -147,7 +147,7 @@ export async function embedExplicitMemory(
   value: string,
 ): Promise<void> {
   try {
-    const db    = DatabaseManager.getInstance();
+    const db    = DatabaseManager.getUserDb();
     const store = new MemoryStore(db);
     const scope: MemoryScope = `copilot-${persona}`;
 
@@ -179,7 +179,7 @@ export async function retrieveWorkspaceMemory(
 ): Promise<string> {
   try {
     gsm.setPersonaState('sybil', 'retrieving_memory');
-    const db    = DatabaseManager.getInstance();
+    const db    = DatabaseManager.getUserDb();
     const store = new MemoryStore(db);
 
     const vec = await embed(query.slice(0, 800));
@@ -216,7 +216,7 @@ export async function retrieveCopilotMemory(
 ): Promise<string> {
   try {
     gsm.setPersonaState('sybil', 'retrieving_memory');
-    const db    = DatabaseManager.getInstance();
+    const db    = DatabaseManager.getUserDb();
     const store = new MemoryStore(db);
 
     // Short queries get context from recent message history to improve recall.

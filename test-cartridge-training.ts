@@ -40,7 +40,8 @@ import { CartridgeStore }  from './db/CartridgeStore.js';
 import {
   createLmSession,
   readLmSession,
-  runLmTraining,
+  startLmTraining,
+  getLmTrainingStatus,
   abortLmTraining,
   resolveLatestLmCheckpoint,
   trainingCacheSizeBytes,
@@ -51,12 +52,12 @@ import { getPythonPath } from './phobos/PythonEnvManager.js';
 
 // ── CLI args ──────────────────────────────────────────────────────────────────
 
-const args         = process.argv.slice(2);
-const modelId      = _arg('--model')  ?? 'qwen3.5-4b-q4';
-const vendor       = (_arg('--vendor') ?? 'cuda') as 'cuda' | 'rocm' | 'cpu';
+const args          = process.argv.slice(2);
+const modelId       = _arg('--model')  ?? 'qwen3.5-4b-q4';
+const vendor        = (_arg('--vendor') ?? 'cuda') as 'cuda' | 'rocm' | 'cpu';
 const stepsOverride = _arg('--steps') ? parseInt(_arg('--steps')!, 10) : 0;
-const onlyPhase    = _arg('--only');
-const skipDownload = args.includes('--skip-download');
+const onlyPhase     = _arg('--only');
+const skipDownload  = args.includes('--skip-download');
 
 function _arg(flag: string): string | null {
   const i = args.indexOf(flag);
@@ -70,8 +71,8 @@ function shouldRun(name: string): boolean {
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
-const OUTPUT_ROOT    = path.resolve('./test-outputs/cartridge-training');
-const TEST_DB_PATH   = path.join(os.tmpdir(), `phobos-cartridge-train-test-${Date.now()}.duckdb`);
+const OUTPUT_ROOT  = path.resolve('./test-outputs/cartridge-training');
+const TEST_DB_PATH = path.join(os.tmpdir(), `phobos-cartridge-train-test-${Date.now()}.duckdb`);
 
 // ── Phase harness ─────────────────────────────────────────────────────────────
 
@@ -87,7 +88,7 @@ async function runPhase(name: string, fn: () => Promise<void>): Promise<void> {
     results.push({ name, status: 'ok', message: '', ms });
     console.log(`[OK]   ${name} (${ms} ms)`);
   } catch (err) {
-    const ms = Date.now() - t0;
+    const ms      = Date.now() - t0;
     const message = (err as Error).message;
     results.push({ name, status: 'fail', message, ms });
     console.error(`[FAIL] ${name} (${ms} ms)\n       ${message}`);
@@ -103,7 +104,7 @@ function assertOk(cond: boolean, msg: string): void {
   if (!cond) throw new Error(msg);
 }
 
-// ── Minimal GGUF validator (reused from test-cartridge-validate.ts) ────────────
+// ── Minimal GGUF validator ────────────────────────────────────────────────────
 
 function validateGguf(filePath: string, minBytes = 256): void {
   assertOk(fs.existsSync(filePath), `File not found: ${filePath}`);
@@ -118,11 +119,6 @@ function validateGguf(filePath: string, minBytes = 256): void {
 
 // ── Synthetic dataset builder ─────────────────────────────────────────────────
 
-/**
- * Writes minimal training files to sessionDatasetDir.
- * Document mode: 12 .md files (~200 words each).
- * Conversation mode: 1 .jsonl with 120 turns.
- */
 function writeDataset(datasetDir: string, dataMode: 'document' | 'conversation'): void {
   fs.mkdirSync(datasetDir, { recursive: true });
 
@@ -145,6 +141,53 @@ function writeDataset(datasetDir: string, dataMode: 'document' | 'conversation')
   }
 }
 
+// ── Poll helper ───────────────────────────────────────────────────────────────
+//
+// Mirrors the poll loop in LmTrainingPanel and WorkflowPanel exactly.
+// Calls getLmTrainingStatus() directly (no HTTP) since we are in-process.
+// Resolves when training completes (done/error/aborted) or the deadline expires.
+
+async function pollUntilDone(
+  sessionId: string,
+  onStep:  (sess: LmTrainingSession) => void,
+  onPhase: (sess: LmTrainingSession) => void,
+): Promise<LmTrainingSession> {
+  const POLL_MS  = 1500;
+  const DEADLINE = Date.now() + 90 * 60 * 1000;  // 90-min hard cap
+
+  let lastStep  = 0;
+  let lastPhase = '';
+
+  while (Date.now() < DEADLINE) {
+    await new Promise(r => setTimeout(r, POLL_MS));
+
+    const st = getLmTrainingStatus();
+
+    // If the in-memory status no longer matches our session, read from disk.
+    const sess = (st.sessionId === sessionId ? st.session : null)
+               ?? readLmSession(sessionId);
+
+    if (!sess) continue;
+
+    if (sess.current_step !== lastStep) {
+      lastStep = sess.current_step;
+      onStep(sess);
+    }
+    if (sess.current_phase !== lastPhase) {
+      lastPhase = sess.current_phase;
+      onPhase(sess);
+    }
+
+    const terminal = sess.status === 'done'
+                  || sess.status === 'error'
+                  || sess.status === 'aborted';
+
+    if (terminal && !st.training) return sess;
+  }
+
+  throw new Error('pollUntilDone: training deadline exceeded (90 min)');
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -164,7 +207,7 @@ async function main() {
 
   let sessionId = '';
 
-  // ── Phase 1: Python venv present ────────────────────────────────────────────
+  // ── Phase 1: Python venv present ──────────────────────────────────────────
   if (shouldRun('deps')) {
     await runPhase('Phase 1: Python venv present', async () => {
       const pyBin = getPythonPath(vendor);
@@ -174,10 +217,7 @@ async function main() {
     });
   }
 
-  // ── Phase 2: Unsloth deps importable ────────────────────────────────────────
-  // Passive check only — no installation attempted here.
-  // Unsloth requires torch pre-installed before pip can resolve its extras.
-  // Install manually first (instructions in FAIL message below).
+  // ── Phase 2: Unsloth deps importable ──────────────────────────────────────
   if (shouldRun('deps')) {
     await runPhase('Phase 2: Unsloth + TRL deps importable', async () => {
       const pyBin = getPythonPath(vendor)!;
@@ -192,13 +232,11 @@ async function main() {
         );
         console.log('       unsloth, trl, safetensors, huggingface_hub — all importable');
       } catch {
-        const activatePath = pyBin.replace('python.exe', 'activate.bat');
         throw new Error(
           'unsloth or trl not importable. Install manually using the full venv pip path:\n' +
           '         1. & "C:\\Users\\armyo\\.phobos\\python-env\\cuda\\Scripts\\pip.exe" install torchvision --index-url https://download.pytorch.org/whl/cu128 --no-deps\n' +
           '         2. & "C:\\Users\\armyo\\.phobos\\python-env\\cuda\\Scripts\\pip.exe" install "unsloth>=2025.3.0" trl sentencepiece pypdf markdown-it-py --no-deps\n' +
           '         3. & "C:\\Users\\armyo\\.phobos\\python-env\\cuda\\Scripts\\pip.exe" install unsloth_zoo --no-deps\n' +
-          '         4. Patch trl: (Get-Content $trl_path -Raw) -replace \'\\.read_text\\(\\)\', \'.read_text(encoding="utf-8")\' | Set-Content $trl_path -NoNewline\n' +
           '       Then re-run: npx tsx test-cartridge-training.ts --only deps',
         );
       }
@@ -212,7 +250,7 @@ async function main() {
     return;
   }
 
-  // ── Phase 3: Create session ──────────────────────────────────────────────────
+  // ── Phase 3: Create session ────────────────────────────────────────────────
   await runPhase('Phase 3: Create LM training session', async () => {
     const sess = await createLmSession({
       sessionId:       `test_${Date.now()}`,
@@ -229,14 +267,14 @@ async function main() {
       password:        '',
       addLicense:      false,
       dataMode:        'document',
-      rank:            4,                      // smallest rank — fastest training
-      steps:           stepsOverride || 0,     // 0 = auto from dataset
+      rank:            4,
+      steps:           stepsOverride || 0,
       lr:              2e-4,
     });
     sessionId = sess.session_id;
-    assertOk(!!sessionId,           'session_id not returned');
+    assertOk(!!sessionId,               'session_id not returned');
     assertOk(sess.status === 'pending', `Expected status 'pending', got '${sess.status}'`);
-    assertOk(sess.rank === 4,       `Expected rank 4, got ${sess.rank}`);
+    assertOk(sess.rank === 4,           `Expected rank 4, got ${sess.rank}`);
     assertOk(sess.training_hf_id !== '', 'training_hf_id is empty — model may not support training');
     console.log(`       Session : ${sessionId}`);
     console.log(`       HF ID   : ${sess.training_hf_id}`);
@@ -250,7 +288,7 @@ async function main() {
     process.exit(1);
   }
 
-  // ── Phase 4: Write dataset ───────────────────────────────────────────────────
+  // ── Phase 4: Write dataset ─────────────────────────────────────────────────
   await runPhase('Phase 4: Write synthetic training dataset', async () => {
     const sess = readLmSession(sessionId)!;
     writeDataset(sess.dataset_dir, 'document');
@@ -259,7 +297,7 @@ async function main() {
     console.log(`       Wrote ${files.length} files to ${sess.dataset_dir}`);
   });
 
-  // ── Phase 5: HF cache check ──────────────────────────────────────────────────
+  // ── Phase 5: HF cache check ────────────────────────────────────────────────
   if (!skipDownload) {
     await runPhase('Phase 5: Training cache directory accessible', async () => {
       const sess  = readLmSession(sessionId)!;
@@ -267,8 +305,6 @@ async function main() {
       const total = trainingCacheSizeBytes();
       console.log(`       Cache dir : ${cDir}`);
       console.log(`       Cache size: ${(total / 1e9).toFixed(2)} GB`);
-      // Not asserting presence — first run will download during training.
-      // Just confirm the path is writable.
       fs.mkdirSync(cDir, { recursive: true });
       assertOk(fs.existsSync(cDir), `Cache dir not creatable: ${cDir}`);
     });
@@ -276,69 +312,78 @@ async function main() {
     skipPhase('Phase 5: Training cache directory accessible', '--skip-download');
   }
 
-  // ── Phase 6: Run training pipeline ──────────────────────────────────────────
+  // ── Phase 6: Run training pipeline ────────────────────────────────────────
   //
-  // This phase downloads the HF base model on first run (~5 GB for 4B models),
-  // runs unsloth LoRA training for auto-computed steps, converts to GGUF,
-  // and packages the .cartridge archive.
+  // Uses the fire-and-forget + poll pattern — mirrors LmTrainingPanel and
+  // WorkflowPanel exactly. startLmTraining() returns immediately; the
+  // background pipeline runs server stop → VRAM settle → dep install →
+  // Python trainer → PyTorch settle → server restart → package.
+  // pollUntilDone() drives getLmTrainingStatus() at 1500 ms intervals.
   //
-  // Expected time: 5–30 min on first run (download dominates).
-  // Subsequent runs with cache present: 2–15 min depending on model and steps.
+  // Expected time: 5–30 min on first run (HF download dominates).
   //
   let trainedCartridgeId = '';
 
   await runPhase('Phase 6: Run training pipeline (download + train + convert + package)', async () => {
-    console.log('       Streaming training progress…\n');
+    console.log('       Starting training (fire-and-forget)…\n');
 
-    let lastStep   = 0;
-    let lastLoss   = 0;
-    let lastPhase  = '';
-    let stepCount  = 0;
+    // POST /run equivalent — starts background pipeline, returns immediately
+    const result = startLmTraining(sessionId, store);
+    assertOk(result.ok, `startLmTraining failed: ${!result.ok ? result.error : ''}`);
 
-    for await (const progress of runLmTraining(sessionId, store)) {
-      switch (progress.type) {
+    console.log('       Polling for progress…\n');
 
-        case 'installing':
-          process.stdout.write(`       [install] ${progress.session.current_phase}\n`);
-          break;
+    let lastStep  = 0;
+    let lastLoss  = 0;
+    let stepCount = 0;
 
-        case 'phase':
-          if (progress.session.current_phase !== lastPhase) {
-            lastPhase = progress.session.current_phase;
-            process.stdout.write(`       [phase  ] ${lastPhase}\n`);
-          }
-          break;
+    const finalSession = await pollUntilDone(
+      sessionId,
 
-        case 'step': {
-          lastStep = progress.session.current_step;
-          lastLoss = progress.session.current_loss;
-          stepCount++;
-          // Print every 10 steps to avoid flooding the terminal
-          if (stepCount % 10 === 0 || lastStep === progress.session.total_steps) {
-            process.stdout.write(
-              `       [step   ] ${lastStep}/${progress.session.total_steps}  loss=${lastLoss.toFixed(4)}\n`,
-            );
-          }
-          break;
+      // onStep — called whenever current_step advances
+      (sess) => {
+        lastStep = sess.current_step;
+        lastLoss = sess.current_loss;
+        stepCount++;
+        if (stepCount % 10 === 0 || lastStep === sess.total_steps) {
+          process.stdout.write(
+            `       [step   ] ${lastStep}/${sess.total_steps}  loss=${lastLoss.toFixed(4)}\n`,
+          );
         }
+      },
 
-        case 'done':
-          trainedCartridgeId = progress.session.cartridge_id ?? '';
+      // onPhase — called whenever current_phase changes
+      (sess) => {
+        process.stdout.write(`       [phase  ] ${sess.current_phase}\n`);
+        if (sess.status === 'done' && sess.cartridge_id) {
+          trainedCartridgeId = sess.cartridge_id;
           process.stdout.write(`       [done   ] cartridge_id=${trainedCartridgeId}\n`);
-          break;
+        }
+        if (sess.status === 'error') {
+          process.stdout.write(`       [error  ] ${sess.error ?? 'unknown'}\n`);
+        }
+      },
+    );
 
-        case 'error':
-          throw new Error(progress.message ?? progress.session.error ?? 'Training error');
-      }
+    // Capture cartridge_id from final session in case onPhase missed it
+    if (!trainedCartridgeId && finalSession.cartridge_id) {
+      trainedCartridgeId = finalSession.cartridge_id;
     }
 
-    assertOk(lastStep > 0,             `No training steps completed (lastStep=${lastStep})`);
-    assertOk(lastLoss > 0,             `Loss never updated (lastLoss=${lastLoss})`);
-    assertOk(!!trainedCartridgeId,     'No cartridge_id after training completed');
+    if (finalSession.status === 'error') {
+      throw new Error(finalSession.error ?? 'Training error — no message');
+    }
+    if (finalSession.status === 'aborted') {
+      throw new Error('Training was aborted');
+    }
+
+    assertOk(lastStep > 0,          `No training steps completed (lastStep=${lastStep})`);
+    assertOk(lastLoss > 0,          `Loss never updated (lastLoss=${lastLoss})`);
+    assertOk(!!trainedCartridgeId,  'No cartridge_id after training completed');
 
     const sess = readLmSession(sessionId)!;
-    assertOk(sess.status === 'done',   `Expected status 'done', got '${sess.status}'`);
-    assertOk(!!sess.gguf_path,         'gguf_path not set on session after training');
+    assertOk(sess.status === 'done',  `Expected status 'done', got '${sess.status}'`);
+    assertOk(!!sess.gguf_path,        'gguf_path not set on session after training');
     assertOk(fs.existsSync(sess.gguf_path!), `lora.gguf not on disk: ${sess.gguf_path}`);
 
     validateGguf(sess.gguf_path!, 1024);
@@ -347,38 +392,37 @@ async function main() {
     console.log(`       lora.gguf        : ${sess.gguf_path}`);
   });
 
-  // ── Phase 7: Cartridge record in store ──────────────────────────────────────
+  // ── Phase 7: Cartridge record in store ────────────────────────────────────
   await runPhase('Phase 7: Packaged cartridge in CartridgeStore', async () => {
     assertOk(!!trainedCartridgeId, 'trainedCartridgeId not set — Phase 6 must have failed');
     const record = await store.get(trainedCartridgeId);
-    assertOk(record !== null,                        `Cartridge record not found: ${trainedCartridgeId}`);
-    assertOk(record!.name === 'Smoke Test Cartridge','name mismatch');
-    assertOk(record!.kind === 'cartridge',           `kind should be 'cartridge', got '${record!.kind}'`);
-    assertOk(record!.is_protected === false,         'expected unprotected (empty password)');
-    assertOk(record!.training_steps > 0,             `training_steps should be > 0, got ${record!.training_steps}`);
-    assertOk(fs.existsSync(record!.lora_path),       `lora_path not on disk: ${record!.lora_path}`);
+    assertOk(record !== null,                         `Cartridge record not found: ${trainedCartridgeId}`);
+    assertOk(record!.name === 'Smoke Test Cartridge', 'name mismatch');
+    assertOk(record!.kind === 'cartridge',            `kind should be 'cartridge', got '${record!.kind}'`);
+    assertOk(record!.is_protected === false,          'expected unprotected (empty password)');
+    assertOk(record!.training_steps > 0,              `training_steps should be > 0, got ${record!.training_steps}`);
+    assertOk(fs.existsSync(record!.lora_path),        `lora_path not on disk: ${record!.lora_path}`);
     validateGguf(record!.lora_path, 1024);
     const archivePath = path.join(record!.install_path, 'cartridge-archive.cartridge');
-    assertOk(fs.existsSync(archivePath),             `cartridge archive not on disk: ${archivePath}`);
+    assertOk(fs.existsSync(archivePath), `cartridge archive not on disk: ${archivePath}`);
     console.log(`       Record id    : ${record!.id}`);
     console.log(`       lora_path    : ${record!.lora_path}`);
     console.log(`       archive      : ${archivePath}`);
   });
 
-  // ── Phase 8: Auth on trained cartridge ──────────────────────────────────────
+  // ── Phase 8: Auth on trained cartridge ────────────────────────────────────
   await runPhase('Phase 8: Auth check on trained cartridge', async () => {
     assertOk(!!trainedCartridgeId, 'trainedCartridgeId not set');
     const record      = await store.get(trainedCartridgeId);
     const archivePath = path.join(record!.install_path, 'cartridge-archive.cartridge');
     const result      = store.checkAuth(archivePath, { password: '' });
-    assertOk(result.ok === true,                    `Auth failed: ${!result.ok ? result.reason : ''}`);
-    assertOk(result.ok && result.via === 'default', `Expected via='default', got '${result.ok ? result.via : 'n/a'}'`);
+    assertOk(result.ok === true,                     `Auth failed: ${!result.ok ? result.reason : ''}`);
+    assertOk(result.ok && result.via === 'default',  `Expected via='default', got '${result.ok ? result.via : 'n/a'}'`);
   });
 
-  // ── Phase 9: Checkpoint present ─────────────────────────────────────────────
+  // ── Phase 9: Checkpoint present ───────────────────────────────────────────
   await runPhase('Phase 9: Training checkpoint on disk', async () => {
     const ckpt = resolveLatestLmCheckpoint(sessionId);
-    // A checkpoint may not exist if steps < save_steps threshold — not fatal.
     if (ckpt) {
       assertOk(fs.existsSync(ckpt), `Checkpoint path returned but not on disk: ${ckpt}`);
       console.log(`       Checkpoint: ${ckpt}`);
@@ -387,32 +431,40 @@ async function main() {
     }
   });
 
-  // ── Phase 10: Abort guard ────────────────────────────────────────────────────
-  // Verify that aborting a non-active session is a no-op (does not throw).
+  // ── Phase 10: Abort guard ─────────────────────────────────────────────────
   await runPhase('Phase 10: Abort non-active session is no-op', async () => {
     abortLmTraining('nonexistent-session-id');
     abortLmTraining(sessionId);  // already done — also no-op
     console.log('       No exception thrown');
   });
 
-  // ── Phase 11: Copy session dir to test-outputs ───────────────────────────────
-  await runPhase('Phase 11: Copy session artifacts to test-outputs', async () => {
+  // ── Phase 11: getLmTrainingStatus reflects idle after completion ──────────
+  await runPhase('Phase 11: getLmTrainingStatus reflects idle after completion', async () => {
+    const st = getLmTrainingStatus();
+    // After training finishes the status should show training=false.
+    // If completedAt is within 5 s the route would still return session from
+    // memory; after 5 s it falls back to disk. Either way training=false.
+    assertOk(st.training === false, `Expected training=false after completion, got training=${st.training}`);
+    console.log(`       training     : ${st.training}`);
+    console.log(`       sessionId    : ${st.sessionId}`);
+    console.log(`       completedAt  : ${st.completedAt ? new Date(st.completedAt).toISOString() : 'null'}`);
+  });
+
+  // ── Phase 12: Copy session dir to test-outputs ────────────────────────────
+  await runPhase('Phase 12: Copy session artifacts to test-outputs', async () => {
     const sess    = readLmSession(sessionId)!;
     const destDir = path.join(OUTPUT_ROOT, sessionId);
     fs.mkdirSync(destDir, { recursive: true });
 
-    // Copy session.json
-    const sessionFile = path.join(sess.session_dir, 'session.json');
-    if (fs.existsSync(sessionFile)) {
-      fs.copyFileSync(sessionFile, path.join(destDir, 'session.json'));
+    const sessionJsonPath = path.join(sess.session_dir, 'session.json');
+    if (fs.existsSync(sessionJsonPath)) {
+      fs.copyFileSync(sessionJsonPath, path.join(destDir, 'session.json'));
     }
 
-    // Copy lora.gguf
     if (sess.gguf_path && fs.existsSync(sess.gguf_path)) {
       fs.copyFileSync(sess.gguf_path, path.join(destDir, 'lora.gguf'));
     }
 
-    // Copy preprocessed.jsonl (the extracted training pairs — useful to inspect)
     const preprocessed = path.join(sess.output_dir, 'preprocessed.jsonl');
     if (fs.existsSync(preprocessed)) {
       fs.copyFileSync(preprocessed, path.join(destDir, 'preprocessed.jsonl'));
@@ -422,8 +474,8 @@ async function main() {
     console.log(`       Files: ${fs.readdirSync(destDir).join(', ')}`);
   });
 
-  // ── Phase 12: Training cache size reported ───────────────────────────────────
-  await runPhase('Phase 12: Training cache size reported', async () => {
+  // ── Phase 13: Training cache size reported ────────────────────────────────
+  await runPhase('Phase 13: Training cache size reported', async () => {
     const sess  = readLmSession(sessionId)!;
     const total = trainingCacheSizeBytes();
     const cDir  = trainingCacheDir(sess.training_hf_id);
@@ -436,7 +488,7 @@ async function main() {
     }
   });
 
-  // ── Teardown ──────────────────────────────────────────────────────────────────
+  // ── Teardown ──────────────────────────────────────────────────────────────
   try { fs.unlinkSync(TEST_DB_PATH); } catch { /* non-fatal */ }
 
   _printSummary();

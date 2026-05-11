@@ -228,7 +228,7 @@ async function upsertTask(
     await taskStore.update(row.id, {
       cron_expression: cron,
       next_run_at:     next?.toISOString() ?? null,
-      task_type:       'background',
+      task_type:       'security',
       handler:         handlerKey,
       enabled:         true,
     });
@@ -238,7 +238,7 @@ async function upsertTask(
       description,
       cron_expression: cron,
       prompt:          '',
-      task_type:       'background',
+      task_type:       'security',
       handler:         handlerKey,
       enabled:         true,
       next_run_at:     next?.toISOString() ?? null,

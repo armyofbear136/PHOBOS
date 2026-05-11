@@ -17,7 +17,7 @@ const DOC_TYPE_MAP: Record<string, DocType> = {
 };
 
 export async function documentsRoute(fastify: FastifyInstance): Promise<void> {
-  const db = DatabaseManager.getInstance();
+  const db = DatabaseManager.getUserDb();
   const store = new DocumentStore(db);
 
   // GET /api/documents/:type

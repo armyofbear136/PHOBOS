@@ -45,6 +45,17 @@
       "trigger": "Active during SEREN final validation in Phase 4.5",
       "runner": null,
       "path": "C:\\Users\\armyo\\NodeJS\\Projects\\dual-reasoning\\phobos\\skills\\core\\reflexion-critique"
+    },
+    {
+      "id": "home-assistant-automations",
+      "name": "Home Assistant Automation Generator",
+      "description": "Generates valid Home Assistant automation YAML from natural language. Uses the live entity snapshot to reference real entity IDs. Output is always copyable YAML ready to paste into HA.",
+      "version": "1.0.0",
+      "scope": "both",
+      "category": "tools",
+      "trigger": "Invoke when the user asks to create, build, write, or generate a Home Assistant automation, scene, script, or schedule. Also invoke when the user asks to fix or improve existing HA YAML.",
+      "runner": null,
+      "path": "phobos/skills/tools/prime/home-assistant-automations"
     }
   ]
 }

@@ -416,17 +416,12 @@ export class PluginScanner {
       [process.platform],
     );
     for (const entry of all) {
+      // Plain INSERT — the DELETE above already cleared all rows for this platform,
+      // so there can be no conflict. ON CONFLICT DO UPDATE is not used here because
+      // DuckDB 1.4.x's binder fails on ON CONFLICT (col) in prepared statements.
       await this.db.run(
         `INSERT INTO vst3_plugin_cache (id, name, path, source, platform, category, is_instrument, scan_state, last_scanned)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (id) DO UPDATE SET
-           name          = excluded.name,
-           path          = excluded.path,
-           source        = excluded.source,
-           category      = excluded.category,
-           is_instrument = excluded.is_instrument,
-           scan_state    = excluded.scan_state,
-           last_scanned  = excluded.last_scanned`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [entry.id, entry.name, entry.path, entry.source, entry.platform,
          entry.category, entry.isInstrument, entry.scanState, entry.last_scanned],
       );

@@ -307,12 +307,11 @@ export class SecurityStore {
   async upsertBaseline(entries: IntegrityBaseline[]): Promise<void> {
     for (const e of entries) {
       await this.db.run(
+        `DELETE FROM security_integrity_baseline WHERE path = ?`, [e.path]
+      );
+      await this.db.run(
         `INSERT INTO security_integrity_baseline (path, sha256, size_bytes, baselined_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT (path) DO UPDATE SET
-           sha256       = excluded.sha256,
-           size_bytes   = excluded.size_bytes,
-           baselined_at = excluded.baselined_at`,
+         VALUES (?, ?, ?, ?)`,
         [e.path, e.sha256, e.size_bytes, e.baselined_at]
       );
     }
@@ -346,9 +345,9 @@ export class SecurityStore {
 
   async setConfig(key: SecurityConfigKey, value: string): Promise<void> {
     const now = new Date().toISOString();
+    await this.db.run(`DELETE FROM security_config WHERE key = ?`, [key]);
     await this.db.run(
-      `INSERT INTO security_config (key, value, updated_at) VALUES (?, ?, ?)
-       ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      `INSERT INTO security_config (key, value, updated_at) VALUES (?, ?, ?)`,
       [key, value, now]
     );
   }

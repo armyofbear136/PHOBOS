@@ -107,9 +107,26 @@ export interface ComposeInput {
     projectScope: import('./ContextIngester.js').ProjectScope;
     repoMap: string;
   };
+  /**
+   * Live Home Assistant entity snapshot from HAManager.getHaSnapshot().
+   * Populated in messages.ts at request time. Null when HA is not connected.
+   * Injected as a context block so SEREN can reference real entity IDs when
+   * the home-assistant-automations skill is active.
+   */
+  haSnapshot?: string | null;
 }
 
 export class DispatchComposer {
+  /**
+   * `executorEnabled` is read from DuckDB's model_config row in the main
+   * thread before this composer is constructed. The coordinator worker
+   * receives the value via INIT_CONFIG and threads it down through
+   * LoopController. Reading it from DB inline (the previous behaviour)
+   * would force a DuckDB lock collision when the coordinator runs in a
+   * worker_thread — main holds the only handle to phobos.duckdb.
+   */
+  constructor(private readonly executorEnabled: boolean = false) {}
+
   private async buildSystemPrompt(input: ComposeInput): Promise<string> {
     const parts: string[] = [];
 
@@ -173,14 +190,10 @@ export class DispatchComposer {
 
     // Sandbox Executor — injected only when the feature is enabled so SEREN
     // doesn't plan execute tasks on systems where the executor isn't available.
+    // Value is supplied via constructor (read from DB on main thread, pushed
+    // to coordinator via INIT_CONFIG) — never read directly from DB here.
     {
-      let executorEnabled = false;
-      try {
-        const { getSandboxExecutorEnabled } = await import('../db/ModelPathStore.js').catch(() => ({ getSandboxExecutorEnabled: async () => false }));
-        const { DatabaseManager: DM } = await import('../db/DatabaseManager.js');
-        executorEnabled = await getSandboxExecutorEnabled(DM.getInstance());
-      } catch { /* non-fatal */ }
-      if (executorEnabled) {
+      if (this.executorEnabled) {
         parts.push(
           `<tool_context>\n` +
           `PHOBOS has a Sandbox Executor available. SEREN can run code it writes in an isolated environment.\n\n` +
@@ -207,6 +220,22 @@ export class DispatchComposer {
         );
       }
     }
+
+    // Home Assistant live state — injected only when HA is connected and the
+    // snapshot is non-null. Gives SEREN real entity IDs for automation generation
+    // without requiring any write access to HA.
+    if (input.haSnapshot) {
+      parts.push(
+        `<home_assistant_state>\n` +
+        `The user has a Home Assistant instance connected. ` +
+        `Below is a live snapshot of their home entities. ` +
+        `When generating automations, use the exact entity IDs shown here. ` +
+        `Do not invent entity IDs.\n\n` +
+        `${input.haSnapshot}\n` +
+        `</home_assistant_state>`
+      );
+    }
+
     if (input.projectMd) parts.push(`<project_md>\n${input.projectMd}\n</project_md>`);
     if (input.chatMd) parts.push(`<chat_md>\n${input.chatMd}\n</chat_md>`);
 

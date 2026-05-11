@@ -11,6 +11,8 @@ import { distillAssistantContent, buildEmbedInput } from '../ai/distillAssistant
 import { writeTurn } from '../db/ConversationStore.js';
 import { embed } from '../ai/EmbedClient.js';
 import { gsm } from '../game/GameStateManager.js';
+import { getHaSnapshot } from '../services/HAManager.js';
+import { runHaWatch }    from '../ha/HaWatchHandler.js';
 
 /**
  * Registers all copilot routes.
@@ -52,14 +54,44 @@ function stripDirectiveTags(token: string): string {
   // boundaries in streamed output. Trimming here caused adjacent tokens to
   // concatenate without spaces, producing garbled single-string output.
   // The only characters we remove are the directive tags themselves.
+  //
+  // NOTE: Per-token regex cannot match tags that span chunk boundaries.
+  // Directives are authoritatively stripped post-stream from the full outputBuf.
+  // These replacements only suppress complete tags that happen to arrive in one chunk.
   return token
     .replace(/\[REMEMBER\s+\w+:[^\]]+\]/gi, '')
     .replace(/\[EMOTION\s+\w+\]/gi, '')
-    .replace(/\[BOND\s+[+-]?\d*\.?\d+\]/gi, '');
+    .replace(/\[BOND\s+[+-]?\d*\.?\d+\]/gi, '')
+    .replace(/\[HA_WATCH:[^\]]+\]/gi, '');
+}
+
+/**
+ * Extracts the first [HA_WATCH: <prompt>] directive from outputBuf.
+ * Returns the prompt string if found, null otherwise.
+ * The directive is matched post-stream on the full buffer — immune to chunk boundaries.
+ */
+function extractHaWatchPrompt(buf: string): string | null {
+  const match = buf.match(/\[HA_WATCH:\s*([\s\S]+?)\]/i);
+  return match ? match[1].trim() : null;
+}
+
+/**
+ * Strips all directive tags from a complete output buffer.
+ * Called post-stream before DB persist and before the complete event fires.
+ * This is the authoritative strip — per-token stripping is best-effort only.
+ */
+function stripAllDirectivesFromBuf(buf: string): string {
+  return buf
+    .replace(/\[REMEMBER\s+\w+:[^\]]+\]/gi, '')
+    .replace(/\[EMOTION\s+\w+\]/gi, '')
+    .replace(/\[BOND\s+[+-]?\d*\.?\d+\]/gi, '')
+    .replace(/\[HA_WATCH:[^\]]*\]/gi, '')
+    .trim();
 }
 
 export async function registerCopilotRoutes(fastify: FastifyInstance): Promise<void> {
-  const db = DatabaseManager.getInstance();
+  const db       = DatabaseManager.getUserDb();
+  const systemDb = DatabaseManager.getInstance();
   const threadStore = new ThreadStore(db);
   const messageStore = new MessageStore(db);
   const memoryStore = new CopilotMemoryStore(db);
@@ -151,9 +183,9 @@ export async function registerCopilotRoutes(fastify: FastifyInstance): Promise<v
   fastify.post<{ Body: { content: string } }>(
     '/api/copilot/sayon',
     async (req, reply) => {
-      await handleCopilotStream('sayon', req.body.content, reply, {
+      await handleCopilotStream('sayon', req.body.content, req, reply, {
         messageStore, memoryStore, relStore, copilotIndex,
-      });
+      }, systemDb);
     }
   );
 
@@ -161,9 +193,9 @@ export async function registerCopilotRoutes(fastify: FastifyInstance): Promise<v
   fastify.post<{ Body: { content: string } }>(
     '/api/copilot/seren',
     async (req, reply) => {
-      await handleCopilotStream('seren', req.body.content, reply, {
+      await handleCopilotStream('seren', req.body.content, req, reply, {
         messageStore, memoryStore, relStore, copilotIndex,
-      });
+      }, systemDb);
     }
   );
 }
@@ -180,8 +212,10 @@ interface CopilotDeps {
 async function handleCopilotStream(
   persona: CopilotPersona,
   userContent: string,
+  req: any,
   reply: any,
-  deps: CopilotDeps
+  deps: CopilotDeps,
+  db: DatabaseManager
 ): Promise<void> {
   const { messageStore, memoryStore, relStore, copilotIndex } = deps;
   const threadId = COPILOT_THREAD_IDS[persona];
@@ -193,16 +227,28 @@ async function handleCopilotStream(
     content: userContent,
   });
 
-  reply.raw.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-    'X-Accel-Buffering': 'no',
-    'Access-Control-Allow-Origin': '*',
-  });
+  // SSE short-circuit for WebRTC — write to emitter instead of HTTP socket
+  const webrtcRequestId = req?.headers?.['x-webrtc-request-id'] as string | undefined;
+  const webrtcSender    = webrtcRequestId
+    ? (await import('../webrtc/SseEmitterRegistry.js')).getSender(webrtcRequestId)
+    : null;
+
+  if (!webrtcSender) {
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+      'Access-Control-Allow-Origin': '*',
+    });
+  }
 
   const sendEvent = (data: Record<string, unknown>): void => {
-    reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+    if (webrtcSender) {
+      webrtcSender(data);
+    } else {
+      reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+    }
   };
 
   gsm.setPersonaState(persona, 'copilot_active');
@@ -236,7 +282,10 @@ async function handleCopilotStream(
       ? memoryContext + '\n' + semanticMemory
       : memoryContext;
 
-    const systemPrompt = buildCopilotSystemPrompt(persona, systemOverview, fullMemoryContext, relationship);
+    // HA snapshot -- synchronous read from in-memory cache, null if not connected.
+    const haSnapshot = getHaSnapshot();
+
+    const systemPrompt = buildCopilotSystemPrompt(persona, systemOverview, fullMemoryContext, relationship, haSnapshot);
 
     // Load conversation history via AUTO context packing — uses distilled content,
     // fits as many pairs as the budget allows (same logic as main thread pipeline).
@@ -248,15 +297,20 @@ async function handleCopilotStream(
 
     // Route to the correct model
     if (persona === 'sayon') {
-      await streamSayon(systemPrompt, history, userContent, sendEvent, threadId, messageStore, memoryStore, relStore);
+      await streamSayon(systemPrompt, history, userContent, sendEvent, threadId, messageStore, memoryStore, relStore, db);
     } else {
-      await streamSeren(systemPrompt, history, userContent, sendEvent, threadId, messageStore, memoryStore, relStore);
+      await streamSeren(systemPrompt, history, userContent, sendEvent, threadId, messageStore, memoryStore, relStore, db);
     }
   } catch (err) {
     console.error(`[Copilot:${persona}] Error:`, err);
     sendEvent({ type: 'error', message: `${persona.toUpperCase()} unavailable` });
   } finally {
-    reply.raw.end();
+    if (webrtcSender && webrtcRequestId) {
+      const { signalDone } = await import('../webrtc/SseEmitterRegistry.js');
+      signalDone(webrtcRequestId);
+    } else {
+      reply.raw.end();
+    }
   }
 }
 
@@ -270,7 +324,8 @@ async function streamSayon(
   threadId: string,
   messageStore: MessageStore,
   memoryStore: CopilotMemoryStore,
-  relStore: CopilotRelationshipStore
+  relStore: CopilotRelationshipStore,
+  db: DatabaseManager
 ): Promise<void> {
   const {
     coordinatorClient, COORDINATOR_MODEL,
@@ -442,13 +497,14 @@ async function streamSayon(
     }
   }
 
-  // Persist assistant message — NO thinking_segments writes, NO thinking_trace in DB
-  // Strip inline directive tags before storing — they are backend instructions, not chat content
-  const finalContent = outputBuf
-    .replace(/\[REMEMBER\s+\w+:[^\]]+\]/gi, '')
-    .replace(/\[EMOTION\s+\w+\]/gi, '')
-    .replace(/\[BOND\s+[+-]?\d*\.?\d+\]/gi, '')
-    .trim() || '(no output)';
+  // ── Post-stream: extract directives, persist, dispatch watch duty ──────────
+  //
+  // This is the authoritative strip. Per-token stripDirectiveTags() is best-effort
+  // (tags spanning chunk boundaries pass through mid-stream). Here we operate on
+  // the complete buffer — all directives are removed before DB persist and display.
+
+  const haWatchPrompt = extractHaWatchPrompt(outputBuf);
+  const finalContent  = stripAllDirectivesFromBuf(outputBuf) || '(no output)';
 
   const savedMsg = await messageStore.insert({
     thread_id: threadId,
@@ -475,6 +531,19 @@ async function streamSayon(
   embedCopilotExchange('sayon', userContent, finalContent).catch(() => {});
 
   gsm.setPersonaState('sayon', 'idle');
+
+  // [HA_WATCH] interception — run after idle state set, before complete fires.
+  // The watch result is injected as a watch_result event so the frontend can
+  // render it inline in the copilot conversation before the complete event closes the stream.
+  if (haWatchPrompt) {
+    try {
+      const result = await runHaWatch(haWatchPrompt, 'copilot', db);
+      sendEvent({ type: 'watch_result', output: result.output || result.error, runId: result.runId });
+    } catch (err) {
+      sendEvent({ type: 'watch_result', output: 'Watch duty failed — see server logs.', runId: null });
+    }
+  }
+
   sendEvent({ type: 'complete' });
 }
 
@@ -488,7 +557,8 @@ async function streamSeren(
   threadId: string,
   messageStore: MessageStore,
   memoryStore: CopilotMemoryStore,
-  relStore: CopilotRelationshipStore
+  relStore: CopilotRelationshipStore,
+  db: DatabaseManager
 ): Promise<void> {
   const {
     engineClient, ENGINE_MODEL,
@@ -704,13 +774,10 @@ async function streamSeren(
     }
   }
 
-  // Persist assistant message — NO thinking_segments, NO thinking_trace
-  // Strip inline directive tags before storing — they are backend instructions, not chat content
-  const finalContent = outputBuf
-    .replace(/\[REMEMBER\s+\w+:[^\]]+\]/gi, '')
-    .replace(/\[EMOTION\s+\w+\]/gi, '')
-    .replace(/\[BOND\s+[+-]?\d*\.?\d+\]/gi, '')
-    .trim() || '(no output)';
+  // ── Post-stream: extract directives, persist, dispatch watch duty ──────────
+
+  const haWatchPromptSeren = extractHaWatchPrompt(outputBuf);
+  const finalContent       = stripAllDirectivesFromBuf(outputBuf) || '(no output)';
 
   const serenSavedMsg = await messageStore.insert({
     thread_id: threadId,
@@ -737,6 +804,16 @@ async function streamSeren(
   embedCopilotExchange('seren', userContent, finalContent).catch(() => {});
 
   gsm.setPersonaState('seren', 'idle');
+
+  if (haWatchPromptSeren) {
+    try {
+      const result = await runHaWatch(haWatchPromptSeren, 'copilot', db);
+      sendEvent({ type: 'watch_result', output: result.output || result.error, runId: result.runId });
+    } catch (err) {
+      sendEvent({ type: 'watch_result', output: 'Watch duty failed — see server logs.', runId: null });
+    }
+  }
+
   sendEvent({ type: 'complete' });
 }
 

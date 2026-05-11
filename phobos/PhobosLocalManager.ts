@@ -8,6 +8,7 @@ import * as https from 'https';
 import * as http  from 'http';
 import { fileURLToPath } from 'url';
 import * as ModelPathStore from '../db/ModelPathStore.js';
+import { userDir, getActiveUser } from '../db/DatabaseManager.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -45,10 +46,10 @@ export function FLUX_MODELS_DIR(): string  { return IMAGE_FLUX_DIR(); }
 export function UPSCALE_MODELS_DIR(): string { return path.join(ModelPathStore.getBasePath(), 'upscale'); }
 
 // ── CivitAI integration ──────────────────────────────────────────────────────
-// Token path stays under ~/.phobos — it is auth config, not a model file,
-// so it does NOT move when the user relocates their models base path.
+// Token path is per-user (E1). It is auth config, not a model file, so it
+// does NOT move when the user relocates their models base path.
 function civitaiTokenPath(): string {
-  return path.join(os.homedir(), '.phobos', 'civitai-token.txt');
+  return path.join(userDir(getActiveUser()), 'civitai-token.txt');
 }
 
 /** Read the stored CivitAI API token. Returns empty string if not set. */
@@ -1642,7 +1643,7 @@ export interface ImageModelSpec {
   blocked?: boolean;
   /** CivitAI model version ID for download. When present, hfRepo/hfFile are ignored and
    *  the model is downloaded from https://civitai.com/api/download/models/{civitaiVersionId}.
-   *  Requires a CivitAI API token stored at ~/.phobos/civitai-token.txt. */
+   *  Requires a CivitAI API token stored at ~/.phobos/users/{user}/civitai-token.txt. */
   civitaiVersionId?: number;
   /** Local filename for CivitAI downloads (since the URL doesn't contain the filename). */
   civitaiFilename?: string;

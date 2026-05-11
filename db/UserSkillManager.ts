@@ -1,28 +1,27 @@
 /**
  * PHOBOS User Skill Manager
  *
- * Manages user-created skills stored in ~/.phobos/user/skills/.
+ * Manages user-created skills stored in ~/.phobos/users/{user}/skills/.
  * Each skill is a directory containing manifest.json + SKILL.md + optional files.
  * Dependency files live in <skillDir>/deps/ and are never treated as logic files.
  *
  * Directory layout:
- *   ~/.phobos/user/
- *     skills/
- *       <skill-id>/
- *         manifest.json      ← skill metadata
- *         SKILL.md           ← content injected into model context (sayon_context)
- *         runner.ts          ← optional execution entry point
- *         seren_context.md   ← optional SEREN-specific context
- *         deps/              ← dependency files (executables, data, etc.)
- *           <any files>
- *     _registry.json         ← auto-generated; never edit by hand
+ *   ~/.phobos/users/{user}/skills/
+ *     <skill-id>/
+ *       manifest.json      ← skill metadata
+ *       SKILL.md           ← content injected into model context (sayon_context)
+ *       runner.ts          ← optional execution entry point
+ *       seren_context.md   ← optional SEREN-specific context
+ *       deps/              ← dependency files (executables, data, etc.)
+ *         <any files>
+ *     _registry.json       ← auto-generated; never edit by hand
  */
 
 import fs from 'fs/promises';
 import { existsSync, mkdirSync } from 'fs';
 import path from 'node:path';
-import os from 'node:os';
 import crypto from 'node:crypto';
+import { userDir, getActiveUser } from './DatabaseManager.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -84,10 +83,14 @@ export interface RegistryEntry {
 }
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
+//
+// E1: skills are per-user. Layout is ~/.phobos/users/{user}/skills/, with the
+// auto-generated _registry.json living at the root of that skills dir.
+// PHOBOS_ACTIVE_USER (env) is resolved at module-load time — single-user-per-
+// process under E1.
 
-const USER_DIR     = path.join(os.homedir(), '.phobos', 'user');
-const SKILLS_DIR   = path.join(USER_DIR, 'skills');
-const REGISTRY_FILE = path.join(USER_DIR, '_registry.json');
+const SKILLS_DIR    = path.join(userDir(getActiveUser()), 'skills');
+const REGISTRY_FILE = path.join(SKILLS_DIR, '_registry.json');
 
 function skillDir(id: string): string {
   return path.join(SKILLS_DIR, id);

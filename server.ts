@@ -4,7 +4,8 @@ import cors from '@fastify/cors';
 import os from 'node:os';
 import { mkdirSync, existsSync as fsExistsSync } from 'node:fs';
 import path from 'node:path';
-import { DatabaseManager } from './db/DatabaseManager.js';
+import { DatabaseManager, userDir, getActiveUser } from './db/DatabaseManager.js';
+import { runE1Migration, MigrationFatalError } from './db/Migration.js';
 import { threadsRoute } from './routes/threads.js';
 import { messagesRoute } from './routes/messages.js';
 import { documentsRoute } from './routes/documents.js';
@@ -24,11 +25,13 @@ import { syncScheduledTasks, registerSecurityHandlers } from './security/Securit
 import { initScheduler } from './scheduling/Scheduler.js';
 import { ScheduledTaskStore } from './db/ScheduledTaskStore.js';
 import { scanOnStartup as scanUserSkills } from './db/UserSkillManager.js';
-import { stopAllServers, startSybil, coordinatorOwnsProcesses } from './phobos/LlamaServerManager.js';
-import { fork }                    from 'node:child_process';
+import { stopAllServers, startSybil } from './phobos/LlamaServerManager.js';
+import { Worker }                  from 'node:worker_threads';
 import { fileURLToPath }           from 'node:url';
 import { S, SHARED_BUFFER_BYTE_LENGTH } from './coordinator/SharedState.js';
-import { coordinatorPipe }         from './PipeClient.js';
+import { CoordinatorBridge }       from './CoordinatorBridge.js';
+import type { CoordinatorOutbound, ClientRoleConfig } from './coordinator/MessageTypes.js';
+import { ModelConfigStore }        from './db/ModelConfigStore.js';
 import { MemoryStore } from './db/MemoryStore.js';
 import { reconfigureClients, COORDINATOR_MODEL, ENGINE_MODEL } from './ai/clients.js';
 import * as ModelPathStore from './db/ModelPathStore.js';
@@ -37,6 +40,12 @@ import { registerGameRoutes } from './routes/game.js';
 import { GameStore } from './db/GameStore.js';
 import { gsm } from './game/GameStateManager.js';
 import { registerServiceRoutes } from './routes/services.js';
+import { registerHaRoutes } from './routes/ha.js';
+import { connectHa } from './services/HAManager.js';
+import { initVaultCrypto }      from './vault/VaultCrypto.js';
+import { VaultStore }           from './db/VaultStore.js';
+import { initVaultManager }     from './vault/VaultManager.js';
+import { registerVaultRoutes }  from './routes/vaultRoutes.js';
 import { registerAudioRoutes } from './routes/audio.js';
 import { ServiceStore } from './db/ServiceStore.js';
 import { stopMeridian, startMeridian, getMeridianStatus } from './services/MeridianManager.js';
@@ -49,11 +58,14 @@ import {
 import { registerToolsRoutes } from './routes/toolsRoute.js';
 import { registerCartridgeRoutes } from './routes/cartridgeRoutes.js';
 import { registerTrainingRoutes }  from './routes/trainingRoutes.js';
+import { registerWecloneRoutes }    from './routes/wecloneRoutes.js';
 import { CartridgeStore } from './db/CartridgeStore.js';
 import { initCartridgeManager, reconcileCartridgeSlots } from './phobos/CartridgeManager.js';
 import { startCamofox, stopCamofox, isCamofoxInstalled } from './phobos/CamofoxManager.js';
 import { stopStirling, startStirling, isBinaryPresent as isStirlingBinaryPresent } from './services/StirlingManager.js';
 import { stopOmniclip, startOmniclip, isBuildPresent as isOmniclipBuildPresent } from './services/OmniclipManager.js';
+import { stopBlockbench, startBlockbench, isBuildPresent as isBlockbenchBuildPresent } from './services/BlockbenchManager.js';
+import { stopSculptGL,   startSculptGL,   isSculptGLBuildPresent }                    from './services/SculptGLManager.js';
 import { ArchiveStore } from './db/ArchiveStore.js';
 import { registerArchiveRoutes } from './routes/archiveRoutes.js';
 import { registerMpvRoutes } from './routes/mpv.js';
@@ -69,6 +81,7 @@ import { registerKavitaIngestRoutes } from './routes/kavitaIngestRoutes.js';
 import { registerJellyfinIngestRoutes } from './routes/jellyfinIngestRoutes.js';
 import { registerPolarisIngestRoutes } from './routes/polarisIngestRoutes.js';
 import { registerMeridianIngestRoutes } from './routes/meridianIngestRoutes.js';
+import { registerWebRTCRoutes, setWebRTCContext } from './routes/webrtc.js';
 import { registerBootEventsRoute } from './routes/bootEvents.js';
 import { runDepPrep, isPrepComplete } from './boot/DepPrep.js';
 import { setBootPhase, setBootProgress, snapshot as bootSnapshot } from './boot/BootState.js';
@@ -81,8 +94,11 @@ const PHOBOS_DATA_DIR = process.env.PHOBOS_DATA_DIR ?? path.join(os.homedir(), '
 mkdirSync(PHOBOS_DATA_DIR, { recursive: true });
 
 const DB_PATH         = process.env.DB_PATH         ?? path.join(PHOBOS_DATA_DIR, 'phobos.duckdb');
-const WORKSPACES_ROOT = process.env.WORKSPACES_ROOT ?? path.join(PHOBOS_DATA_DIR, 'workspaces');
-mkdirSync(WORKSPACES_ROOT, { recursive: true });
+// WORKSPACES_ROOT is per-user. The active user defaults to 'owner' (E2 will
+// resolve from per-request session). mkdirSync is deferred to main() so the
+// E1 migration can rename a pre-existing ~/.phobos/workspaces/ into place
+// before this dir gets auto-created empty.
+const WORKSPACES_ROOT = process.env.WORKSPACES_ROOT ?? path.join(userDir(getActiveUser()), 'workspaces');
 
 async function buildServer() {
   const fastify = Fastify({
@@ -161,10 +177,13 @@ async function buildServer() {
   await registerSecurityRoutes(fastify);
   await registerGameRoutes(fastify);
   await registerServiceRoutes(fastify);
+  await registerHaRoutes(fastify);
+  await registerVaultRoutes(fastify);
   await registerAudioRoutes(fastify);
   await registerToolsRoutes(fastify);
   await registerCartridgeRoutes(fastify);
   await registerTrainingRoutes(fastify);
+  await registerWecloneRoutes(fastify);
   await registerArchiveRoutes(fastify);
   await registerKavitaIngestRoutes(fastify);
   await registerJellyfinIngestRoutes(fastify);
@@ -172,6 +191,7 @@ async function buildServer() {
   await registerMeridianIngestRoutes(fastify);
   await registerMpvRoutes(fastify);
   await registerIptvRoutes(fastify);
+  await registerWebRTCRoutes(fastify);
 
   fastify.get('/health', async () => ({ ok: true, ts: Date.now() }));
 
@@ -189,9 +209,95 @@ async function buildServer() {
   return fastify;
 }
 
+/**
+ * Open a DatabaseManager with retry on Windows file-lock errors.
+ * After runE1Migration() the system DB handle release is async at the OS level —
+ * the NTFS handle from the migration's DuckDB instances lingers after close()
+ * resolves in JS. setTimeout(0) inside the migration does not drain libuv's
+ * native I/O thread pool, so the lock can still be active when server.ts opens
+ * the same file. Polling here is the correct fix: we detect the lock at the
+ * call site where it actually matters instead of hoping a fixed sleep is enough.
+ */
+async function initializeDbWithRetry(
+  db: ReturnType<typeof DatabaseManager.getInstance>,
+  label: string,
+): Promise<void> {
+  const delays = [100, 200, 400, 800, 1600, 3200, 5000, 10000, 15000, 30000, 30000, 30000, 30000, 30000, 30000, 30000, 30000, 30000];
+  let lastErr: unknown;
+  for (let i = 0; i <= delays.length; i++) {
+    try {
+      await db.initialize();
+      return;
+    } catch (err) {
+      lastErr = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      const isLock = /being used by another process|sharing violation|EBUSY|EACCES/i.test(msg);
+      if (!isLock || i === delays.length) throw err;
+      console.warn(`[Boot] ${label} DB locked after migration — retrying in ${delays[i]}ms (attempt ${i + 1}/${delays.length})`);
+      await new Promise<void>(resolve => setTimeout(resolve, delays[i]));
+    }
+  }
+  throw lastErr;
+}
+
 async function main() {
   process.env.DB_PATH         = DB_PATH;
   process.env.WORKSPACES_ROOT = WORKSPACES_ROOT;
+
+  // ── PHASE 0: E1 multi-user migration ───────────────────────────────────────
+  // Detect the pre-E1 single-DB layout. If found, split it:
+  //   ~/.phobos/phobos.duckdb → ~/.phobos/phobos.duckdb.pre-e1.backup
+  //   build new system DB at ~/.phobos/phobos.duckdb (system tables only)
+  //   build new user DB at  ~/.phobos/users/owner/phobos.duckdb (user tables)
+  //   move ~/.phobos/conversations.duckdb → users/owner/conversations.duckdb
+  //   move ~/.phobos/workspaces/          → users/owner/workspaces/
+  //   move ~/.phobos/license.key          → users/owner/license.key
+  //   move ~/.phobos/civitai-token.txt    → users/owner/civitai-token.txt
+  //   move ~/.phobos/user/skills/         → users/owner/skills/
+  //   insert {username:'owner'} row in system DB users table
+  //   touch ~/.phobos/.e1-migration-complete
+  //
+  // Idempotent: returns immediately if .e1-migration-complete exists or the
+  // layout is already split. The sentinel is only written on full success.
+  //
+  // Fatal-on-error: if any required migration step fails, runE1Migration()
+  // throws MigrationFatalError. Boot halts, the renamed backup remains intact,
+  // and the migration retries from the backup on the next boot. We must not
+  // continue to dep-prep or DB init in a half-migrated state — doing so would
+  // serve traffic against a partially-populated user DB.
+  let migrationReport: Awaited<ReturnType<typeof runE1Migration>>;
+  try {
+    migrationReport = await runE1Migration();
+  } catch (err) {
+    if (err instanceof MigrationFatalError) {
+      console.error('━'.repeat(72));
+      console.error('[Boot] FATAL: E1 migration aborted.');
+      console.error(`[Boot]   ${err.message}`);
+      const cause = (err as Error & { cause?: unknown }).cause;
+      if (cause instanceof Error) {
+        console.error(`[Boot]   underlying: ${cause.message}`);
+      }
+      console.error('[Boot] The backup at ~/.phobos/phobos.duckdb.pre-e1.backup is intact.');
+      console.error('[Boot] Migration will retry on next boot. PHOBOS will not start until it succeeds.');
+      console.error('━'.repeat(72));
+      process.exit(1);
+    }
+    throw err;
+  }
+  if (migrationReport.performed) {
+    console.log('[Boot] E1 migration complete — multi-user layout active.');
+    if (migrationReport.errors.length > 0) {
+      // Only soft warnings reach this branch (best-effort lazy-table or
+      // system-table copies that failed). Fatal errors throw above.
+      console.warn(`[Boot] E1 migration finished with ${migrationReport.errors.length} non-fatal warning(s):`);
+      for (const e of migrationReport.errors) console.warn(`  - ${e}`);
+    }
+  }
+
+  // The owner's workspaces dir must exist before threads are created. After
+  // migration, this is users/owner/workspaces/ — either freshly moved from the
+  // pre-E1 location or created here on a fresh install.
+  mkdirSync(WORKSPACES_ROOT, { recursive: true });
 
   // ── PHASE 1: Dependency prep ───────────────────────────────────────────────
   // Fastify starts immediately so /api/boot/events is reachable during prep.
@@ -203,8 +309,21 @@ async function main() {
 
     // Initialize DB before buildServer() — routes call DatabaseManager.getInstance()
     // and ensureTable() at plugin registration time and need a live connection.
+    // Both DBs are opened here. The system DB holds shared config (model_config,
+    // users master list, cartridges, plugins, services). The user DB holds the
+    // active user's threads, messages, prompt logs, workspaces, etc.
     const db = DatabaseManager.getInstance(DB_PATH);
-    await db.initialize();
+    await initializeDbWithRetry(db, 'system');
+    // Ensure the owner user row exists. ON CONFLICT is unreliable in DuckDB 1.4.x
+    // across different connection contexts — use WHERE NOT EXISTS instead, which
+    // avoids the conflict-resolution binder entirely and works in all versions.
+    await db.exec(
+      `INSERT INTO users (username, display_name, role)
+       SELECT 'owner', 'Owner', 'admin'
+       WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = 'owner')`,
+    );
+    const userDb = DatabaseManager.getUserDb();
+    await userDb.initialize();
 
     const fastify = await buildServer();
     try {
@@ -248,12 +367,20 @@ async function main() {
 
   // Fast-path: prep already done on a previous boot.
   // DB must be initialized before buildServer() — routes call DatabaseManager.getInstance()
-  // and ensureTable() at plugin registration time.
+  // and ensureTable() at plugin registration time. Both system and user DBs
+  // open here; see the Phase 1 path above for split rationale.
   console.log('⚙️  Initializing Phobos Core Systems...');
   setBootPhase('db_init');
 
   const fastDb = DatabaseManager.getInstance(DB_PATH);
-  await fastDb.initialize();
+  await initializeDbWithRetry(fastDb, 'system');
+  await fastDb.exec(
+    `INSERT INTO users (username, display_name, role)
+     SELECT 'owner', 'Owner', 'admin'
+     WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = 'owner')`,
+  );
+  const fastUserDb = DatabaseManager.getUserDb();
+  await fastUserDb.initialize();
 
   const fastify = await buildServer();
   try {
@@ -280,14 +407,17 @@ async function continueBootSequence(
 
   // existingDb is passed when we already called initialize() before buildServer()
   // (the dep-prep path). On the fast-path it is null and we initialize here.
+  // The user DB follows the same pattern: idempotent initialize() if missing.
   const db = existingDb ?? DatabaseManager.getInstance(DB_PATH);
   if (!existingDb) await db.initialize();
+  const userDb = DatabaseManager.getUserDb();
+  if (!existingDb) await userDb.initialize();
 
   // ── PHASE 3: Core init ─────────────────────────────────────────────────────
   console.log('⚙️  [Boot] Phase 3: Core init...');
   setBootPhase('core_init');
 
-  const memoryStore = new MemoryStore(db);
+  const memoryStore = new MemoryStore(userDb);
   await memoryStore.ensureTable();
 
   await ModelPathStore.loadAsync(db);
@@ -311,9 +441,9 @@ async function continueBootSequence(
   await loadRegistry();
   await scanUserSkills();
 
-  const taskStore = new ScheduledTaskStore(db);
+  const taskStore = new ScheduledTaskStore(userDb);
   await taskStore.ensureTable();
-  const scheduler = initScheduler(db);
+  const scheduler = initScheduler(userDb);
 
   const securityStore = new SecurityStore(db);
   await securityStore.ensureTable();
@@ -323,8 +453,24 @@ async function continueBootSequence(
 
   scheduler.start();
 
+  // HA startup reconnect: if HA was enabled when server last shut down, reconnect.
+  connectHa(db).catch(err => {
+    console.error('[Server] HA startup connect failed:', err.message);
+  });
+
+  // Vault intentionally does NOT auto-unlock on boot. Credentials require
+  // explicit user action each session. initVaultManager only loads config
+  // (db_path, lock_timeout) — no file is opened, no password is required.
+  
+  initVaultCrypto();
+
+  const vaultStore = new VaultStore(db);
+  await vaultStore.ensureTable();
+  await initVaultManager(vaultStore);
+ 
+
   // ── PHOBOS World game state ─────────────────────────────────────────────────
-  const gameStoreInstance = new GameStore(db);
+  const gameStoreInstance = new GameStore(userDb);
   await gameStoreInstance.ensureTable();
   gsm.start();
 
@@ -354,6 +500,20 @@ async function continueBootSequence(
   if (isOmniclipBuildPresent()) {
     startOmniclip().catch(err =>
       console.warn('[Omniclip] Auto-start failed (non-fatal):', (err as Error).message)
+    );
+  }
+
+  // ── Blockbench ──────────────────────────────────────────────────────────
+  if (isBlockbenchBuildPresent()) {
+    startBlockbench().catch(err =>
+      console.warn('[Blockbench] Auto-start failed (non-fatal):', (err as Error).message)
+    );
+  }
+
+  // ── SculptGL ────────────────────────────────────────────────────────────
+  if (isSculptGLBuildPresent()) {
+    startSculptGL().catch(err =>
+      console.warn('[SculptGL] Auto-start failed (non-fatal):', (err as Error).message)
     );
   }
 
@@ -476,10 +636,21 @@ async function continueBootSequence(
   }, CHECKPOINT_INTERVAL_MS);
   checkpointTimer.unref();
 
-  // ── Coordinator process ────────────────────────────────────────────────────
-  // Fork before waitForServicesToSettle so the coordinator is up and holding
-  // the pipe socket before we declare 'ready'. The fork is non-blocking — the
-  // await is only for the COORDINATOR_READY IPC message (timeout: 10s).
+  // ── Coordinator worker_thread ──────────────────────────────────────────────
+  // Spawn the coordinator BEFORE waitForServicesToSettle so it is up and
+  // serving postMessage traffic before we declare 'ready'. Worker spawn is
+  // non-blocking; the await below is only for the COORDINATOR_READY message
+  // (timeout: 10s).
+  //
+  // Why worker_threads instead of child_process.fork:
+  //   - SharedArrayBuffer cannot be transferred across child_process IPC
+  //     (Node serialiser does not implement _getSharedArrayBufferId). Worker
+  //     spawn structured-clone honours SAB sharing — both threads see the
+  //     same backing memory, which is the entire point of using SAB for
+  //     SAYON/SEREN/queue state.
+  //   - SEA build constraint dissolves: Worker accepts a path to a sibling
+  //     .cjs file directly via the normal Node module loader, regardless of
+  //     whether the host process is a SEA binary.
   const sharedBuffer = new SharedArrayBuffer(SHARED_BUFFER_BYTE_LENGTH);
   const sharedState  = new Int32Array(sharedBuffer);
 
@@ -487,11 +658,12 @@ async function continueBootSequence(
   // Atomics.load without creating a circular import (server → routes → server).
   (globalThis as Record<string, unknown>).__phobosSharedState = sharedState;
 
-  // Seed FASTIFY_HEARTBEAT so the coordinator can detect this process.
+  // Seed FASTIFY_HEARTBEAT so the coordinator can detect a hung main thread.
   Atomics.store(sharedState, S.FASTIFY_HEARTBEAT, Math.floor(Date.now() / 1000));
 
-  // Resolve coordinator entry point: dist/coordinator.cjs in SEA, or
-  // coordinator/coordinator.ts via tsx in dev (tsx resolves .ts from .js imports).
+  // Resolve coordinator entry point: dist/coordinator.cjs sibling to the SEA
+  // binary in production, or coordinator/coordinator.js (resolved from .ts via
+  // tsx) in dev.
   const _dirname_server: string = (() => {
     try {
       if (typeof import.meta?.url === 'string') return path.dirname(fileURLToPath(import.meta.url));
@@ -505,48 +677,306 @@ async function continueBootSequence(
     return path.join(_dirname_server, 'coordinator', 'coordinator.js');
   })();
 
-  let coordinatorProc = fork(coordinatorPath, [], {
-    env: { ...process.env, PHOBOS_COORDINATOR: '1' },
+  // Read INIT_CONFIG values once before the first spawn — these are the
+  // DB-bound values the coordinator needs but cannot read itself. Pushed
+  // again after every successful (re)spawn so respawned workers inherit
+  // current state without ever opening DuckDB.
+  const buildInitConfig = async (): Promise<{
+    coordinator:     ClientRoleConfig;
+    engine:          ClientRoleConfig;
+    executorEnabled: boolean;
+  }> => {
+    const cfgStore = new ModelConfigStore(db);
+    const { coordinator, engine } = await cfgStore.getAll();
+    const executorEnabled = await ModelPathStore.getSandboxExecutorEnabled(db);
+    return {
+      coordinator: {
+        provider:    coordinator.provider,
+        model:       coordinator.model,
+        endpoint:    coordinator.endpoint,
+        apiKey:      coordinator.apiKey ?? null,
+        deviceIndex: coordinator.deviceIndex ?? null,
+        gpuBackend:  coordinator.gpuBackend  ?? null,
+        gpuLayers:   coordinator.gpuLayers   ?? null,
+      },
+      engine: {
+        provider:    engine.provider,
+        model:       engine.model,
+        endpoint:    engine.endpoint,
+        apiKey:      engine.apiKey ?? null,
+        deviceIndex: engine.deviceIndex ?? null,
+        gpuBackend:  engine.gpuBackend  ?? null,
+        gpuLayers:   engine.gpuLayers   ?? null,
+      },
+      executorEnabled,
+    };
+  };
+
+  const spawnCoordinator = (): Worker => new Worker(coordinatorPath, {
+    workerData: { sharedBuffer },
+    // stdout/stderr inherit parent — log lines appear in the same console.
+    stdout: false,
+    stderr: false,
   });
 
+  // ── Main-thread handlers for round-trip requests from the worker ─────────
+  // The worker has no DB access. These three callbacks satisfy the requests
+  // it postMessages back: archive search, workspace memory search, and code
+  // audit. Each round-trip is correlated by requestId.
+  const handleArchiveSearchRequest = async (
+    worker: Worker,
+    msg: Extract<CoordinatorOutbound, { type: 'ARCHIVE_SEARCH_REQUEST' }>,
+  ): Promise<void> => {
+    try {
+      const { search: archiveSearch } = await import('./ai/ArchiveClient.js');
+      const result = await archiveSearch({
+        query:   msg.query,
+        domains: msg.domains,
+        k:       msg.k,
+      });
+      worker.postMessage({ type: 'ARCHIVE_SEARCH_REPLY', requestId: msg.requestId, result });
+    } catch (err) {
+      worker.postMessage({
+        type: 'ARCHIVE_SEARCH_REPLY',
+        requestId: msg.requestId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const handleMemorySearchRequest = async (
+    worker: Worker,
+    msg: Extract<CoordinatorOutbound, { type: 'MEMORY_SEARCH_REQUEST' }>,
+  ): Promise<void> => {
+    try {
+      const { retrieveWorkspaceMemory } = await import('./ai/MemoryWriter.js');
+      const result = await retrieveWorkspaceMemory(msg.query);
+      worker.postMessage({ type: 'MEMORY_SEARCH_REPLY', requestId: msg.requestId, result });
+    } catch (err) {
+      worker.postMessage({
+        type: 'MEMORY_SEARCH_REPLY',
+        requestId: msg.requestId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const handleCodeAuditRequest = async (
+    worker: Worker,
+    msg: Extract<CoordinatorOutbound, { type: 'CODE_AUDIT_REQUEST' }>,
+  ): Promise<void> => {
+    try {
+      const { SecurityStore } = await import('./db/SecurityStore.js');
+      const { runCodeAudit }  = await import('./security/CodeAuditor.js');
+      const nodePath          = await import('node:path');
+
+      const projectRoot = process.cwd(); // worker passes absolute paths when possible
+      const absTarget   = nodePath.isAbsolute(msg.target)
+        ? msg.target
+        : nodePath.join(projectRoot, msg.target);
+
+      const secStore = new SecurityStore(db);
+      await secStore.ensureTable();
+      const run = await secStore.createRun('code_audit');
+
+      await runCodeAudit(secStore, run.id, absTarget);
+
+      const completed  = await secStore.getRunById(run.id);
+      const findings   = await secStore.getFindingsByRun(run.id);
+      const durationMs = Date.now() - (completed ? Date.parse(completed.started_at) : Date.now());
+
+      const findingPreview = findings.length > 0
+        ? findings[0].title.slice(0, 120)
+        : 'No issues found';
+
+      let output: string;
+      if (findings.length === 0) {
+        output = `[CODE AUDIT CLEAN -- ${msg.target}]\nNo security issues detected.`;
+      } else {
+        const bySeverity: Record<string, typeof findings> = {};
+        for (const f of findings) (bySeverity[f.severity] ??= []).push(f);
+        const lines: string[] = [
+          `[CODE AUDIT -- ${findings.length} finding${findings.length !== 1 ? 's' : ''} in ${msg.target}]`,
+          '',
+        ];
+        for (const sev of ['critical', 'high', 'medium', 'low', 'info'] as const) {
+          const group = bySeverity[sev];
+          if (!group?.length) continue;
+          lines.push(`${sev.toUpperCase()} (${group.length}):`);
+          for (const f of group) {
+            lines.push(`  [${f.target ?? msg.target}] ${f.title}`);
+            if (f.detail) lines.push(`    ${f.detail}`);
+          }
+          lines.push('');
+        }
+        if (completed?.seren_digest) lines.push('ANALYSIS:', completed.seren_digest);
+        output = lines.join('\n');
+      }
+
+      worker.postMessage({
+        type: 'CODE_AUDIT_REPLY',
+        requestId: msg.requestId,
+        result: {
+          output,
+          exitCode:      findings.length > 0 ? 1 : 0,
+          durationMs,
+          stdoutPreview: findingPreview,
+          findingsCount: findings.length,
+        },
+      });
+    } catch (err) {
+      worker.postMessage({
+        type: 'CODE_AUDIT_REPLY',
+        requestId: msg.requestId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const handlePromptLog = async (
+    msg: Extract<CoordinatorOutbound, { type: 'PROMPT_LOG' }>,
+  ): Promise<void> => {
+    try {
+      const { PromptLogStore } = await import('./db/PromptLogStore.js');
+      const store = new PromptLogStore(userDb);
+      await store.insert({
+        threadId:  msg.threadId,
+        messageId: msg.messageId,
+        role:      msg.role,
+        stage:     msg.stage as never,
+        model:     msg.model,
+        prompt:    msg.prompt,
+        response:  msg.response,
+        latencyMs: msg.latencyMs,
+      });
+    } catch (err) {
+      console.warn('[promptLog] write failed:', err instanceof Error ? err.message : err);
+    }
+  };
+
+  // ── Central message dispatcher ───────────────────────────────────────────
+  // Receives every postMessage from the coordinator. Round-trip requests and
+  // PROMPT_LOG are handled inline; per-task lifecycle messages delegate to
+  // the bridge's per-taskId handler registry.
+  const dispatchCoordinatorMessage = (msg: CoordinatorOutbound): void => {
+    switch (msg.type) {
+      case 'PROMPT_LOG':
+        handlePromptLog(msg).catch(() => {});
+        break;
+      case 'ARCHIVE_SEARCH_REQUEST':
+        handleArchiveSearchRequest(coordinatorWorker, msg).catch(() => {});
+        break;
+      case 'MEMORY_SEARCH_REQUEST':
+        handleMemorySearchRequest(coordinatorWorker, msg).catch(() => {});
+        break;
+      case 'CODE_AUDIT_REQUEST':
+        handleCodeAuditRequest(coordinatorWorker, msg).catch(() => {});
+        break;
+      case 'COORDINATOR_READY':
+        // Initial handshake handled by coordinatorReady promise below.
+        break;
+      default:
+        // Per-task lifecycle / streaming events — delegate to the bridge.
+        CoordinatorBridge.dispatchOutbound(msg);
+        break;
+    }
+  };
+
+  let coordinatorWorker = spawnCoordinator();
+
+  // Wire dispatch + give the bridge a reference so enqueue() can postMessage.
+  coordinatorWorker.on('message', dispatchCoordinatorMessage);
+  CoordinatorBridge.setWorker(coordinatorWorker);
+
+  // Wait for COORDINATOR_READY (10s timeout — Worker spawn is normally <100ms).
   const coordinatorReady = new Promise<void>((resolve) => {
     const timeout = setTimeout(() => {
       console.warn('[Boot] Coordinator did not send READY within 10s — continuing anyway');
       resolve();
     }, 10_000);
-    coordinatorProc.once('message', (msg: unknown) => {
-      if (msg && typeof msg === 'object' && (msg as Record<string, unknown>).type === 'COORDINATOR_READY') {
+    coordinatorWorker.once('message', (msg: CoordinatorOutbound) => {
+      if (msg && msg.type === 'COORDINATOR_READY') {
         clearTimeout(timeout);
         resolve();
       }
     });
   });
 
-  coordinatorProc.send({ type: 'INIT_SHARED_BUFFER', buffer: sharedBuffer });
+  // Crash recovery — re-spawn on non-zero exit, re-attach all listeners,
+  // re-push INIT_CONFIG (workerData already provides the SAB).
+  const onCoordinatorExit = (code: number): void => {
+    if (code === 0) return; // clean shutdown
+    console.warn(`[Coordinator] Worker exited code=${code} — respawning in 2s`);
+    setTimeout(() => {
+      coordinatorWorker = spawnCoordinator();
+      coordinatorWorker.on('message', dispatchCoordinatorMessage);
+      coordinatorWorker.on('exit', onCoordinatorExit);
+      CoordinatorBridge.setWorker(coordinatorWorker);
+      coordinatorWorker.once('message', (msg: CoordinatorOutbound) => {
+        if (msg && msg.type === 'COORDINATOR_READY') {
+          console.log('[Coordinator] Respawned and ready');
+          buildInitConfig()
+            .then(payload => coordinatorWorker.postMessage({ type: 'INIT_CONFIG', payload }))
+            .catch(err => console.warn('[Coordinator] Respawn INIT_CONFIG failed:', err));
+        }
+      });
+    }, 2_000);
+  };
+  coordinatorWorker.on('exit', onCoordinatorExit);
+  coordinatorWorker.on('error', (err) => {
+    console.error('[Coordinator] Worker error:', err instanceof Error ? err.message : err);
+  });
+
   await coordinatorReady;
 
-  // Keep FASTIFY_HEARTBEAT alive every 5s so the coordinator detects Fastify crashes.
+  // Push INIT_CONFIG immediately after READY so the worker's clients.ts has
+  // valid OpenAI handles + executor flag before the first ENQUEUE arrives.
+  try {
+    const initPayload = await buildInitConfig();
+    coordinatorWorker.postMessage({ type: 'INIT_CONFIG', payload: initPayload });
+  } catch (err) {
+    console.warn('[Boot] INIT_CONFIG send failed:', err instanceof Error ? err.message : err);
+  }
+
+  // Keep FASTIFY_HEARTBEAT alive every 5s so the coordinator can detect a
+  // hung main thread.
   const fastifyHeartbeatTimer = setInterval(() => {
     Atomics.store(sharedState, S.FASTIFY_HEARTBEAT, Math.floor(Date.now() / 1000));
   }, 5_000);
   fastifyHeartbeatTimer.unref();
 
-  // Reconnect logic: if coordinator crashes, respawn after 2s.
-  const onCoordinatorExit = (code: number | null, signal: NodeJS.Signals | null) => {
-    if (code === 0) return; // clean shutdown
-    console.warn(`[Coordinator] Process exited code=${code} signal=${signal} — respawning in 2s`);
-    setTimeout(() => {
-      coordinatorProc = fork(coordinatorPath, [], {
-        env: { ...process.env, PHOBOS_COORDINATOR: '1' },
-      });
-      coordinatorProc.send({ type: 'INIT_SHARED_BUFFER', buffer: sharedBuffer });
-      coordinatorProc.on('exit', onCoordinatorExit);
-    }, 2_000);
-  };
-  coordinatorProc.on('exit', onCoordinatorExit);
+  // ── WebRTC signaling ───────────────────────────────────────────────────────
+  // Non-fatal: if autarch.net is unreachable the relay client reconnects in
+  // the background. The access code routes return null until it connects.
+  let webrtcSignalingClient: import('./webrtc/SignalingClient.js').SignalingClient | null = null;
+  let webrtcServer: import('./webrtc/WebRTCServer.js').WebRTCServer | null = null;
+  try {
+    const { SignalingClient } = await import('./webrtc/SignalingClient.js');
+    const { WebRTCServer }    = await import('./webrtc/WebRTCServer.js');
 
-  // Connect the Fastify-side pipe client.
-  coordinatorPipe.connect();
+    webrtcSignalingClient = new SignalingClient({
+      relayUrl:   process.env.WEBRTC_RELAY_URL ?? 'wss://autarch.net/relay',
+      activeUser: 'owner',
+      onCode:     (code, _ice) => console.log(`[WebRTC] Access code: ${code}`),
+      onOffer:    (offer)      => webrtcServer?.handleOffer(offer),
+      onIce:      (ice)        => webrtcServer?.addIceCandidate(ice),
+      onRelayConnect:    () => console.log('[WebRTC] Relay connected'),
+      onRelayDisconnect: () => console.warn('[WebRTC] Relay disconnected'),
+    });
+
+    webrtcServer = new WebRTCServer({
+      fastify,
+      signalingClient: webrtcSignalingClient,
+      activeUser:      'owner',
+      onConnected:     () => console.log('[WebRTC] Mobile session connected'),
+      onDisconnected:  () => console.log('[WebRTC] Mobile session disconnected'),
+    });
+
+    setWebRTCContext({ signalingClient: webrtcSignalingClient, webrtcServer });
+    webrtcSignalingClient.connect();
+  } catch (err) {
+    console.warn('[WebRTC] Failed to initialize (non-fatal):', (err as Error).message);
+  }
 
   // ── PHASE 4: Services wait → Ready ────────────────────────────────────────
   // All service start() calls above are fire-and-forgot. Give them up to 5
@@ -584,20 +1014,20 @@ async function continueBootSequence(
     clearInterval(fastifyHeartbeatTimer);
     await stopCamofox().catch(() => {});
     await stopStirling().catch(() => {});
+    webrtcSignalingClient?.destroy();
+    webrtcServer?.disconnect();
     await stopOmniclip().catch(() => {});
+    await stopBlockbench().catch(() => {});
+    await stopSculptGL().catch(() => {});
     await stopMeridian().catch(() => {});
     await stopPolaris().catch(() => {});
     await stopJellyfin().catch(() => {});
     await stopKavita().catch(() => {});
     await stopMpv().catch(() => {});
-    // Only stop llama-server processes if the Coordinator hasn't taken ownership.
-    // After C1 handoff, the Coordinator owns SAYON/SEREN lifecycle — killing them
-    // here would defeat the purpose of coordinator crash isolation.
-    if (!coordinatorOwnsProcesses()) {
-      await stopAllServers().catch(() => {});
-    }
-    coordinatorProc.kill('SIGTERM');
-    coordinatorPipe.disconnect();
+    // Main thread always owns llama-server processes — coordinator is now an
+    // in-process worker_thread and shares lifecycle with main.
+    await stopAllServers().catch(() => {});
+    await coordinatorWorker.terminate().catch(() => {});
     await fastify.close().catch(() => {});
 
     process.exit(0);

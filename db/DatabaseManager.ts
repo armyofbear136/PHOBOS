@@ -6,15 +6,9 @@ import os from 'os';
 // ── Resolve bundled DuckDB extension directory ─────────────────────────────────
 // DuckDB looks for extensions at: {extension_directory}/v{version}/{platform}/
 // We bundle vss.duckdb_extension in phobos/extensions/ staged alongside the exe.
-// Priority:
-//   1. exe dir — dist/phobos/extensions/ (SEA production)
-//   2. repo phobos/extensions/ (tsx dev)
-//   3. dist/phobos/extensions/ relative to cwd (post-build dev)
-//   4. null — extension not bundled, LOAD vss will fail (non-fatal, caught by MemoryStore)
 function resolveBundledExtensionDir(): string | null {
   const seaDir  = path.dirname(process.execPath);
   const repoDir = path.resolve(path.dirname(
-    // ESM: import.meta.url available; CJS SEA bundle: __dirname global
     typeof __filename !== 'undefined' ? __filename : process.cwd()
   ), '..');
 
@@ -33,7 +27,70 @@ function resolveBundledExtensionDir(): string | null {
 
 export const BUNDLED_EXTENSION_DIR = resolveBundledExtensionDir();
 
-const SCHEMA = `
+// ── Active user resolution (E1: hardcoded; E2: per-request) ───────────────────
+//
+// The active user is the identity whose data the current operation reads/writes.
+// E1 has only one real user ('owner'). The env var lets test/dev override.
+// E2 will replace these reads with per-request resolution from the auth context.
+
+export const DEFAULT_USERNAME = 'owner';
+
+export function getActiveUser(): string {
+  return process.env.PHOBOS_ACTIVE_USER || DEFAULT_USERNAME;
+}
+
+// ── Path resolution ───────────────────────────────────────────────────────────
+
+function dataDir(): string {
+  return process.env.PHOBOS_DATA_DIR ?? path.join(os.homedir(), '.phobos');
+}
+
+export function systemDbPath(): string {
+  return path.join(dataDir(), 'phobos.duckdb');
+}
+
+export function userDir(username: string): string {
+  return path.join(dataDir(), 'users', username);
+}
+
+export function userDbPath(username: string): string {
+  return path.join(userDir(username), 'phobos.duckdb');
+}
+
+// ── Schemas ───────────────────────────────────────────────────────────────────
+//
+// SYSTEM_SCHEMA: tables that live in ~/.phobos/phobos.duckdb. Shared across
+// all users — model selections, media services, cartridges, plugins, the
+// users master list itself.
+//
+// USER_SCHEMA: tables that live in ~/.phobos/users/{username}/phobos.duckdb.
+// Each user has their own copy. Threads, messages, prompt logs, workspaces,
+// memory, copilot relationships, game state, etc.
+//
+// Cross-DB foreign keys are not enforced (DuckDB doesn't support them across
+// files anyway). The `users(username)` row is the logical anchor for every
+// per-user DB. Deleting a user means deleting their directory.
+
+export const SYSTEM_SCHEMA = `
+-- Master list of users on this PHOBOS instance.
+-- Each row corresponds to ~/.phobos/users/<username>/.
+CREATE TABLE IF NOT EXISTS users (
+  username    VARCHAR PRIMARY KEY,
+  display_name VARCHAR NOT NULL,
+  role        VARCHAR NOT NULL DEFAULT 'admin' CHECK (role IN ('admin','full','guest','read')),
+  created_at  TIMESTAMP NOT NULL DEFAULT now(),
+  last_active TIMESTAMP
+);
+
+-- Model config: persisted endpoint + model selections (system-wide).
+CREATE TABLE IF NOT EXISTS model_config (
+  key        VARCHAR PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT now()
+);
+`;
+
+export const USER_SCHEMA = `
 -- Threads
 CREATE TABLE IF NOT EXISTS threads (
   id          VARCHAR PRIMARY KEY,
@@ -102,7 +159,7 @@ CREATE TABLE IF NOT EXISTS memory (
   PRIMARY KEY (key, project_id)
 );
 
--- Dispatch log (instrumentation)
+-- Dispatch log (instrumentation, per-user since it's tied to that user's tasks)
 CREATE TABLE IF NOT EXISTS dispatch_log (
   id             VARCHAR PRIMARY KEY,
   message_id     VARCHAR,
@@ -118,22 +175,16 @@ CREATE TABLE IF NOT EXISTS dispatch_log (
   created_at     TIMESTAMP NOT NULL DEFAULT now()
 );
 
--- Message events: persists every meaningful SSE event so history survives refresh.
--- Replayed in order on thread load to reconstruct file panels, coordinator bubbles,
--- activity logs, and thinking traces exactly as they appeared during the stream.
 CREATE TABLE IF NOT EXISTS message_events (
   id           VARCHAR PRIMARY KEY,
   thread_id    VARCHAR NOT NULL REFERENCES threads(id),
-  message_id   VARCHAR,              -- links to the assistant message this event belongs to
-  event_type   VARCHAR NOT NULL,     -- 'file_panel' | 'coordinator' | 'thinking_complete' | 'patches_applied' | 'activity'
-  payload      TEXT NOT NULL,        -- JSON blob of the full event
-  seq          INTEGER NOT NULL DEFAULT 0,  -- ordering within a message
+  message_id   VARCHAR,
+  event_type   VARCHAR NOT NULL,
+  payload      TEXT NOT NULL,
+  seq          INTEGER NOT NULL DEFAULT 0,
   created_at   TIMESTAMP NOT NULL DEFAULT now()
 );
 
--- Chat summaries: rolling coordinator-generated summary per thread.
--- Updated after every completed turn. Used as primary conversation memory
--- so the coordinator doesn't need to re-read the full message history.
 CREATE TABLE IF NOT EXISTS chat_summaries (
   id                      VARCHAR PRIMARY KEY,
   thread_id               VARCHAR NOT NULL REFERENCES threads(id),
@@ -143,17 +194,6 @@ CREATE TABLE IF NOT EXISTS chat_summaries (
   UNIQUE (thread_id)
 );
 
--- Model config: persisted endpoint + model selections.
--- Keyed by role ('coordinator' | 'engine'). Values are JSON blobs.
-CREATE TABLE IF NOT EXISTS model_config (
-  key        VARCHAR PRIMARY KEY,
-  value      TEXT NOT NULL,
-  updated_at TIMESTAMP NOT NULL DEFAULT now()
-);
-
--- Knowledge base: coordinator-searchable entries persisted across turns.
--- Queried before classification (Pass 3D) to inject relevant prior knowledge
--- into the task context. Indexed on query for fast substring lookup.
 CREATE TABLE IF NOT EXISTS knowledge_base (
   id         VARCHAR PRIMARY KEY,
   query      VARCHAR NOT NULL,
@@ -164,55 +204,42 @@ CREATE TABLE IF NOT EXISTS knowledge_base (
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_query ON knowledge_base(query);
 
--- Workspace files: per-thread file index with AI-maintained notes
--- Each thread has its own working directory on disk (workspaces/<thread_id>/)
--- This table is the coordinator's index of what is in that directory.
 CREATE TABLE IF NOT EXISTS workspace_files (
   id           VARCHAR PRIMARY KEY,
   thread_id    VARCHAR NOT NULL REFERENCES threads(id),
-  filename     VARCHAR NOT NULL,    -- relative path within the workspace dir
-  language     VARCHAR,             -- detected language/type (ts, py, gd, md, etc.)
+  filename     VARCHAR NOT NULL,
+  language     VARCHAR,
   size_bytes   BIGINT NOT NULL DEFAULT 0,
-  note         TEXT,                -- coordinator-written description of what this file is
-  last_written_by VARCHAR,          -- 'user' | 'engine' | 'coordinator'
-  content_hash VARCHAR,             -- sha256 of content for change detection
+  note         TEXT,
+  last_written_by VARCHAR,
+  content_hash VARCHAR,
   created_at   TIMESTAMP NOT NULL DEFAULT now(),
   updated_at   TIMESTAMP NOT NULL DEFAULT now(),
   UNIQUE (thread_id, filename)
 );
 
--- Persists reasoning traces as individually-timestamped segments.
--- Each coordinator or engine thinking phase produces one row.
--- Tokens are appended in real time via UPDATE so nothing is lost on crash.
--- The front end reads this as the single source of truth for the reasoning panel.
 CREATE TABLE IF NOT EXISTS thinking_segments (
   id           VARCHAR PRIMARY KEY,
   thread_id    VARCHAR NOT NULL,
   message_id   VARCHAR NOT NULL,
-  phase        VARCHAR NOT NULL,   -- 'coordinator' | 'engine'
+  phase        VARCHAR NOT NULL,
   content      TEXT    NOT NULL DEFAULT '',
   token_count  INTEGER NOT NULL DEFAULT 0,
-  seq          INTEGER NOT NULL,   -- order within message
-  started_at   VARCHAR NOT NULL,   -- ISO timestamp — shown as break divider in UI
-  completed_at VARCHAR             -- NULL while streaming
+  seq          INTEGER NOT NULL,
+  started_at   VARCHAR NOT NULL,
+  completed_at VARCHAR
 );
 CREATE INDEX IF NOT EXISTS idx_thinking_segments_thread
   ON thinking_segments(thread_id, started_at ASC);
 CREATE INDEX IF NOT EXISTS idx_thinking_segments_message
   ON thinking_segments(message_id, seq ASC);
 
--- Prompt log: every raw AI call — exact prompt in, exact response out.
--- One row per coordinatorCall / coordinatorStream / engineStream invocation.
--- Captures all internal prompts that never appear in the normal chat UI:
--- file summaries, request rewrites, task decomposition, dispatch system prompts,
--- review calls, delivery composition, chat summaries, and so on.
--- Used by the export route to build a complete audit transcript.
 CREATE TABLE IF NOT EXISTS prompt_log (
   id          VARCHAR PRIMARY KEY,
   thread_id   VARCHAR NOT NULL REFERENCES threads(id),
   message_id  VARCHAR,
-  role        VARCHAR NOT NULL,   -- 'sayon' | 'seren'
-  stage       VARCHAR NOT NULL,   -- 'classify' | 'rewrite' | 'summarise' | 'discover' | 'extract' | 'decompose' | 'dispatch' | 'review' | 'validate' | 'deliver' | 'summarize_chat' | 'direct' | 'other'
+  role        VARCHAR NOT NULL,
+  stage       VARCHAR NOT NULL,
   model       VARCHAR NOT NULL,
   prompt      TEXT    NOT NULL,
   response    TEXT    NOT NULL,
@@ -222,18 +249,18 @@ CREATE TABLE IF NOT EXISTS prompt_log (
 CREATE INDEX IF NOT EXISTS idx_prompt_log_thread
   ON prompt_log(thread_id, created_at ASC);
 
+-- User-uploaded skills are per-user; system-level skills come from the bundled set on disk.
 CREATE TABLE IF NOT EXISTS skills (
   id           VARCHAR PRIMARY KEY,
   name         VARCHAR NOT NULL,
-  scope        VARCHAR NOT NULL,   -- 'sayon' | 'seren' | 'both'
-  category     VARCHAR NOT NULL,   -- 'core' | 'tools'
+  scope        VARCHAR NOT NULL,
+  category     VARCHAR NOT NULL,
   trigger      VARCHAR,
-  runner       VARCHAR,            -- relative path to runner script, null = context-only
+  runner       VARCHAR,
   installed_at TIMESTAMP NOT NULL DEFAULT now()
 );
 
--- Seed default documents if none exist.
--- claude.md is intentionally language-agnostic — the user sets their own standards.
+-- Seed default documents if none exist (per-user — each user has their own).
 INSERT OR IGNORE INTO documents (id, doc_type, content, version)
 VALUES
   ('doc-claude-md', 'claude_md',
@@ -256,50 +283,115 @@ Output code changes ONLY as SEARCH/REPLACE blocks. Never rewrite entire files un
 Describe your project here. The AI will read this before every task.', 1);
 `;
 
+// ── DatabaseManager ───────────────────────────────────────────────────────────
+//
+// Multi-instance manager keyed by (kind, identifier).
+//   kind='system'  → ~/.phobos/phobos.duckdb (one)
+//   kind='user'    → ~/.phobos/users/{username}/phobos.duckdb (one per user)
+//
+// Stores choose which DB they live in by calling getInstance() (system) or
+// getUserDb() (user, defaults to active user). Routes that touch system data
+// (model_config, cartridges, plugins, media services) keep getInstance().
+// Routes that touch per-user data (threads, messages, etc.) use getUserDb().
+
+type Kind = 'system' | 'user';
+
 export class DatabaseManager {
-  private static instance: DatabaseManager | null = null;
+  private static instances = new Map<string, DatabaseManager>();
   private db!: Database.Database;
   private dbPath: string;
+  private kind: Kind;
 
-  private constructor(dbPath: string) {
+  private constructor(kind: Kind, dbPath: string) {
+    this.kind = kind;
     this.dbPath = dbPath;
   }
 
-  static getInstance(dbPath = './localai.duckdb'): DatabaseManager {
-    if (!DatabaseManager.instance) {
-      DatabaseManager.instance = new DatabaseManager(dbPath);
+  /**
+   * System-scoped DatabaseManager. Returns the singleton for ~/.phobos/phobos.duckdb.
+   *
+   * The `dbPath` argument is preserved for backward compatibility with existing
+   * callers that pass a path explicitly (typically server.ts at boot, and tests
+   * that construct an isolated DB). When unspecified, the canonical system path
+   * is used. Tests that pass a custom path get an isolated instance keyed by
+   * that path.
+   */
+  static getInstance(dbPath?: string): DatabaseManager {
+    const resolvedPath = dbPath ?? systemDbPath();
+    const key = `system:${resolvedPath}`;
+    let inst = DatabaseManager.instances.get(key);
+    if (!inst) {
+      inst = new DatabaseManager('system', resolvedPath);
+      DatabaseManager.instances.set(key, inst);
     }
-    return DatabaseManager.instance;
+    return inst;
+  }
+
+  /**
+   * User-scoped DatabaseManager. Returns the singleton for the given user's
+   * ~/.phobos/users/{username}/phobos.duckdb. When no username is given, the
+   * active user (from getActiveUser()) is used.
+   *
+   * E1: getActiveUser() always returns 'owner' unless PHOBOS_ACTIVE_USER is set.
+   * E2: getActiveUser() will read from per-request session context.
+   */
+  static getUserDb(username?: string): DatabaseManager {
+    const user = username ?? getActiveUser();
+    const resolvedPath = userDbPath(user);
+    const key = `user:${user}:${resolvedPath}`;
+    let inst = DatabaseManager.instances.get(key);
+    if (!inst) {
+      inst = new DatabaseManager('user', resolvedPath);
+      DatabaseManager.instances.set(key, inst);
+    }
+    return inst;
+  }
+
+  /**
+   * Used only by Migration.ts to build DBs at arbitrary paths during the E1
+   * split. Bypasses the singleton cache. Do not use elsewhere.
+   */
+  static createForMigration(kind: Kind, dbPath: string): DatabaseManager {
+    return new DatabaseManager(kind, dbPath);
+  }
+
+  /**
+   * Wrap an already-open Database.Database instance as a DatabaseManager.
+   * Used by Migration.ts so that schema-pre-creation calls (ensureSchema,
+   * ensureTable) share the same native handle as the copy phase, avoiding
+   * the double-open file-lock race on Windows.
+   * Do not use elsewhere.
+   */
+  static wrapExisting(kind: Kind, dbPath: string, db: Database.Database): DatabaseManager {
+    const inst = new DatabaseManager(kind, dbPath);
+    inst.db = db;
+    return inst;
   }
 
   async initialize(): Promise<void> {
-    // Pass the bundled extension directory so DuckDB finds vss.duckdb_extension
-    // without touching ~/.duckdb/. If the directory doesn't exist (e.g. first run
-    // before fetch-vss-extension.js), DuckDB falls back to default behaviour —
-    // MemoryStore.ensureTable() catches the LOAD vss failure non-fatally.
+    fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
+
     const dbConfig = BUNDLED_EXTENSION_DIR
       ? { extension_directory: BUNDLED_EXTENSION_DIR }
       : {};
 
     this.db = await Database.Database.create(this.dbPath, dbConfig as any);
-    await this.db.exec(SCHEMA);
-    await this.migrateDocuments();
-    await this.ensureDistilledColumn();
-    if (BUNDLED_EXTENSION_DIR) {
+    const schema = this.kind === 'system' ? SYSTEM_SCHEMA : USER_SCHEMA;
+    await this.db.exec(schema);
+    if (this.kind === 'user') {
+      await this.migrateDocuments();
+      await this.ensureDistilledColumn();
+    }
+    if (BUNDLED_EXTENSION_DIR && this.kind === 'system') {
       console.log(`[DB] Extension dir: ${BUNDLED_EXTENSION_DIR}`);
     }
-    console.log(`[DB] Initialized at ${this.dbPath}`);
+    console.log(`[DB] Initialized ${this.kind} at ${this.dbPath}`);
   }
 
-  /**
-   * Adds distilled_content column to existing messages tables that predate it.
-   * New DBs get the column from SCHEMA directly. This is a no-op for those.
-   */
   private async ensureDistilledColumn(): Promise<void> {
     try {
       await this.db!.exec(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS distilled_content TEXT`);
     } catch {
-      // Older DuckDB without IF NOT EXISTS — check existence before giving up
       try {
         await this.db!.exec(`SELECT distilled_content FROM messages LIMIT 0`);
       } catch {
@@ -312,22 +404,14 @@ export class DatabaseManager {
     }
   }
 
-  /**
-   * Expands the doc_type CHECK constraint to include phobos_directives and user_directives.
-   * DuckDB does not support ALTER COLUMN for CHECK constraints — we recreate the table
-   * only if the old narrow constraint is still in place (detected by attempting an insert
-   * of the new type and catching the constraint violation).
-   */
   private async migrateDocuments(): Promise<void> {
     try {
-      // Probe whether the constraint already allows the new types
       const conn = await this.db.connect();
       try {
         await conn.exec(`INSERT INTO documents (id, doc_type, content, version)
           VALUES ('__probe__', 'user_directives', '', 0)`);
         await conn.exec(`DELETE FROM documents WHERE id = '__probe__'`);
       } catch {
-        // Constraint violation — recreate table with expanded CHECK
         await conn.exec(`
           ALTER TABLE documents RENAME TO documents_old;
           CREATE TABLE documents (
@@ -383,6 +467,41 @@ export class DatabaseManager {
     }
   }
 
+  /** Execute a SQL statement directly without going through prepare().
+   *  Use when DuckDB's binder fails on the prepare phase for valid SQL
+   *  (e.g. ON CONFLICT (col) DO NOTHING on PRIMARY KEY columns in 1.4). */
+  async exec(sql: string): Promise<void> {
+    const conn = await this.db.connect();
+    try {
+      await conn.exec(sql);
+    } finally {
+      await conn.close();
+    }
+  }
+
+  /**
+   * Execute SQL with positional params via conn.exec() — bypasses prepare().
+   * Use for ON CONFLICT DML that hits DuckDB 1.4.x's prepare-path binder bug.
+   * Params are inlined as SQL literals using safe type serialisation:
+   *   null/undefined → NULL, number/boolean → bare literal,
+   *   string → single-quoted with internal quotes doubled.
+   */
+  async execWithParams(sql: string, params: unknown[]): Promise<void> {
+    let i = 0;
+    const inlined = sql.replace(/\?/g, () => {
+      const v = params[i++];
+      if (v === null || v === undefined) return 'NULL';
+      if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+      return `'${String(v).replace(/'/g, "''")}'`;
+    });
+    const conn = await this.db.connect();
+    try {
+      await conn.exec(inlined);
+    } finally {
+      await conn.close();
+    }
+  }
+
   async queryOne<T = Record<string, unknown>>(
     sql: string,
     params: unknown[] = []
@@ -398,8 +517,6 @@ export class DatabaseManager {
   /**
    * Force a WAL checkpoint — flushes all WAL entries into the main .duckdb file.
    * After this call, the .wal file can be deleted without data loss.
-   * Call after migrations and periodically during long sessions to guard
-   * against hard kills (Windows console close, power loss, crashes).
    */
   async checkpoint(): Promise<void> {
     const conn = await this.db.connect();

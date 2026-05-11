@@ -62,10 +62,13 @@ export function computeNextRun(expr: string, after: Date = new Date()): Date | n
 // opens a thread, and confirms back via /api/scheduler/pending/confirm.
 
 export interface PendingFire {
-  taskId:   string;
-  taskName: string;
-  prompt:   string;
-  firedAt:  string;
+  taskId:              string;
+  taskName:            string;
+  prompt:              string;
+  firedAt:             string;
+  pinned_sayon_model:  string | null;
+  pinned_seren_model:  string | null;
+  pinned_cartridge_id: string | null;
 }
 
 let _pending: PendingFire | null = null;
@@ -127,7 +130,7 @@ export class Scheduler extends EventEmitter {
     const task = await this.store.getById(taskId);
     if (!task) return { ok: false, error: 'Task not found' };
 
-    if (task.task_type === 'background') {
+    if (task.task_type === 'background' || task.task_type === 'security' || task.task_type === 'ha') {
       setImmediate(() => { this.runBackground(task).catch(console.error); });
     } else {
       this.signalPending(task);
@@ -211,7 +214,7 @@ export class Scheduler extends EventEmitter {
           next_run_at: next?.toISOString() ?? null,
         });
 
-        if (task.task_type === 'background') {
+        if (task.task_type === 'background' || task.task_type === 'security' || task.task_type === 'ha') {
           // Fire all background tasks concurrently — no frontend gate.
           setImmediate(() => {
             this.runBackground(task)
@@ -234,10 +237,13 @@ export class Scheduler extends EventEmitter {
 
   private signalPending(task: ScheduledTask): void {
     _pending = {
-      taskId:   task.id,
-      taskName: task.name,
-      prompt:   task.prompt,
-      firedAt:  new Date().toISOString(),
+      taskId:              task.id,
+      taskName:            task.name,
+      prompt:              task.prompt,
+      firedAt:             new Date().toISOString(),
+      pinned_sayon_model:  task.pinned_sayon_model  ?? null,
+      pinned_seren_model:  task.pinned_seren_model  ?? null,
+      pinned_cartridge_id: task.pinned_cartridge_id ?? null,
     };
     console.log(`[Scheduler] Conversation task pending: "${task.name}" (${task.id})`);
   }

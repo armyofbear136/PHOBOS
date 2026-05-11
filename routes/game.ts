@@ -20,7 +20,7 @@ import { GameStore } from '../db/GameStore.js';
 import { gsm } from '../game/GameStateManager.js';
 
 export async function registerGameRoutes(fastify: FastifyInstance): Promise<void> {
-  const db = DatabaseManager.getInstance();
+  const db = DatabaseManager.getUserDb();
   const store = new GameStore(db);
 
   // ── SSE Stream ─────────────────────────────────────────────────────────

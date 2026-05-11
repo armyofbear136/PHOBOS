@@ -22,7 +22,9 @@
  *   POST   /api/phobos/training/lm/sessions               — create LM session
  *   GET    /api/phobos/training/lm/sessions               — list LM sessions
  *   GET    /api/phobos/training/lm/sessions/:id           — get LM session
- *   POST   /api/phobos/training/lm/sessions/:id/run       — run (SSE)
+ *   PATCH  /api/phobos/training/lm/sessions/:id/config    — update rank/steps/lr/license
+ *   POST   /api/phobos/training/lm/sessions/:id/run       — start training (fire-and-forget)
+ *   GET    /api/phobos/training/lm/sessions/:id/run-status — poll training status
  *   POST   /api/phobos/training/lm/sessions/:id/abort     — abort
  *   DELETE /api/phobos/training/lm/sessions/:id           — delete
  *   GET    /api/phobos/training/lm/status                 — active LM status
@@ -39,6 +41,10 @@ import type { FastifyInstance } from 'fastify';
 import * as fs   from 'fs';
 import * as path from 'path';
 import * as os   from 'os';
+import { execFile }  from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
 import { DatabaseManager } from '../db/DatabaseManager.js';
 import { PluginStore }     from '../db/PluginStore.js';
 import { CartridgeStore }  from '../db/CartridgeStore.js';
@@ -57,16 +63,19 @@ import {
 import {
   createLmSession,
   readLmSession,
+  updateSession,
   listLmSessions,
-  runLmTraining,
+  startLmTraining,
   abortLmTraining,
   isLmTraining,
   activeLmSessionId,
+  getLmTrainingStatus,
   resolveLatestLmCheckpoint,
   estimateLmTrainingVramGb,
   trainingCacheSizeBytes,
   deleteTrainingCache,
   type StartLmTrainingOptions,
+  type LmTrainingSession,
 } from '../phobos/CartridgeTrainer.js';
 import { detectHardware, queryGpuFreeVram } from '../phobos/PhobosLocalManager.js';
 import type { PluginBaseModel, PluginCategory } from '../phobos/PluginTypes.js';
@@ -345,6 +354,34 @@ export async function registerTrainingRoutes(fastify: FastifyInstance): Promise<
     },
   );
 
+  // PATCH /config — updates rank/steps/lr/license/password on a pending session.
+  // Called by the wizard when the user advances past the Config step.
+  fastify.patch<{ Params: { id: string }; Body: Partial<LmTrainingSession> }>(
+    '/api/phobos/training/lm/sessions/:id/config',
+    async (req, reply) => {
+      const s = readLmSession(req.params.id);
+      if (!s) return reply.status(404).send({ error: 'Session not found' });
+      const { rank, steps, lr, license, password, add_license } = req.body as {
+        rank?: number; steps?: number; lr?: number;
+        license?: string; password?: string;
+        addLicense?: boolean; add_license?: boolean;
+      };
+      const patch: Partial<LmTrainingSession> = {};
+      if (rank       !== undefined) patch.rank       = rank;
+      if (steps      !== undefined) patch.steps      = steps;
+      if (lr         !== undefined) patch.lr         = lr;
+      if (license    !== undefined) patch.license    = license as LmTrainingSession['license'];
+      if (password   !== undefined) patch.password   = password;
+      // wizard sends addLicense (camelCase); session stores add_license (snake_case)
+      const al = (req.body as { addLicense?: boolean }).addLicense ?? add_license;
+      if (al !== undefined) patch.add_license = al;
+      const updated = updateSession(req.params.id, patch);
+      return reply.send(updated);
+    },
+  );
+
+  // POST /run — starts training in the background and returns immediately.
+  // Frontend polls /run-status for updates (mirrors WorkflowPanel pattern).
   fastify.post<{ Params: { id: string } }>(
     '/api/phobos/training/lm/sessions/:id/run',
     async (req, reply) => {
@@ -356,32 +393,34 @@ export async function registerTrainingRoutes(fastify: FastifyInstance): Promise<
         return reply.status(409).send({ error: `Another LM session is active: ${activeLmSessionId()}` });
       }
 
-      reply.raw.writeHead(200, {
-        'Content-Type':      'text/event-stream',
-        'Cache-Control':     'no-cache',
-        'Connection':        'keep-alive',
-        'X-Accel-Buffering': 'no',
-      });
-
-      const send         = (ev: object) => { if (!reply.raw.destroyed) reply.raw.write(`data: ${JSON.stringify(ev)}\n\n`); };
-      const pingInterval = setInterval(() => { if (!reply.raw.destroyed) reply.raw.write(': ping\n\n'); }, 15_000);
-
-      req.raw.on('close', () => {
-        clearInterval(pingInterval);
-        if (isLmTraining() && activeLmSessionId() === sessionId) abortLmTraining(sessionId);
-      });
-
-      try {
-        for await (const progress of runLmTraining(sessionId, cartridgeStore)) {
-          send(progress);
-          if (progress.type === 'done' || progress.type === 'error') break;
-        }
-      } catch (e) {
-        send({ type: 'error', message: (e as Error).message });
-      } finally {
-        clearInterval(pingInterval);
-        if (!reply.raw.destroyed) reply.raw.end();
+      const result = startLmTraining(sessionId, cartridgeStore);
+      if (!result.ok) {
+        return reply.status(409).send({ error: result.error });
       }
+
+      return reply.send({ ok: true, training: true });
+    },
+  );
+
+  // GET /run-status — polled by the frontend every ~1500 ms.
+  // Returns the current in-memory training state. Connection lifecycle is
+  // completely decoupled from the training process.
+  fastify.get<{ Params: { id: string } }>(
+    '/api/phobos/training/lm/sessions/:id/run-status',
+    async (req, reply) => {
+      const { id } = req.params;
+      const st = getLmTrainingStatus();
+      if (st.sessionId !== id) {
+        // No active run for this session — read final state from disk
+        const s = readLmSession(id);
+        return reply.send({ training: false, session: s });
+      }
+      // If completed more than 5 s ago, fall through to disk state
+      if (st.completedAt && Date.now() - st.completedAt > 5000) {
+        const s = readLmSession(id);
+        return reply.send({ training: false, session: s });
+      }
+      return reply.send({ training: st.training, session: st.session });
     },
   );
 
@@ -459,6 +498,172 @@ export async function registerTrainingRoutes(fastify: FastifyInstance): Promise<
       fs.rmSync(fp);
       const files = fs.readdirSync(s.dataset_dir).filter(f => !f.startsWith('.'));
       return reply.send({ ok: true, deleted: safe, count: files.length });
+    },
+  );
+
+  // Extensions phobos-lm-trainer.py handles natively (see DOC_EXTS in trainer).
+  // Any file copied into dataset_dir whose extension is NOT in this set gets
+  // renamed to .txt — the content is plain text, only the extension differs.
+  const TRAINER_NATIVE_EXTS = new Set([
+    '.md', '.txt', '.py', '.ts', '.js', '.json', '.html', '.pdf', '.jsonl',
+  ]);
+
+  function trainerDest(dir: string, originalName: string): string {
+    const ext  = path.extname(originalName).toLowerCase();
+    const base = path.basename(originalName, path.extname(originalName));
+    const finalExt = TRAINER_NATIVE_EXTS.has(ext) ? ext : '.txt';
+    // Avoid collisions: if renaming ext, append original ext slug to base
+    const finalBase = finalExt !== ext ? `${base}_${ext.slice(1)}` : base;
+    return path.join(dir, finalBase + finalExt);
+  }
+
+  // POST /pick-files — opens native OS multi-select file dialog, copies chosen
+  // files into the session dataset_dir on the server side (no HTTP upload).
+  // Returns the full updated file list.
+  fastify.post<{ Params: { id: string } }>(
+    '/api/phobos/training/lm/sessions/:id/dataset/pick-files',
+    async (req, reply) => {
+      const s = readLmSession(req.params.id);
+      if (!s) return reply.status(404).send({ error: 'Session not found' });
+      fs.mkdirSync(s.dataset_dir, { recursive: true });
+
+      const FILTER = 'Training files|*.md;*.txt;*.pdf;*.py;*.ts;*.js;*.json;*.html;*.htm;*.ahk;*.sh;*.bash;*.ps1;*.bat;*.cmd;*.lua;*.rb;*.go;*.rs;*.c;*.cpp;*.h;*.cs;*.java;*.kt;*.php;*.sql;*.yaml;*.yml;*.toml;*.ini;*.cfg;*.conf;*.env;*.log;*.csv;*.xml;*.rst;*.tex;*.org;*.adoc;*.jsonl|All files (*.*)|*.*';
+      let selectedPaths: string[] = [];
+
+      try {
+        if (process.platform === 'win32') {
+          const tmpPs1 = path.join(os.tmpdir(), `phobos-lm-pick-${Date.now()}.ps1`);
+          const ps1 = [
+            'Add-Type -AssemblyName System.Windows.Forms',
+            '[System.Windows.Forms.Application]::EnableVisualStyles()',
+            '$f = New-Object System.Windows.Forms.Form',
+            '$f.TopMost = $true; $f.ShowInTaskbar = $false',
+            '$f.WindowState = [System.Windows.Forms.FormWindowState]::Minimized',
+            '$f.Show(); $f.Hide()',
+            '$d = New-Object System.Windows.Forms.OpenFileDialog',
+            `$d.Filter = "${FILTER}"`,
+            '$d.Title = "Select training files"',
+            '$d.Multiselect = $true',
+            'if ($d.ShowDialog($f) -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileNames | ForEach-Object { Write-Output $_ } }',
+            '$f.Dispose()',
+          ].join('\r\n');
+          try {
+            fs.writeFileSync(tmpPs1, ps1, 'utf-8');
+            const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', tmpPs1]);
+            selectedPaths = stdout.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+          } finally { try { fs.unlinkSync(tmpPs1); } catch { /* ignore */ } }
+
+        } else if (process.platform === 'darwin') {
+          const { stdout } = await execFileAsync('osascript', [
+            '-e', 'POSIX paths of (choose file with prompt "Select training files" with multiple selections allowed)',
+          ]);
+          selectedPaths = stdout.trim().split(', ').map(p => p.trim()).filter(Boolean);
+
+        } else {
+          const { stdout } = await execFileAsync('zenity', [
+            '--file-selection', '--title=Select training files', '--multiple', '--separator=\n',
+          ]);
+          selectedPaths = stdout.split('\n').map(l => l.trim()).filter(Boolean);
+        }
+      } catch { /* user cancelled — selectedPaths stays empty */ }
+
+      let copied = 0;
+      for (const src of selectedPaths) {
+        if (!fs.existsSync(src)) continue;
+        const dest = trainerDest(s.dataset_dir, path.basename(src));
+        try { fs.copyFileSync(src, dest); copied++; } catch { /* skip unreadable */ }
+      }
+
+      const files = fs.readdirSync(s.dataset_dir)
+        .filter(f => !f.startsWith('.'))
+        .map(f => { const stat = fs.statSync(path.join(s.dataset_dir, f)); return { name: f, sizeBytes: stat.size }; });
+      return reply.send({ ok: true, copied, files });
+    },
+  );
+
+  // POST /pick-folder — opens native OS folder dialog, copies all training-
+  // compatible files from the chosen folder into dataset_dir on the server.
+  // Returns the full updated file list.
+  fastify.post<{ Params: { id: string } }>(
+    '/api/phobos/training/lm/sessions/:id/dataset/pick-folder',
+    async (req, reply) => {
+      const s = readLmSession(req.params.id);
+      if (!s) return reply.status(404).send({ error: 'Session not found' });
+      fs.mkdirSync(s.dataset_dir, { recursive: true });
+
+      const VALID_EXTS = new Set([
+        '.md','.txt','.pdf','.py','.ts','.js','.json','.html','.htm',
+        '.ahk','.sh','.bash','.zsh','.fish','.ps1','.bat','.cmd',
+        '.lua','.rb','.go','.rs','.c','.cpp','.h','.hpp','.cs','.java',
+        '.kt','.swift','.r','.m','.pl','.pm','.php','.sql',
+        '.yaml','.yml','.toml','.ini','.cfg','.conf','.env','.log',
+        '.csv','.xml','.rst','.tex','.org','.wiki','.adoc',
+        '.nfo','.me','.readme','.license','.jsonl',
+      ]);
+      let folderPath = '';
+
+      try {
+        if (process.platform === 'win32') {
+          const tmpPs1 = path.join(os.tmpdir(), `phobos-lm-folder-${Date.now()}.ps1`);
+          const ps1 = [
+            'Add-Type -AssemblyName System.Windows.Forms',
+            '[System.Windows.Forms.Application]::EnableVisualStyles()',
+            '$src = @"',
+            'using System; using System.Runtime.InteropServices; using System.Windows.Forms;',
+            '[ComImport, Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")] class FileOpenDialogCOM {}',
+            'public class FolderPicker2 {',
+            '  [DllImport("shell32.dll", CharSet=CharSet.Unicode)] static extern int SHCreateItemFromParsingName(string p, IntPtr b, ref Guid r, out IShellItem i);',
+            '  [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] interface IShellItem { void BindToHandler(IntPtr p, ref Guid b, ref Guid r, out IntPtr o); void GetParent(out IShellItem i); void GetDisplayName(uint s, out string n); void GetAttributes(uint m, out uint a); void Compare(IShellItem i, uint h, out int o); }',
+            '  [ComImport, Guid("d57c7288-d4ad-4768-be02-9d969532d960"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)] interface IFileOpenDialog { [PreserveSig] int Show(IntPtr h); void SetFileTypes(uint c, IntPtr t); void SetFileTypeIndex(uint i); void GetFileTypeIndex(out uint i); void Advise(IntPtr e, out uint c); void Unadvise(uint c); void SetOptions(uint f); void GetOptions(out uint f); void SetDefaultFolder(IShellItem i); void SetFolder(IShellItem i); void GetFolder(out IShellItem i); void GetCurrentSelection(out IShellItem i); void SetFileName(string n); void GetFileName(out string n); void SetTitle(string t); void SetOkButtonLabel(string t); void SetFileNameLabel(string t); void GetResult(out IShellItem i); void AddPlace(IShellItem i, int a); void SetDefaultExtension(string e); void Close(int r); void SetClientGuid(ref Guid g); void ClearClientData(); void SetFilter(IntPtr f); void GetResults(out IntPtr e); void GetSelectedItems(out IntPtr e); }',
+            '  public static string Pick(string title) {',
+            '    var dlg = (IFileOpenDialog)new FileOpenDialogCOM();',
+            '    dlg.SetOptions(0x00000020 | 0x00000800);',
+            '    dlg.SetTitle(title);',
+            '    var hr = dlg.Show(IntPtr.Zero);',
+            '    if (hr != 0) return "";',
+            '    IShellItem item; dlg.GetResult(out item);',
+            '    string p; item.GetDisplayName(0x80058000, out p); return p ?? "";',
+            '  }',
+            '}',
+            '"@',
+            'Add-Type -TypeDefinition $src -Language CSharp',
+            '$result = [FolderPicker2]::Pick("Select folder containing training files")',
+            'if ($result) { Write-Output $result }',
+          ].join('\r\n');
+          try {
+            fs.writeFileSync(tmpPs1, ps1, 'utf-8');
+            const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', tmpPs1]);
+            folderPath = stdout.trim();
+          } finally { try { fs.unlinkSync(tmpPs1); } catch { /* ignore */ } }
+
+        } else if (process.platform === 'darwin') {
+          const { stdout } = await execFileAsync('osascript', [
+            '-e', 'POSIX path of (choose folder with prompt "Select folder containing training files")',
+          ]);
+          folderPath = stdout.trim();
+
+        } else {
+          const { stdout } = await execFileAsync('zenity', ['--file-selection', '--directory', '--title=Select training folder']);
+          folderPath = stdout.trim();
+        }
+      } catch { /* cancelled */ }
+
+      let copied = 0;
+      if (folderPath && fs.existsSync(folderPath)) {
+        for (const name of fs.readdirSync(folderPath)) {
+          if (!VALID_EXTS.has(path.extname(name).toLowerCase())) continue;
+          const src  = path.join(folderPath, name);
+          const dest = trainerDest(s.dataset_dir, name);
+          try {
+            if (fs.statSync(src).isFile()) { fs.copyFileSync(src, dest); copied++; }
+          } catch { /* skip unreadable */ }
+        }
+      }
+
+      const files = fs.readdirSync(s.dataset_dir)
+        .filter(f => !f.startsWith('.'))
+        .map(f => { const stat = fs.statSync(path.join(s.dataset_dir, f)); return { name: f, sizeBytes: stat.size }; });
+      return reply.send({ ok: true, copied, folderPath: folderPath || null, files });
     },
   );
 

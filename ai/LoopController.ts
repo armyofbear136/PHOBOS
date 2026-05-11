@@ -185,6 +185,43 @@ export interface LoopOptions {
     userPrompt: string;
     messageId?: string;
   }) => Promise<void>;
+
+  /**
+   * Sandbox executor flag. Read from DuckDB's model_path_settings table on
+   * the main thread and threaded through to LoopController + DispatchComposer.
+   * The coordinator worker has no DB access, so this value is supplied by
+   * INIT_CONFIG / EXECUTOR_FLAG_UPDATE postMessages from main. Defaults to
+   * false if unspecified — execute / simulate tasks degrade gracefully.
+   */
+  executorEnabled?: boolean;
+
+  /**
+   * Override for archive search. When set (in coordinator-worker context),
+   * routes archive queries through main via postMessage round-trip instead
+   * of calling ArchiveStore directly. When unset (main / tests), TaskPlanner
+   * falls back to direct ArchiveClient.search.
+   */
+  archiveSearchFn?: (query: string, domains: import('../db/ArchiveStore.js').ArchiveDomain[], k: number) => Promise<string>;
+
+  /**
+   * Override for workspace memory search. Same pattern as archiveSearchFn —
+   * coordinator routes through main; main / tests use direct DB call.
+   */
+  memorySearchFn?: (query: string) => Promise<string>;
+
+  /**
+   * Override for code audit. The audit operation reads + writes the security
+   * scan tables and runs SEREN-driven analysis — pure DB-bound work that
+   * cannot run inside the coordinator worker. When set, LoopController
+   * delegates the entire audit task to main via postMessage round-trip.
+   */
+  codeAuditFn?: (target: string, taskIndex: number, total: number) => Promise<{
+    output:        string;
+    exitCode:      number;
+    durationMs:    number;
+    stdoutPreview: string;
+    findingsCount: number;
+  }>;
 }
 
 export interface AttemptResult {
@@ -237,7 +274,7 @@ interface StreamResult {
 }
 
 export class LoopController {
-  private composer = new DispatchComposer();
+  private composer: DispatchComposer;
   private deliveryComposer = new DeliveryComposer();
   private interventionHandler = new InterventionHandler();
   private toolParser = new FileToolParser();
@@ -259,7 +296,9 @@ export class LoopController {
   // Max read_file → act cycles per attempt (prevents infinite read loops)
   private static MAX_READ_CYCLES = 3;
 
-  constructor(private options: LoopOptions = {}) {}
+  constructor(private options: LoopOptions = {}) {
+    this.composer = new DispatchComposer(options.executorEnabled ?? false);
+  }
 
   private sendEvent(reply: FastifyReply, event: SSEEvent): void {
     reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
@@ -470,7 +509,10 @@ export class LoopController {
 
     if (needsPlanning) {
       agentState.transition('planning', 'Decomposing tasks');
-      const planner = new TaskPlanner(workspaceDir);
+      const planner = new TaskPlanner(workspaceDir, {
+        archiveSearchFn: this.options.archiveSearchFn,
+        memorySearchFn:  this.options.memorySearchFn,
+      });
 
       // ── SEREN clarification re-entry shortcut ────────────────────────────
       // When the user is answering SEREN's clarification question, we already
@@ -919,12 +961,10 @@ export class LoopController {
           const isSimulate = task.operation === 'simulate';
 
           // Gate on feature flag — degrade gracefully if executor is disabled.
-          let executorEnabled = false;
-          try {
-            const { getSandboxExecutorEnabled } = await import('../db/ModelPathStore.js');
-            const { DatabaseManager: DM } = await import('../db/DatabaseManager.js');
-            executorEnabled = await getSandboxExecutorEnabled(DM.getInstance());
-          } catch { /* non-fatal — treat as disabled */ }
+          // Value flows through LoopOptions.executorEnabled. Main thread reads
+          // model_path_settings; coordinator worker receives via INIT_CONFIG.
+          // No DB access from this code path.
+          const executorEnabled = this.options.executorEnabled ?? false;
 
           if (!executorEnabled) {
             const desc = task.entrypoint ?? task.title;
@@ -1082,87 +1122,122 @@ export class LoopController {
             break;
           }
 
-          const nodePath   = await import('node:path');
-          const absTarget  = nodePath.isAbsolute(rawTarget)
-            ? rawTarget
-            : nodePath.join(projectRoot, rawTarget);
-
           let auditOutput: string;
-          try {
-            const { DatabaseManager: DM } = await import('../db/DatabaseManager.js');
-            const { SecurityStore }        = await import('../db/SecurityStore.js');
-            const { runCodeAudit }         = await import('../security/CodeAuditor.js');
 
-            const secStore = new SecurityStore(DM.getInstance());
-            await secStore.ensureTable();
-            const run = await secStore.createRun('code_audit');
-
+          if (this.options.codeAuditFn) {
+            // Coordinator-worker path. The whole audit runs on main thread:
+            // SecurityStore createRun, runCodeAudit (file scan + SEREN digest),
+            // getRunById, getFindingsByRun. We receive the formatted output
+            // string and the metadata for the SSE result card.
             agentState.transition('executing', rawTarget, task.index, total);
             sendStatus(`[${task.index}/${total}] Auditing ${rawTarget}…`);
-
-            await runCodeAudit(secStore, run.id, absTarget);
-
-            const completed = await secStore.getRunById(run.id);
-            const findings  = await secStore.getFindingsByRun(run.id);
-            const durationMs = Date.now() - (completed ? Date.parse(completed.started_at) : Date.now());
-
-            // Emit SSE result card reusing execute_result shape
-            const findingPreview = findings.length > 0
-              ? findings[0].title.slice(0, 120)
-              : 'No issues found';
-            this.sendEvent(reply, {
-              type:          'execute_result',
-              taskIndex:     task.index,
-              exitCode:      findings.length > 0 ? 1 : 0,
-              durationMs,
-              timedOut:      false,
-              stdoutPreview: findingPreview,
-              mode:          'audit',
-            });
-            this.options.onExecuteResult?.({
-              taskIndex:     task.index,
-              exitCode:      findings.length > 0 ? 1 : 0,
-              durationMs,
-              timedOut:      false,
-              stdoutPreview: findingPreview,
-              mode:          'audit',
-            });
-
-            // Build output string: findings grouped by severity, digest appended.
-            // This becomes completedOutput and flows through outputRequiredBy
-            // and DeliveryComposer exactly like every other operation.
-            if (findings.length === 0) {
-              auditOutput = `[CODE AUDIT CLEAN -- ${rawTarget}]\nNo security issues detected.`;
-            } else {
-              const bySeverity: Record<string, typeof findings> = {};
-              for (const f of findings) {
-                (bySeverity[f.severity] ??= []).push(f);
-              }
-              const lines: string[] = [
-                `[CODE AUDIT -- ${findings.length} finding${findings.length !== 1 ? 's' : ''} in ${rawTarget}]`,
-                '',
-              ];
-              for (const sev of ['critical', 'high', 'medium', 'low', 'info'] as const) {
-                const group = bySeverity[sev];
-                if (!group?.length) continue;
-                lines.push(`${sev.toUpperCase()} (${group.length}):`);
-                for (const f of group) {
-                  lines.push(`  [${f.target ?? rawTarget}] ${f.title}`);
-                  if (f.detail) lines.push(`    ${f.detail}`);
-                }
-                lines.push('');
-              }
-              if (completed?.seren_digest) {
-                lines.push('ANALYSIS:', completed.seren_digest);
-              }
-              auditOutput = lines.join('\n');
+            try {
+              const result = await this.options.codeAuditFn(rawTarget, task.index, total);
+              this.sendEvent(reply, {
+                type:          'execute_result',
+                taskIndex:     task.index,
+                exitCode:      result.exitCode,
+                durationMs:    result.durationMs,
+                timedOut:      false,
+                stdoutPreview: result.stdoutPreview,
+                mode:          'audit',
+              });
+              this.options.onExecuteResult?.({
+                taskIndex:     task.index,
+                exitCode:      result.exitCode,
+                durationMs:    result.durationMs,
+                timedOut:      false,
+                stdoutPreview: result.stdoutPreview,
+                mode:          'audit',
+              });
+              auditOutput = result.output;
+            } catch (auditErr) {
+              auditOutput = `[Audit error: ${(auditErr as Error).message}]`;
             }
-          } catch (auditErr) {
-            auditOutput = `[Audit error: ${(auditErr as Error).message}]`;
+          } else {
+            // Main-thread / test path. Direct DB access — DatabaseManager
+            // singleton is initialised here and held open for the process.
+            const nodePath  = await import('node:path');
+            const absTarget = nodePath.isAbsolute(rawTarget)
+              ? rawTarget
+              : nodePath.join(projectRoot, rawTarget);
+
+            try {
+              const { DatabaseManager: DM } = await import('../db/DatabaseManager.js');
+              const { SecurityStore }        = await import('../db/SecurityStore.js');
+              const { runCodeAudit }         = await import('../security/CodeAuditor.js');
+
+              const secStore = new SecurityStore(DM.getInstance());
+              await secStore.ensureTable();
+              const run = await secStore.createRun('code_audit');
+
+              agentState.transition('executing', rawTarget, task.index, total);
+              sendStatus(`[${task.index}/${total}] Auditing ${rawTarget}…`);
+
+              await runCodeAudit(secStore, run.id, absTarget);
+
+              const completed = await secStore.getRunById(run.id);
+              const findings  = await secStore.getFindingsByRun(run.id);
+              const durationMs = Date.now() - (completed ? Date.parse(completed.started_at) : Date.now());
+
+              // Emit SSE result card reusing execute_result shape
+              const findingPreview = findings.length > 0
+                ? findings[0].title.slice(0, 120)
+                : 'No issues found';
+              this.sendEvent(reply, {
+                type:          'execute_result',
+                taskIndex:     task.index,
+                exitCode:      findings.length > 0 ? 1 : 0,
+                durationMs,
+                timedOut:      false,
+                stdoutPreview: findingPreview,
+                mode:          'audit',
+              });
+              this.options.onExecuteResult?.({
+                taskIndex:     task.index,
+                exitCode:      findings.length > 0 ? 1 : 0,
+                durationMs,
+                timedOut:      false,
+                stdoutPreview: findingPreview,
+                mode:          'audit',
+              });
+
+              // Build output string: findings grouped by severity, digest appended.
+              // This becomes completedOutput and flows through outputRequiredBy
+              // and DeliveryComposer exactly like every other operation.
+              if (findings.length === 0) {
+                auditOutput = `[CODE AUDIT CLEAN -- ${rawTarget}]\nNo security issues detected.`;
+              } else {
+                const bySeverity: Record<string, typeof findings> = {};
+                for (const f of findings) {
+                  (bySeverity[f.severity] ??= []).push(f);
+                }
+                const lines: string[] = [
+                  `[CODE AUDIT -- ${findings.length} finding${findings.length !== 1 ? 's' : ''} in ${rawTarget}]`,
+                  '',
+                ];
+                for (const sev of ['critical', 'high', 'medium', 'low', 'info'] as const) {
+                  const group = bySeverity[sev];
+                  if (!group?.length) continue;
+                  lines.push(`${sev.toUpperCase()} (${group.length}):`);
+                  for (const f of group) {
+                    lines.push(`  [${f.target ?? rawTarget}] ${f.title}`);
+                    if (f.detail) lines.push(`    ${f.detail}`);
+                  }
+                  lines.push('');
+                }
+                if (completed?.seren_digest) {
+                  lines.push('ANALYSIS:', completed.seren_digest);
+                }
+                auditOutput = lines.join('\n');
+              }
+            } catch (auditErr) {
+              auditOutput = `[Audit error: ${(auditErr as Error).message}]`;
+            }
           }
 
-          attemptResult.output = auditOutput!;
-          task.completedOutput = auditOutput!;
+          attemptResult.output = auditOutput;
+          task.completedOutput = auditOutput;
           taskApproved = true;
           break;
         }

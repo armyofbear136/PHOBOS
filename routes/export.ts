@@ -15,7 +15,7 @@ import { PromptLogStore } from '../db/PromptLogStore.js';
  * in the order it happened.
  */
 export async function exportRoute(fastify: FastifyInstance): Promise<void> {
-  const db             = DatabaseManager.getInstance();
+  const db             = DatabaseManager.getUserDb();
   const messageStore   = new MessageStore(db);
   const eventStore     = new MessageEventStore(db);
   const segmentStore   = new ThinkingSegmentStore(db);

@@ -1,31 +1,29 @@
 /**
- * CoordinatorBridge.ts  (repo root — Fastify side)
+ * CoordinatorBridge.ts  (repo root — main-thread side)
  *
- * Fastify-side API for task execution. Called by routes/messages.ts.
+ * Main-thread API for task execution. Routes call CoordinatorBridge.enqueue,
+ * which postMessages an ENQUEUE to the coordinator worker_thread and registers
+ * a per-taskId handler. Server.ts wires the worker's `message` event to
+ * CoordinatorBridge.dispatchOutbound for every message that isn't a round-trip
+ * request handled directly in server.ts.
  *
- * C2: enqueue() sends the task to the Coordinator via named pipe, then
- * subscribes to all pipe events for that taskId. Pipe events are handled:
- *   - SSE_EVENT        → write directly to reply.raw (SSE stream)
- *   - THINK_CHUNK      → call onThinkChunk callback
- *   - THINK_PHASE_COMPLETE → call onThinkPhaseComplete callback
- *   - PERSIST_EVENT    → call persistEvent callback
- *   - AGENT_STATE      → call onAgentState callback
- *   - DISPATCH_LOG     → call onDispatch callback
- *   - IMAGE_STATUS     → call onImageStatus callback
- *   - EXECUTE_RESULT   → call onExecuteResult callback
- *   - TASK_COMPLETE    → resolve with { attempts, lastPlanningContext, latencyMs }
- *   - TASK_ERROR       → reject with Error
- *   - TASK_ABORTED     → reject with Error('aborted')
- *
- * C3 will add abort() and priorityBump().
+ * Lifecycle:
+ *   - server.ts spawns the coordinator Worker, then calls setWorker(worker).
+ *     If the worker crashes and respawns, server.ts calls setWorker again.
+ *   - enqueue(params) returns a Promise that resolves on TASK_COMPLETE, or
+ *     rejects on TASK_ERROR / TASK_ABORTED.
+ *   - Per-task handlers self-clean on terminal events.
  */
 
-import { randomUUID }   from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import type { Worker as NodeWorker } from 'node:worker_threads';
 import type { FastifyReply } from 'fastify';
 import type { AttemptResult } from './ai/LoopController.js';
 import type { ComposeInput }  from './ai/DispatchComposer.js';
-import type { CoordinatorOutbound } from './coordinator/PipeServer.js';
-import { coordinatorPipe }   from './PipeClient.js';
+import type {
+  CoordinatorOutbound,
+  CoordinatorInbound,
+} from './coordinator/MessageTypes.js';
 
 export interface LoopCallbacks {
   persistEvent:        (eventType: string, payload: unknown, messageId: string) => Promise<void>;
@@ -59,18 +57,53 @@ export interface BridgeResult {
   latencyMs:           number;
 }
 
+type TaskHandler = (msg: CoordinatorOutbound) => void;
+
+let _worker:          NodeWorker | null = null;
+const _taskHandlers = new Map<string, TaskHandler>();
+
+function postToWorker(msg: CoordinatorInbound): void {
+  if (!_worker) {
+    console.warn('[CoordinatorBridge] postMessage before worker attached — message dropped');
+    return;
+  }
+  _worker.postMessage(msg);
+}
+
 export const CoordinatorBridge = {
   /**
-   * Enqueue a task with the Coordinator.
-   * Returns a Promise that resolves when TASK_COMPLETE arrives, forwarding
-   * all intermediate pipe events to callbacks and to reply.raw (SSE).
+   * Called by server.ts on every Worker spawn (initial + every respawn).
+   * Replaces the active worker reference; per-task handlers persist across
+   * respawn but in-flight tasks against the dead worker will time out their
+   * own SSE streams — recovery of pending tasks is not in C2 scope.
+   */
+  setWorker(worker: NodeWorker): void {
+    _worker = worker;
+  },
+
+  /**
+   * Called by server.ts's central `worker.on('message')` handler for every
+   * outbound message that isn't a round-trip request handled inline. Routes
+   * to the registered handler for the message's taskId, if any.
+   */
+  dispatchOutbound(msg: CoordinatorOutbound): void {
+    const taskId = (msg as { taskId?: string }).taskId;
+    if (!taskId) return;
+    const handler = _taskHandlers.get(taskId);
+    if (handler) handler(msg);
+  },
+
+  /**
+   * Enqueue a task with the coordinator.
+   * Returns a Promise that resolves on TASK_COMPLETE, forwarding all
+   * intermediate per-task messages to callbacks and to reply.raw (SSE).
    */
   enqueue(params: BridgeEnqueueParams): Promise<BridgeResult> {
     const { reply, composeInput, loopOptions, messageId, priority = 'local', callbacks } = params;
     const taskId = randomUUID();
 
     return new Promise<BridgeResult>((resolve, reject) => {
-      coordinatorPipe.onTask(taskId, (msg: CoordinatorOutbound) => {
+      _taskHandlers.set(taskId, (msg: CoordinatorOutbound) => {
         switch (msg.type) {
           case 'SSE_EVENT':
             reply.raw.write(`data: ${JSON.stringify(msg.data)}\n\n`);
@@ -105,7 +138,7 @@ export const CoordinatorBridge = {
             break;
 
           case 'TASK_COMPLETE':
-            coordinatorPipe.offTask(taskId);
+            _taskHandlers.delete(taskId);
             resolve({
               attempts:            msg.attempts as AttemptResult[],
               lastPlanningContext: msg.lastPlanningContext,
@@ -114,29 +147,56 @@ export const CoordinatorBridge = {
             break;
 
           case 'TASK_ERROR':
-            coordinatorPipe.offTask(taskId);
+            _taskHandlers.delete(taskId);
             reject(new Error(msg.error));
             break;
 
           case 'TASK_ABORTED':
-            coordinatorPipe.offTask(taskId);
+            _taskHandlers.delete(taskId);
             reject(new Error('Task aborted'));
             break;
 
           default:
+            // TASK_QUEUED / TASK_STARTED — informational, no action.
             break;
         }
       });
 
-      coordinatorPipe.send({
+      postToWorker({
         type:    'ENQUEUE',
         taskId,
-        payload: { composeInput, loopOptions, messageId, priority },
+        payload: {
+          composeInput,
+          loopOptions,
+          messageId,
+          priority,
+        },
       });
     });
   },
 
-  requestStatus(): void {
-    coordinatorPipe.send({ type: 'STATUS' });
+  /** Abort a queued task (no-op if it has already started executing). */
+  abort(taskId: string): void {
+    postToWorker({ type: 'ABORT', taskId });
+  },
+
+  /** Bump a queued task to the front of the local-priority tier. */
+  priorityBump(taskId: string): void {
+    postToWorker({ type: 'PRIORITY_BUMP', taskId });
+  },
+
+  /**
+   * Push an updated model_config to the coordinator after the admin route
+   * mutates the underlying table. Coordinator updates its OpenAI clients
+   * without touching DuckDB.
+   */
+  updateModelConfig(coordinator: import('./coordinator/MessageTypes.js').ClientRoleConfig,
+                    engine:      import('./coordinator/MessageTypes.js').ClientRoleConfig): void {
+    postToWorker({ type: 'MODEL_CONFIG_UPDATE', coordinator, engine });
+  },
+
+  /** Push the executor flag after the admin route flips it. */
+  updateExecutorFlag(enabled: boolean): void {
+    postToWorker({ type: 'EXECUTOR_FLAG_UPDATE', enabled });
   },
 };

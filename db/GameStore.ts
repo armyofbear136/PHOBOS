@@ -518,9 +518,9 @@ export class GameStore {
       const elapsed = Date.now() - new Date(rows[0].harvested_at).getTime();
       if (elapsed < RESPAWN_MS) return { ok: false };
     }
+    await this.db.run(`DELETE FROM game_minerals WHERE node_id = ?`, [nodeId]);
     await this.db.run(
-      `INSERT INTO game_minerals (node_id, harvested_at) VALUES (?, now())
-       ON CONFLICT (node_id) DO UPDATE SET harvested_at = now()`,
+      `INSERT INTO game_minerals (node_id, harvested_at) VALUES (?, now())`,
       [nodeId]
     );
     const updated = await this.db.query<{ harvested_at: string }>(

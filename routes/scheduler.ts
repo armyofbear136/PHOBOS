@@ -20,7 +20,7 @@ import { ScheduledTaskStore } from '../db/ScheduledTaskStore.js';
 import { getScheduler, computeNextRun, getPendingFire } from '../scheduling/Scheduler.js';
 
 export async function registerSchedulerRoutes(fastify: FastifyInstance): Promise<void> {
-  const db    = DatabaseManager.getInstance();
+  const db    = DatabaseManager.getUserDb();
   const store = new ScheduledTaskStore(db);
 
   // ── Task CRUD ──────────────────────────────────────────────────────────────
@@ -32,25 +32,39 @@ export async function registerSchedulerRoutes(fastify: FastifyInstance): Promise
 
   fastify.post<{
     Body: {
-      name:            string;
-      description?:    string;
-      cron_expression: string;
-      prompt:          string;
-      enabled?:        boolean;
+      name:                 string;
+      description?:         string;
+      cron_expression:      string;
+      prompt:               string;
+      enabled?:             boolean;
+      task_type?:           import('../db/ScheduledTaskStore.js').TaskType;
+      task_parameters?:     string[] | null;
+      pinned_sayon_model?:  string | null;
+      pinned_seren_model?:  string | null;
+      pinned_cartridge_id?: string | null;
     };
   }>('/api/scheduler/tasks', async (req, reply) => {
-    const { name, description, cron_expression, prompt, enabled = true } = req.body;
+    const {
+      name, description, cron_expression, prompt, enabled = true,
+      task_type, task_parameters,
+      pinned_sayon_model, pinned_seren_model, pinned_cartridge_id,
+    } = req.body;
     if (!name || !cron_expression || !prompt) {
       return reply.status(400).send({ error: 'name, cron_expression and prompt are required' });
     }
     const next = computeNextRun(cron_expression);
     const task = await store.create({
       name,
-      description: description ?? null,
+      description:          description ?? null,
       cron_expression,
       prompt,
       enabled,
-      next_run_at: next?.toISOString() ?? null,
+      task_type:            task_type            ?? 'conversation',
+      task_parameters:      task_parameters      ?? null,
+      next_run_at:          next?.toISOString()  ?? null,
+      pinned_sayon_model:   pinned_sayon_model   ?? null,
+      pinned_seren_model:   pinned_seren_model   ?? null,
+      pinned_cartridge_id:  pinned_cartridge_id  ?? null,
     });
     return reply.status(201).send(task);
   });
@@ -58,11 +72,16 @@ export async function registerSchedulerRoutes(fastify: FastifyInstance): Promise
   fastify.put<{
     Params: { id: string };
     Body: {
-      name?:            string;
-      description?:     string;
-      cron_expression?: string;
-      prompt?:          string;
-      enabled?:         boolean;
+      name?:                string;
+      description?:         string;
+      cron_expression?:     string;
+      prompt?:              string;
+      enabled?:             boolean;
+      task_type?:           import('../db/ScheduledTaskStore.js').TaskType;
+      task_parameters?:     string[] | null;
+      pinned_sayon_model?:  string | null;
+      pinned_seren_model?:  string | null;
+      pinned_cartridge_id?: string | null;
     };
   }>('/api/scheduler/tasks/:id', async (req, reply) => {
     const task = await store.getById(req.params.id);

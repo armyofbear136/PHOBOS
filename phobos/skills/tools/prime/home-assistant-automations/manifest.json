@@ -1,0 +1,10 @@
+{
+  "id": "home-assistant-automations",
+  "name": "Home Assistant Automation Generator",
+  "description": "Generates valid Home Assistant automation YAML from natural language. Uses the live entity snapshot to reference real entity IDs. Output is always copyable YAML ready to paste into HA — no write access required.",
+  "version": "1.0.0",
+  "scope": "both",
+  "category": "tools",
+  "trigger": "Invoke when the user asks to create, build, write, or generate a Home Assistant automation, scene, script, or schedule. Also invoke when the user asks to fix or improve existing HA YAML.",
+  "runner": null
+}

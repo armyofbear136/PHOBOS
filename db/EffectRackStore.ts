@@ -99,9 +99,9 @@ export class EffectRackStore {
     for (const p of DEFAULT_PRESETS) {
       await this.db.run(
         `INSERT INTO audio_effect_presets (id, label, context, params_json, routing_json)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT (id) DO NOTHING`,
-        [p.id, p.label, p.context, JSON.stringify(p.params), JSON.stringify(p.routing)],
+         SELECT ?, ?, ?, ?, ?
+         WHERE NOT EXISTS (SELECT 1 FROM audio_effect_presets WHERE id = ?)`,
+        [p.id, p.label, p.context, JSON.stringify(p.params), JSON.stringify(p.routing), p.id],
       );
     }
   }
@@ -132,15 +132,10 @@ export class EffectRackStore {
   }
 
   async upsert(preset: Omit<EffectPreset, 'created_at' | 'updated_at'>): Promise<EffectPreset> {
+    await this.db.run(`DELETE FROM audio_effect_presets WHERE id = ?`, [preset.id]);
     await this.db.run(
       `INSERT INTO audio_effect_presets (id, label, context, params_json, routing_json)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT (id) DO UPDATE SET
-         label        = EXCLUDED.label,
-         context      = EXCLUDED.context,
-         params_json  = EXCLUDED.params_json,
-         routing_json = EXCLUDED.routing_json,
-         updated_at   = now()`,
+       VALUES (?, ?, ?, ?, ?)`,
       [preset.id, preset.label, preset.context,
        JSON.stringify(preset.params),
        JSON.stringify(preset.routing)],

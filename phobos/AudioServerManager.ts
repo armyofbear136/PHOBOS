@@ -43,6 +43,7 @@ import {
   gpuToVendor,
   isVendorReady,
 }                        from './PythonEnvManager.js';
+import { userDir, getActiveUser } from '../db/DatabaseManager.js';
 
 // ── Dir resolution (ESM dev vs CJS SEA bundle) ────────────────────────────────
 
@@ -149,7 +150,7 @@ function resolveWhisperModelPath(): string {
 
 function audioWorkspaceDir(threadId: string, category: 'tts' | 'music' | 'sfx'): string {
   const root = process.env.WORKSPACES_ROOT
-    ?? path.join(os.homedir(), '.phobos', 'workspaces');
+    ?? path.join(userDir(getActiveUser()), 'workspaces');
   return path.join(root, threadId, 'audio', category);
 }
 
@@ -298,13 +299,29 @@ export async function generateKokoro(opts: KokoroOptions): Promise<AudioGenerate
 
   let KokoroTTS: any;
   try {
-    // Dynamic import — kokoro-js is an optional runtime dep, not in tsconfig paths.
-    // Using Function constructor avoids the static import() type check.
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval
-    const mod = await (new Function('m', 'return import(m)'))('kokoro-js');
+    // Resolve kokoro-js relative to this file's location, not process.cwd().
+    // A bare import('kokoro-js') in a compiled ESM bundle resolves against cwd,
+    // which breaks when the server launches from a different working directory.
+    // import.meta.resolve() anchors to the calling file and is available in
+    // Node 20.6+ (same baseline as the rest of the project). Falls back to a
+    // path.resolve from _thisDir for older runtimes or CJS bundles.
+    let resolvedUrl: string;
+    try {
+      resolvedUrl = import.meta.resolve('kokoro-js');
+    } catch {
+      // Fallback: walk up from _thisDir to find node_modules/kokoro-js
+      const pkgPath = path.resolve(_thisDir, '..', 'node_modules', 'kokoro-js', 'package.json');
+      resolvedUrl = `file://${pkgPath.replace(/\\/g, '/')}`;
+      // Let the import below fail naturally with a useful message if not found
+    }
+    const mod = await import(resolvedUrl);
     KokoroTTS = mod.KokoroTTS;
-  } catch {
-    throw new Error('kokoro-js not installed. Run: npm install kokoro-js');
+  } catch (err) {
+    const msg = (err as Error).message ?? String(err);
+    if (msg.includes('Cannot find') || msg.includes('not installed') || msg.includes('ERR_MODULE_NOT_FOUND')) {
+      throw new Error('kokoro-js not installed. Run: npm install kokoro-js');
+    }
+    throw err;
   }
 
   const outputPath = timestampedOutputPath(opts.threadId, 'tts', opts.label ?? 'kokoro');

@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { userDir, getActiveUser } from '../db/DatabaseManager.js';
 
 // ── Skill scope ──────────────────────────────────────────────────────────────
 // 'sayon'  — injected into SAYON prompts only
@@ -244,6 +245,8 @@ const PRIME_SKILL_IDS = new Set<string>([
   'download-video', 'transcribe-video', 'compress-images',
   // YouTube
   'youtube-clipper-skill',
+  // Home Assistant
+  'home-assistant-automations',
 ]);
 
 /**
@@ -461,11 +464,10 @@ export function getUserSkillTriggerList(): string {
   // (which would require cascading async changes through TaskPlanner), we read the
   // registry JSON synchronously here.
   try {
-    const os   = require('node:os')   as typeof import('os');
     const path = require('node:path') as typeof import('path');
     const fs   = require('node:fs')   as typeof import('fs');
 
-    const registryPath = path.join(os.homedir(), '.phobos', 'user', '_registry.json');
+    const registryPath = path.join(userDir(getActiveUser()), 'skills', '_registry.json');
     if (!fs.existsSync(registryPath)) return '';
 
     const raw = fs.readFileSync(registryPath, 'utf-8');
@@ -502,11 +504,10 @@ export function getUserSkillInstructions(skillIds: string[]): string {
   if (skillIds.length === 0) return '';
 
   try {
-    const os   = require('node:os')   as typeof import('os');
     const path = require('node:path') as typeof import('path');
     const fs   = require('node:fs')   as typeof import('fs');
 
-    const skillsDir = path.join(os.homedir(), '.phobos', 'user', 'skills');
+    const skillsDir = path.join(userDir(getActiveUser()), 'skills');
     const parts: string[] = [];
 
     for (const id of skillIds) {

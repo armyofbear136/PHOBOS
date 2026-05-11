@@ -57,12 +57,14 @@ export async function registerCartridgeRoutes(fastify: FastifyInstance): Promise
       s.getActiveSlot('seren'),
     ]);
 
-    const result = records.map(r => ({
-      ...deser(r),
-      isActiveSayon: sayonSlot.cartridgeId === r.id,
-      isActiveSeren: serenSlot.cartridgeId === r.id,
-      isActive:      sayonSlot.cartridgeId === r.id || serenSlot.cartridgeId === r.id,
-    }));
+    const result = records
+      .filter(r => r.category !== 'weclone')
+      .map(r => ({
+        ...deser(r),
+        isActiveSayon: sayonSlot.cartridgeId === r.id,
+        isActiveSeren: serenSlot.cartridgeId === r.id,
+        isActive:      sayonSlot.cartridgeId === r.id || serenSlot.cartridgeId === r.id,
+      }));
 
     return reply.send(result);
   });

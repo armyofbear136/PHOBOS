@@ -1,6 +1,5 @@
 import * as fs   from 'fs';
 import * as path from 'path';
-import * as os   from 'os';
 import * as crypto from 'crypto';
 
 import {
@@ -24,12 +23,14 @@ import {
   UPSCALE_MODELS_DIR,
 } from './PhobosLocalManager.js';
 
+import { userDir, getActiveUser } from '../db/DatabaseManager.js';
+
 // ── Workspace root (mirrors convention across codebase) ───────────────────────
 
 function workspacesRoot(): string {
   return process.env.WORKSPACES_ROOT
     ? path.resolve(process.env.WORKSPACES_ROOT)
-    : path.resolve(process.cwd(), 'workspaces');
+    : path.join(userDir(getActiveUser()), 'workspaces');
 }
 
 function workflowsDir(threadId: string): string {
@@ -794,10 +795,7 @@ async function* executeRemoveBg(
   // Pre-process to a clean standard RGB PNG. imgly/sharp rejects some PNG
   // variants (interlaced, unusual color profiles, RGBA). flattenAlpha re-encodes
   // to a plain RGBA PNG that sharp can always handle.
-  const scratchRoot = path.join(
-    process.env.WORKSPACES_ROOT ?? path.join(os.homedir(), '.phobos', 'workspaces'),
-    threadId, 'vision-scratch'
-  );
+  const scratchRoot = path.join(workspacesRoot(), threadId, 'vision-scratch');
   fs.mkdirSync(scratchRoot, { recursive: true });
   const cleanInput = path.join(scratchRoot, `removebg-in-${Date.now()}.png`);
   try { flattenAlpha(inputPath, cleanInput); } catch { fs.copyFileSync(inputPath, cleanInput); }

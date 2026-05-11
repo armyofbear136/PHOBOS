@@ -54,9 +54,10 @@ const VALID_CONFIG_KEYS = new Set<SecurityConfigKey>([
 ] as SecurityConfigKey[]);
 
 export async function registerSecurityRoutes(fastify: FastifyInstance): Promise<void> {
-  const db        = DatabaseManager.getInstance();
-  const store     = new SecurityStore(db);
-  const taskStore = new ScheduledTaskStore(db);
+  const systemDb  = DatabaseManager.getInstance();
+  const userDb    = DatabaseManager.getUserDb();
+  const store     = new SecurityStore(systemDb);
+  const taskStore = new ScheduledTaskStore(userDb);
   await store.ensureTable();
 
   // ── Status — tool availability + last run per type ─────────────────────────

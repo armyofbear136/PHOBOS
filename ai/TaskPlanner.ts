@@ -137,8 +137,28 @@ const MAX_TASK_CONTEXT_CHARS = 8_000;
  */
 const SEREN_CONTEXT_BUDGET = 80_000;
 
+/**
+ * Optional dependencies that the TaskPlanner uses during planning. When
+ * unset, falls through to the direct DuckDB-backed implementations
+ * (archiveSearch from ArchiveClient, retrieveWorkspaceMemory from MemoryWriter).
+ *
+ * The coordinator worker passes these in to route DB-bound work back to the
+ * main thread via postMessage round-trips. Main-thread callers and tests can
+ * omit them.
+ */
+export interface TaskPlannerDeps {
+  archiveSearchFn?: (query: string, domains: import('../db/ArchiveStore.js').ArchiveDomain[], k: number) => Promise<string>;
+  memorySearchFn?:  (query: string) => Promise<string>;
+}
+
 export class TaskPlanner {
-  constructor(private workspaceDir: string) {}
+  private readonly archiveSearchFn?: TaskPlannerDeps['archiveSearchFn'];
+  private readonly memorySearchFn?:  TaskPlannerDeps['memorySearchFn'];
+
+  constructor(private workspaceDir: string, deps: TaskPlannerDeps = {}) {
+    this.archiveSearchFn = deps.archiveSearchFn;
+    this.memorySearchFn  = deps.memorySearchFn;
+  }
 
   /**
    * Plan the full execution for a request.
@@ -186,14 +206,18 @@ export class TaskPlanner {
     const hasActiveProject = this.workspaceDir !== process.cwd();
  
     const [priorMemory, archiveContext] = await Promise.all([
-      retrieveWorkspaceMemory(userMessage),
+      this.memorySearchFn
+        ? this.memorySearchFn(userMessage).catch(() => '')
+        : retrieveWorkspaceMemory(userMessage),
       _archiveClassifier
         .classify({ userMessage, hasActiveProject, pinnedDomains: [], isCopilot: false })
-        .then(routing =>
-          routing.useArchive
-            ? archiveSearch({ query: routing.queryText, domains: routing.domains, k: routing.k })
-            : ''
-        )
+        .then(routing => {
+          if (!routing.useArchive) return '';
+          if (this.archiveSearchFn) {
+            return this.archiveSearchFn(routing.queryText, routing.domains, routing.k);
+          }
+          return archiveSearch({ query: routing.queryText, domains: routing.domains, k: routing.k });
+        })
         .catch(() => ''),  // Archive errors are always non-fatal
     ]);
  

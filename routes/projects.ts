@@ -10,7 +10,7 @@ interface Project {
 }
 
 export async function projectsRoute(fastify: FastifyInstance): Promise<void> {
-  const db = DatabaseManager.getInstance();
+  const db = DatabaseManager.getUserDb();
 
   // GET /api/projects
   fastify.get('/api/projects', async (_req, reply) => {

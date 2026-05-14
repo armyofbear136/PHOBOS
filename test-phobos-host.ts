@@ -42,6 +42,9 @@ import {
   getPhobosSynthSlotId,
   getPhobosCrystalSlotId,
   setPhobosCrystalActive,
+  setEqBand,
+  setEqEnabled,
+  getEqState,
   playMidiSequence,
   stopSequence,
   playAudioFile,
@@ -661,6 +664,77 @@ async function main(): Promise<void> {
       try { await getPluginState(helmSlotId); }
       catch { threw = true; }
       if (!threw) throw new Error('expected getPluginState after unload to throw');
+    });
+
+    // ── EQ ops ──────────────────────────────────────────────────────────────
+    //
+    // Exercises the master 8-band EQ node wired into channel 0 after Crystal.
+    // Verifies getEqState, setEqBand (per-band write + readback), and
+    // setEqEnabled (master bypass). All DSP effects are audible if the user
+    // is listening, but the assertions are structural (op round-trips), not
+    // perceptual.
+
+    await runPhase('getEqState returns 8 bands at defaults', async () => {
+      const state = await getEqState();
+      if (typeof state.enabled !== 'boolean') {
+        throw new Error(`getEqState missing enabled: ${JSON.stringify(state)}`);
+      }
+      if (!Array.isArray(state.bands) || state.bands.length !== 8) {
+        throw new Error(`expected 8 bands, got ${state.bands?.length}`);
+      }
+      for (const b of state.bands) {
+        if (typeof b.gainDb !== 'number') throw new Error(`band missing gainDb`);
+        if (typeof b.q      !== 'number') throw new Error(`band missing q`);
+        if (typeof b.enabled !== 'boolean') throw new Error(`band missing enabled`);
+      }
+      console.log(`       master=${state.enabled}, bands=${state.bands.length}`);
+    });
+
+    await runPhase('setEqBand round-trips gain and q', async () => {
+      // Write a distinctive value to band 3 (500 Hz), read back, verify.
+      await setEqBand(3, { gainDb: 6.0, q: 2.0, enabled: true });
+      await new Promise(r => setTimeout(r, 50));
+      const state = await getEqState();
+      const b3 = state.bands[3];
+      if (Math.abs(b3.gainDb - 6.0) > 0.01) {
+        throw new Error(`gainDb round-trip failed: expected 6.0, got ${b3.gainDb}`);
+      }
+      if (Math.abs(b3.q - 2.0) > 0.01) {
+        throw new Error(`q round-trip failed: expected 2.0, got ${b3.q}`);
+      }
+      // Reset band 3 to flat.
+      await setEqBand(3, { gainDb: 0.0, q: 0.707, enabled: true });
+    });
+
+    await runPhase('setEqEnabled master bypass round-trip', async () => {
+      await setEqEnabled(false);
+      await new Promise(r => setTimeout(r, 50));
+      const off = await getEqState();
+      if (off.enabled !== false) throw new Error(`expected enabled=false after setEqEnabled(false)`);
+
+      await setEqEnabled(true);
+      await new Promise(r => setTimeout(r, 50));
+      const on = await getEqState();
+      if (on.enabled !== true) throw new Error(`expected enabled=true after setEqEnabled(true)`);
+    });
+
+    await runPhase('setEqBand rejects out-of-range band', async () => {
+      let threw = false;
+      try { await setEqBand(8, { gainDb: 0, q: 1, enabled: true }); }
+      catch (err) {
+        if (!(err as Error).message.includes('band')) {
+          throw new Error(`unexpected error: ${(err as Error).message}`);
+        }
+        threw = true;
+      }
+      if (!threw) throw new Error('expected setEqBand(8, ...) to throw');
+    });
+
+    await runPhase('setEqBand rejects out-of-range gainDb', async () => {
+      let threw = false;
+      try { await setEqBand(0, { gainDb: 99, q: 1, enabled: true }); }
+      catch { threw = true; }
+      if (!threw) throw new Error('expected setEqBand with gainDb=99 to throw');
     });
 
     await runPhase('no [ERR]-level events surfaced', async () => {

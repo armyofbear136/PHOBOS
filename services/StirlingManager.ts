@@ -26,11 +26,13 @@ import * as fs   from 'fs';
 import * as net  from 'net';
 import * as path from 'path';
 import * as os   from 'os';
+import * as http from 'node:http';
 
 const execFileAsync = promisify(execFile);
 
 // ── Wire constants ─────────────────────────────────────────────────────────────
 export const STIRLING_PORT = 16346;
+export const STIRLING_PROXY_PORT = 16349;
 
 // ── Paths ──────────────────────────────────────────────────────────────────────
 
@@ -92,9 +94,10 @@ interface ManagedService {
   process: ChildProcess | null;
   state:   'stopped' | 'starting' | 'running' | 'error';
   error:   string | null;
+  proxyServer: http.Server | null;
 }
 
-const service: ManagedService = { process: null, state: 'stopped', error: null };
+const service: ManagedService = { process: null, state: 'stopped', error: null, proxyServer: null };
 
 // ── Start ──────────────────────────────────────────────────────────────────────
 
@@ -163,6 +166,7 @@ export async function startStirling(): Promise<void> {
 
     service.process = proc;
     await waitForPort(STIRLING_PORT, 90_000);
+    await startProxyServer();
     service.state = 'running';
     console.log(`[StirlingManager] ready on :${STIRLING_PORT} (${java.version})`);
   } catch (err) {
@@ -178,6 +182,10 @@ export async function startStirling(): Promise<void> {
 
 export async function stopStirling(): Promise<void> {
   if (service.state === 'stopped' && !service.process) return;
+  if (service.proxyServer) {
+    await new Promise<void>((resolve) => { service.proxyServer!.close(() => resolve()); });
+    service.proxyServer = null;
+  }
   if (service.process) {
     service.process.kill('SIGTERM');
     await new Promise<void>((resolve) => {
@@ -207,4 +215,43 @@ export function getStirlingStatus(): StirlingStatus {
     binaryPresent: isBinaryPresent(),
     platform:      process.platform,
   };
+}
+
+function startProxyServer(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      const upstream = http.request(
+        { host: '127.0.0.1', port: STIRLING_PORT, path: req.url, method: req.method,
+          headers: req.headers },
+        (upstreamRes) => {
+          const headers: http.OutgoingHttpHeaders = {};
+          for (const [k, v] of Object.entries(upstreamRes.headers)) {
+            if (v !== undefined) headers[k] = v;
+          }
+          headers['cross-origin-opener-policy']   = 'same-origin';
+          headers['cross-origin-embedder-policy'] = 'require-corp';
+          headers['cross-origin-resource-policy'] = 'cross-origin';
+          res.writeHead(upstreamRes.statusCode ?? 200, headers);
+          upstreamRes.pipe(res);
+          upstreamRes.on('error', () => res.destroy());
+        },
+      );
+      upstream.on('error', () => { res.writeHead(502); res.end(); });
+      req.pipe(upstream);
+      req.on('error', () => upstream.destroy());
+    });
+
+    server.on('error', (err: NodeJS.ErrnoException) => {
+      service.error = err.code === 'EADDRINUSE'
+        ? `Port ${STIRLING_PROXY_PORT} already in use`
+        : err.message;
+      reject(new Error(service.error!));
+    });
+
+    server.listen(STIRLING_PROXY_PORT, '127.0.0.1', () => {
+      console.log(`[StirlingManager] proxy ready on :${STIRLING_PROXY_PORT}`);
+      service.proxyServer = server;
+      resolve();
+    });
+  });
 }

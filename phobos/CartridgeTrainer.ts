@@ -140,6 +140,7 @@ export interface StartLmTrainingOptions {
   rank?:           number;
   steps?:          number;
   lr?:             number;
+  vendorOverride?: GpuVendor;  // force a specific vendor/venv — used by test script and ROCm/XPU paths
 }
 
 // ── Module-level state ────────────────────────────────────────────────────────
@@ -286,13 +287,21 @@ export async function createLmSession(
 
   const hw     = await detectHardware();
   const gpu    = hw.gpus[0];
-  const vendor = gpu ? gpuToVendor(gpu) : 'cpu';
-  const device = gpu
-    ? (gpu.backend === 'cuda' ? 'cuda:0' : gpu.backend === 'metal' ? 'mps' : 'cpu')
-    : 'cpu';
+
+  // vendorOverride lets the test script (and future multi-GPU routing) force a specific
+  // vendor without depending on which GPU detectHardware() happens to put first.
+  const vendor = opts.vendorOverride ?? (gpu ? gpuToVendor(gpu) : 'cpu');
+
+  // ROCm (AMD) maps to 'cuda:0' — HIP exposes torch.cuda as the compute API.
+  // XPU (Intel Arc) maps to 'xpu:0'.
+  // Vulkan-only — no training path; fall through to CPU.
+  const device = vendor === 'cuda'  ? 'cuda:0'
+               : vendor === 'rocm'  ? 'cuda:0'
+               : vendor === 'xpu'   ? 'xpu:0'
+               : (gpu?.backend === 'metal' ? 'mps' : 'cpu');
 
   const mixedPrecision: 'bf16' | 'fp16' =
-    gpu?.backend === 'cuda' ? 'bf16' : 'fp16';
+    (vendor === 'cuda' || vendor === 'rocm') ? 'bf16' : 'fp16';
 
   const rank  = opts.rank  ?? 16;
   const steps = opts.steps ?? 0;
@@ -417,7 +426,12 @@ export function startLmTraining(
       // Training targets the first CUDA GPU (device 0).
       // On mixed CUDA+Vulkan machines, CUDA is always device 0.
       const hw       = await detectHardware();
-      const trainGpu = hw.gpus.find(g => g.backend === 'cuda') ?? hw.gpus[0];
+      // Select the GPU that matches the session's vendor — prevents targeting the CUDA card
+      // when the session was created with vendorOverride='rocm' on a mixed-GPU machine.
+      const sessionVendor = session.vendor as GpuVendor;
+      const trainGpu = hw.gpus.find(g => gpuToVendor(g) === sessionVendor)
+                    ?? hw.gpus.find(g => g.backend === 'cuda')
+                    ?? hw.gpus[0];
       const deviceIdx = trainGpu?.index;   // undefined = CPU-only path
 
       // ── Stop only servers on the training GPU (mirrors workflows.ts) ─────
@@ -427,7 +441,7 @@ export function startLmTraining(
       snaps = snapshotAllServersOnDevice(deviceIdx);
 
       if (snaps.length > 0) {
-        console.log(`[LM:${sessionId}] unload : stopping ${snaps.map(s => s.role).join(' + ')} for CUDA training`);
+        console.log(`[LM:${sessionId}] unload : stopping ${snaps.map(s => s.role).join(' + ')} for ${sessionVendor.toUpperCase()} training`);
         for (const snap of snaps) {
           try { await stopServer(snap.role); } catch { /* already stopped — non-fatal */ }
         }
@@ -438,7 +452,9 @@ export function startLmTraining(
       // This waits for the driver to finish reclaiming pages from the
       // stopped llama-server processes before Python tries to allocate.
       // Max wait: 5 s. Skipped on CPU-only paths.
-      const isDiscreteGpu = trainGpu && (trainGpu.backend === 'cuda' || trainGpu.backend === 'vulkan');
+      const isDiscreteGpu = trainGpu && (
+        trainGpu.backend === 'cuda' || trainGpu.backend === 'vulkan' || gpuToVendor(trainGpu) === 'rocm'
+      );
       let lastFreeMb = 0;
 
       if (isDiscreteGpu && trainGpu) {
@@ -458,13 +474,19 @@ export function startLmTraining(
         }
 
         // ── Pre-flight VRAM log ────────────────────────────────────────────
-        const freeGb     = lastFreeMb / 1024;
         const requiredGb = estimateLmTrainingVramGb(session!.base_model_id, session!.rank);
         const reqMb      = Math.round(requiredGb * 1024);
         const totalMb    = Math.round((trainGpu.vramGb ?? 0) * 1024);
-        console.log(`[LM:${sessionId}] vram   : need ~${reqMb} MB  free ${lastFreeMb} MB  total ${totalMb} MB`);
-        if (freeGb < requiredGb) {
-          console.warn(`[LM:${sessionId}] vram   : ⚠ need ${requiredGb} GB, have ${freeGb.toFixed(1)} GB free — training may OOM`);
+        // AMD APU (890M, 780M): DXGI performance counter may be unavailable when the
+        // WMI GPU counter service isn't running. queryGpuFreeVram returns undefined → 0.
+        // On unified-memory APUs the BIOS-carved partition IS the total — nothing else
+        // has claimed it, so treat total as free when the live query returns 0.
+        const reportedFree = (lastFreeMb === 0 && trainGpu.unifiedMemory === true)
+          ? totalMb
+          : lastFreeMb;
+        console.log(`[LM:${sessionId}] vram   : need ~${reqMb} MB  free ${reportedFree} MB  total ${totalMb} MB`);
+        if (reportedFree / 1024 < requiredGb) {
+          console.warn(`[LM:${sessionId}] vram   : ⚠ need ${requiredGb} GB, have ${(reportedFree / 1024).toFixed(1)} GB free — training may OOM`);
         }
       }
 
@@ -524,6 +546,10 @@ export function startLmTraining(
         PYTHONUTF8:                '1',
         UNSLOTH_CACHE_DIR:         path.join(os.homedir(), '.phobos', 'unsloth-cache'),
         LLAMA_CPP_DIR:             path.join(os.homedir(), '.phobos', 'llamacpp'),
+        // ROCm: explicitly expose device 0 to the HIP runtime.
+        // Without this, hipGetDeviceCount() can return 0 on unsupported
+        // architectures (gfx1150 / 890M) causing torch.cuda.is_available() = False.
+        ...(session!.vendor === 'rocm' ? { HIP_VISIBLE_DEVICES: '0' } : {}),
       };
 
       console.log(`[LM:${sessionId}] start  : ${session!.base_model_id}  rank=${session!.rank}  steps=${session!.steps || 'auto'}`);

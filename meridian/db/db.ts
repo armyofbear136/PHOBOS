@@ -67,48 +67,18 @@ const TABLES = [
   files_added INTEGER NOT NULL DEFAULT 0, files_removed INTEGER NOT NULL DEFAULT 0,
   files_changed INTEGER NOT NULL DEFAULT 0, error VARCHAR
 )`,
-// ── MediaSync tables ───────────────────────────────────────────────────────
-`CREATE TABLE IF NOT EXISTS phobos_sync_devices (
-  device_id   VARCHAR PRIMARY KEY,
-  device_name VARCHAR NOT NULL,
-  platform    VARCHAR NOT NULL,
-  sync_token  VARCHAR NOT NULL,
-  last_seen_at TIMESTAMPTZ DEFAULT now()
-)`,
-`CREATE TABLE IF NOT EXISTS phobos_sync_policies (
-  id          VARCHAR PRIMARY KEY,
-  device_id   VARCHAR NOT NULL,
-  library     VARCHAR NOT NULL,
-  enabled     BOOLEAN NOT NULL DEFAULT true,
-  retain_days INTEGER,
-  upload_mode VARCHAR NOT NULL DEFAULT 'auto',
-  created_at  TIMESTAMPTZ DEFAULT now(),
-  updated_at  TIMESTAMPTZ DEFAULT now()
-)`,
-`CREATE TABLE IF NOT EXISTS phobos_sync_exclusions (
-  id        VARCHAR PRIMARY KEY,
-  policy_id VARCHAR NOT NULL,
-  path      VARCHAR NOT NULL,
-  scope     VARCHAR NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT now()
-)`,
-`CREATE INDEX IF NOT EXISTS idx_sync_exclusions_policy ON phobos_sync_exclusions (policy_id)`,
-`CREATE TABLE IF NOT EXISTS phobos_sync_manifest (
-  content_hash  VARCHAR PRIMARY KEY,
-  library       VARCHAR NOT NULL,
-  original_name VARCHAR NOT NULL,
-  dest_path     VARCHAR NOT NULL,
-  size_bytes    BIGINT,
-  taken_at      TIMESTAMPTZ,
-  uploaded_at   TIMESTAMPTZ DEFAULT now(),
-  device_id     VARCHAR NOT NULL
-)`,
-`CREATE INDEX IF NOT EXISTS idx_sync_manifest_device ON phobos_sync_manifest (device_id)`,
-`CREATE INDEX IF NOT EXISTS idx_sync_manifest_taken  ON phobos_sync_manifest (taken_at)`,
+// phobos_sync_* tables are defined in USER_SCHEMA (DatabaseManager.ts) and
+// live in the user-scoped DB (_syncDb). They are no longer created here.
 ];
 
 export class MeridianDB {
-  constructor(private db: DatabaseManager) {}
+  // _syncDb is the user-scoped DatabaseManager for phobos_sync_* tables.
+  // If not provided, falls back to the media DB (legacy / test paths).
+  private _syncDb: DatabaseManager;
+
+  constructor(private db: DatabaseManager, syncDb?: DatabaseManager) {
+    this._syncDb = syncDb ?? db;
+  }
 
   async ensureSchema(): Promise<void> {
     for (const stmt of TABLES) await this.db.run(stmt);
@@ -224,14 +194,21 @@ export class MeridianDB {
   }
 
   async rawQuery(sql: string, params: unknown[] = []): Promise<Row[]> {
-    return this.db.query<Row>(sql, params);
+    return this._dbForSql(sql).query<Row>(sql, params);
   }
 
   /** Like rawQuery but routes through conn.exec() to bypass DuckDB 1.4.x's
    *  prepare-path binder bug on ON CONFLICT DML. Use for INSERT/UPDATE/DELETE
    *  with ON CONFLICT clauses. Returns no rows (write-only path). */
   async execQuery(sql: string, params: unknown[] = []): Promise<void> {
-    return this.db.execWithParams(sql, params);
+    return this._dbForSql(sql).execWithParams(sql, params);
+  }
+
+  /** Route a SQL statement to the correct DatabaseManager based on table name.
+   *  phobos_sync_* tables live in the user DB (_syncDb); all others in the media DB. */
+  private _dbForSql(sql: string): DatabaseManager {
+    if (/phobos_sync_/i.test(sql)) return this._syncDb;
+    return this.db;
   }
 
   // ── Libraries ──────────────────────────────────────────────────────────────

@@ -19,6 +19,9 @@
  *   npx tsx test-pytorch-gen.ts --no-offload             — skip offload even on small VRAM cards
  *   npx tsx test-pytorch-gen.ts --sage-attention         — enable SageAttention backend
  *   npx tsx test-pytorch-gen.ts --torch-compile          — enable torch.compile
+ *   npx tsx test-pytorch-gen.ts --plugin ./lora.safetensors        — load LoRA at weight 0.8
+ *   npx tsx test-pytorch-gen.ts --plugin ./lora.safetensors:0.6    — load LoRA at weight 0.6
+ *   npx tsx test-pytorch-gen.ts --plugin ./a.sft --plugin ./b.sft  — up to 3 LoRAs
  */
 
 import * as fs from 'fs';
@@ -63,6 +66,10 @@ let noOffload = false;
 let sageAttention = false;
 let torchCompile = false;
 let refImage: string | null = null;
+// Up to 3 plugins: --plugin <path>[:weight] (repeatable)
+// weight defaults to 0.8 if omitted. All three use kind=raw_lora (flat file).
+// For .phobos zip archives use kind=plugin — not yet exposed as a CLI flag.
+const pluginEntries: Array<{ path: string; weight: number }> = [];
 
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
@@ -80,6 +87,17 @@ for (let i = 2; i < process.argv.length; i++) {
     torchCompile = true;
   } else if (arg === '--ref-image' && process.argv[i + 1]) {
     refImage = process.argv[++i];
+  } else if (arg === '--plugin' && process.argv[i + 1]) {
+    if (pluginEntries.length >= 3) {
+      console.error('FAIL: maximum 3 plugins per run');
+      process.exit(1);
+    }
+    const raw = process.argv[++i];           // path or path:weight
+    const colonIdx = raw.lastIndexOf(':');
+    const hasWeight = colonIdx > 0 && !isNaN(Number(raw.slice(colonIdx + 1)));
+    const plugPath  = hasWeight ? raw.slice(0, colonIdx) : raw;
+    const plugWeight = hasWeight ? Number(raw.slice(colonIdx + 1)) : 0.8;
+    pluginEntries.push({ path: plugPath, weight: plugWeight });
   } else if (!arg.startsWith('--')) {
     modelType = arg;
   }
@@ -514,6 +532,21 @@ if (spec.runnerProfile === 'flux' || spec.runnerProfile === 'flux1-kontext') {
 
 console.log(`  Prompt:  "${prompt}"`);
 console.log(`  Output:  ${outPath}`);
+
+// Plugin/LoRA loading — up to 3 raw_lora adapters
+if (pluginEntries.length > 0) {
+  for (const p of pluginEntries) {
+    if (!fs.existsSync(p.path)) {
+      console.error(`FAIL: plugin file not found: ${p.path}`);
+      process.exit(1);
+    }
+  }
+  args.push('--lora-paths',   pluginEntries.map(p => p.path).join(':'));
+  args.push('--lora-weights', pluginEntries.map(p => String(p.weight)).join(':'));
+  args.push('--lora-names',   pluginEntries.map((_, i) => `plugin_${i}`).join(':'));
+  args.push('--lora-kinds',   pluginEntries.map(() => 'raw_lora').join(':'));
+  console.log(`  Plugins: ${pluginEntries.map(p => `${path.basename(p.path)}@${p.weight}`).join(', ')}`);
+}
 
 // Performance flags
 if (sageAttention) { args.push('--sage-attention'); console.log('  Sage:    enabled'); }

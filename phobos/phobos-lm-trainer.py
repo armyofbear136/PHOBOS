@@ -213,11 +213,44 @@ def train(cfg: dict) -> None:
     steps           = int(cfg.get("steps", 0))
     lr              = float(cfg.get("lr", 2e-4))
     device          = cfg.get("device", "cuda")
+    vendor          = cfg.get("vendor", "cuda")
     mixed_precision = cfg.get("mixed_precision", "bf16")
     data_mode       = cfg.get("data_mode", "document")
     dataset_dir     = Path(cfg["dataset_dir"])
     output_dir      = Path(cfg["output_dir"])
     resume_from     = cfg.get("resume_from") or None
+
+    # ── Optimizer — adamw_8bit is bitsandbytes CUDA-only ──────────────────────
+    # ROCm Linux: adamw_torch_fused (native HIP, fast).
+    # ROCm Windows: adamw_torch (fused not available in AMD Windows torch build).
+    # XPU / MPS / CPU: adamw_torch (bitsandbytes has no support for these backends).
+    if vendor == "cuda":
+        optim = "adamw_8bit"
+    elif vendor == "rocm" and sys.platform != "win32":
+        optim = "adamw_torch_fused"
+    else:
+        optim = "adamw_torch"
+
+    # ── load_in_4bit — bitsandbytes 4-bit quantization is CUDA-only ──────────
+    # XPU (Intel Arc): load full bf16 weights. A770/A750 have 16 GB — fits fine.
+    # ROCm (AMD): bitsandbytes 4-bit is unreliable on Windows ROCm. The 890M has
+    #   48 GB unified memory — full bf16 weights for 1.5B fit easily (~3 GB).
+    # CUDA / MPS / CPU: 4-bit saves VRAM and is supported by unsloth/bnb.
+    load_in_4bit = vendor not in ("xpu", "rocm")
+
+    # ── XPU fp64 workaround ───────────────────────────────────────────────────
+    # Intel Arc does not support fp64 in hardware. Unsloth's RoPE path calls
+    # torch.arange(..., dtype=float64). Patch it to silently downcast to float32,
+    # exactly as phobos-diffusers.py does for image generation on Arc.
+    if device.startswith("xpu"):
+        import torch as _torch_pre
+        _orig_arange = _torch_pre.arange
+        def _xpu_safe_arange(*a, **kw):
+            if kw.get("dtype") == _torch_pre.float64:
+                kw["dtype"] = _torch_pre.float32
+            return _orig_arange(*a, **kw)
+        _torch_pre.arange = _xpu_safe_arange
+        emit("PHASE XPU: fp64->fp32 arange patch applied (Arc fp64 workaround)")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     preprocessed_jsonl = output_dir / "preprocessed.jsonl"
@@ -278,8 +311,11 @@ def train(cfg: dict) -> None:
             model_name          = training_hf_id,
             max_seq_length      = max_seq_length,
             dtype               = None,          # auto
-            load_in_4bit        = True,
-            device_map          = "auto" if device == "cuda:0" else device,
+            load_in_4bit        = load_in_4bit,
+            # ROCm single-GPU: force {"": 0} to prevent device_map="auto" from
+            # trying to split the model when the HIP layer reports multiple logical
+            # devices. CUDA and CPU use "auto" (correct for those paths).
+            device_map          = {"": 0} if vendor == "rocm" else ("auto" if device == "cuda:0" else device),
         )
     except Exception as e:
         emit(f"ERROR Failed to load base model: {e}")
@@ -352,7 +388,7 @@ def train(cfg: dict) -> None:
         learning_rate               = lr,
         lr_scheduler_type           = "cosine",
         warmup_ratio                = 0.05,
-        optim                       = "adamw_8bit",
+        optim                       = optim,
         bf16                        = (mixed_precision == "bf16"),
         fp16                        = (mixed_precision == "fp16"),
         logging_steps               = 10,

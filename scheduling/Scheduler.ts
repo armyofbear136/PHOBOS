@@ -78,7 +78,7 @@ export function clearPendingFire(): void             { _pending = null; }
 
 // ── Handler registry ──────────────────────────────────────────────────────────
 
-export type BackgroundHandler = () => Promise<void>;
+export type BackgroundHandler = (task: ScheduledTask) => Promise<void>;
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
 
@@ -266,7 +266,7 @@ export class Scheduler extends EventEmitter {
     const runId = await this.store.recordRunStart(task.id, null);
 
     try {
-      await handler();
+      await handler(task);
       await this.store.update(task.id, {
         last_run_at:     new Date().toISOString(),
         last_run_status: 'success',

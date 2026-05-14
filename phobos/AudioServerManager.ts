@@ -28,6 +28,7 @@
  */
 
 import { spawn }         from 'child_process';
+import * as crypto       from 'crypto';
 import * as fs           from 'fs';
 import * as os           from 'os';
 import * as path         from 'path';
@@ -122,7 +123,195 @@ function resolveF5Script(): string {
   throw new Error(`${file} not found.\nSearched:\n  ${candidates.join('\n  ')}`);
 }
 
-// ── Kokoro ONNX model ─────────────────────────────────────────────────────────
+function resolveKokoroScript(): string {
+  const file    = 'phobos-kokoro.mjs';
+  const seaDir  = path.dirname(process.execPath);
+  const candidates = [
+    path.join(seaDir, file),                           // SEA production: dist/
+    path.join(_thisDir, file),                         // same dir as this .ts file (dev)
+    path.join(_thisDir, '..', 'phobos', file),         // one level up in built output
+    path.join(process.cwd(), 'phobos', file),          // repo root dev (tsx)
+    path.join(process.cwd(), 'dist', file),            // dist/ from repo root
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  throw new Error(`${file} not found.\nSearched:\n  ${candidates.join('\n  ')}`);
+}
+
+// ── Portable Node binary ───────────────────────────────────────────────────────
+// In production, process.execPath is phobos.exe (SEA) — a sealed binary that
+// cannot execute .mjs scripts. A portable node binary is staged alongside it
+// by build.js. In dev, process.execPath IS a real Node binary.
+function resolveNodeBin(): string {
+  const nodeName = process.platform === 'win32'
+    ? `node-${process.platform}-${process.arch}.exe`
+    : `node-${process.platform}-${process.arch}`;
+  const stagedNode = path.join(path.dirname(process.execPath), nodeName);
+  if (fs.existsSync(stagedNode)) return stagedNode;
+  return process.execPath; // dev fallback — already a real Node binary
+}
+
+
+// ── Kokoro daemon — persistent warm process ───────────────────────────────────
+//
+// Instead of spawning a fresh Node process per TTS segment (which reloads the
+// ONNX model every time, ~10s), we keep one long-running daemon alive.
+// The daemon loads the model once, signals [READY], then accepts JSON jobs on
+// stdin and responds with [DONE] / [ERROR] lines on stdout.
+//
+// Lifecycle:
+//   - First generateKokoro() call: daemon not running → spawn it.
+//   - While model loads: first job is queued and sent as soon as [READY] arrives.
+//   - Subsequent calls: job sent immediately (model already warm, ~1-2s inference).
+//   - Daemon crash: cleared, next call restarts it transparently.
+
+interface KokoroPendingJob {
+  id:      string;
+  resolve: (outputPath: string) => void;
+  reject:  (err: Error) => void;
+}
+
+interface KokoroDaemon {
+  proc:    import('child_process').ChildProcess;
+  ready:   boolean;                       // true once [READY] received
+  pending: Map<string, KokoroPendingJob>; // jobs waiting for [DONE]/[ERROR]
+  queue:   Array<string>;                 // raw JSON lines queued before ready
+}
+
+let _kokoroDaemon: KokoroDaemon | null = null;
+
+function _startKokoroDaemon(
+  nodeBin:     string,
+  scriptPath:  string,
+  modelDir:    string,
+  cwd:         string,
+): KokoroDaemon {
+  const proc = spawn(nodeBin, [
+    scriptPath,
+    '--model-dir', modelDir,
+  ], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    cwd,
+    env: process.env,
+  });
+
+  const daemon: KokoroDaemon = {
+    proc,
+    ready:   false,
+    pending: new Map(),
+    queue:   [],
+  };
+
+  proc.stdout?.on('data', (chunk: Buffer) => {
+    for (const raw of chunk.toString().split('\n')) {
+      const line = raw.trim();
+      if (!line) continue;
+      console.log(`[kokoro] ${line}`);
+
+      if (line === '[READY]') {
+        daemon.ready = true;
+        for (const queued of daemon.queue) {
+          proc.stdin?.write(queued + '\n');
+        }
+        daemon.queue.length = 0;
+        return;
+      }
+
+      // [DONE ] <id> <outputPath>
+      if (line.startsWith('[DONE ]')) {
+        const rest = line.slice('[DONE ]'.length).trimStart();
+        const spaceIdx = rest.indexOf(' ');
+        const id = spaceIdx >= 0 ? rest.slice(0, spaceIdx) : rest;
+        const outPath = spaceIdx >= 0 ? rest.slice(spaceIdx + 1).trim() : '';
+        const job = daemon.pending.get(id);
+        if (job) {
+          daemon.pending.delete(id);
+          job.resolve(outPath);
+        }
+        return;
+      }
+
+      // [ERROR] <id> <message>
+      if (line.startsWith('[ERROR]')) {
+        const rest = line.slice('[ERROR]'.length).trimStart();
+        const spaceIdx = rest.indexOf(' ');
+        const id = spaceIdx >= 0 ? rest.slice(0, spaceIdx) : rest;
+        const msg = spaceIdx >= 0 ? rest.slice(spaceIdx + 1).trim() : 'unknown error';
+        const job = daemon.pending.get(id);
+        if (job) {
+          daemon.pending.delete(id);
+          job.reject(new Error(msg));
+        }
+        return;
+      }
+
+      // [FATAL] — daemon is about to exit
+      if (line.startsWith('[FATAL]')) {
+        const msg = line.slice('[FATAL]'.length).trim();
+        for (const job of daemon.pending.values()) {
+          job.reject(new Error(`Kokoro daemon fatal: ${msg}`));
+        }
+        daemon.pending.clear();
+      }
+    }
+  });
+
+  proc.stderr?.on('data', (chunk: Buffer) => {
+    for (const line of chunk.toString().split('\n')) {
+      if (line.trim()) console.log(`[kokoro:err] ${line.trim()}`);
+    }
+  });
+
+  proc.on('exit', (code, signal) => {
+    console.log(`[kokoro] daemon exited (code=${code}, signal=${signal})`);
+    for (const job of daemon.pending.values()) {
+      job.reject(new Error(`Kokoro daemon exited unexpectedly (code=${code})`));
+    }
+    daemon.pending.clear();
+    if (_kokoroDaemon === daemon) _kokoroDaemon = null;
+  });
+
+  proc.on('error', (err: Error) => {
+    console.log(`[kokoro] daemon spawn error: ${err.message}`);
+    for (const job of daemon.pending.values()) {
+      job.reject(new Error(`Kokoro daemon spawn error: ${err.message}`));
+    }
+    daemon.pending.clear();
+    if (_kokoroDaemon === daemon) _kokoroDaemon = null;
+  });
+
+  _kokoroDaemon = daemon;
+  return daemon;
+}
+
+function _getOrStartKokoroDaemon(
+  nodeBin:    string,
+  scriptPath: string,
+  modelDir:   string,
+  cwd:        string,
+): KokoroDaemon {
+  if (_kokoroDaemon && !_kokoroDaemon.proc.exitCode && !(_kokoroDaemon.proc as any).killed) {
+    return _kokoroDaemon;
+  }
+  return _startKokoroDaemon(nodeBin, scriptPath, modelDir, cwd);
+}
+
+/** Shutdown the warm kokoro daemon cleanly (called on server shutdown). */
+export function shutdownKokoroDaemon(): void {
+  if (_kokoroDaemon) {
+    try { _kokoroDaemon.proc.stdin?.end(); } catch { /**/ }
+    _kokoroDaemon = null;
+  }
+}
+
+function resolveKokoroCwd(): string {
+  const seaDir = path.dirname(process.execPath);
+  if (fs.existsSync(path.join(seaDir, 'node_modules', 'kokoro-js'))) return seaDir;
+  const repoRoot = process.cwd();
+  if (fs.existsSync(path.join(repoRoot, 'node_modules', 'kokoro-js'))) return repoRoot;
+  return repoRoot;
+}
 
 function resolveKokoroModelDir(): string {
   const binDir = resolveBinDir();
@@ -208,12 +397,18 @@ function runProcess(
   outputPath: string,
   opts:       AudioRunOptions = {},
   extraEnv?:  Record<string, string>,
+  cwd?:       string,
 ): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const spawnEnv = extraEnv
       ? { ...process.env, ...extraEnv }
       : process.env;
-    const proc = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], env: spawnEnv });
+    const spawnOpts: import('child_process').SpawnOptions = {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env:   spawnEnv,
+    };
+    if (cwd) spawnOpts.cwd = cwd;
+    const proc = spawn(bin, args, spawnOpts);
 
     if (opts.signal) {
       const abort = () => { try { proc.kill('SIGTERM'); } catch { /**/ } };
@@ -288,61 +483,60 @@ export async function generateKokoro(opts: KokoroOptions): Promise<AudioGenerate
   const modelDir  = resolveKokoroModelDir();
   const modelFile = path.join(modelDir, 'onnx', 'model_quantized.onnx');
 
-  // If local model dir doesn't have the full set of files kokoro-js needs,
-  // fall back to the HF repo ID so the library fetches + caches automatically.
-  // Once we've confirmed which files are required, we'll pin them all to local.
-  const useLocalPath = fs.existsSync(modelFile);
-  const modelSource  = useLocalPath ? modelDir : 'onnx-community/Kokoro-82M-v1.0-ONNX';
-  if (!useLocalPath) {
-    console.log('[AudioServerManager] Kokoro: local model incomplete, falling back to HF cache');
+  if (!fs.existsSync(modelFile)) {
+    throw new Error(
+      'Kokoro model not found. Download it from Phobos settings → Audio → Kokoro TTS.\n' +
+      `Expected: ${modelFile}`,
+    );
   }
 
-  let KokoroTTS: any;
-  try {
-    // Resolve kokoro-js relative to this file's location, not process.cwd().
-    // A bare import('kokoro-js') in a compiled ESM bundle resolves against cwd,
-    // which breaks when the server launches from a different working directory.
-    // import.meta.resolve() anchors to the calling file and is available in
-    // Node 20.6+ (same baseline as the rest of the project). Falls back to a
-    // path.resolve from _thisDir for older runtimes or CJS bundles.
-    let resolvedUrl: string;
-    try {
-      resolvedUrl = import.meta.resolve('kokoro-js');
-    } catch {
-      // Fallback: walk up from _thisDir to find node_modules/kokoro-js
-      const pkgPath = path.resolve(_thisDir, '..', 'node_modules', 'kokoro-js', 'package.json');
-      resolvedUrl = `file://${pkgPath.replace(/\\/g, '/')}`;
-      // Let the import below fail naturally with a useful message if not found
-    }
-    const mod = await import(resolvedUrl);
-    KokoroTTS = mod.KokoroTTS;
-  } catch (err) {
-    const msg = (err as Error).message ?? String(err);
-    if (msg.includes('Cannot find') || msg.includes('not installed') || msg.includes('ERR_MODULE_NOT_FOUND')) {
-      throw new Error('kokoro-js not installed. Run: npm install kokoro-js');
-    }
-    throw err;
-  }
-
+  const nodeBin    = resolveNodeBin();
+  const scriptPath = resolveKokoroScript();
+  const cwd        = resolveKokoroCwd();
   const outputPath = timestampedOutputPath(opts.threadId, 'tts', opts.label ?? 'kokoro');
   const startMs    = Date.now();
+  const jobId      = crypto.randomUUID();
 
-  opts.onProgress?.('[INFO ] Loading Kokoro ONNX model');
-  const tts = await KokoroTTS.from_pretrained(modelSource, { dtype: 'q8' });
+  // Get or start the warm daemon. If this is the first call, the daemon spawns
+  // and begins loading the model. The job is queued and sent as soon as [READY]
+  // fires — so the model load overlaps with the LLM's time-to-first-token.
+  const daemon = _getOrStartKokoroDaemon(nodeBin, scriptPath, modelDir, cwd);
 
-  opts.onProgress?.('[INFO ] Synthesizing');
-  const audio = await tts.generate(opts.text, {
-    voice: opts.voice ?? 'af_heart',
-    speed: opts.speed ?? 1.0,
+  const job = JSON.stringify({
+    id:     jobId,
+    text:   opts.text,
+    output: outputPath,
+    voice:  opts.voice  ?? 'af_heart',
+    speed:  opts.speed  ?? 1.0,
   });
 
-  await audio.save(outputPath);
+  await new Promise<void>((resolve, reject) => {
+    daemon.pending.set(jobId, {
+      id:      jobId,
+      resolve: (outPath: string) => {
+        opts.onProgress?.(`[INFO ] Done — ${outPath}`);
+        resolve();
+      },
+      reject,
+    });
 
-  if (!fs.existsSync(outputPath)) {
-    throw new Error('Kokoro synthesis completed but output file not found');
-  }
+    if (opts.signal) {
+      const onAbort = () => {
+        if (daemon.pending.has(jobId)) {
+          daemon.pending.delete(jobId);
+          reject(new Error('Audio generation cancelled'));
+        }
+      };
+      opts.signal.addEventListener('abort', onAbort, { once: true });
+    }
 
-  opts.onProgress?.('[INFO ] Done');
+    if (daemon.ready) {
+      daemon.proc.stdin?.write(job + '\n');
+    } else {
+      daemon.queue.push(job);
+    }
+  });
+
   return { outputPath, elapsedMs: Date.now() - startMs };
 }
 
@@ -442,7 +636,6 @@ export async function generateAceStep(opts: AceStepOptions): Promise<AudioGenera
   const aceSynth = resolveAceBin('ace-synth');
 
   const outputPath = timestampedOutputPath(opts.threadId, 'music', opts.label ?? 'acestep');
-  const codesPath  = outputPath.replace('.wav', '.codes.json');
   const startMs    = Date.now();
   const duration   = opts.duration ?? 30;
   const seed       = (opts.seed !== undefined && opts.seed >= 0)
@@ -451,7 +644,9 @@ export async function generateAceStep(opts: AceStepOptions): Promise<AudioGenera
 
   // Pass 1 — ace-lm: prompt + lyrics → audio codes
   // ace-lm takes a JSON request file, not inline flags.
-  // Output: writes <codesPath> (request JSON enriched with audio_codes field).
+  // Temp files go to os.tmpdir() — NOT alongside outputPath in the workspace —
+  // so the workspace file index never picks them up.
+  const tempId  = crypto.randomUUID();
   const requestObj: Record<string, unknown> = {
     task:     'text2music',
     caption:  opts.prompt,
@@ -461,7 +656,7 @@ export async function generateAceStep(opts: AceStepOptions): Promise<AudioGenera
   if (opts.lyrics) requestObj.lyrics = opts.lyrics;
   if (opts.cfgStrength !== undefined) requestObj.lm_cfg_scale = opts.cfgStrength;
 
-  const requestPath = outputPath.replace('.wav', '.request.json');
+  const requestPath = path.join(os.tmpdir(), `phobos-acestep-${tempId}.request.json`);
   fs.writeFileSync(requestPath, JSON.stringify(requestObj, null, 2));
 
   const lmArgs = [
@@ -473,7 +668,7 @@ export async function generateAceStep(opts: AceStepOptions): Promise<AudioGenera
   console.log(`[AudioServerManager] ace-lm: ${aceLm} ${lmArgs.join(' ')}`);
 
   await new Promise<void>((resolve, reject) => {
-    const proc = spawn(aceLm, lmArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = spawn(aceLm, lmArgs, { stdio: ['ignore', 'pipe', 'pipe'], cwd: path.dirname(aceLm) });
     if (opts.signal) {
       const abort = () => { try { proc.kill('SIGTERM'); } catch { /**/ } };
       opts.signal.addEventListener('abort', abort, { once: true });
@@ -531,7 +726,7 @@ or: ${altPath}`
 
   opts.onProgress?.('[INFO ] ACE-Step pass 2/2: synthesis');
   console.log(`[AudioServerManager] ace-synth: ${aceSynth} ${synthArgs.join(' ')}`);
-  await runProcess(aceSynth, synthArgs, synthOutputPath, opts);
+  await runProcess(aceSynth, synthArgs, synthOutputPath, opts, undefined, path.dirname(aceSynth));
 
   // Move the generated WAV to the canonical timestamped output path
   fs.renameSync(synthOutputPath, outputPath);

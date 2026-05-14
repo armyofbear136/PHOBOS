@@ -237,7 +237,20 @@ export function buildCopilotSystemPrompt(
       `The system will run the analysis against the live entity snapshot and inject the result ` +
       `back into this conversation automatically. ` +
       `Emit [HA_WATCH: ...] once per response — do not emit it multiple times. ` +
-      `Do not describe what you are about to check — just emit the tag and let the result speak.`
+      `Do not describe what you are about to check — just emit the tag and let the result speak.` +
+      `\n\n## HOME ASSISTANT — CONTROL\n` +
+      `When the user asks you to control a device or entity (turn on/off lights, set temperature, ` +
+      `lock/unlock doors, open/close covers, etc.), emit the following tag on its own line at the ` +
+      `end of your response:\n\n` +
+      `  [HA_ACTION domain=<domain> service=<service> entity_id=<entity_id> label=<friendly description> <extra key=value pairs>]\n\n` +
+      `Rules for [HA_ACTION]:\n` +
+      `- domain, service, entity_id, and label are always required.\n` +
+      `- label must be a short human-readable description of the action, e.g. label=Turn off Living Room Light\n` +
+      `- Do not quote values — use plain text: entity_id=light.living_room not entity_id="light.living_room"\n` +
+      `- For services that take extra data (e.g. temperature, brightness, position), append as additional key=value pairs.\n` +
+      `- Only use entity IDs that appear in the live snapshot above. Never invent entity IDs.\n` +
+      `- Emit [HA_ACTION ...] once per response. A confirmation card will be shown to the user before anything executes.\n` +
+      `- Tell the user you have sent an action request for their approval — do not say the action has already been performed.`
     );
   }
 

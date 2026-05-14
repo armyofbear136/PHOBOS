@@ -699,6 +699,23 @@ function buildDeps(arch: PhobosArch): Dep[] {
     const exeName   = isWin ? 'PhobosHost.exe' : 'PhobosHost';
     const exePath   = path.join(hostDir, exeName);
 
+    // If a previous DepPrep run staged a .pending binary (because the host
+    // was locked/running at the time), promote it now while the host is
+    // not yet started. This is the earliest safe window to do the swap.
+    const pendingPath = exePath + '.pending';
+    if (fs.existsSync(pendingPath)) {
+      try {
+        const oldPath = exePath + '.old';
+        if (fs.existsSync(exePath)) fs.renameSync(exePath, oldPath);
+        fs.renameSync(pendingPath, exePath);
+        if (!isWin) fs.chmodSync(exePath, 0o755);
+        try { fs.rmSync(oldPath, { force: true }); } catch {}
+        console.log(`[DepPrep] Applied staged PhobosHost update from ${pendingPath}`);
+      } catch (err) {
+        console.warn(`[DepPrep] Failed to promote PhobosHost.pending: ${(err as Error).message}`);
+      }
+    }
+
     const filenames: Record<PhobosArch, string> = {
       'win32-x64':    'PhobosHost-win-x64.zip',
       'darwin-arm64': 'PhobosHost-darwin-arm64.tar.gz',
@@ -716,6 +733,17 @@ function buildDeps(arch: PhobosArch): Dep[] {
         try { return fs.statSync(exePath).size >= 500_000; } catch { return false; }
       },
       install: async (arc) => {
+        // PhobosHost may already be running from the previous boot.
+        // On Windows, a running .exe cannot be overwritten (EBUSY).
+        // Strategy: rename the live binary to .old, copy the new binary into
+        // place, then remove .old. On lock failure, write to .pending — the
+        // update takes effect on next PHOBOS boot when the host is not running.
+        const oldPath     = exePath + '.old';
+        const pendingPath = exePath + '.pending';
+        for (const stale of [oldPath, pendingPath]) {
+          try { fs.rmSync(stale, { force: true }); } catch {}
+        }
+
         fs.mkdirSync(hostDir, { recursive: true });
         const tmp = arc + '-extract';
         fs.mkdirSync(tmp, { recursive: true });
@@ -724,8 +752,27 @@ function buildDeps(arch: PhobosArch): Dep[] {
 
         const found = findFile(tmp, exeName);
         if (!found) throw new Error(`${exeName} not found in ${file}`);
-        fs.copyFileSync(found, exePath);
-        if (!isWin) fs.chmodSync(exePath, 0o755);
+
+        if (fs.existsSync(exePath)) {
+          try {
+            fs.renameSync(exePath, oldPath);
+            fs.copyFileSync(found, exePath);
+            if (!isWin) fs.chmodSync(exePath, 0o755);
+            try { fs.rmSync(oldPath, { force: true }); } catch {}
+          } catch {
+            // Binary is locked (running). Stage as .pending for next boot.
+            try { fs.renameSync(oldPath, exePath); } catch {}
+            fs.copyFileSync(found, pendingPath);
+            if (!isWin) fs.chmodSync(pendingPath, 0o755);
+            console.warn(
+              `[DepPrep] PhobosHost is locked — new binary staged at ${pendingPath}. ` +
+              `It will replace the live binary on next PHOBOS boot.`,
+            );
+          }
+        } else {
+          fs.copyFileSync(found, exePath);
+          if (!isWin) fs.chmodSync(exePath, 0o755);
+        }
 
         // Stage any side-by-side runtime files (DLLs on Win, .so on Linux,
         // .dylib on Mac) next to the binary so the OS loader can find them.
@@ -757,6 +804,20 @@ function buildDeps(arch: PhobosArch): Dep[] {
     const pluginsDir = path.join(SERVICES_DIR, 'phobos-host', 'plugins');
     const bundleDir  = path.join(pluginsDir, 'PhobosCrystal.vst3');
 
+    // Promote a staged .pending bundle from a previous locked-update attempt.
+    const pendingBundle = path.join(pluginsDir, 'PhobosCrystal.vst3.pending');
+    if (fs.existsSync(pendingBundle)) {
+      try {
+        const oldBundle = path.join(pluginsDir, 'PhobosCrystal.vst3.old');
+        if (fs.existsSync(bundleDir)) fs.renameSync(bundleDir, oldBundle);
+        fs.renameSync(pendingBundle, bundleDir);
+        try { fs.rmSync(oldBundle, { recursive: true, force: true }); } catch {}
+        console.log(`[DepPrep] Applied staged PhobosCrystal update`);
+      } catch (err) {
+        console.warn(`[DepPrep] Failed to promote PhobosCrystal.pending: ${(err as Error).message}`);
+      }
+    }
+
     return {
       id: 'phobos-crystal', label: 'PhobosCrystal VST3',
       file: 'PhobosCrystal.vst3.zip', minBytes: 100_000,
@@ -767,11 +828,48 @@ function buildDeps(arch: PhobosArch): Dep[] {
         fs.mkdirSync(pluginsDir, { recursive: true });
         // The zip already contains a PhobosCrystal.vst3/ folder at root —
         // extract directly into pluginsDir and the bundle drops in place.
-        // Remove any existing bundle first so we don't merge old + new files.
-        if (fs.existsSync(bundleDir)) fs.rmSync(bundleDir, { recursive: true, force: true });
-        await extractZip(arc, pluginsDir);
-        if (!fs.existsSync(bundleDir)) {
-          throw new Error('PhobosCrystal.vst3/ folder not present after extracting PhobosCrystal.vst3.zip');
+        // Extract to a staging dir first, then atomic-swap into place.
+        // This avoids EPERM on Windows when PhobosHost has the DLL loaded.
+        const stagingDir  = path.join(pluginsDir, '.crystal-staging');
+        const stagingBundle = path.join(stagingDir, 'PhobosCrystal.vst3');
+        const pendingBundle = path.join(pluginsDir, 'PhobosCrystal.vst3.pending');
+        const oldBundle     = path.join(pluginsDir, 'PhobosCrystal.vst3.old');
+
+        // Clean up any stale staging or pending dirs from prior attempts.
+        for (const stale of [stagingDir, pendingBundle, oldBundle]) {
+          try { fs.rmSync(stale, { recursive: true, force: true }); } catch {}
+        }
+
+        fs.mkdirSync(stagingDir, { recursive: true });
+        await extractZip(arc, stagingDir);
+        if (!fs.existsSync(stagingBundle)) {
+          throw new Error('PhobosCrystal.vst3/ not present in extracted zip');
+        }
+
+        if (fs.existsSync(bundleDir)) {
+          try {
+            fs.renameSync(bundleDir, oldBundle);
+            fs.renameSync(stagingBundle, bundleDir);
+            try { fs.rmSync(oldBundle, { recursive: true, force: true }); } catch {}
+          } catch {
+            // Host has the DLL locked. Leave the new bundle as .pending —
+            // phobosCrystalDep() will promote it on the next boot before
+            // PhobosHost starts.
+            fs.renameSync(stagingBundle, pendingBundle);
+            try { if (fs.existsSync(oldBundle)) fs.renameSync(oldBundle, bundleDir); } catch {}
+            console.warn(
+              `[DepPrep] PhobosCrystal DLL is locked — new bundle staged at ${pendingBundle}. ` +
+              `It will replace the live bundle on next PHOBOS boot.`,
+            );
+          }
+        } else {
+          fs.renameSync(stagingBundle, bundleDir);
+        }
+
+        try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch {}
+
+        if (!fs.existsSync(bundleDir) && !fs.existsSync(pendingBundle)) {
+          throw new Error('PhobosCrystal.vst3/ not in place after install');
         }
       },
     };
@@ -1139,9 +1237,9 @@ function buildDeps(arch: PhobosArch): Dep[] {
       id:        'kokoro-82m',
       label:     'Kokoro 82M TTS (ONNX)',
       file:      'kokoro-82m-onnx.zip',
-      minBytes:  85_000_000,
+      minBytes:  60_000_000,
       isPresent: () => {
-        try { return fs.statSync(path.join(kokoroDir, 'onnx', 'model_quantized.onnx')).size >= 85_000_000; }
+        try { return fs.statSync(path.join(kokoroDir, 'onnx', 'model_quantized.onnx')).size >= 60_000_000; }
         catch { return false; }
       },
       install: async (arc) => {
@@ -1162,7 +1260,7 @@ function buildDeps(arch: PhobosArch): Dep[] {
       id:        'whisper-cli',
       label:     'Whisper STT CLI',
       file:      'whisper-cli-win32-x64.zip',
-      minBytes:  1_500_000,
+      minBytes:  500_000,
       isPresent: () => {
         try {
           return fs.statSync(whisperExe).size >= 400_000 &&
@@ -1190,7 +1288,7 @@ function buildDeps(arch: PhobosArch): Dep[] {
       id:        'ace-step',
       label:     'ACE-Step v1.5 Music Generation',
       file:      'ace-step-win32-x64.zip',
-      minBytes:  1_500_000,
+      minBytes:  500_000,
       isPresent: () => {
         try {
           return fs.statSync(aceLmExe).size   >= 300_000 &&

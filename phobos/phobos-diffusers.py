@@ -392,6 +392,12 @@ def load_wan_pipeline(args, device: str, dtype):
     from diffusers import WanPipeline, WanTransformer3DModel, AutoencoderKLWan, GGUFQuantizationConfig
     from diffusers.schedulers import UniPCMultistepScheduler
 
+    # ftfy is required by WanPipeline.__call__ for text pre-processing.
+    # diffusers 0.36 does not declare it as a dependency — install it in the venv
+    # via PythonEnvManager Pass 1. Import here so a missing package gives a clear
+    # error at load time rather than a NameError deep inside the pipeline.
+    import ftfy  # noqa: F401  — side-effect import, pipeline reads it via its own import
+
     config_repo = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
 
     # ── Load transformer from GGUF ──────────────────────────────────────────
@@ -808,6 +814,15 @@ def _apply_torch_compile(pipe, args) -> None:
 
     if not torch.cuda.is_available():
         log("[INFO ] torch.compile skipped — requires CUDA")
+        return
+
+    # ROCm on Windows: triton-windows is CUDA-only. torch.compile calls the
+    # Triton backend which has no Windows ROCm support — it raises a
+    # TorchDynamo error immediately. Detect via torch.version.hip (only set
+    # on ROCm builds) + sys.platform.
+    import sys
+    if sys.platform == "win32" and getattr(torch.version, "hip", None) is not None:
+        log("[INFO ] torch.compile skipped — Triton has no ROCm Windows backend")
         return
 
     transformer = getattr(pipe, "transformer", None) or getattr(pipe, "unet", None)

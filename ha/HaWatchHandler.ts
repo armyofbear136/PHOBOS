@@ -108,24 +108,15 @@ export function registerHaWatchHandler(
   scheduler: import('../scheduling/Scheduler.js').Scheduler,
   db:        DatabaseManager,
 ): void {
-  scheduler.registerHandler('ha:watch', async () => {
-    // The handler receives no task context directly — background handlers are
-    // registered as () => Promise<void>. The prompt comes from the task row,
-    // but the Scheduler doesn't pass it to the handler. For scheduled watch
-    // duty, users set a meaningful prompt when creating the task in SchedulerPanel.
-    // We use a default prompt here; Phase 4 can thread the task prompt through
-    // the handler registry if per-task prompts are needed for background runs.
-    //
-    // NOTE: If you need per-task prompts for ha:watch scheduled tasks, the clean
-    // solution is to give BackgroundHandler the signature (task: ScheduledTask) =>
-    // Promise<void>. That's a Scheduler.ts change scoped to Phase 4.
-    await runHaWatch(
-      'Check the current home state. Report any anomalies, lights left on in unoccupied areas, ' +
-      'unlocked doors, unusual temperatures, or anything else worth the user\'s attention. ' +
-      'If everything looks normal, confirm that briefly.',
-      'scheduled',
-      db,
-    );
+  scheduler.registerHandler('ha:watch', async (task) => {
+    // task.prompt is set by the user when creating the scheduled watch task
+    // in SchedulerPanel. Fall back to a sensible default if left blank.
+    const prompt = task.prompt?.trim()
+      || 'Check the current home state. Report any anomalies, lights left on in unoccupied areas, ' +
+         "unlocked doors, unusual temperatures, or anything else worth the user's attention. " +
+         'If everything looks normal, confirm that briefly.';
+
+    await runHaWatch(prompt, 'scheduled', db);
   });
 
   console.log('[HaWatchHandler] ha:watch handler registered');

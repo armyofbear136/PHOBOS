@@ -68,10 +68,11 @@ export type SecurityConfigKey =
   | 'dependency_audit_cron'
   | 'system_audit_cron'
   | 'integrity_check_cron'
-  | 'malware_scan_paths'   // JSON array of absolute paths
+  | 'malware_scan_paths'      // JSON array of absolute paths
   | 'semgrep_enabled'
   | 'integrity_enabled'
-  | 'clamav_update_cron';
+  | 'clamav_update_cron'
+  | 'owner_password_hash';    // bcrypt hash; empty string = not yet set
 
 const CONFIG_DEFAULTS: Record<SecurityConfigKey, string> = {
   port_scan_cron:        '0 3 * * 0',   // Sunday 3am
@@ -84,6 +85,7 @@ const CONFIG_DEFAULTS: Record<SecurityConfigKey, string> = {
   semgrep_enabled:       'true',
   integrity_enabled:     'true',
   clamav_update_cron:    '0 3 * * 3',   // Wednesday 3am
+  owner_password_hash:   '',             // empty = management password not yet set
 };
 
 // ── DDL ───────────────────────────────────────────────────────────────────────

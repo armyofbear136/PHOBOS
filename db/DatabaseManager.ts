@@ -27,16 +27,45 @@ function resolveBundledExtensionDir(): string | null {
 
 export const BUNDLED_EXTENSION_DIR = resolveBundledExtensionDir();
 
-// ── Active user resolution (E1: hardcoded; E2: per-request) ───────────────────
+// ── Active user resolution ─────────────────────────────────────────────────────
 //
-// The active user is the identity whose data the current operation reads/writes.
-// E1 has only one real user ('owner'). The env var lets test/dev override.
-// E2 will replace these reads with per-request resolution from the auth context.
+// Priority order:
+//   1. PHOBOS_ACTIVE_USER env var (dev/test override)
+//   2. ~/.phobos/active-user.json written by POST /api/admin/switch-user
+//   3. Hard default: 'owner'
+//
+// The JSON file is written atomically (tmp → rename) by the switch-user route.
+// readFileSync is used because getActiveUser() is called at module evaluation
+// time (e.g. WORKSPACES_ROOT constants in server.ts). Async is not possible
+// at that point. This is not a hot path.
 
 export const DEFAULT_USERNAME = 'owner';
 
+const ACTIVE_USER_FILE = path.join(
+  process.env.PHOBOS_DATA_DIR ?? path.join(os.homedir(), '.phobos'),
+  'active-user.json',
+);
+const ACTIVE_USER_TMP = ACTIVE_USER_FILE + '.tmp';
+
 export function getActiveUser(): string {
-  return process.env.PHOBOS_ACTIVE_USER || DEFAULT_USERNAME;
+  if (process.env.PHOBOS_ACTIVE_USER) return process.env.PHOBOS_ACTIVE_USER;
+  try {
+    const raw    = fs.readFileSync(ACTIVE_USER_FILE, 'utf8');
+    const parsed = JSON.parse(raw) as { username?: unknown };
+    if (typeof parsed.username === 'string' && parsed.username.length > 0) {
+      return parsed.username;
+    }
+  } catch {
+    // File absent or malformed — fall through to default.
+  }
+  return DEFAULT_USERNAME;
+}
+
+/** Write the active user atomically. Called by POST /api/admin/switch-user. */
+export function writeActiveUser(username: string): void {
+  fs.mkdirSync(path.dirname(ACTIVE_USER_FILE), { recursive: true });
+  fs.writeFileSync(ACTIVE_USER_TMP, JSON.stringify({ username }, null, 2), 'utf8');
+  fs.renameSync(ACTIVE_USER_TMP, ACTIVE_USER_FILE);
 }
 
 // ── Path resolution ───────────────────────────────────────────────────────────
@@ -87,6 +116,22 @@ CREATE TABLE IF NOT EXISTS model_config (
   key        VARCHAR PRIMARY KEY,
   value      TEXT NOT NULL,
   updated_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
+-- Access codes for guest and self-remote access.
+-- Issued per system user; validated by WebRTC handler before session open.
+-- target_username is NULL for unbound codes — a guest user is provisioned on
+-- first connect and the column is backfilled.
+CREATE TABLE IF NOT EXISTS access_codes (
+  code              VARCHAR PRIMARY KEY,
+  issuing_username  VARCHAR NOT NULL,
+  target_username   VARCHAR,
+  code_type         VARCHAR NOT NULL DEFAULT 'guest'
+                    CHECK (code_type IN ('guest', 'self')),
+  single_use        BOOLEAN NOT NULL DEFAULT true,
+  consumed          BOOLEAN NOT NULL DEFAULT false,
+  created_at        TIMESTAMP NOT NULL DEFAULT now(),
+  expires_at        TIMESTAMP NOT NULL
 );
 `;
 
@@ -281,6 +326,86 @@ Output code changes ONLY as SEARCH/REPLACE blocks. Never rewrite entire files un
 '# Project
 
 Describe your project here. The AI will read this before every task.', 1);
+
+-- Per-user credentials for external services (Jellyfin, Kavita, etc.).
+-- Replaces the system-wide media_services.settings approach for per-user accounts.
+-- Populated by provisionSystemUser() when a new system user is created.
+CREATE TABLE IF NOT EXISTS user_service_tokens (
+  service     VARCHAR NOT NULL,
+  key         VARCHAR NOT NULL,
+  value       TEXT    NOT NULL,
+  updated_at  TIMESTAMP NOT NULL DEFAULT now(),
+  PRIMARY KEY (service, key)
+);
+
+-- Social graph: friends of this user.
+-- Friends are identities in the communications layer only — no local provisioning.
+-- instance_url is their PHOBOS relay address for future peer connections.
+CREATE TABLE IF NOT EXISTS user_friends (
+  id            VARCHAR PRIMARY KEY,
+  friend_handle VARCHAR NOT NULL,
+  display_name  VARCHAR NOT NULL,
+  instance_url  VARCHAR,
+  status        VARCHAR NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending', 'active', 'blocked')),
+  added_at      TIMESTAMP NOT NULL DEFAULT now()
+);
+
+-- Vault configuration: file path, lock timeout, and open timestamps.
+-- Per-user so each user has their own .kdbx file at their own path.
+-- No secrets, no passwords, no key material ever touch this table.
+CREATE TABLE IF NOT EXISTS vault_config (
+  key   VARCHAR PRIMARY KEY,
+  value VARCHAR
+);
+
+-- Sync devices and policies: per-user so each user's mobile devices
+-- sync only to their own Meridian library.
+CREATE TABLE IF NOT EXISTS phobos_sync_devices (
+  device_id   VARCHAR PRIMARY KEY,
+  device_name VARCHAR NOT NULL,
+  platform    VARCHAR NOT NULL DEFAULT 'unknown',
+  sync_token  VARCHAR NOT NULL UNIQUE,
+  registered_at TIMESTAMP NOT NULL DEFAULT now(),
+  last_seen_at  TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS phobos_sync_policies (
+  id          VARCHAR PRIMARY KEY,
+  device_id   VARCHAR NOT NULL REFERENCES phobos_sync_devices(device_id),
+  library     VARCHAR NOT NULL,
+  enabled     BOOLEAN NOT NULL DEFAULT true,
+  retain_days INTEGER NOT NULL DEFAULT 90,
+  upload_mode VARCHAR NOT NULL DEFAULT 'wifi_only'
+              CHECK (upload_mode IN ('wifi_only', 'always', 'manual')),
+  updated_at  TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS phobos_sync_exclusions (
+  id        VARCHAR PRIMARY KEY,
+  policy_id VARCHAR NOT NULL REFERENCES phobos_sync_policies(id),
+  path      VARCHAR NOT NULL,
+  scope     VARCHAR NOT NULL DEFAULT 'subtree'
+            CHECK (scope IN ('subtree', 'exact'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_exclusions_policy
+  ON phobos_sync_exclusions (policy_id);
+
+CREATE TABLE IF NOT EXISTS phobos_sync_manifest (
+  content_hash VARCHAR NOT NULL,
+  device_id    VARCHAR NOT NULL REFERENCES phobos_sync_devices(device_id),
+  dest_path    VARCHAR NOT NULL,
+  file_size    BIGINT  NOT NULL DEFAULT 0,
+  taken_at     TIMESTAMP,
+  synced_at    TIMESTAMP NOT NULL DEFAULT now(),
+  PRIMARY KEY (content_hash, device_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_manifest_device
+  ON phobos_sync_manifest (device_id);
+CREATE INDEX IF NOT EXISTS idx_sync_manifest_taken
+  ON phobos_sync_manifest (taken_at);
 `;
 
 // ── DatabaseManager ───────────────────────────────────────────────────────────

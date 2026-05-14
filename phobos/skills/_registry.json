@@ -11,7 +11,7 @@
       "category": "core",
       "trigger": "Active during file summarisation and request rewriting in Phase 1",
       "runner": null,
-      "path": "C:\\Users\\armyo\\NodeJS\\Projects\\dual-reasoning\\phobos\\skills\\core\\context-compression"
+      "path": "phobos/skills/tools/core/context-compression"
     },
     {
       "id": "interleaved-thinking",
@@ -22,7 +22,7 @@
       "category": "core",
       "trigger": "Always active in SEREN execution turns",
       "runner": null,
-      "path": "C:\\Users\\armyo\\NodeJS\\Projects\\dual-reasoning\\phobos\\skills\\core\\interleaved-thinking"
+      "path": "phobos/skills/tools/core/interleaved-thinking"
     },
     {
       "id": "llm-as-judge",
@@ -33,7 +33,7 @@
       "category": "core",
       "trigger": "Active during SAYON per-task review in Phase 4",
       "runner": null,
-      "path": "C:\\Users\\armyo\\NodeJS\\Projects\\dual-reasoning\\phobos\\skills\\core\\llm-as-judge"
+      "path": "phobos/skills/tools/core/llm-as-judge"
     },
     {
       "id": "reflexion-critique",
@@ -44,7 +44,7 @@
       "category": "core",
       "trigger": "Active during SEREN final validation in Phase 4.5",
       "runner": null,
-      "path": "C:\\Users\\armyo\\NodeJS\\Projects\\dual-reasoning\\phobos\\skills\\core\\reflexion-critique"
+      "path": "phobos/skills/tools/core/reflexion-critique"
     },
     {
       "id": "home-assistant-automations",

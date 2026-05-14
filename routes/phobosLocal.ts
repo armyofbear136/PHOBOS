@@ -1832,7 +1832,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       };
 
       const abort = new AbortController();
-      req.raw.on('close', () => abort.abort());
+      req.raw.socket?.on('close', () => abort.abort());
 
       try {
         fs.mkdirSync(audioModelDir(spec), { recursive: true });

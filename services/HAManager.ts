@@ -77,6 +77,9 @@ const conn: ManagedConnection = {
   config:       null,
 };
 
+/** Pending call_service requests awaiting a result response from HA. */
+const pendingCalls = new Map<number, { resolve: (r: unknown) => void; reject: (e: Error) => void }>();
+
 // Backoff: 2^n seconds, capped at 60s.
 const RETRY_BASE_MS  = 2_000;
 const RETRY_MAX_MS   = 60_000;
@@ -178,27 +181,45 @@ export function getHaSnapshot(): string | null {
   return lines.join('\n');
 }
 
-// ── Phase 4 stub ──────────────────────────────────────────────────────────────
-
 /**
- * Call a Home Assistant service. Phase 4 only — not implemented.
+ * Call a Home Assistant service and await the result.
  *
- * In Phase 4 this will send a `call_service` command over the WebSocket and
- * await the result response. Every call site must pass through the approval
- * gate in the copilot panel before reaching here — no service call fires
- * without explicit user confirmation.
+ * Every call site must have already passed through the user approval gate in
+ * the copilot confirmation card — this function fires immediately on call.
+ * Never call this without prior user confirmation.
  *
- * @throws always — calling this in Phase 3 is a programming error.
+ * @throws if HA is not connected, or if HA returns an error result.
  */
 export function callService(
-  _domain:  string,
-  _service: string,
-  _data:    Record<string, unknown>,
-): never {
-  throw new Error(
-    '[HAManager] callService() is not implemented until Phase 4. ' +
-    'Phase 3 is strictly read-only.'
-  );
+  domain:  string,
+  service: string,
+  data:    Record<string, unknown>,
+): Promise<unknown> {
+  if (conn.state !== 'connected' || !conn.ws) {
+    return Promise.reject(new Error('[HAManager] callService() called while not connected.'));
+  }
+
+  const id = conn.nextId++;
+
+  return new Promise<unknown>((resolve, reject) => {
+    pendingCalls.set(id, { resolve, reject });
+
+    _send({
+      id,
+      type:         'call_service',
+      domain,
+      service,
+      service_data: data,
+    });
+
+    // 10-second timeout — HA result responses are normally immediate.
+    setTimeout(() => {
+      if (pendingCalls.has(id)) {
+        pendingCalls.delete(id);
+        reject(new Error(`[HAManager] callService() timed out for ${domain}.${service}`));
+      }
+    }, 10_000);
+  });
 }
 
 // ── Internal — connection lifecycle ──────────────────────────────────────────
@@ -281,6 +302,20 @@ function _handleMessage(msg: Record<string, unknown>): void {
     case 'result': {
       const id = msg['id'] as number;
       if (id === conn.subId) break; // subscription ack, no action needed
+
+      // Resolve or reject a pending callService() promise.
+      const pending = pendingCalls.get(id);
+      if (pending) {
+        pendingCalls.delete(id);
+        if (msg['success'] === true) {
+          pending.resolve(msg['result']);
+        } else {
+          const errMsg = (msg['error'] as Record<string, unknown>)?.['message'] as string
+            ?? 'HA returned an error result';
+          pending.reject(new Error(`[HAManager] ${errMsg}`));
+        }
+        break;
+      }
 
       // Initial get_states response — populate the map.
       if (msg['success'] === true && Array.isArray(msg['result'])) {
@@ -368,6 +403,11 @@ function _teardown(): void {
     try { conn.ws.close(1000); } catch { /* ignore */ }
     conn.ws = null;
   }
+  // Reject any in-flight callService() promises — connection is gone.
+  for (const { reject } of pendingCalls.values()) {
+    reject(new Error('[HAManager] Connection torn down before service call completed.'));
+  }
+  pendingCalls.clear();
   conn.entityStates.clear();
   conn.nextId    = 1;
   conn.subId     = null;

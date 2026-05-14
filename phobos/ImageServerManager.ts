@@ -857,8 +857,11 @@ export function selectBackend(
 
   // Models blocked on PyTorch — always sd-cli
   const profile = cfg.fluxSpec.runnerProfile;
-  if (profile === 'flux2')   return 'sdcli'; // Diffusers shape bug #13001
-  if (profile === 'z-image') return 'sdcli'; // Diffusers GGUF loader bug
+  if (profile === 'flux2') return 'sdcli'; // Diffusers shape bug #13001 — confirmed, no fix yet
+
+  // Z-Image: load path implemented with cap_pad_token fix. Pending live validation
+  // on diffusers==0.36.0. Force sdcli unless user explicitly chose pytorch.
+  if (profile === 'z-image' && cfg.imageBackend !== 'pytorch') return 'sdcli';
 
   // Qwen-Image on CUDA has GGUF dequant KeyError — only works on ROCm/non-CUDA PyTorch
   if (profile === 'qwen-image' && gpu) {

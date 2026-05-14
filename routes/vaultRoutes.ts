@@ -1,10 +1,9 @@
 /**
  * vaultRoutes.ts — PHOBOS Vault API routes.
  *
- * Mirrors registerHaRoutes exactly: DatabaseManager.getInstance() is called
- * inside the function body, not at module load time. This is safe because
- * buildServer() is only called after the DB is initialized on both boot paths.
- * VaultStore is constructed here — no parameter needed from continueBootSequence.
+ * Uses DatabaseManager.getUserDb() so each user gets their own vault config.
+ * vault_config is created by USER_SCHEMA — no ensureTable() needed.
+ * VaultStore is constructed here; buildServer() runs after both DBs initialize.
  *
  * POST   /api/vault/create
  * POST   /api/vault/unlock
@@ -63,9 +62,7 @@ function isNotFound(err: unknown): boolean {
 }
 
 export async function registerVaultRoutes(fastify: FastifyInstance): Promise<void> {
-  const db    = DatabaseManager.getInstance();
-  const store = new VaultStore(db);
-  await store.ensureTable();
+  const store = new VaultStore(DatabaseManager.getUserDb());
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 

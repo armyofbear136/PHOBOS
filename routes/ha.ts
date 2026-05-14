@@ -22,6 +22,7 @@ import {
   getHaSnapshot,
   getHaEntity,
   setExposedDomains,
+  callService,
 } from '../services/HAManager.js';
 
 export async function registerHaRoutes(fastify: FastifyInstance): Promise<void> {
@@ -122,5 +123,33 @@ export async function registerHaRoutes(fastify: FastifyInstance): Promise<void> 
     await watchStore.ensureTable();
     const runs = await watchStore.getRecentRuns(20);
     return reply.send(runs);
+  });
+
+  // ── POST /api/ha/action ───────────────────────────────────────────────────
+  // Execute a confirmed HA service call. Called by CopilotPanel after the user
+  // taps Confirm on an action_pending confirmation card.
+  // This is the only call site for callService() — no action fires without
+  // the user explicitly confirming via the card UI.
+  fastify.post<{
+    Body: {
+      domain:    string;
+      service:   string;
+      data:      Record<string, unknown>;
+    };
+  }>('/api/ha/action', async (req, reply) => {
+    const { domain, service, data } = req.body;
+
+    if (!domain || !service || typeof data !== 'object' || data === null) {
+      return reply.status(400).send({ ok: false, error: 'domain, service, and data are required' });
+    }
+
+    try {
+      const result = await callService(domain, service, data);
+      return reply.send({ ok: true, result });
+    } catch (err) {
+      const msg = (err as Error).message;
+      console.error(`[HA Action] ${domain}.${service} failed: ${msg}`);
+      return reply.status(502).send({ ok: false, error: msg });
+    }
   });
 }

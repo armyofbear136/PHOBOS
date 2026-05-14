@@ -641,10 +641,12 @@ export async function buildForPlatform({
   // phobos-diffusers.py — ImageServerManager (PyTorch image generation)
   // phobos-lm-trainer.py — CartridgeTrainer (LLM LoRA training)
   // _torchcodec.py — PythonEnvManager patches torchaudio with this after install
+  // unsloth_zoo_utils.py — PythonEnvManager copies this into unsloth_zoo on ROCm after install
   const pyScripts = [
     ['phobos-diffusers.py', 'phobos-diffusers.py', 'PyTorch generation script'],
     ['phobos-lm-trainer.py', 'phobos-lm-trainer.py', 'LLM LoRA training script'],
     ['_torchcodec.py', '_torchcodec.py', 'torchaudio soundfile fallback patch'],
+    ['unsloth_zoo_utils.py', 'unsloth_zoo_utils.py', 'unsloth_zoo ROCm torch.distributed patch'],
   ];
   for (const [src, dst, label] of pyScripts) {
     const pyScript = path.join(__dirname, 'phobos', src);
@@ -652,6 +654,68 @@ export async function buildForPlatform({
       fs.copyFileSync(pyScript, path.join(distDir, dst));
       log(`  ✅ ${dst} (${label})`);
     }
+  }
+
+  // ── phobos-kokoro.mjs — Kokoro TTS subprocess script ─────────────────────
+  // Spawned by AudioServerManager as a standalone Node process (not in-process).
+  // Running as a subprocess with the correct cwd means kokoro-js and
+  // @huggingface/transformers resolve via node_modules without any SEA issues.
+  const kokoroScriptSrc = path.join(__dirname, 'phobos', 'phobos-kokoro.mjs');
+  if (fs.existsSync(kokoroScriptSrc)) {
+    fs.copyFileSync(kokoroScriptSrc, path.join(distDir, 'phobos-kokoro.mjs'));
+    log('  ✅ phobos-kokoro.mjs (Kokoro TTS subprocess script)');
+  } else {
+    log('  ⚠️  phobos-kokoro.mjs not found — Kokoro TTS will be unavailable');
+  }
+
+  // ── kokoro-js + @huggingface/transformers — staged to dist/node_modules/ ──
+  //
+  // These are pure-JS ESM packages (no .node binaries) so they can be staged
+  // directly. phobos-kokoro.mjs is spawned with cwd=dist/ so Node resolves
+  // bare specifiers against dist/node_modules/.
+  //
+  // @huggingface/transformers v3 ships its own onnxruntime-node@1.21.x, which
+  // is a different version from the top-level 1.17.x staged for VisionProcessor.
+  // We nest it inside @huggingface/transformers/node_modules/ so the two copies
+  // coexist without version conflicts — exactly the same pattern used for imgly.
+  const kokoroJsSrc = path.join(__dirname, 'node_modules', 'kokoro-js');
+  if (fs.existsSync(kokoroJsSrc)) {
+    const kokoroJsDest = path.join(distDir, 'node_modules', 'kokoro-js');
+    copyDir(kokoroJsSrc, kokoroJsDest);
+    log('  ✅ kokoro-js/');
+  } else {
+    log('  ⚠️  kokoro-js not installed — run npm install');
+  }
+
+  const hfTransformersSrc = path.join(__dirname, 'node_modules', '@huggingface', 'transformers');
+  if (fs.existsSync(hfTransformersSrc)) {
+    const hfDest = path.join(distDir, 'node_modules', '@huggingface', 'transformers');
+    copyDir(hfTransformersSrc, hfDest);
+    log('  ✅ @huggingface/transformers/');
+
+    // Nest @huggingface/transformers own onnxruntime-node (1.21.x) inside it so
+    // it doesn't collide with the top-level 1.17.x staged for VisionProcessor.
+    // Check nested first (npm may have deduplicated it to top-level if versions match).
+    const hfOnnxNested  = path.join(__dirname, 'node_modules', '@huggingface', 'transformers', 'node_modules', 'onnxruntime-node');
+    const hfOnnxHoisted = path.join(__dirname, 'node_modules', 'onnxruntime-node');
+    const hfOnnxSrc = fs.existsSync(hfOnnxNested) ? hfOnnxNested : null;
+    // Only use the hoisted copy if it's 1.21.x — don't let 1.17.x stand in for it
+    const resolvedHfOnnxSrc = hfOnnxSrc ?? (() => {
+      if (!fs.existsSync(hfOnnxHoisted)) return null;
+      try {
+        const v = JSON.parse(fs.readFileSync(path.join(hfOnnxHoisted, 'package.json'), 'utf8')).version ?? '';
+        return v.startsWith('1.21.') ? hfOnnxHoisted : null;
+      } catch { return null; }
+    })();
+
+    if (resolvedHfOnnxSrc) {
+      copyDir(resolvedHfOnnxSrc, path.join(hfDest, 'node_modules', 'onnxruntime-node'));
+      log('  ✅ @huggingface/transformers/node_modules/onnxruntime-node (nested)');
+    } else {
+      log('  ⚠️  @huggingface/transformers onnxruntime-node not found — Kokoro TTS may fail at inference');
+    }
+  } else {
+    log('  ⚠️  @huggingface/transformers not installed — run npm install');
   }
   // Shared recursive directory copy -- used for configs/ and phobos/skills/
   const copyDirRec = (src, dst) => {

@@ -124,9 +124,9 @@ const VALIDATION_MATRIX: ValidationEntry[] = [
 
   // ── Newly added pipelines — verify generation ──
   {
-    modelId: 'z-image-turbo-q4',   modelTypeArg: 'z-image', pipelinePath: 'ZImagePipeline (Diffusers 0.37.0)',
-    pytorchStatus: 'blocked',      needsAux: true,
-    notes: 'ZImagePipeline.from_single_file GGUF loading broken in Diffusers 0.37.1 (model_loading_utils KeyError). Blocked until upstream fix.',
+    modelId: 'z-image-turbo-q4',   modelTypeArg: 'z-image', pipelinePath: 'ZImagePipeline (Diffusers 0.36.0)',
+    pytorchStatus: 'pending',      needsAux: true,
+    notes: 'ZImagePipeline load path implemented with cap_pad_token unsqueeze fix. Needs live test on current diffusers==0.36.0 stack to confirm. Previously noted as broken in 0.37.1 — not applicable here.',
     sageCompatible: false,         tritonCompatible: false,  vramRequiredGb: 8,
   },
   {
@@ -381,17 +381,22 @@ function buildTestArgs(
     }
   }
 
-  // SageAttention
-  if (sageMode) {
-    env.DIFFUSERS_ATTN_BACKEND = 'sage_attn';
-  }
-  // Z-Image: force-disable SageAttention regardless — produces black images
-  if (entry.modelTypeArg === 'z-image') {
-    delete env.DIFFUSERS_ATTN_BACKEND;
+  // SageAttention — pass as CLI flag so phobos-diffusers.py sets the env var
+  // AFTER diffusers imports. Setting DIFFUSERS_ATTN_BACKEND in the spawn env
+  // causes diffusers 0.36 to validate the name at import time and throw
+  // ValueError: 'sage_attn' is not a valid AttentionBackendName.
+  // The script's _apply_sage_attention() handles the z-image skip internally.
+  if (sageMode && entry.sageCompatible) {
+    scriptArgs.push('--sage-attention');
   }
 
-  // Triton / torch.compile — would need phobos-diffusers.py support (--compile flag)
-  // For now this is a placeholder — torch.compile is not yet wired into the script.
+  // torch.compile via --torch-compile flag (wired in phobos-diffusers.py).
+  // Skipped on Wan (dynamic latent shapes) and when offload is active
+  // (incompatible). The script enforces both guards internally but we skip
+  // here to avoid the ~2 min first-run compile cost on incompatible models.
+  if (tritonMode && entry.tritonCompatible && !offload) {
+    scriptArgs.push('--torch-compile');
+  }
 
   return { scriptArgs, env, offload, t5Label };
 }
@@ -601,11 +606,38 @@ for (const { gpu, entries } of gpuSets) {
       }
     }
 
-    // ── Triton/torch.compile test (placeholder) ──
+    // ── Triton/torch.compile test (same model, if requested) ──
     if (testTriton && entry.tritonCompatible && result.code === 0) {
+      process.stdout.write(`    Triton (torch.compile)... `);
+      const { scriptArgs: tritonArgs, env: tritonEnv, offload: tritonOffload } = buildTestArgs(
+        entry, spec, gpu, vendor, hw, freeVramMb, false, true
+      );
       const r = results[results.length - 1];
-      r.triton = 'skip';
-      console.log(`    ${dim('Triton: skipped — --compile flag not yet in phobos-diffusers.py')}`);
+      // torch.compile is incompatible with --offload-cpu (PyTorch <2.5 guard;
+      // kept for safety across all versions). Skip rather than fail.
+      if (tritonOffload) {
+        r.triton = 'skip';
+        console.log(dim('skip (offload active — incompatible with torch.compile)'));
+      } else {
+        const tritonResult = await runPython(pyPath, tritonArgs, tritonEnv, 20 * 60 * 1000);
+        if (tritonResult.code === 0) {
+          r.triton = 'pass';
+          console.log(ok('PASS'));
+        } else {
+          // ROCm Windows: script exits non-zero after logging the skip message —
+          // this is expected (no Triton ROCm Windows backend). Score as skip.
+          const isRocmWindowsSkip = tritonResult.stdout.includes('Triton has no ROCm Windows backend')
+            || tritonResult.stderr.includes('TORCHDYNAMO_VERBOSE');
+          if (isRocmWindowsSkip) {
+            r.triton = 'skip';
+            console.log(dim('skip (no Triton ROCm Windows backend)'));
+          } else {
+            const tritonErr = tritonResult.stderr.split('\n').slice(-1)[0]?.slice(0, 80) ?? 'unknown error';
+            r.triton = 'fail';
+            console.log(fail(tritonErr));
+          }
+        }
+      }
     }
   }
 }

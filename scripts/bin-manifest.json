@@ -155,10 +155,10 @@
       "version": "0.9.0"
     },
     "phobos-host": {
-      "version": "1.0.1"
+      "version": "1.0.2"
     },
     "phobos-crystal": {
-      "version": "1.0.0"
+      "version": "1.0.2"
     },
     "mpv": {
       "version": "0.41.0"

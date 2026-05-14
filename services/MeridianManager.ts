@@ -29,6 +29,10 @@ export async function startMeridian(opts: {
   // db is optional — defaults to DatabaseManager.getInstance() (main process singleton).
   // Pass explicitly in test scripts that use an isolated database.
   db?:     DatabaseManager;
+  // syncDb is the user-scoped DatabaseManager for phobos_sync_* tables.
+  // Defaults to DatabaseManager.getUserDb() (active user). Pass explicitly
+  // in test scripts or when switching users.
+  syncDb?: DatabaseManager;
   // dbPath is used only when db is not provided, to open a specific database file.
   // Primarily for test scripts that need an isolated DuckDB.
   dbPath?: string;
@@ -47,12 +51,15 @@ export async function startMeridian(opts: {
     dbManager = DatabaseManager.getInstance();
   }
 
+  // User-scoped DB for phobos_sync_* tables.
+  const syncDbManager = opts.syncDb ?? DatabaseManager.getUserDb();
+
   const startOpts: MeridianStartOpts = {
     libraryPath: opts.libraryPath,
     idleEnabled: opts.idleEnabled,
   };
 
-  await startMeridianServer(dbManager, startOpts);
+  await startMeridianServer(dbManager, startOpts, syncDbManager);
 }
 
 export async function stopMeridian(): Promise<void> {

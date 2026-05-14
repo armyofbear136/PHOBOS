@@ -747,6 +747,75 @@ export async function closePhobosCrystalUi(): Promise<void> {
   await requireControl().call('closePluginUi', { slotId });
 }
 
+/**
+ * Set a single Crystal parameter by its APVTS string ID.
+ *
+ * `value` is normalised [0.0, 1.0] — the same space JUCE uses for all
+ * parameter automation. The caller is responsible for converting from
+ * user-facing units before calling here:
+ *
+ *   - Boolean params (e.g. chordDetect): 0.0 = false, 1.0 = true
+ *   - Choice params (e.g. mode, chordType): index / (numChoices - 1)
+ *   - Linear [0..1] params (e.g. depth, spread): pass directly
+ *   - Non-linear params (attack ms, filterQ, etc.): use the APVTS
+ *     NormalisableRange from Parameters.h as reference — JUCE normalises
+ *     internally, but preset values stored in EffectRackStore must already
+ *     be in [0..1] normalised form to be passed here.
+ *
+ * The host op is O(N) over Crystal's ~40 parameters. This is an effect-rack
+ * preset switch path, not an audio-rate path — the cost is negligible.
+ */
+export async function setCrystalParam(paramId: string, value: number): Promise<void> {
+  const slotId = service.phobosCrystalSlotId;
+  if (slotId === null) throw new Error('phobos crystal not mounted');
+  if (value < 0 || value > 1) {
+    throw new Error(`setCrystalParam: value must be in [0, 1] (got ${value} for '${paramId}')`);
+  }
+  await requireControl().call('setPluginParam', { slotId, paramId, value });
+}
+
+export interface EqBandState {
+  gainDb:  number;   // ±18 dB
+  q:       number;   // 0.1 – 10.0 (shelf bands ignore Q)
+  enabled: boolean;
+}
+
+export interface EqState {
+  enabled: boolean;
+  bands:   EqBandState[];
+}
+
+/** Fixed centre frequencies matching EqNode.h FREQS[] — index is the band index. */
+export const EQ_BAND_FREQS = [60, 120, 250, 500, 1000, 3000, 8000, 16000] as const;
+
+/**
+ * Set one band of the master EQ.
+ * gainDb: ±18 dB  |  q: 0.1–10  |  enabled: per-band bypass
+ * Bands 0 and 7 are shelf filters; Q is accepted but has reduced audible effect.
+ */
+export async function setEqBand(
+  band: number,
+  params: EqBandState,
+): Promise<void> {
+  if (band < 0 || band > 7) throw new Error(`setEqBand: band must be 0-7 (got ${band})`);
+  await requireControl().call('setEqBand', {
+    band,
+    gainDb:  Math.max(-18, Math.min(18, params.gainDb)),
+    q:       Math.max(0.1, Math.min(10, params.q)),
+    enabled: params.enabled,
+  });
+}
+
+/** Master EQ on/off — bypasses the entire EqNode without touching band state. */
+export async function setEqEnabled(enabled: boolean): Promise<void> {
+  await requireControl().call('setEqEnabled', { enabled });
+}
+
+/** Read full EQ state (all 8 bands + master enabled). */
+export async function getEqState(): Promise<EqState> {
+  return requireControl().call<EqState>('getEqState', {});
+}
+
 // ── Channel ↔ slot mapping (in-memory; Session 5 persists this) ──────────────
 
 /**

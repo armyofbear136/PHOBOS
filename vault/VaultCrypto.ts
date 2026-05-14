@@ -24,9 +24,13 @@
  * use rather than preventing server startup.
  */
 
-import * as fs                                            from 'node:fs';
-import * as path                                          from 'node:path';
-import { CryptoEngine, ProtectedValue, KdbxCredentials } from 'kdbxweb';
+import * as fs   from 'node:fs';
+import * as path from 'node:path';
+// kdbxweb is a CJS package with no "exports" field — ESM named imports fail at runtime.
+// Import as default and destructure, matching how tsx and esbuild CJS bundles handle it.
+import kdbxweb   from 'kdbxweb';
+import type { ProtectedValue as ProtectedValueType, Credentials as KdbxCredsType } from 'kdbxweb';
+const { CryptoEngine, ProtectedValue, Credentials: KdbxCreds } = kdbxweb as typeof import('kdbxweb');
 
 // ── WASM instance (loaded once on first vault op) ─────────────────────────────
 
@@ -53,10 +57,18 @@ let _wasm: Argon2Exports | null = null;
 async function _getWasm(): Promise<Argon2Exports> {
   if (_wasm) return _wasm;
 
-  const wasmPath = path.join(
-    path.dirname(process.execPath),
-    'node_modules', 'argon2-browser', 'dist', 'argon2.wasm',
-  );
+  // Path resolution mirrors LlamaServerManager: try SEA dist dir first, then
+  // __filename-relative (tsx/CJS), then process.cwd() (tsx from project root).
+  const wasmRelative = path.join('node_modules', 'argon2-browser', 'dist', 'argon2.wasm');
+  const candidates = [
+    path.join(path.dirname(process.execPath), wasmRelative),                          // SEA binary
+    // eslint-disable-next-line no-undef
+    typeof __filename !== 'undefined'
+      ? path.join(path.dirname(__filename), '..', wasmRelative)                       // tsx __filename
+      : null,
+    path.join(process.cwd(), wasmRelative),                                           // tsx cwd fallback
+  ].filter(Boolean) as string[];
+  const wasmPath = candidates.find(p => fs.existsSync(p)) ?? candidates[0];
   const wasmBytes = fs.readFileSync(wasmPath);
 
   let memory: WebAssembly.Memory;
@@ -189,14 +201,14 @@ export function initVaultCrypto(): void {
 
 // ── ProtectedValue helpers ────────────────────────────────────────────────────
 
-export function protectString(plaintext: string): ProtectedValue {
+export function protectString(plaintext: string): ProtectedValueType {
   return ProtectedValue.fromString(plaintext);
 }
 
-export function exposeProtected(value: ProtectedValue): string {
+export function exposeProtected(value: ProtectedValueType): string {
   return value.getText();
 }
 
-export function makeCredentials(masterPassword: string): KdbxCredentials {
-  return new KdbxCredentials(ProtectedValue.fromString(masterPassword));
+export function makeCredentials(masterPassword: string): KdbxCredsType {
+  return new KdbxCreds(ProtectedValue.fromString(masterPassword));
 }

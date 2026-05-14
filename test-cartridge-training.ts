@@ -54,7 +54,7 @@ import { getPythonPath } from './phobos/PythonEnvManager.js';
 
 const args          = process.argv.slice(2);
 const modelId       = _arg('--model')  ?? 'qwen3.5-4b-q4';
-const vendor        = (_arg('--vendor') ?? 'cuda') as 'cuda' | 'rocm' | 'cpu';
+const vendor        = (_arg('--vendor') ?? 'cuda') as 'cuda' | 'rocm' | 'xpu' | 'cpu';
 const stepsOverride = _arg('--steps') ? parseInt(_arg('--steps')!, 10) : 0;
 const onlyPhase     = _arg('--only');
 const skipDownload  = args.includes('--skip-download');
@@ -145,7 +145,8 @@ function writeDataset(datasetDir: string, dataMode: 'document' | 'conversation')
 //
 // Mirrors the poll loop in LmTrainingPanel and WorkflowPanel exactly.
 // Calls getLmTrainingStatus() directly (no HTTP) since we are in-process.
-// Resolves when training completes (done/error/aborted) or the deadline expires.
+// Resolves when training completes (done/error/aborted). Polls indefinitely —
+// the user aborts via the UI if they want to stop. No artificial time cap.
 
 async function pollUntilDone(
   sessionId: string,
@@ -153,12 +154,11 @@ async function pollUntilDone(
   onPhase: (sess: LmTrainingSession) => void,
 ): Promise<LmTrainingSession> {
   const POLL_MS  = 1500;
-  const DEADLINE = Date.now() + 90 * 60 * 1000;  // 90-min hard cap
 
   let lastStep  = 0;
   let lastPhase = '';
 
-  while (Date.now() < DEADLINE) {
+  while (true) {
     await new Promise(r => setTimeout(r, POLL_MS));
 
     const st = getLmTrainingStatus();
@@ -184,8 +184,6 @@ async function pollUntilDone(
 
     if (terminal && !st.training) return sess;
   }
-
-  throw new Error('pollUntilDone: training deadline exceeded (90 min)');
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -228,15 +226,21 @@ async function main() {
         await execAsync(
           pyBin,
           ['-c', 'import unsloth, trl, safetensors, huggingface_hub; print("ok")'],
-          { timeout: 60_000, env: { ...process.env, PYTHONUTF8: '1' } },
+          { timeout: 180_000, env: { ...process.env, PYTHONUTF8: '1' } },
         );
         console.log('       unsloth, trl, safetensors, huggingface_hub — all importable');
       } catch {
+        const pipBin = pyBin.replace(/python(\.exe)?$/, process.platform === 'win32' ? 'pip.exe' : 'pip3');
+        const tvIndex = vendor === 'rocm'
+          ? 'https://download.pytorch.org/whl/rocm7.2'
+          : vendor === 'xpu'
+          ? 'https://download.pytorch.org/whl/xpu'
+          : 'https://download.pytorch.org/whl/cu128';
         throw new Error(
           'unsloth or trl not importable. Install manually using the full venv pip path:\n' +
-          '         1. & "C:\\Users\\armyo\\.phobos\\python-env\\cuda\\Scripts\\pip.exe" install torchvision --index-url https://download.pytorch.org/whl/cu128 --no-deps\n' +
-          '         2. & "C:\\Users\\armyo\\.phobos\\python-env\\cuda\\Scripts\\pip.exe" install "unsloth>=2025.3.0" trl sentencepiece pypdf markdown-it-py --no-deps\n' +
-          '         3. & "C:\\Users\\armyo\\.phobos\\python-env\\cuda\\Scripts\\pip.exe" install unsloth_zoo --no-deps\n' +
+          `         1. & "${pipBin}" install torchvision --index-url ${tvIndex} --no-deps\n` +
+          `         2. & "${pipBin}" install "unsloth>=2025.3.0" trl sentencepiece pypdf markdown-it-py --no-deps\n` +
+          `         3. & "${pipBin}" install unsloth_zoo --no-deps\n` +
           '       Then re-run: npx tsx test-cartridge-training.ts --only deps',
         );
       }
@@ -270,6 +274,7 @@ async function main() {
       rank:            4,
       steps:           stepsOverride || 0,
       lr:              2e-4,
+      vendorOverride:  vendor !== 'cuda' ? vendor : undefined,
     });
     sessionId = sess.session_id;
     assertOk(!!sessionId,               'session_id not returned');

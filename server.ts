@@ -4,7 +4,7 @@ import cors from '@fastify/cors';
 import os from 'node:os';
 import { mkdirSync, existsSync as fsExistsSync } from 'node:fs';
 import path from 'node:path';
-import { DatabaseManager, userDir, getActiveUser } from './db/DatabaseManager.js';
+import { DatabaseManager, userDir, getActiveUser, writeActiveUser } from './db/DatabaseManager.js';
 import { runE1Migration, MigrationFatalError } from './db/Migration.js';
 import { threadsRoute } from './routes/threads.js';
 import { messagesRoute } from './routes/messages.js';
@@ -46,7 +46,9 @@ import { initVaultCrypto }      from './vault/VaultCrypto.js';
 import { VaultStore }           from './db/VaultStore.js';
 import { initVaultManager }     from './vault/VaultManager.js';
 import { registerVaultRoutes }  from './routes/vaultRoutes.js';
+import { registerUserManagementRoutes } from './routes/userManagement.js';
 import { registerAudioRoutes } from './routes/audio.js';
+import { shutdownKokoroDaemon } from './phobos/AudioServerManager.js';
 import { ServiceStore } from './db/ServiceStore.js';
 import { stopMeridian, startMeridian, getMeridianStatus } from './services/MeridianManager.js';
 import { stopPolaris, startPolaris, isBinaryPresent as isPolarisBinaryPresent } from './services/PolarisManager.js';
@@ -179,6 +181,7 @@ async function buildServer() {
   await registerServiceRoutes(fastify);
   await registerHaRoutes(fastify);
   await registerVaultRoutes(fastify);
+  await registerUserManagementRoutes(fastify);
   await registerAudioRoutes(fastify);
   await registerToolsRoutes(fastify);
   await registerCartridgeRoutes(fastify);
@@ -461,11 +464,11 @@ async function continueBootSequence(
   // Vault intentionally does NOT auto-unlock on boot. Credentials require
   // explicit user action each session. initVaultManager only loads config
   // (db_path, lock_timeout) — no file is opened, no password is required.
-  
+  // vault_config lives in the user DB (USER_SCHEMA) — one vault per user.
+
   initVaultCrypto();
 
-  const vaultStore = new VaultStore(db);
-  await vaultStore.ensureTable();
+  const vaultStore = new VaultStore(userDb);
   await initVaultManager(vaultStore);
  
 
@@ -539,6 +542,7 @@ async function continueBootSequence(
     startMeridian({
       libraryPath:  merRecord.libraryPath!,
       idleEnabled:  Boolean(merRecord.settings.idleClassifier ?? true),
+      syncDb:       userDb,
     }).catch(err => console.warn('[MediaHub] Meridian auto-start failed:', err.message));
   }
 
@@ -950,12 +954,16 @@ async function continueBootSequence(
   // the background. The access code routes return null until it connects.
   let webrtcSignalingClient: import('./webrtc/SignalingClient.js').SignalingClient | null = null;
   let webrtcServer: import('./webrtc/WebRTCServer.js').WebRTCServer | null = null;
-  try {
+  const webrtcRelayUrl = process.env.WEBRTC_RELAY_URL ?? 'wss://autarch.net/relay';
+  if (!webrtcRelayUrl) {
+    console.log('[WebRTC] WEBRTC_RELAY_URL is empty — relay disabled');
+  }
+  if (webrtcRelayUrl) try {
     const { SignalingClient } = await import('./webrtc/SignalingClient.js');
     const { WebRTCServer }    = await import('./webrtc/WebRTCServer.js');
 
     webrtcSignalingClient = new SignalingClient({
-      relayUrl:   process.env.WEBRTC_RELAY_URL ?? 'wss://autarch.net/relay',
+      relayUrl:   webrtcRelayUrl,
       activeUser: 'owner',
       onCode:     (code, _ice) => console.log(`[WebRTC] Access code: ${code}`),
       onOffer:    (offer)      => webrtcServer?.handleOffer(offer),
@@ -1028,6 +1036,7 @@ async function continueBootSequence(
     // in-process worker_thread and shares lifecycle with main.
     await stopAllServers().catch(() => {});
     await coordinatorWorker.terminate().catch(() => {});
+    shutdownKokoroDaemon();
     await fastify.close().catch(() => {});
 
     process.exit(0);

@@ -47,7 +47,7 @@ export async function registerBootEventsRoute(fastify: FastifyInstance): Promise
     });
 
     // Clean up on client disconnect.
-    req.raw.on('close', () => { unsub(); });
+    req.raw.socket?.on('close', () => { unsub(); });
     req.raw.on('error', () => { unsub(); });
 
     // Keep-alive ping every 25 s so proxies / load balancers don't close idle streams.
@@ -58,7 +58,7 @@ export async function registerBootEventsRoute(fastify: FastifyInstance): Promise
       try { raw.write(': ping\n\n'); } catch { clearInterval(ping); }
     }, 25_000);
 
-    req.raw.on('close', () => clearInterval(ping));
+    req.raw.socket?.on('close', () => clearInterval(ping));
 
     // Fastify must not finalise the reply — we own the raw stream.
     await new Promise<void>((resolve) => raw.on('finish', resolve));

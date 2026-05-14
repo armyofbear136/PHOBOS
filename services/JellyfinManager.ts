@@ -763,3 +763,82 @@ async function applyHardwareAccel(accelType: string): Promise<void> {
 export function generateAdminPassword(): string {
   return crypto.randomBytes(24).toString('base64url');
 }
+
+// ── Per-user provisioning ─────────────────────────────────────────────────────
+
+export interface JellyfinProvisionResult {
+  userId:      string;
+  accessToken: string;
+}
+
+/**
+ * Create a Jellyfin account for a new PHOBOS system user.
+ * Creates the user's media directory and adds it as a Jellyfin library
+ * scoped to that user's account.
+ *
+ * Returns the new user's UserId and a session token for that account.
+ * The caller is responsible for storing these in user_service_tokens.
+ *
+ * Best-effort: throws on failure so provisionSystemUser() can catch and log.
+ */
+export async function provisionUser(username: string): Promise<JellyfinProvisionResult> {
+  if (service.state !== 'running') throw new Error('Jellyfin is not running');
+  if (!service.accessToken)        throw new Error('Jellyfin not authenticated');
+
+  // Generate a random password for this user's Jellyfin account.
+  const password = crypto.randomBytes(18).toString('base64url');
+
+  // Create the Jellyfin user.
+  const createRes = await jellyfinApiRequest('POST', '/Users/New', {
+    Name:     username,
+    Password: password,
+  });
+  if (!createRes.ok) {
+    const body = await createRes.text().catch(() => '');
+    throw new Error(`Jellyfin user create failed: HTTP ${createRes.status} — ${body}`);
+  }
+  const created = await createRes.json() as { Id: string };
+  const userId = created.Id;
+
+  // Authenticate as the new user to obtain their personal access token.
+  const authRes = await fetch(`http://127.0.0.1:${JELLYFIN_PORT}/Users/AuthenticateByName`, {
+    method:  'POST',
+    headers: {
+      'Content-Type':  'application/json',
+      'Authorization': DEVICE_HEADER,
+    },
+    body: JSON.stringify({ Username: username, Pw: password }),
+  });
+  if (!authRes.ok) {
+    throw new Error(`Jellyfin user auth failed: HTTP ${authRes.status}`);
+  }
+  const authData = await authRes.json() as { AccessToken: string };
+
+  // Create the user's personal media directory.
+  const userMediaPath = path.join(os.homedir(), '.phobos', 'media', 'jellyfin', username);
+  fs.mkdirSync(userMediaPath, { recursive: true });
+
+  // Add the directory as a library scoped to this user (admin adds it system-wide;
+  // Jellyfin library access is managed per-user via policy in 10.11).
+  try {
+    await addLibrary(`${username}-media`, userMediaPath, 'homevideos');
+  } catch (err) {
+    // Non-fatal — library can be added later via the reprovision route.
+    console.warn(`[JellyfinManager] Library create for ${username} failed (non-fatal):`, err);
+  }
+
+  console.log(`[JellyfinManager] Provisioned user: ${username} (id=${userId})`);
+  return { userId, accessToken: authData.AccessToken };
+}
+
+/**
+ * Remove a Jellyfin user account by their Jellyfin user ID.
+ * Best-effort — does not throw if the user is already gone.
+ */
+export async function deprovisionUser(jellyfinUserId: string): Promise<void> {
+  if (service.state !== 'running' || !service.accessToken) return;
+  const res = await jellyfinApiRequest('DELETE', `/Users/${jellyfinUserId}`);
+  if (!res.ok && res.status !== 404) {
+    console.warn(`[JellyfinManager] deprovisionUser failed: HTTP ${res.status}`);
+  }
+}

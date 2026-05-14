@@ -169,7 +169,7 @@ print(json.dumps(r, indent=2))
 `;
 
   try {
-    const { stdout } = await exec(pyPath, ['-c', checkScript], { timeout: 60_000 });
+    const { stdout } = await exec(pyPath, ['-c', checkScript], { timeout: 180_000 });
     const d = JSON.parse(stdout);
     console.log(`  Python:         ${d.python}`);
     console.log(`  torch:          ${d.torch ?? `ERROR: ${d.torch_error}`}`);

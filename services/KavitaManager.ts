@@ -28,10 +28,11 @@
  */
 
 import { spawn, type ChildProcess } from 'child_process';
-import * as fs   from 'fs';
-import * as net  from 'net';
-import * as path from 'path';
-import * as os   from 'os';
+import * as crypto from 'crypto';
+import * as fs     from 'fs';
+import * as net    from 'net';
+import * as path   from 'path';
+import * as os     from 'os';
 
 export const KAVITA_PORT         = 18000;
 export const KAVITA_ADMIN_USER   = 'phobos';
@@ -573,4 +574,103 @@ export async function getStats(): Promise<{ totalSeries: number; libraryCount: n
   const libs = await listLibraries();
   const totalSeries  = libs.reduce((n, l) => n + (l.seriesCount ?? l.series ?? 0), 0);
   return { totalSeries, libraryCount: libs.length };
+}
+
+// ── Per-user provisioning ─────────────────────────────────────────────────────
+
+export interface KavitaProvisionResult {
+  userId:       string;
+  jwt:          string;
+  refreshToken: string;
+  apiKey:       string;
+}
+
+/**
+ * Create a Kavita account for a new PHOBOS system user.
+ * Uses POST /api/Account/register — works for non-admin accounts when called
+ * with an active admin JWT (Kavita 0.8.9.1 requires admin auth for subsequent
+ * registrations after the first account exists).
+ *
+ * Creates the user's phobosDocs directory and a Kavita library for it.
+ * Returns credentials for storage in user_service_tokens.
+ *
+ * Best-effort: throws on failure so provisionSystemUser() can catch and log.
+ */
+export async function provisionUser(username: string): Promise<KavitaProvisionResult> {
+  if (!service.jwt) throw new Error('Kavita not running');
+
+  const password = `Phobos-${crypto.randomBytes(12).toString('base64url')}!`;
+  const email    = `${username}@phobos.local`;
+
+  // Kavita 0.8.9.x allows admin-authed POST /api/Account/register for new accounts.
+  const regRes = await kavitaFetch('/Account/register', {
+    method: 'POST',
+    body:   { username, password, email },
+  });
+  if (!regRes.ok && regRes.status !== 400) {
+    throw new Error(`Kavita user register failed: HTTP ${regRes.status} — ${JSON.stringify(regRes.data)}`);
+  }
+
+  // Login as the new user to obtain their JWT and refresh token.
+  const loginRes = await kavitaFetch('/Account/login', {
+    method: 'POST',
+    body:   { username, password },
+  });
+  if (!loginRes.ok) {
+    throw new Error(`Kavita user login failed: HTTP ${loginRes.status}`);
+  }
+  const loginData = loginRes.data as Record<string, string>;
+  if (!loginData.token) throw new Error('Kavita login response missing token');
+
+  const userJwt     = loginData.token;
+  const refreshToken = loginData.refreshToken ?? '';
+
+  // Fetch the user's Kavita ID by calling /api/Users (admin endpoint).
+  const usersRes = await kavitaFetch('/Users', {});
+  const userList = Array.isArray(usersRes.data)
+    ? usersRes.data as Array<{ id: string; username: string }>
+    : [];
+  const match = userList.find(u => u.username === username);
+  const userId = match?.id ?? '';
+
+  // Create the user's phobosDocs directory and a library entry for it.
+  const docsPath = path.join(os.homedir(), '.phobos', 'media', 'kavita', username, 'phobosDocs');
+  fs.mkdirSync(docsPath, { recursive: true });
+
+  try {
+    await kavitaFetch('/Library/create', {
+      method: 'POST',
+      body: {
+        name:                        `${username}-docs`,
+        type:                        KAVITA_LIB_TYPE.books,
+        folders:                     [docsPath],
+        fileGroupTypes:              ALL_FILE_GROUPS,
+        excludePatterns:             [],
+        folderWatching:              true,
+        includeInDashboard:          true,
+        includeInRecommended:        true,
+        manageCollections:           true,
+        collapseSeriesRelationships: false,
+      },
+    });
+  } catch (err) {
+    // Non-fatal — library can be added later via reprovision route.
+    console.warn(`[KavitaManager] Library create for ${username} failed (non-fatal):`, err);
+  }
+
+  console.log(`[KavitaManager] Provisioned user: ${username} (id=${userId})`);
+  return { userId, jwt: userJwt, refreshToken, apiKey: '' };
+}
+
+/**
+ * Remove a Kavita user account by their Kavita user ID.
+ * Best-effort — does not throw if the user is already gone.
+ */
+export async function deprovisionUser(kavitaUserId: string): Promise<void> {
+  if (!service.jwt) return;
+  // Kavita admin delete: DELETE /api/Users/{id}
+  const res = await kavitaFetch(`/Users/${kavitaUserId}`, { method: 'DELETE' });
+  if (!res.ok && res.status !== 404) {
+    console.warn(`[KavitaManager] deprovisionUser failed: HTTP ${res.status}`);
+  }
 }

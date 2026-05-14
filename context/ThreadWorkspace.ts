@@ -60,6 +60,7 @@ export class ThreadWorkspace {
     'attachments',     // user-uploaded attachments — referenced by message, not indexed in workspace
     'images',          // media files are tracked separately via addMediaFile
     'videos',          // video generation output — tracked separately via workspace-media
+    'audio',           // generated audio (TTS, music, SFX) — tracked separately via workspace-media
     'workflows',       // workflow engine cache — managed by WorkflowEngine, not workspace index
     'vision-scratch',  // temporary VisionProcessor artifacts — cleaned after each workflow run
   ];

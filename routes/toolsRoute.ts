@@ -114,20 +114,10 @@ export async function registerToolsRoutes(fastify: FastifyInstance): Promise<voi
           headers: { ...req.headers, host: `127.0.0.1:${STIRLING_PORT}` } },
         (upstream) => {
           reply.status(upstream.statusCode ?? 200);
-          // Hop-by-hop headers must not be forwarded — they are connection-specific
-          // and cause issues when Fastify re-encodes the response body.
           const HOP_BY_HOP = new Set([
             'transfer-encoding', 'connection', 'keep-alive',
             'proxy-authenticate', 'proxy-authorization', 'te', 'trailers', 'upgrade',
-            // content-encoding must be stripped: Node's http.IncomingMessage automatically
-            // decompresses gzip/deflate bodies when reading chunks. If we forward the
-            // content-encoding header (e.g. 'gzip') but the body is already decompressed,
-            // the browser tries to decompress again and gets ERR_CONTENT_DECODING_FAILED.
             'content-encoding',
-            // content-length must be stripped: Spring Boot sends the compressed byte count.
-            // After decompression the body is larger, so forwarding the original length
-            // causes the browser to truncate the response body, producing a corrupted page.
-            // Fastify will set the correct content-length after reply.send(body).
             'content-length',
           ]);
           for (const [k, v] of Object.entries(upstream.headers)) {
@@ -135,32 +125,52 @@ export async function registerToolsRoutes(fastify: FastifyInstance): Promise<voi
               reply.header(k, v as string);
             }
           }
-          // COOP+COEP+CORP: Stirling is cross-origin from the Vite parent (:5173
-          // vs :3001). The parent has COEP: require-corp (for Godot SharedArrayBuffer).
-          // For the iframe to load, the response must carry CORP: cross-origin.
-          // COOP+COEP also declare the iframe itself as cross-origin isolated,
-          // satisfying Chrome's requirement that sandboxed allow-same-origin iframes
-          // in a COEP parent be themselves cross-origin isolated — same pattern
-          // as Blockbench, SculptGL, and Omniclip.
-          // Spring Boot sets none of these headers, so the proxy injects them.
           reply.header('Cross-Origin-Opener-Policy',   'same-origin');
           reply.header('Cross-Origin-Embedder-Policy', 'require-corp');
           reply.header('Cross-Origin-Resource-Policy', 'cross-origin');
+
+          const encoding = (upstream.headers['content-encoding'] ?? '').toLowerCase();
           const chunks: Buffer[] = [];
           upstream.on('data', (c: Buffer) => chunks.push(c));
           upstream.on('end', () => {
-            let body = Buffer.concat(chunks);
-            const ct = (upstream.headers['content-type'] ?? '');
+            const raw = Buffer.concat(chunks);
+            const ct  = upstream.headers['content-type'] ?? '';
 
-            // Rewrite absolute paths in HTML so the SPA works under our prefix
-            if (ct.includes('html')) {
-              const patched = body.toString('utf8')
-                .replace(/(href|src|action)="\/"/g, `$1="/api/tools/stirling/app/`);
-              body = Buffer.from(patched, 'utf8');
+            const send = (body: Buffer) => {
+              let out = body;
+              if (ct.includes('html')) {
+                const patched = out.toString('utf8')
+                  .replace(/(href|src|action)="\/"/g, `$1="/api/tools/stirling/app/`);
+                out = Buffer.from(patched, 'utf8');
+              }
+              reply.send(out);
+              resolve();
+            };
+
+            if (encoding === 'gzip') {
+              import('node:zlib').then(({ gunzip }) => {
+                gunzip(raw, (err, decompressed) => {
+                  if (err) { reply.status(502).send(); resolve(); return; }
+                  send(decompressed);
+                });
+              });
+            } else if (encoding === 'br') {
+              import('node:zlib').then(({ brotliDecompress }) => {
+                brotliDecompress(raw, (err, decompressed) => {
+                  if (err) { reply.status(502).send(); resolve(); return; }
+                  send(decompressed);
+                });
+              });
+            } else if (encoding === 'deflate') {
+              import('node:zlib').then(({ inflate }) => {
+                inflate(raw, (err, decompressed) => {
+                  if (err) { reply.status(502).send(); resolve(); return; }
+                  send(decompressed);
+                });
+              });
+            } else {
+              send(raw);
             }
-
-            reply.send(body);
-            resolve();
           });
           upstream.on('error', () => { reply.status(502).send(); resolve(); });
         }
@@ -169,9 +179,6 @@ export async function registerToolsRoutes(fastify: FastifyInstance): Promise<voi
         reply.status(502).send({ error: 'Stirling proxy error', detail: err.message });
         resolve();
       });
-      // Fastify may have consumed req.raw for parsed content types (JSON).
-      // For multipart/binary uploads req.body is a Buffer from the global parser.
-      // Write whatever we have and end — Stirling handles both cases.
       const body = req.body;
       if (body instanceof Buffer && body.length > 0) {
         proxy.write(body);

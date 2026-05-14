@@ -4,8 +4,12 @@
  * Stores only vault configuration: file path, lock timeout, timestamps.
  * No secrets, no passwords, no key material ever touch this table.
  *
- * Uses the system DB (DatabaseManager.getInstance()), consistent with
- * SecurityStore, CartridgeStore, and other system-level stores.
+ * Uses the USER DB (DatabaseManager.getUserDb()), so each user has their
+ * own vault configuration and their own .kdbx file path. The vault_config
+ * table is created by USER_SCHEMA in DatabaseManager — ensureTable() is
+ * not needed and has been removed.
+ *
+ * Default vault path: ~/.phobos/users/{username}/vault/vault.kdbx
  *
  * Table: vault_config
  *   key   VARCHAR PRIMARY KEY
@@ -20,7 +24,7 @@
 
 import * as os   from 'node:os';
 import * as path from 'node:path';
-import { DatabaseManager } from './DatabaseManager.js';
+import { DatabaseManager, userDir } from './DatabaseManager.js';
 
 // ── Config key types ───────────────────────────────────────────────────────────
 
@@ -39,7 +43,16 @@ export interface VaultConfig {
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
-function defaultDbPath(): string {
+// ── Defaults ──────────────────────────────────────────────────────────────────
+
+function defaultDbPath(db: DatabaseManager): string {
+  // Derive the vault path from the user DB path so it stays in the user's dir.
+  // e.g. ~/.phobos/users/owner/phobos.duckdb → ~/.phobos/users/owner/vault/vault.kdbx
+  const dbPath = (db as any)['dbPath'] as string | undefined;
+  if (dbPath) {
+    return path.join(path.dirname(dbPath), 'vault', 'vault.kdbx');
+  }
+  // Fallback: legacy path for the owner user.
   return path.join(os.homedir(), '.phobos', 'vault', 'vault.kdbx');
 }
 
@@ -52,14 +65,7 @@ export class VaultStore {
     this.db = db;
   }
 
-  async ensureTable(): Promise<void> {
-    await this.db.exec(`
-      CREATE TABLE IF NOT EXISTS vault_config (
-        key   VARCHAR PRIMARY KEY,
-        value VARCHAR
-      )
-    `);
-  }
+  // vault_config is declared in USER_SCHEMA — no ensureTable() needed.
 
   // ── Read ──────────────────────────────────────────────────────────────────
 
@@ -81,7 +87,7 @@ export class VaultStore {
     const timeout    = parseInt(rawTimeout, 10);
 
     return {
-      db_path:              map.get('db_path') ?? defaultDbPath(),
+      db_path:              map.get('db_path') ?? defaultDbPath(this.db),
       lock_timeout_seconds: Number.isFinite(timeout) ? timeout : 900,
       last_opened_at:       map.get('last_opened_at') ?? null,
       created_at:           map.get('created_at')     ?? null,

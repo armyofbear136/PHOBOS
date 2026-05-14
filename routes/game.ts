@@ -48,7 +48,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
     });
 
     // Client disconnect cleanup
-    req.raw.on('close', () => {
+    req.raw.socket?.on('close', () => {
       gsm.removeClient(clientId);
     });
 
@@ -154,6 +154,20 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
     Body: { id: string };
   }>('/api/game/inventory/unequip', async (req, reply) => {
     await store.unequipItem(req.body.id);
+    return reply.send({ ok: true });
+  });
+
+  // POST /api/game/inventory/durability
+  // Persists a durability decrement for a single equipped item.
+  // The client debounces calls so this fires at most once per 800 ms per weapon.
+  fastify.post<{
+    Body: { id: string; durability: number };
+  }>('/api/game/inventory/durability', async (req, reply) => {
+    const { id, durability } = req.body;
+    if (!id || typeof durability !== 'number' || durability < 0) {
+      return reply.status(400).send({ error: 'id and non-negative durability required' });
+    }
+    await store.updateWeaponDurability(id, durability);
     return reply.send({ ok: true });
   });
 

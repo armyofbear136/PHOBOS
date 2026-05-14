@@ -292,11 +292,11 @@ export function registerSecurityHandlers(
   store:     SecurityStore,
   port:      number,
 ): void {
-  scheduler.registerHandler('security:port_scan',        () => dispatchScan(store, 'port_scan',        port).then(() => undefined));
-  scheduler.registerHandler('security:web_scan',         () => dispatchScan(store, 'web_scan',         port).then(() => undefined));
-  scheduler.registerHandler('security:malware_scan',     () => dispatchScan(store, 'malware_scan',     port).then(() => undefined));
-  scheduler.registerHandler('security:dependency_audit', () => dispatchScan(store, 'dependency_audit', port).then(() => undefined));
-  scheduler.registerHandler('security:system_audit',     () => dispatchScan(store, 'system_audit',     port).then(() => undefined));
-  scheduler.registerHandler('security:integrity_check',  () => dispatchScan(store, 'integrity_check',  port).then(() => undefined));
-  scheduler.registerHandler('security:clamav_update',    () => runUpdateDefinitions());
+  scheduler.registerHandler('security:port_scan',        (_task) => dispatchScan(store, 'port_scan',        port).then(() => undefined));
+  scheduler.registerHandler('security:web_scan',         (_task) => dispatchScan(store, 'web_scan',         port).then(() => undefined));
+  scheduler.registerHandler('security:malware_scan',     (_task) => dispatchScan(store, 'malware_scan',     port).then(() => undefined));
+  scheduler.registerHandler('security:dependency_audit', (_task) => dispatchScan(store, 'dependency_audit', port).then(() => undefined));
+  scheduler.registerHandler('security:system_audit',     (_task) => dispatchScan(store, 'system_audit',     port).then(() => undefined));
+  scheduler.registerHandler('security:integrity_check',  (_task) => dispatchScan(store, 'integrity_check',  port).then(() => undefined));
+  scheduler.registerHandler('security:clamav_update',    (_task) => runUpdateDefinitions());
 }

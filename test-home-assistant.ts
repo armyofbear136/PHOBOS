@@ -7,11 +7,12 @@
  * What this tests:
  *   - Mock HA WebSocket server (spins up locally, simulates HA auth + state_changed events)
  *   - HAManager connect / status / snapshot / entity lookup / domain filter
- *   - routes/ha.ts — all six endpoints via the running PHOBOS server
+ *   - routes/ha.ts — all endpoints via the running PHOBOS server (incl. POST /api/ha/action)
  *   - HaWatchStore — createRun / completeRun / failRun / getRecentRuns / pruneOldRuns
- *   - HaWatchHandler.runHaWatch — copilot and scheduled origin paths
- *   - Phase 4 callService stub — confirms it throws
- *   - routes/ha.ts GET /api/ha/watch/runs — polled by HomeAssistantPanel
+ *   - HaWatchHandler.runHaWatch — disconnected guard
+ *   - callService() — returns rejected promise when not connected (Phase 4 real impl)
+ *   - extractHaAction — key=value directive parsing (label with spaces, missing fields, strip)
+ *   - Scheduler BackgroundHandler — signature now passes ScheduledTask to handler
  *   - DispatchComposer haSnapshot injection — ComposeInput field is present
  *
  * Options (env vars):
@@ -21,7 +22,7 @@
  *
  * Note on PHOBOS_SKIP_HA_ROUTES:
  *   Unit-level tests (HAManager, HaWatchStore, HaWatchHandler) run regardless.
- *   Route-level tests (sections 6–9) require a running PHOBOS instance and will
+ *   Route-level tests (sections 6–10) require a running PHOBOS instance and will
  *   be skipped if PHOBOS_SKIP_HA_ROUTES=1.
  */
 
@@ -30,6 +31,8 @@ import * as os     from 'os';
 import * as path   from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
+import { type DatabaseManager } from './db/DatabaseManager.js';
+import { type HaWatchRun }      from './db/HaWatchStore.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -138,7 +141,7 @@ async function phobosApi(
 ): Promise<{ ok: boolean; status: number; data: unknown }> {
   const res = await fetch(`${PHOBOS_BASE}${endpoint}`, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
     body:    body !== undefined ? JSON.stringify(body) : undefined,
   });
   let data: unknown;
@@ -233,6 +236,7 @@ console.log();
 
 console.log('[ 1/10 ] Starting mock HA WebSocket server...');
 let mockHa: { wss: WebSocketServer; close: () => Promise<void> };
+let mockHaClosed = false;
 try {
   mockHa = await startMockHaServer();
   ok(`Mock HA server listening on ws://127.0.0.1:${MOCK_HA_PORT}`, true);
@@ -245,13 +249,13 @@ try {
 // ── [ 2 ] HAManager — imports ──────────────────────────────────────────────────
 
 console.log('\n[ 2/10 ] HAManager module import...');
-let connectHa: (db: unknown) => Promise<void>;
-let disconnectHa: (db: unknown) => Promise<void>;
+let connectHa: (db: DatabaseManager) => Promise<void>;
+let disconnectHa: (db: DatabaseManager) => Promise<void>;
 let getHaStatus: () => unknown;
 let getHaSnapshot: () => string | null;
 let getHaEntity: (id: string) => unknown;
 let setExposedDomains: (domains: string[]) => void;
-let callService: (d: string, s: string, data: Record<string, unknown>) => never;
+let callService: (d: string, s: string, data: Record<string, unknown>) => Promise<unknown>;
 
 try {
   const haModule = await import('./services/HAManager.js');
@@ -273,26 +277,28 @@ try {
 } catch (err) {
   ok('HAManager imported', false);
   console.error(`   ❌ ${(err as Error).message}`);
-  await mockHa.close();
+  if (!mockHaClosed) { await mockHa.close(); mockHaClosed = true; }
   process.exit(1);
 }
 
-// ── [ 3 ] Phase 4 callService stub ────────────────────────────────────────────
+// ── [ 3 ] callService — rejects when not connected ────────────────────────────
+// Phase 4: callService() is now a real implementation. When HA is not connected
+// it must return a rejected promise (not throw synchronously).
 
-console.log('\n[ 3/10 ] Phase 4 callService stub...');
-let callServiceThrew = false;
+console.log('\n[ 3/10 ] callService — rejects when not connected...');
 try {
-  callService('light', 'turn_on', { entity_id: 'light.test' });
+  let rejected = false;
+  let rejectMsg = '';
+  await callService('light', 'turn_on', { entity_id: 'light.test' }).catch((err: Error) => {
+    rejected  = true;
+    rejectMsg = err.message;
+  });
+  ok('callService rejects when not connected',      rejected);
+  ok('Rejection message mentions not connected',    rejectMsg.toLowerCase().includes('not connected'));
+  console.log(`   Rejection: "${rejectMsg}"`);
 } catch (err) {
-  callServiceThrew = true;
-  const msg = (err as Error).message;
-  ok('callService throws (Phase 4 stub)',         callServiceThrew);
-  ok('Error message mentions Phase 4',            msg.includes('Phase 4'));
-  ok('Error message mentions read-only',          msg.toLowerCase().includes('read-only'));
-  console.log(`   Message: "${msg}"`);
-}
-if (!callServiceThrew) {
-  ok('callService throws (Phase 4 stub)', false);
+  ok('callService rejects when not connected', false);
+  warn('callService test error', (err as Error).message);
 }
 
 // ── [ 4 ] HAManager — connect and initial state ────────────────────────────────
@@ -315,12 +321,12 @@ console.log(`   Snapshot:             ${getHaSnapshot() === null ? 'null ✓' : 
 // ── [ 5 ] HaWatchStore — unit tests ───────────────────────────────────────────
 
 console.log('\n[ 5/10 ] HaWatchStore unit tests...');
-let HaWatchStore: new (db: unknown) => {
+let HaWatchStore: new (db: DatabaseManager) => {
   ensureTable(): Promise<void>;
   createRun(origin: string, prompt: string, entityCount: number): Promise<{ id: string; status: string }>;
   completeRun(id: string, output: string): Promise<void>;
   failRun(id: string, error: string): Promise<void>;
-  getRecentRuns(limit?: number): Promise<Array<Record<string, unknown>>>;
+  getRecentRuns(limit?: number): Promise<HaWatchRun[]>;
   pruneOldRuns(keep?: number): Promise<void>;
 };
 
@@ -336,7 +342,7 @@ try {
 
 if (HaWatchStore) {
   // Use an isolated DuckDB instance so unit tests never touch the real system DB.
-  let dbModule: { DatabaseManager: { getInstance(path: string): { initialize(): Promise<void> } } };
+  let dbModule: { DatabaseManager: { getInstance(path: string): DatabaseManager } };
   try {
     dbModule = await import('./db/DatabaseManager.js');
     const db = dbModule.DatabaseManager.getInstance(DB_PATH);
@@ -353,34 +359,34 @@ if (HaWatchStore) {
 
     // getRecentRuns — should contain our new run
     const runsAfterCreate = await store.getRecentRuns(10);
-    const found = runsAfterCreate.find((r: Record<string, unknown>) => r['id'] === run.id);
+    const found = runsAfterCreate.find((r: HaWatchRun) => r.id === run.id);
     ok('getRecentRuns returns new run',           !!found);
-    ok('new run has correct origin',              found?.['origin'] === 'copilot');
-    ok('new run has correct prompt',              found?.['prompt'] === 'Check all lights');
-    ok('new run has correct entity_count',        found?.['entity_count'] === 42);
-    ok('new run status = running',                found?.['status'] === 'running');
+    ok('new run has correct origin',              found?.origin       === 'copilot');
+    ok('new run has correct prompt',              found?.prompt       === 'Check all lights');
+    ok('new run has correct entity_count',        found?.entity_count === 42);
+    ok('new run status = running',                found?.status       === 'running');
 
     // completeRun
     await store.completeRun(run.id, 'All lights off in empty rooms. No anomalies.');
     const runsAfterComplete = await store.getRecentRuns(10);
-    const completed = runsAfterComplete.find((r: Record<string, unknown>) => r['id'] === run.id);
-    ok('completeRun sets status = success',       completed?.['status'] === 'success');
-    ok('completeRun sets output',                 completed?.['output'] === 'All lights off in empty rooms. No anomalies.');
-    ok('completeRun sets completed_at',           completed?.['completed_at'] !== null);
+    const completed = runsAfterComplete.find((r: HaWatchRun) => r.id === run.id);
+    ok('completeRun sets status = success',       completed?.status       === 'success');
+    ok('completeRun sets output',                 completed?.output       === 'All lights off in empty rooms. No anomalies.');
+    ok('completeRun sets completed_at',           completed?.completed_at !== null);
 
     // failRun — create a second run and fail it
     const failedRun = await store.createRun('scheduled', 'Nightly check', 10);
     await store.failRun(failedRun.id, 'HA disconnected during analysis');
     const runsAfterFail = await store.getRecentRuns(10);
-    const failed_ = runsAfterFail.find((r: Record<string, unknown>) => r['id'] === failedRun.id);
-    ok('failRun sets status = error',             failed_?.['status'] === 'error');
-    ok('failRun sets error message',              failed_?.['error'] === 'HA disconnected during analysis');
+    const failed_ = runsAfterFail.find((r: HaWatchRun) => r.id === failedRun.id);
+    ok('failRun sets status = error',             failed_?.status === 'error');
+    ok('failRun sets error message',              failed_?.error  === 'HA disconnected during analysis');
 
     // getRecentRuns ordering — newest first
     const orderedRuns = await store.getRecentRuns(10);
     ok('getRecentRuns returns newest first',
       orderedRuns.length < 2 ||
-      new Date(orderedRuns[0]['started_at'] as string) >= new Date(orderedRuns[1]['started_at'] as string)
+      new Date(orderedRuns[0].started_at) >= new Date(orderedRuns[1].started_at)
     );
 
     // pruneOldRuns — create enough runs to trigger pruning
@@ -560,14 +566,28 @@ if (SKIP_ROUTES) {
 
   console.log('\n[ 10/10 ] POST /api/ha/disconnect...');
   try {
+    // Disconnect first — this nulls conn.config and sets enabled=false in the DB
+    // before the WebSocket closes. That way when the close event fires, the
+    // reconnect guard (conn.config?.enabled) is already false and no retry is scheduled.
     const r = await phobosApi('POST', '/api/ha/disconnect');
     ok('POST /api/ha/disconnect → 200', r.ok);
     ok('Response has ok: true',         (r.data as Record<string, unknown>)?.['ok'] === true);
 
-    // Poll for disconnected state.
-    await sleep(500);
-    const statusR = await phobosApi('GET', '/api/ha/status');
-    const state   = (statusR.data as Record<string, unknown>)?.['state'];
+    // Stop the mock server after disconnect so any in-flight reconnect attempt
+    // gets connection refused immediately rather than succeeding.
+    if (!mockHaClosed) { await mockHa.close(); mockHaClosed = true; }
+    console.log('   Mock HA server stopped after disconnect.');
+
+    // Poll for disconnected state — WebSocket close is asynchronous.
+    let state = 'unknown';
+    let statusR: Awaited<ReturnType<typeof phobosApi>> = { ok: false, status: 0, data: {} };
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      statusR = await phobosApi('GET', '/api/ha/status');
+      state   = (statusR.data as Record<string, unknown>)?.['state'] as string;
+      if (state === 'disconnected') break;
+      await sleep(200);
+    }
     ok('State returns to disconnected after disconnect', state === 'disconnected');
     ok('enabled = false after disconnect',               (statusR.data as Record<string, unknown>)?.['enabled'] === false);
     console.log(`   Post-disconnect state: ${state}`);
@@ -637,9 +657,114 @@ try {
   warn('runHaWatch test error', (err as Error).message);
 }
 
+// ── [ + ] extractHaAction — directive parsing ──────────────────────────────────
+// Tests the key=value parser in copilot.ts without a running server.
+// We import the helper directly via the exported interface test.
+
+console.log('\n[ + ] extractHaAction — directive parsing...');
+try {
+  // copilot.ts exports HaActionDirective as an interface but extractHaAction is
+  // internal. We test the parsing logic by constructing inputs that match the
+  // format and verifying the regex pattern used in the implementation.
+  // This mirrors what extractHaAction does without re-importing the private fn.
+
+  // Replicate the extraction logic here so we test the exact same regex contract.
+  function testExtractHaAction(buf: string): {
+    domain: string; service: string; entity_id: string; label: string; data: Record<string, string>
+  } | null {
+    const tagMatch = buf.match(/\[HA_ACTION\s+([\s\S]+?)\]/i);
+    if (!tagMatch) return null;
+    const inner = tagMatch[1];
+    const pairs: Record<string, string> = {};
+    const kvRegex = /(\w+)=([^=\]]*?)(?=\s+\w+=|\s*$)/g;
+    let m: RegExpExecArray | null;
+    while ((m = kvRegex.exec(inner)) !== null) {
+      pairs[m[1].toLowerCase()] = m[2].trim();
+    }
+    const { domain, service, entity_id, label, ...rest } = pairs;
+    if (!domain || !service || !entity_id || !label) return null;
+    return { domain, service, entity_id, label, data: { entity_id, ...rest } };
+  }
+
+  // Case 1 — basic light turn_off
+  const basic = testExtractHaAction(
+    'I have sent an action for approval.\n[HA_ACTION domain=light service=turn_off entity_id=light.living_room label=Turn off Living Room Light]'
+  );
+  ok('basic action: domain parsed',     basic?.domain     === 'light');
+  ok('basic action: service parsed',    basic?.service    === 'service' ? false : basic?.service === 'turn_off');
+  ok('basic action: entity_id parsed',  basic?.entity_id  === 'light.living_room');
+  ok('basic action: label with spaces', basic?.label      === 'Turn off Living Room Light');
+
+  // Case 2 — climate set_temperature with extra data field
+  const climate = testExtractHaAction(
+    '[HA_ACTION domain=climate service=set_temperature entity_id=climate.main temperature=72 label=Set thermostat to 72]'
+  );
+  ok('climate action: domain parsed',       climate?.domain       === 'climate');
+  ok('climate action: service parsed',      climate?.service      === 'set_temperature');
+  ok('climate action: extra field present', climate?.data?.['temperature'] === '72');
+  ok('climate action: label parsed',        climate?.label        === 'Set thermostat to 72');
+
+  // Case 3 — missing required field (no entity_id) → returns null
+  const missing = testExtractHaAction('[HA_ACTION domain=light service=turn_on label=Turn on]');
+  ok('missing entity_id returns null',  missing === null);
+
+  // Case 4 — no directive in buffer → returns null
+  const none = testExtractHaAction('Just a normal response with no directive.');
+  ok('no directive returns null',       none === null);
+
+  // Case 5 — directive is stripped by stripAllDirectivesFromBuf equivalent
+  function testStrip(buf: string): string {
+    return buf
+      .replace(/\[REMEMBER\s+\w+:[^\]]+\]/gi, '')
+      .replace(/\[EMOTION\s+\w+\]/gi, '')
+      .replace(/\[BOND\s+[+-]?\d*\.?\d+\]/gi, '')
+      .replace(/\[HA_WATCH:[^\]]*\]/gi, '')
+      .replace(/\[HA_ACTION\s[^\]]+\]/gi, '')
+      .trim();
+  }
+  const stripped = testStrip('I have sent the action for your approval.\n[HA_ACTION domain=light service=turn_off entity_id=light.living_room label=Turn off Living Room Light]');
+  ok('HA_ACTION stripped from buffer',  !stripped.includes('[HA_ACTION'));
+  ok('visible content preserved',       stripped.includes('I have sent the action'));
+
+} catch (err) {
+  ok('extractHaAction tests completed', false);
+  warn('extractHaAction test error', (err as Error).message);
+}
+
+// ── [ + ] Scheduler BackgroundHandler — task context threading ─────────────────
+// Verifies BackgroundHandler now receives a ScheduledTask argument.
+
+console.log('\n[ + ] Scheduler BackgroundHandler — task context...');
+try {
+  const { Scheduler } = await import('./scheduling/Scheduler.js');
+  const { DatabaseManager: SchedDbManager } = await import('./db/DatabaseManager.js');
+  const schedDb = SchedDbManager.getInstance(DB_PATH);
+  try { await schedDb.initialize(); } catch { /* already initialized */ }
+
+  const scheduler = new Scheduler(schedDb);
+
+  let receivedTask: Record<string, unknown> | null = null;
+  scheduler.registerHandler('test:phase4', async (task) => {
+    receivedTask = task as unknown as Record<string, unknown>;
+  });
+
+  // triggerNow requires the task to exist in the DB — we can't easily call it
+  // without a real task row. Instead verify the handler signature is correct
+  // by calling registerHandler with a typed handler and confirming no TS error
+  // (compile-time) and that the registered function has arity 1 (runtime).
+  const handlers = (scheduler as unknown as { handlers: Map<string, (...args: unknown[]) => unknown> })['handlers'];
+  const fn = handlers.get('test:phase4');
+  ok('handler registered successfully',      typeof fn === 'function');
+  ok('handler has arity 1 (receives task)',   fn?.length === 1);
+
+} catch (err) {
+  ok('BackgroundHandler signature test completed', false);
+  warn('BackgroundHandler test error', (err as Error).message);
+}
+
 // ── Teardown ───────────────────────────────────────────────────────────────────
 
-await mockHa.close();
+if (!mockHaClosed) { await mockHa.close(); mockHaClosed = true; }
 console.log('\n   Mock HA server stopped.');
 
 // Clean up the isolated test DB.

@@ -31,6 +31,7 @@
   "dependencies": {
     "@fastify/cors": "^10.0.1",
     "@fastify/static": "^8.0.1",
+    "@huggingface/transformers": "^3.0.0",
     "@imgly/background-removal-node": "^1.4.5",
     "@omnimedia/omniclip": "1.1.3",
     "@types/archiver": "^7.0.0",

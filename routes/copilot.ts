@@ -62,7 +62,8 @@ function stripDirectiveTags(token: string): string {
     .replace(/\[REMEMBER\s+\w+:[^\]]+\]/gi, '')
     .replace(/\[EMOTION\s+\w+\]/gi, '')
     .replace(/\[BOND\s+[+-]?\d*\.?\d+\]/gi, '')
-    .replace(/\[HA_WATCH:[^\]]+\]/gi, '');
+    .replace(/\[HA_WATCH:[^\]]+\]/gi, '')
+    .replace(/\[HA_ACTION\s[^\]]+\]/gi, '');
 }
 
 /**
@@ -76,6 +77,47 @@ function extractHaWatchPrompt(buf: string): string | null {
 }
 
 /**
+ * Parsed action from an [HA_ACTION ...] directive.
+ */
+export interface HaActionDirective {
+  domain:    string;
+  service:   string;
+  entity_id: string;
+  label:     string;
+  /** All remaining key=value pairs become service_data passed to callService(). */
+  data:      Record<string, string>;
+}
+
+/**
+ * Extracts the first [HA_ACTION key=value ...] directive from outputBuf.
+ * Returns a parsed HaActionDirective or null if not found or malformed.
+ *
+ * Format: [HA_ACTION domain=light service=turn_off entity_id=light.living_room label=Turn off Living Room Light]
+ * Values are unquoted plain text. The label field may contain spaces — it runs to the
+ * next key=value boundary or the closing bracket.
+ */
+function extractHaAction(buf: string): HaActionDirective | null {
+  const tagMatch = buf.match(/\[HA_ACTION\s+([\s\S]+?)\]/i);
+  if (!tagMatch) return null;
+
+  const inner = tagMatch[1];
+
+  // Split into key=value tokens. We walk char by char so label=Turn off the light
+  // is handled correctly — the value runs until the next \w+=  boundary or end.
+  const pairs: Record<string, string> = {};
+  const kvRegex = /(\w+)=([^=\]]*?)(?=\s+\w+=|\s*$)/g;
+  let m: RegExpExecArray | null;
+  while ((m = kvRegex.exec(inner)) !== null) {
+    pairs[m[1].toLowerCase()] = m[2].trim();
+  }
+
+  const { domain, service, entity_id, label, ...rest } = pairs;
+  if (!domain || !service || !entity_id || !label) return null;
+
+  return { domain, service, entity_id, label, data: { entity_id, ...rest } };
+}
+
+/**
  * Strips all directive tags from a complete output buffer.
  * Called post-stream before DB persist and before the complete event fires.
  * This is the authoritative strip — per-token stripping is best-effort only.
@@ -86,6 +128,7 @@ function stripAllDirectivesFromBuf(buf: string): string {
     .replace(/\[EMOTION\s+\w+\]/gi, '')
     .replace(/\[BOND\s+[+-]?\d*\.?\d+\]/gi, '')
     .replace(/\[HA_WATCH:[^\]]*\]/gi, '')
+    .replace(/\[HA_ACTION\s[^\]]+\]/gi, '')
     .trim();
 }
 
@@ -504,6 +547,7 @@ async function streamSayon(
   // the complete buffer — all directives are removed before DB persist and display.
 
   const haWatchPrompt = extractHaWatchPrompt(outputBuf);
+  const haAction      = extractHaAction(outputBuf);
   const finalContent  = stripAllDirectivesFromBuf(outputBuf) || '(no output)';
 
   const savedMsg = await messageStore.insert({
@@ -542,6 +586,20 @@ async function streamSayon(
     } catch (err) {
       sendEvent({ type: 'watch_result', output: 'Watch duty failed — see server logs.', runId: null });
     }
+  }
+
+  // [HA_ACTION] interception — emit action_pending so the frontend renders
+  // a confirmation card. The action does not fire here; POST /api/ha/action
+  // is called only after the user taps Confirm in the card.
+  if (haAction) {
+    sendEvent({
+      type:      'action_pending',
+      domain:    haAction.domain,
+      service:   haAction.service,
+      entity_id: haAction.entity_id,
+      label:     haAction.label,
+      data:      haAction.data,
+    });
   }
 
   sendEvent({ type: 'complete' });
@@ -777,6 +835,7 @@ async function streamSeren(
   // ── Post-stream: extract directives, persist, dispatch watch duty ──────────
 
   const haWatchPromptSeren = extractHaWatchPrompt(outputBuf);
+  const haActionSeren      = extractHaAction(outputBuf);
   const finalContent       = stripAllDirectivesFromBuf(outputBuf) || '(no output)';
 
   const serenSavedMsg = await messageStore.insert({
@@ -812,6 +871,17 @@ async function streamSeren(
     } catch (err) {
       sendEvent({ type: 'watch_result', output: 'Watch duty failed — see server logs.', runId: null });
     }
+  }
+
+  if (haActionSeren) {
+    sendEvent({
+      type:      'action_pending',
+      domain:    haActionSeren.domain,
+      service:   haActionSeren.service,
+      entity_id: haActionSeren.entity_id,
+      label:     haActionSeren.label,
+      data:      haActionSeren.data,
+    });
   }
 
   sendEvent({ type: 'complete' });

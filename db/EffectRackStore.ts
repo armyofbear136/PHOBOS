@@ -6,7 +6,7 @@ export type EffectContext = 'daw' | 'polaris' | 'game' | 'custom';
 
 export interface EffectParamMap {
   [pluginKey: string]: {       // 'helm' | 'surge' | 'crystal'
-    [paramId: string]: number; // plugin parameter id → value (legacy schema; see EffectRack note in routes/audio.ts)
+    [paramId: string]: number; // APVTS string ID → normalised value [0..1]
   };
 }
 
@@ -30,6 +30,10 @@ export interface EffectPreset {
 // ── Default seeds ─────────────────────────────────────────────────────────────
 // Three factory presets seeded on first ensureTable(). Minimal values — the
 // expectation is that a user (or AI) adjusts from these starting points.
+//
+// params.crystal keys are APVTS string IDs from Parameters.h. All values are
+// normalised [0..1] — the same space JUCE uses internally. 'depth' is the
+// dry/wet mix (AudioParameterFloat, linear [0..1], so raw value = normalised).
 
 const DEFAULT_PRESETS: Array<Omit<EffectPreset, 'created_at' | 'updated_at'>> = [
   {
@@ -37,7 +41,7 @@ const DEFAULT_PRESETS: Array<Omit<EffectPreset, 'created_at' | 'updated_at'>> = 
     label:   'DAW — Dry',
     context: 'daw',
     params: {
-      crystal: { '14': 0.0 },             // mix = 0 (Crystal bypassed)
+      crystal: { depth: 0.0 },             // mix = 0 (Crystal bypassed)
     },
     routing: { sendsToCrystal: [], crystalSend: 0.0 },
   },
@@ -46,7 +50,7 @@ const DEFAULT_PRESETS: Array<Omit<EffectPreset, 'created_at' | 'updated_at'>> = 
     label:   'Polaris — Mastered',
     context: 'polaris',
     params: {
-      crystal: { '14': 0.15 },            // gentle shimmer
+      crystal: { depth: 0.15 },            // gentle shimmer
     },
     routing: { sendsToCrystal: ['helm', 'surge'], crystalSend: 0.15 },
   },
@@ -55,7 +59,7 @@ const DEFAULT_PRESETS: Array<Omit<EffectPreset, 'created_at' | 'updated_at'>> = 
     label:   'Game — Combat',
     context: 'game',
     params: {
-      crystal: { '14': 0.35 },            // more present in combat
+      crystal: { depth: 0.35 },            // more present in combat
     },
     routing: { sendsToCrystal: ['helm', 'surge'], crystalSend: 0.35 },
   },
@@ -102,6 +106,21 @@ export class EffectRackStore {
          SELECT ?, ?, ?, ?, ?
          WHERE NOT EXISTS (SELECT 1 FROM audio_effect_presets WHERE id = ?)`,
         [p.id, p.label, p.context, JSON.stringify(p.params), JSON.stringify(p.routing), p.id],
+      );
+    }
+
+    // Migration: factory presets seeded before this commit stored
+    // crystal params under the legacy Carla numeric key '14' instead of
+    // the APVTS string ID 'depth'. Update any existing row that still has
+    // the old key. Safe to run on every boot — the WHERE clause is a no-op
+    // once the row has already been migrated.
+    for (const p of DEFAULT_PRESETS) {
+      await this.db.run(
+        `UPDATE audio_effect_presets
+            SET params_json = ?
+          WHERE id = ?
+            AND json_extract(params_json, '$.crystal."14"') IS NOT NULL`,
+        [JSON.stringify(p.params), p.id],
       );
     }
   }
@@ -155,8 +174,8 @@ export class EffectRackStore {
 
   /**
    * Diff two presets and return (pluginKey, paramId, newValue) tuples for
-   * every param that changed. Legacy from the Carla per-param OSC path; left
-   * intact pending the EffectRackStore redesign for PhobosHost (Session 5+).
+   * every param that changed. Pass null for `from` to get all params in `to`
+   * (used by effect-rack/activate, which always writes the full preset).
    */
   static diff(from: EffectPreset | null, to: EffectPreset): Array<{
     pluginKey: string;

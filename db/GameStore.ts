@@ -354,6 +354,28 @@ export class GameStore {
   }
 
   /**
+   * Patch the weaponStats.durability field inside an item's data blob.
+   * Reads current data, merges only the durability field into weaponStats,
+   * and writes back — all other item fields are preserved.
+   * No-ops silently if the item doesn't exist or has no weaponStats.
+   */
+  async updateWeaponDurability(id: string, durability: number): Promise<void> {
+    const rows = await this.db.query<{ data: string }>(
+      `SELECT data FROM game_inventory WHERE id = ? AND target = 'player'`, [id]
+    );
+    if (!rows.length) return;
+    let item: Record<string, unknown> = {};
+    try { item = JSON.parse(rows[0].data); } catch { return; }
+    if (!item.weaponStats) return;
+    const ws = item.weaponStats as Record<string, unknown>;
+    ws.durability = durability;
+    await this.db.run(
+      `UPDATE game_inventory SET data = ? WHERE id = ?`,
+      [JSON.stringify(item), id]
+    );
+  }
+
+  /**
    * Remove up to `quantity` inventory items matching a material_id stored
    * in the item data JSON. Returns the number actually removed.
    *

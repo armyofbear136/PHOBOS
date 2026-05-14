@@ -228,8 +228,9 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
       const files = [
         ...readDir('images'),
         ...readDir('videos'),
-        // Generated audio: three sub-categories all land in the media grid
-        ...readDir('audio/tts'),
+        // Generated audio: music and SFX are intentional media artifacts.
+        // audio/tts is excluded — copilot voice output is ephemeral, not a
+        // workspace artifact the user needs to see or manage.
         ...readDir('audio/music'),
         ...readDir('audio/sfx'),
       ].sort((a, b) => a.createdAt.localeCompare(b.createdAt));

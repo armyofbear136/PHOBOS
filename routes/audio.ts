@@ -31,13 +31,19 @@
  * ── Phobos Crystal (global FX on channel 0, after the synth) ─────────────────
  * GET  /api/audio/crystal/status                  — {mounted, slotId}
  * POST /api/audio/crystal/active                  — {active: boolean} → {}
+ * POST /api/audio/crystal/param                   — {paramId, value} → {}
+ *
+ *  * ── Master EQ ───────────────────────────────────────────────────────────────
+ *  * GET  /api/audio/eq/state                         — full EQ state
+ *  * POST /api/audio/eq/band                          — {band, gainDb, q, enabled}
+ *  * POST /api/audio/eq/enabled                       — {enabled: boolean}
  * POST /api/audio/crystal/ui/show                 — {} → {}
  * POST /api/audio/crystal/ui/close                — {} → {}
  *
  * ── Effect rack ──────────────────────────────────────────────────────────────
  * GET    /api/audio/effect-rack/presets          — list all presets
  * POST   /api/audio/effect-rack/presets          — create/update a preset
- * POST   /api/audio/effect-rack/activate         — STUB in Session 4 (see route comment)
+ * POST   /api/audio/effect-rack/activate         — apply preset → sets Crystal params live
  * DELETE /api/audio/effect-rack/presets/:id      — delete non-factory preset
  *
  * ── DAW projects ─────────────────────────────────────────────────────────────
@@ -102,6 +108,11 @@ import {
   setPhobosCrystalActive,
   showPhobosCrystalUi,
   closePhobosCrystalUi,
+  setCrystalParam,
+  setEqBand,
+  setEqEnabled,
+  getEqState,
+  type EqBandState,
   playAudioFile,
   pauseAudio,
   resumeAudio,
@@ -244,8 +255,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     });
   });
 
-  // EffectRackStore is registered for read/write (presets list/upsert/delete).
-  // The activate path is a stub in Session 4 — see route comment below.
+  // EffectRackStore is registered for read/write (presets list/upsert/delete/activate).
 
   // ── PhobosHost lifecycle ─────────────────────────────────────────────────
 
@@ -615,6 +625,93 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     }
   });
 
+  /**
+   * Set a single Crystal parameter by APVTS string ID.
+   *
+   * Body: { paramId: string, value: number }
+   *   paramId — string ID from Parameters.h (e.g. "depth", "mode", "chordType")
+   *   value   — normalised float [0.0, 1.0]
+   *
+   * Used directly by the frontend for one-off parameter writes (e.g. bypassing
+   * a specific knob from the Polaris Crystal panel). The effect-rack/activate
+   * route uses this internally for bulk preset application.
+   */
+  fastify.post<{
+    Body: { paramId: string; value: number };
+  }>('/api/audio/crystal/param', async (req, reply) => {
+    try {
+      const { paramId, value } = req.body ?? {};
+      if (typeof paramId !== 'string' || paramId.length === 0) {
+        return reply.status(400).send({ error: 'paramId must be a non-empty string' });
+      }
+      if (typeof value !== 'number' || value < 0 || value > 1) {
+        return reply.status(400).send({ error: 'value must be a number in [0.0, 1.0]' });
+      }
+      await ensureHostRunning();
+      await setCrystalParam(paramId, value);
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  // ── Master EQ ─────────────────────────────────────────────────────────────
+  //
+  // The 8-band parametric EQ (EqNode) sits permanently at the tail of
+  // channel 0 in PhobosHost, after Crystal. These routes are the full
+  // control surface — the frontend owns all UI.
+
+  fastify.get('/api/audio/eq/state', async (_req, reply) => {
+    try {
+      await ensureHostRunning();
+      const state = await getEqState();
+      return reply.send(state);
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  fastify.post<{
+    Body: { band: number; gainDb: number; q: number; enabled: boolean };
+  }>('/api/audio/eq/band', async (req, reply) => {
+    try {
+      const { band, gainDb, q, enabled } = req.body ?? {};
+      if (typeof band !== 'number' || band < 0 || band > 7) {
+        return reply.status(400).send({ error: 'band must be 0-7' });
+      }
+      if (typeof gainDb !== 'number' || gainDb < -18 || gainDb > 18) {
+        return reply.status(400).send({ error: 'gainDb must be in [-18, 18]' });
+      }
+      if (typeof q !== 'number' || q < 0.1 || q > 10) {
+        return reply.status(400).send({ error: 'q must be in [0.1, 10.0]' });
+      }
+      if (typeof enabled !== 'boolean') {
+        return reply.status(400).send({ error: 'enabled must be boolean' });
+      }
+      await ensureHostRunning();
+      await setEqBand(band, { gainDb, q, enabled } satisfies EqBandState);
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
+  fastify.post<{
+    Body: { enabled: boolean };
+  }>('/api/audio/eq/enabled', async (req, reply) => {
+    try {
+      const { enabled } = req.body ?? {};
+      if (typeof enabled !== 'boolean') {
+        return reply.status(400).send({ error: 'enabled must be boolean' });
+      }
+      await ensureHostRunning();
+      await setEqEnabled(enabled);
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
   // ── Plugin enumeration (filesystem catalog) ──────────────────────────────
 
   /**
@@ -660,15 +757,17 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   /**
-   * Effect-rack preset activation — STUBBED in Session 4.
+   * Apply an effect-rack preset — sets all Crystal parameters defined in the
+   * preset's params.crystal map on the live Crystal slot.
    *
-   * The Carla path was per-parameter OSC diff (`setParam` per change). PhobosHost
-   * has no per-param op yet; only whole getPluginState/setPluginState. The
-   * EffectRackStore preset-as-param-bag schema needs to redesign around
-   * setPluginState before this can do real work — likely Session 5/6 territory.
+   * Only params that differ from a null baseline are sent (EffectRackStore.diff
+   * with from=null writes every param in the preset). All values in
+   * params.crystal must be normalised [0..1]. The three factory presets only
+   * set "depth"; custom presets may set any paramId from Parameters.h.
    *
-   * Returns ok=true so the existing frontend doesn't break, but logs a WARN
-   * so the no-op is visible in logs. Frontend behavior is unchanged for now.
+   * Activating a preset does NOT unload or reload Crystal — it writes values
+   * directly onto the live plugin instance via setPluginParam. Crystal picks up
+   * each new value on its next processBlock with no gap in audio output.
    */
   fastify.post<{
     Body: { id: string };
@@ -677,8 +776,29 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     if (typeof id !== 'string' || id.length === 0) {
       return reply.status(400).send({ error: 'id must be a non-empty string' });
     }
-    process.stderr.write(`[audio:WARN] effect-rack/activate is a stub in Session 4 (id="${id}")\n`);
-    return reply.send({ ok: true, activePresetId: id, stub: true });
+
+    try {
+      const preset = await effectRack.get(id);
+      if (!preset) {
+        return reply.status(404).send({ error: `preset '${id}' not found` });
+      }
+
+      // Diff against null so every param defined in the preset is always
+      // written. We don't track which preset was last active across restarts,
+      // so always writing is the correct idempotent behaviour here.
+      const changes = EffectRackStore.diff(null, preset);
+      const crystalChanges = changes.filter((c) => c.pluginKey === 'crystal');
+
+      await ensureHostRunning();
+
+      for (const { paramId, value } of crystalChanges) {
+        await setCrystalParam(paramId, value);
+      }
+
+      return reply.send({ ok: true, activePresetId: id, applied: crystalChanges.length });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
   });
 
   fastify.delete<{
@@ -1210,20 +1330,29 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     if (typeof filePath !== 'string' || filePath.length === 0) {
       return reply.status(400).send({ error: 'path query param required' });
     }
-    // Safety: only serve files inside the user data dir
+    // Safety: allow files inside ~/.phobos/ OR os.tmpdir() (for ephemeral TTS WAVs).
+    // TTS output goes to tmpdir so it never accumulates in workspace directories.
     const homePhobos = path.join(os.homedir(), '.phobos');
+    const tmpDir     = os.tmpdir();
     const resolved   = path.resolve(filePath);
-    if (!resolved.startsWith(homePhobos)) {
-      return reply.status(403).send({ error: 'path outside .phobos directory' });
+    if (!resolved.startsWith(homePhobos) && !resolved.startsWith(tmpDir)) {
+      return reply.status(403).send({ error: 'path outside allowed directories' });
     }
     if (!fs.existsSync(resolved)) {
       return reply.status(404).send({ error: 'file not found' });
     }
-    const stat = fs.statSync(resolved);
+    const stat     = fs.statSync(resolved);
+    const isTtsTmp = resolved.startsWith(tmpDir) && resolved.includes('phobos-tts-');
     reply.header('Content-Type', 'audio/wav');
     reply.header('Content-Length', String(stat.size));
     reply.header('Cache-Control', 'no-store');
-    return reply.send(fs.createReadStream(resolved));
+    // Stream then delete ephemeral TTS WAVs — they're single-use and never
+    // need to be replayed. Keeps tmpdir clean automatically.
+    const stream = fs.createReadStream(resolved);
+    if (isTtsTmp) {
+      stream.on('close', () => { try { fs.unlinkSync(resolved); } catch { /**/ } });
+    }
+    return reply.send(stream);
   });
 
   // ── POST /api/audio/tts ────────────────────────────────────────────────────
@@ -1266,7 +1395,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     ensureAudioWorkspace(threadId);
 
     const abort = new AbortController();
-    req.raw.on('close', () => abort.abort());
+    req.raw.socket?.on('close', () => abort.abort());
 
     try {
       const result = await generateKokoro({
@@ -1445,7 +1574,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     ensureAudioWorkspace(threadId);
 
     const abort = new AbortController();
-    req.raw.on('close', () => abort.abort());
+    req.raw.socket?.on('close', () => abort.abort());
 
     // Phase tracking — mutated by onProgress, read nowhere else in this closure
     let synthPhaseStarted = false;
@@ -1560,7 +1689,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     ensureAudioWorkspace(threadId);
 
     const abort  = new AbortController();
-    req.raw.on('close', () => abort.abort());
+    req.raw.socket?.on('close', () => abort.abort());
 
     // Write ref audio to a temp path — cleaned up in finally regardless of outcome
     const refAudioPath = path.join(audioUploadsDir, `${crypto.randomUUID()}.wav`);

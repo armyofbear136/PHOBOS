@@ -176,7 +176,7 @@ export async function registerTrainingRoutes(fastify: FastifyInstance): Promise<
       const send        = (ev: object) => { if (!reply.raw.destroyed) reply.raw.write(`data: ${JSON.stringify(ev)}\n\n`); };
       const pingInterval = setInterval(() => { if (!reply.raw.destroyed) reply.raw.write(': ping\n\n'); }, 15_000);
 
-      req.raw.on('close', () => {
+      req.raw.socket?.on('close', () => {
         clearInterval(pingInterval);
         if (isTraining() && activeSessionId() === sessionId) abortTraining(sessionId);
       });

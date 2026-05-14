@@ -61,8 +61,9 @@ export const MERIDIAN_PORT = 16320;
 // ── Start ─────────────────────────────────────────────────────────────────────
 
 export async function startMeridianServer(
-  dbManager: DatabaseManager,
-  opts: MeridianStartOpts,
+  dbManager:     DatabaseManager,
+  opts:          MeridianStartOpts,
+  syncDbManager?: DatabaseManager,
 ): Promise<void> {
   if (_state === 'running' || _state === 'starting') return;
 
@@ -110,7 +111,8 @@ export async function startMeridianServer(
     fs.mkdirSync(cfg.phobosLibPath, { recursive: true });
 
     // Use the already-open DatabaseManager from the main process — no second open.
-    const db = new MeridianDB(dbManager);
+    // syncDbManager is the owner's user DB where phobos_sync_* tables now live.
+    const db = new MeridianDB(dbManager, syncDbManager);
     await db.ensureSchema();
 
     // Bootstrap library rows.

@@ -16,13 +16,15 @@ import * as fs         from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import * as path       from 'node:path';
 import * as os         from 'node:os';
-import {
-  Kdbx,
-  KdbxEntry,
-  KdbxGroup,
-  KdbxUuid,
-  ProtectedValue,
+// kdbxweb is CJS with no "exports" field — use default import to avoid ESM named export failure.
+import kdbxweb from 'kdbxweb';
+import type {
+  Kdbx         as KdbxType,
+  KdbxEntry    as KdbxEntryType,
+  KdbxGroup    as KdbxGroupType,
+  ProtectedValue as ProtectedValueType,
 } from 'kdbxweb';
+const { Kdbx, KdbxEntry, KdbxGroup, KdbxUuid, ProtectedValue } = kdbxweb as typeof import('kdbxweb');
 import { VaultStore }                                    from '../db/VaultStore.js';
 import { makeCredentials, protectString, exposeProtected } from './VaultCrypto.js';
 import type {
@@ -33,9 +35,21 @@ import type {
   VaultState,
 } from './VaultTypes.js';
 
+// ── UUID helpers ─────────────────────────────────────────────────────────────
+// kdbxweb UUIDs are standard base64 which contains / and + — unsafe in URLs.
+// Encode to URL-safe base64 for API surface; decode back when looking up entries.
+
+function _uuidToUrlSafe(id: string): string {
+  return id.replace(/\//g, '-').replace(/\+/g, '_');
+}
+
+function _uuidFromUrlSafe(id: string): string {
+  return id.replace(/-/g, '/').replace(/_/g, '+');
+}
+
 // ── Module-level state ────────────────────────────────────────────────────────
 
-let _db:          Kdbx | null  = null;
+let _db:          KdbxType | null  = null;
 let _dbPath:      string       = path.join(os.homedir(), '.phobos', 'vault', 'vault.kdbx');
 let _lockTimeout: number       = 900_000; // ms, default 15 min
 let _lockTimer:   ReturnType<typeof setTimeout> | null = null;
@@ -204,7 +218,7 @@ export async function createEntry(fields: VaultEntryInput): Promise<string> {
   await _saveToFile();
   _resetLockTimer();
   console.log('[Vault] Entry created');
-  return entry.uuid.id;
+  return _uuidToUrlSafe(entry.uuid.id);
 }
 
 export async function updateEntry(uuid: string, fields: Partial<VaultEntryInput>): Promise<void> {
@@ -259,7 +273,7 @@ export async function createGroup(name: string, parentUuid: string | null): Prom
   const group  = _db!.createGroup(parent, name);
   await _saveToFile();
   _resetLockTimer();
-  return group.uuid.id;
+  return _uuidToUrlSafe(group.uuid.id);
 }
 
 export async function renameGroup(uuid: string, name: string): Promise<void> {
@@ -315,7 +329,7 @@ async function _saveToFile(): Promise<void> {
   await fsPromises.rename(tmp, _dbPath);
 }
 
-function _applyEntryFields(entry: KdbxEntry, fields: VaultEntryInput): void {
+function _applyEntryFields(entry: KdbxEntryType, fields: VaultEntryInput): void {
   entry.fields.set('Title',    fields.title    || '');
   entry.fields.set('UserName', fields.username || '');
   entry.fields.set('URL',      fields.url      || '');
@@ -328,13 +342,13 @@ function _applyEntryFields(entry: KdbxEntry, fields: VaultEntryInput): void {
   }
 }
 
-function _serializeEntry(entry: KdbxEntry): VaultEntry {
+function _serializeEntry(entry: KdbxEntryType): VaultEntry {
   const group    = entry.parentGroup;
   const otpField = entry.fields.get('otp') ?? entry.fields.get('TOTP');
 
   return {
-    uuid:      entry.uuid.id,
-    groupUuid: group?.uuid.id ?? '',
+    uuid:      _uuidToUrlSafe(entry.uuid.id),
+    groupUuid: _uuidToUrlSafe(group?.uuid.id ?? ''),
     groupName: group?.name    ?? '',
     title:     _safeField(entry, 'Title'),
     username:  _safeField(entry, 'UserName'),
@@ -354,20 +368,24 @@ function _serializeEntry(entry: KdbxEntry): VaultEntry {
  * Return the string value of a field, or '' for missing/ProtectedValue fields.
  * ProtectedValue fields (i.e. Password) are never serialized here.
  */
-function _safeField(entry: KdbxEntry, key: string): string {
+function _safeField(entry: KdbxEntryType, key: string): string {
   const val = entry.fields.get(key);
   if (val === undefined || val === null) return '';
   if (val instanceof ProtectedValue) return '';
   return String(val);
 }
 
-function _collectEntries(group: KdbxGroup): VaultEntry[] {
+function _collectEntries(group: KdbxGroupType): VaultEntry[] {
   const result: VaultEntry[] = [];
   _walkEntries(group, result);
   return result;
 }
 
-function _walkEntries(group: KdbxGroup, acc: VaultEntry[]): void {
+function _walkEntries(group: KdbxGroupType, acc: VaultEntry[]): void {
+  // Skip the recycle bin — deleted entries live here and must not appear in listings
+  const recycleBinUuid = _db?.meta.recycleBinUuid;
+  if (recycleBinUuid && group.uuid.equals(recycleBinUuid)) return;
+
   for (const entry of group.entries) {
     acc.push(_serializeEntry(entry));
   }
@@ -377,7 +395,7 @@ function _walkEntries(group: KdbxGroup, acc: VaultEntry[]): void {
 }
 
 function _walkGroups(
-  group:    KdbxGroup,
+  group:    KdbxGroupType,
   parentId: string | null,
   depth:    number,
   acc:      VaultGroup[],
@@ -387,20 +405,25 @@ function _walkGroups(
   if (recycleBinUuid && group.uuid.equals(recycleBinUuid)) return;
 
   acc.push({
-    uuid:       group.uuid.id,
+    uuid:       _uuidToUrlSafe(group.uuid.id),
     name:       group.name    ?? '',
-    parentUuid: parentId,
+    parentUuid: parentId ? _uuidToUrlSafe(parentId) : null,
     depth,
     entryCount: group.entries.length,
   });
   for (const sub of group.groups) {
-    _walkGroups(sub, group.uuid.id, depth + 1, acc);
+    _walkGroups(sub, _uuidToUrlSafe(group.uuid.id), depth + 1, acc);
   }
 }
 
-function _findEntry(root: KdbxGroup, uuid: string): KdbxEntry | null {
+function _findEntry(root: KdbxGroupType, uuid: string): KdbxEntryType | null {
+  // Skip the recycle bin — deleted entries live here and must return null
+  const recycleBinUuid = _db?.meta.recycleBinUuid;
+  if (recycleBinUuid && root.uuid.equals(recycleBinUuid)) return null;
+
+  const rawUuid = _uuidFromUrlSafe(uuid);
   for (const entry of root.entries) {
-    if (entry.uuid.id === uuid) return entry;
+    if (entry.uuid.id === rawUuid) return entry;
   }
   for (const sub of root.groups) {
     const found = _findEntry(sub, uuid);
@@ -409,20 +432,25 @@ function _findEntry(root: KdbxGroup, uuid: string): KdbxEntry | null {
   return null;
 }
 
-function _resolveGroup(uuid: string): KdbxGroup | null {
-  return _db!.getGroup(uuid) ?? null;
+function _resolveGroup(uuid: string): KdbxGroupType | null {
+  return _db!.getGroup(_uuidFromUrlSafe(uuid)) ?? null;
 }
 
 function _countEntries(): number {
+  const recycleBinUuid = _db?.meta.recycleBinUuid;
   let n = 0;
-  const walk = (g: KdbxGroup): void => { n += g.entries.length; g.groups.forEach(walk); };
+  const walk = (g: KdbxGroupType): void => {
+    if (recycleBinUuid && g.uuid.equals(recycleBinUuid)) return;
+    n += g.entries.length;
+    g.groups.forEach(walk);
+  };
   walk(_db!.getDefaultGroup());
   return n;
 }
 
 function _countGroups(): number {
   let n = 0;
-  const walk = (g: KdbxGroup): void => { n++; g.groups.forEach(walk); };
+  const walk = (g: KdbxGroupType): void => { n++; g.groups.forEach(walk); };
   _db!.getDefaultGroup().groups.forEach(walk);
   return n;
 }

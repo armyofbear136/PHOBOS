@@ -1198,20 +1198,36 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     supportsVision: true,
     mmproj: { hfRepo: 'unsloth/Qwen3.5-35B-A3B-GGUF', hfFile: 'mmproj-BF16.gguf', sizeBytes: 900_000_000 },
   },
-  // ── Qwen3.5-Coder family ────────────────────────────────────────────────────
-  // Alibaba's code-specialised Qwen3.5 fine-tune. Apache 2.0.
-  // Same Jinja template and thinking mechanism as base Qwen3.5.
-  // 32B outperforms GPT-4o on most code benchmarks. Excellent for SEREN executor role.
+  // ── Qwen3.6 family ──────────────────────────────────────────────────────────
+  // Released April 2026. Builds on Qwen3.5 with major agentic coding improvements.
+  // Native multimodal (text + image). Thinking preserved across conversation history.
+  // Same <think> token format, jinja template, and llama-server flags as Qwen3.5.
+  // Apache 2.0. mmproj from unsloth (~931 MB BF16) — same pairing as Qwen3.5.
+  // 27B: dense, flagship-level coding, beats Qwen3.5-397B on SWE-bench. 18 GB RAM.
+  // 35B-A3B: MoE (3B active), 22 GB RAM, fast inference.
   {
-    modelId: 'qwen3.5-coder-32b-q4', label: 'Qwen3.5 Coder 32B Q4', family: 'Qwen3.5',
+    modelId: 'qwen3.6-27b-q4', label: 'Qwen3.6 27B Q4', family: 'Qwen3.6',
     role: 'seren', thinkingTokens: true, jinjaTemplate: true,
-    hfRepo: 'bartowski/Qwen_Qwen3.5-Coder-32B-Instruct-GGUF',
-    hfFile: 'Qwen_Qwen3.5-Coder-32B-Instruct-Q4_K_M.gguf',
-    sizeBytes: 19_400_000_000, ramRequiredGb: 22, contextWindow: 131072,
-    kvCacheMbPer1kTokens: 224,  // 64 layers x 8 KV heads x 128 head_dim x 2 x F16
-    activeParamsB: 32.0, serenQuality: 5, speedClass: 'slow',
+    hfRepo: 'bartowski/Qwen_Qwen3.6-27B-GGUF',
+    hfFile: 'Qwen_Qwen3.6-27B-Q4_K_M.gguf',
+    trainingHfId: 'Qwen/Qwen3.6-27B',
+    sizeBytes: 17_500_000_000, ramRequiredGb: 20, contextWindow: 262144,
+    kvCacheMbPer1kTokens: 224,  // dense 27B — same KV structure as Qwen3.5-27B
+    activeParamsB: 27.0, serenQuality: 5, speedClass: 'slow',
     supportsVision: true,
-    mmproj: { hfRepo: 'unsloth/Qwen3.5-Coder-32B-Instruct-GGUF', hfFile: 'mmproj-BF16.gguf', sizeBytes: 900_000_000 },
+    mmproj: { hfRepo: 'unsloth/Qwen3.6-27B-GGUF', hfFile: 'mmproj-BF16.gguf', sizeBytes: 931_000_000 },
+  },
+  {
+    modelId: 'qwen3.6-35b-a3b-q4', label: 'Qwen3.6 35B-A3B Q4', family: 'Qwen3.6',
+    role: 'seren', thinkingTokens: true, jinjaTemplate: true,
+    hfRepo: 'bartowski/Qwen_Qwen3.6-35B-A3B-GGUF',
+    hfFile: 'Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf',
+    trainingHfId: 'Qwen/Qwen3.6-35B-A3B',
+    sizeBytes: 21_400_000_000, ramRequiredGb: 23, contextWindow: 262144,
+    kvCacheMbPer1kTokens: 96,   // MoE 3B active — same KV profile as Qwen3.5-35B-A3B
+    activeParamsB: 3.8, serenQuality: 4, speedClass: 'fast',
+    supportsVision: true,
+    mmproj: { hfRepo: 'unsloth/Qwen3.6-35B-A3B-GGUF', hfFile: 'mmproj-BF16.gguf', sizeBytes: 931_000_000 },
   },
   // ── Qwen3 family (legacy) ───────────────────────────────────────────────────
   // Superseded by Qwen3.5. Still downloadable for users who prefer them.
@@ -1262,7 +1278,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     activeParamsB: 7.0, sayonQuality: 3, speedClass: 'medium',
   },
   {
-    modelId: 'magistral-8b-q4', label: 'Magistral 24B Q4', family: 'Mistral',
+    modelId: 'magistral-24b-q4', label: 'Magistral 24B Q4', family: 'Mistral',
     role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/mistralai_Magistral-Small-2506-GGUF',
     hfFile: 'mistralai_Magistral-Small-2506-Q4_K_M.gguf',
@@ -1449,7 +1465,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'seren', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'bartowski/Qwen_Qwen3.5-2B-GGUF',
     hfFile: 'Qwen_Qwen3.5-2B-Q4_K_M.gguf',
-    sizeBytes: 1_520_000_000, ramRequiredGb: 2, contextWindow: 262144,
+    sizeBytes: 1_329_766_560, ramRequiredGb: 2, contextWindow: 262144,
     kvCacheMbPer1kTokens: 80,   // GDN hybrid — lower layers than 4B variant
     activeParamsB: 2.5, serenQuality: 1, speedClass: 'fast',  // GDN overhead + unstable thinking at 2B
     supportsVision: true,
@@ -1539,7 +1555,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     role: 'sayon', thinkingTokens: true, jinjaTemplate: true,
     hfRepo: 'Jackrong/Qwen3.5-2B-Claude-4.6-Opus-Reasoning-Distilled-GGUF',
     hfFile: 'Qwen3.5-2B.Q4_K_M.gguf',
-    sizeBytes: 1_520_000_000, ramRequiredGb: 2, contextWindow: 262144,
+    sizeBytes: 1_270_804_416, ramRequiredGb: 2, contextWindow: 262144,
     kvCacheMbPer1kTokens: 80,   // 2B dense — low KV cost, good for coordinator role
     activeParamsB: 2.0, sayonQuality: 3, speedClass: 'fast',
   },
@@ -1856,7 +1872,7 @@ export const WAN_VAE: FluxAuxFile = {
   hfRepo:     'Comfy-Org/Wan_2.1_ComfyUI_repackaged',
   hfFile:     'split_files/vae/wan_2.1_vae.safetensors',
   localFile:  'wan_2.1_vae.safetensors',
-  sizeBytes:  100_000_000,
+  sizeBytes:  253_815_318,
   cliFlag:    '--vae',
   license:    'Apache-2.0',
   licenseUrl: 'https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged',
@@ -1885,7 +1901,7 @@ export const WAN_CLIP_VISION: FluxAuxFile = {
   hfRepo:     'Comfy-Org/Wan_2.1_ComfyUI_repackaged',
   hfFile:     'split_files/clip_vision/clip_vision_h.safetensors',
   localFile:  'clip_vision_h.safetensors',
-  sizeBytes:  1_730_000_000,
+  sizeBytes:  1_264_219_396,
   cliFlag:    '--clip_vision',
   license:    'Apache-2.0',
   licenseUrl: 'https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged',
@@ -2682,7 +2698,7 @@ export const WAN_CATALOGUE: ImageModelSpec[] = [
     quantization:     'Q4_K_M',
     hfRepo:           'city96/Wan2.1-I2V-14B-480P-gguf',
     hfFile:           'wan2.1-i2v-14b-480p-Q4_K_M.gguf',
-    sizeBytes:        10_100_000_000,
+    sizeBytes:        11_341_184_384,
     vramRequiredGb:   16,
     diffusionMb:      9600,
     encoderMb:        0,

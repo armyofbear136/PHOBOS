@@ -199,6 +199,19 @@ def _extract_json_text(fpath: Path) -> str:
 def train(cfg: dict) -> None:
     emit("PHASE Loading training dependencies")
 
+    # ── ROCm Windows: suppress unsloth's HIP torch-reinstall path ────────────
+    # torch 2.9.1+rocmsdk20260116 sets torch.version.hip (e.g. "7.2.26024-..."),
+    # so unsloth's is_hip() returns True.  But unsloth's has_hip_torch check looks
+    # for 'rocm' in torch.__version__, which is False for '+rocmsdk...' builds.
+    # Result: is_hip()=True + has_hip_torch=False → unsloth spawns a pip subprocess
+    # to reinstall torch from download.pytorch.org/whl/rocm7.2, which fails because
+    # our AMD Windows wheel lives at repo.radeon.com, not there.
+    # Fix: null out torch.version.hip before unsloth imports torch, so is_hip()=False
+    # and DEVICE_TYPE resolves to "cuda" — the correct path for HIP-as-CUDA on Windows.
+    if os.environ.get("HIP_VISIBLE_DEVICES") is not None and sys.platform == "win32":
+        import torch as _torch_pre_unsloth
+        _torch_pre_unsloth.version.hip = None
+
     try:
         from unsloth import FastLanguageModel
         from trl import SFTTrainer, SFTConfig

@@ -25,12 +25,16 @@ import type {
   RemoteResponse, RemoteSSEFrame, RemoteDone, RemoteError,
   MediaCheckRequest, MediaCheckResponse,
   MediaUploadBegin, MediaChunkEnvelope, MediaUploadEnd, MediaUploadAck,
+  AuthChallenge, AuthResponse, SessionReady, NeedsUsername, AuthError,
 } from './RemoteProtocol.js';
 import { DatabaseManager } from '../db/DatabaseManager.js';
+import { UserStore }       from '../db/UserStore.js';
+import { provisionSystemUser } from '../db/UserProvisioner.js';
 
 export interface DataChannelHandlerOptions {
   fastify:    FastifyInstance;
-  activeUser: string;
+  systemDb:   DatabaseManager;  // for access_codes validation
+  relayCode:  string;           // the 6-char code the mobile connected with (self-access check)
 }
 
 // ── Upload state ──────────────────────────────────────────────────────────────
@@ -64,24 +68,42 @@ function resolveLibraryDir(library: MediaUploadBegin['library']): string {
 
 export class DataChannelHandler {
   private readonly _fastify:    FastifyInstance;
-  private readonly _activeUser: string;
+  private readonly _systemDb:   DatabaseManager;
+  private readonly _relayCode:  string;
+
+  // Set after successful auth handshake — null means not yet authenticated.
+  private _sessionUsername: string | null = null;
+
   private _controlDC:     DataChannel | null = null;
   private _mediaIndexDC:  DataChannel | null = null;
   private _mediaUploadDC: DataChannel | null = null;
   private _uploads = new Map<string, UploadState>();
   private _destroyed = false;
 
+  // Auth handshake state
+  private _authComplete = false;
+  private _awaitingUsername = false;
+  private _pendingCode: string | null = null;
+
   constructor(opts: DataChannelHandlerOptions) {
-    this._fastify    = opts.fastify;
-    this._activeUser = opts.activeUser;
+    this._fastify   = opts.fastify;
+    this._systemDb  = opts.systemDb;
+    this._relayCode = opts.relayCode;
   }
 
   // ── Channel attachment ──────────────────────────────────────────────────────
 
   attachControlChannel(dc: DataChannel): void {
     this._controlDC = dc;
+
+    // Send challenge immediately on attach.
+    this._sendControl<AuthChallenge>({ kind: 'auth-challenge' });
+
     dc.onMessage((data) => {
-      if (typeof data === 'string') {
+      if (typeof data !== 'string') return;
+      if (!this._authComplete) {
+        void this._handleAuthMessage(data);
+      } else {
         void this._handleControlMessage(data);
       }
     });
@@ -118,6 +140,152 @@ export class DataChannelHandler {
     this._controlDC     = null;
     this._mediaIndexDC  = null;
     this._mediaUploadDC = null;
+  }
+
+  // ── Auth handshake ──────────────────────────────────────────────────────────
+
+  private async _handleAuthMessage(raw: string): Promise<void> {
+    if (this._destroyed) return;
+    let frame: AuthResponse;
+    try {
+      frame = JSON.parse(raw) as AuthResponse;
+    } catch { return; }
+
+    if (frame.kind !== 'auth-response') return;
+
+    const code = frame.code?.trim().toUpperCase();
+    if (!code) {
+      this._authFail('invalid_code');
+      return;
+    }
+
+    // Self-access: mobile sent the relay code that core registered with.
+    if (code === this._relayCode) {
+      this._sessionUsername = 'owner';
+      this._authComplete    = true;
+      this._sendControl<SessionReady>({ kind: 'session-ready', username: 'owner', role: 'owner' });
+      console.log('[DataChannelHandler] Self-access authenticated: owner');
+      return;
+    }
+
+    // Guest-access: look up code in access_codes.
+    interface AccessCodeRow {
+      code_type:        string;
+      target_username:  string | null;
+      consumed:         boolean;
+      expires_at:       string;
+      issuing_username: string;
+    }
+    let row: AccessCodeRow | null = null;
+
+    try {
+      const rows = await this._systemDb.query<AccessCodeRow>(
+        `SELECT code_type, target_username, consumed,
+                expires_at::VARCHAR AS expires_at,
+                issuing_username
+         FROM access_codes WHERE code = ?`,
+        [code],
+      );
+      row = rows[0] ?? null;
+    } catch (err) {
+      console.error('[DataChannelHandler] access_codes query failed:', err);
+      this._authFail('internal');
+      return;
+    }
+
+    if (!row) {
+      this._authFail('invalid_code');
+      return;
+    }
+
+    if (row.consumed) {
+      // Single-use codes are consumed after provisioning — subsequent connections
+      // use the bound target_username without re-consuming.
+      // If consumed AND no target_username something went wrong.
+      if (!row.target_username) {
+        this._authFail('expired_code');
+        return;
+      }
+    }
+
+    if (new Date(row.expires_at) < new Date()) {
+      this._authFail('expired_code');
+      return;
+    }
+
+    // Code is valid. If already bound to a username, session is ready.
+    if (row.target_username) {
+      this._sessionUsername = row.target_username;
+      this._authComplete    = true;
+      const userStore = new UserStore(this._systemDb);
+      const user      = await userStore.getByUsername(row.target_username);
+      this._sendControl<SessionReady>({
+        kind:     'session-ready',
+        username: row.target_username,
+        role:     (user?.role ?? 'guest') as SessionReady['role'],
+      });
+      console.log(`[DataChannelHandler] Guest session ready: ${row.target_username}`);
+      return;
+    }
+
+    // Code is unbound — need a username before provisioning.
+    if (!this._awaitingUsername) {
+      this._awaitingUsername = true;
+      this._pendingCode      = code;
+      this._sendControl<NeedsUsername>({ kind: 'needs-username' });
+      return;
+    }
+
+    // Second response — has requestedUsername.
+    const requestedUsername = frame.requestedUsername?.trim().toLowerCase();
+    if (!requestedUsername || !/^[a-z0-9_-]{2,32}$/.test(requestedUsername)) {
+      this._sendControl<AuthError>({ kind: 'auth-error', reason: 'username_invalid' });
+      return;
+    }
+
+    // Check for collision.
+    const userStore = new UserStore(this._systemDb);
+    const existing  = await userStore.getByUsername(requestedUsername);
+    if (existing) {
+      this._sendControl<AuthError>({ kind: 'auth-error', reason: 'username_taken' });
+      return;
+    }
+
+    // Provision.
+    try {
+      await provisionSystemUser(requestedUsername, 'guest', userStore);
+    } catch (err) {
+      console.error('[DataChannelHandler] provisionSystemUser failed:', err);
+      this._authFail('internal');
+      return;
+    }
+
+    // Stamp the code as consumed and bind target_username.
+    await this._systemDb.execWithParams(
+      `UPDATE access_codes
+       SET target_username = ?, consumed = true
+       WHERE code = ?`,
+      [requestedUsername, this._pendingCode ?? code],
+    );
+
+    this._sessionUsername  = requestedUsername;
+    this._authComplete     = true;
+    this._awaitingUsername = false;
+    this._pendingCode      = null;
+
+    this._sendControl<SessionReady>({
+      kind: 'session-ready', username: requestedUsername, role: 'guest',
+    });
+    console.log(`[DataChannelHandler] Guest provisioned and authenticated: ${requestedUsername}`);
+  }
+
+  private _authFail(reason: AuthError['reason']): void {
+    this._sendControl<AuthError>({ kind: 'auth-error', reason });
+    console.warn(`[DataChannelHandler] Auth failed: ${reason}`);
+    // Close the control DC — WebRTCServer teardown handles the rest.
+    setTimeout(() => {
+      try { this._controlDC?.close(); } catch { /* ignore */ }
+    }, 100);
   }
 
   // ── Control channel ─────────────────────────────────────────────────────────
@@ -157,7 +325,7 @@ export class DataChannelHandler {
         url:     frame.path,
         headers: {
           ...frame.headers,
-          'x-webrtc-user':       this._activeUser,
+          'x-webrtc-user':       this._sessionUsername ?? 'owner',
           'x-webrtc-request-id': frame.id,
         },
         payload: frame.body,
@@ -210,7 +378,7 @@ export class DataChannelHandler {
         url:     frame.path,
         headers: {
           ...frame.headers,
-          'x-webrtc-user':       this._activeUser,
+          'x-webrtc-user':       this._sessionUsername ?? 'owner',
           'x-webrtc-request-id': frame.id,
         },
         payload: frame.body,

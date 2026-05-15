@@ -362,6 +362,23 @@ export async function buildForPlatform({
     log('  ⚠️  sharp not installed — some vision features may be unavailable');
   }
 
+  // @img/* — native addon packages introduced in sharp >= v0.33.
+  // sharp v0.33 replaced its bundled libvips binary with scoped @img packages.
+  // The top-level sharp/ requires @img/sharp-win32-x64 (or the platform equivalent)
+  // to load its .node binding, and @img/colour for the colour module.
+  // These live at node_modules/@img/ in the project root (npm hoists them there).
+  // Without this block the top-level sharp silently fails with
+  // "Cannot find module '@img/colour'" — which also crashes the kokoro daemon
+  // because phobos-kokoro.mjs runs with cwd=dist/ where sharp is resolved.
+  const imgAtSrc = path.join(__dirname, 'node_modules', '@img');
+  if (fs.existsSync(imgAtSrc)) {
+    const imgAtDest = path.join(distDir, 'node_modules', '@img');
+    copyDir(imgAtSrc, imgAtDest);
+    log('  ✅ @img/ (sharp v0.33+ native addon packages)');
+  } else {
+    log('  ⚠️  @img not found — sharp may fail to load (run npm install)');
+  }
+
   // sharp runtime deps — staged at top-level dist/node_modules/ so sharp finds them
   // via the globalPaths banner. These are all pure JS (no .node binaries).
   // In development npm hoists them to the project root; in dist/ they must be explicit.
@@ -642,11 +659,18 @@ export async function buildForPlatform({
   // phobos-lm-trainer.py — CartridgeTrainer (LLM LoRA training)
   // _torchcodec.py — PythonEnvManager patches torchaudio with this after install
   // unsloth_zoo_utils.py — PythonEnvManager copies this into unsloth_zoo on ROCm after install
+  // unsloth_zoo_device_type.py — PythonEnvManager copies this into unsloth_zoo on ROCm after install
   const pyScripts = [
     ['phobos-diffusers.py', 'phobos-diffusers.py', 'PyTorch generation script'],
     ['phobos-lm-trainer.py', 'phobos-lm-trainer.py', 'LLM LoRA training script'],
     ['_torchcodec.py', '_torchcodec.py', 'torchaudio soundfile fallback patch'],
     ['unsloth_zoo_utils.py', 'unsloth_zoo_utils.py', 'unsloth_zoo ROCm torch.distributed patch'],
+    ['phobos_rocm_patch.py', 'phobos_rocm_patch.py', 'ROCm Windows unsloth device_type startup patch'],
+    ['nf4tensor.py', 'nf4tensor.py', 'torchao NF4 distributed op stub for ROCm Windows'],
+    ['unsloth_zoo_temporary_patches_utils.py', 'unsloth_zoo_temporary_patches_utils.py', 'unsloth_zoo temporary_patches/utils.py ROCm Windows _distributed_c10d patch'],
+    ['torchao_float8_distributed_utils.py', 'torchao_float8_distributed_utils.py', 'torchao float8/distributed_utils.py ROCm Windows distributed import guard'],
+    ['torch_distributed_c10d.py', 'torch_distributed_c10d.py', 'torch distributed/distributed_c10d.py ROCm Windows _distributed_c10d stub'],
+    ['torch_distributed_constants.py', 'torch_distributed_constants.py', 'torch distributed/constants.py ROCm Windows _distributed_c10d stub'],
   ];
   for (const [src, dst, label] of pyScripts) {
     const pyScript = path.join(__dirname, 'phobos', src);

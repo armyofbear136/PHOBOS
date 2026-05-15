@@ -493,7 +493,7 @@ export async function generateKokoro(opts: KokoroOptions): Promise<AudioGenerate
   const nodeBin    = resolveNodeBin();
   const scriptPath = resolveKokoroScript();
   const cwd        = resolveKokoroCwd();
-  const outputPath = timestampedOutputPath(opts.threadId, 'tts', opts.label ?? 'kokoro');
+  const outputPath = path.join(os.tmpdir(), `phobos-tts-${crypto.randomUUID()}.wav`);
   const startMs    = Date.now();
   const jobId      = crypto.randomUUID();
 
@@ -564,7 +564,7 @@ export async function generateF5Tts(opts: F5TtsOptions): Promise<AudioGenerateRe
 
   const { pythonBin, deviceArg } = await resolvePythonDevice();
   const scriptPath = resolveF5Script();
-  const outputPath = timestampedOutputPath(opts.threadId, 'tts', opts.label ?? 'f5tts');
+  const outputPath = path.join(os.tmpdir(), `phobos-tts-${crypto.randomUUID()}.wav`);
   const startMs    = Date.now();
 
   const modelDirectory = audioModelDir(spec);
@@ -668,7 +668,7 @@ export async function generateAceStep(opts: AceStepOptions): Promise<AudioGenera
   console.log(`[AudioServerManager] ace-lm: ${aceLm} ${lmArgs.join(' ')}`);
 
   await new Promise<void>((resolve, reject) => {
-    const proc = spawn(aceLm, lmArgs, { stdio: ['ignore', 'pipe', 'pipe'], cwd: path.dirname(aceLm) });
+    const proc = spawn(aceLm, lmArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
     if (opts.signal) {
       const abort = () => { try { proc.kill('SIGTERM'); } catch { /**/ } };
       opts.signal.addEventListener('abort', abort, { once: true });
@@ -726,7 +726,7 @@ or: ${altPath}`
 
   opts.onProgress?.('[INFO ] ACE-Step pass 2/2: synthesis');
   console.log(`[AudioServerManager] ace-synth: ${aceSynth} ${synthArgs.join(' ')}`);
-  await runProcess(aceSynth, synthArgs, synthOutputPath, opts, undefined, path.dirname(aceSynth));
+  await runProcess(aceSynth, synthArgs, synthOutputPath, opts);
 
   // Move the generated WAV to the canonical timestamped output path
   fs.renameSync(synthOutputPath, outputPath);

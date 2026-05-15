@@ -1791,12 +1791,10 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
   // ── POST /api/phobos/audio-model/download ─────────────────────────────────
   //
   // Downloads a single audio model by modelId using direct HTTPS.
-  // Mirrors the downloadFluxFileGen pattern: resume-capable, progress-emitting,
-  // SSE-streamed to the client.
-  //
-  // Multi-file models (ACE-Step, F5-TTS) use hfRepo snapshot_download via a
-  // Python subprocess (requires PyTorch env). Single-file models (Whisper large)
-  // are downloaded directly via Node https.
+  // Mirrors the LLM/image download pattern: resume-capable, progress-emitting,
+  // SSE-streamed to the client. All audio models are single-file downloads
+  // (hfRepo + hfFile → https://huggingface.co/<repo>/resolve/main/<file>).
+  // hfFile may contain a subdirectory path (e.g. F5TTS_v1_Base/model.safetensors).
   //
   // Body: { modelId: string }
   //
@@ -1815,17 +1813,15 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       if (!spec) return reply.status(400).send({ error: `Unknown audio model: ${modelId}` });
       if (spec.blocked) return reply.status(400).send({ error: `Model ${modelId} is not yet available` });
 
-      // Whisper is managed by DepPrep — not downloadable through this route
-      if (spec.runnerProfile === 'whisper') {
-        return reply.status(400).send({ error: 'Whisper is installed via DepPrep, not this route' });
-      }
-
-      reply.raw.writeHead(200, {
-        'Content-Type':  'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection':    'keep-alive',
+      const origin = req.headers?.origin;
+      const sseHead: Record<string, string> = {
+        'Content-Type':      'text/event-stream',
+        'Cache-Control':     'no-cache',
+        'Connection':        'keep-alive',
         'X-Accel-Buffering': 'no',
-      });
+      };
+      if (origin) sseHead['Access-Control-Allow-Origin'] = origin;
+      reply.raw.writeHead(200, sseHead);
 
       const emit = (payload: Record<string, unknown>) => {
         try { reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`); } catch { /* socket closed */ }
@@ -1835,63 +1831,17 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       req.raw.socket?.on('close', () => abort.abort());
 
       try {
-        fs.mkdirSync(audioModelDir(spec), { recursive: true });
+        // All audio models download as a single file via HTTPS — the same
+        // resume-capable, redirect-following downloader used for LLM GGUFs.
+        // hfFile may contain a subdirectory (e.g. F5TTS_v1_Base/model.safetensors)
+        // so we mkdirSync on the full destPath's parent, not just audioModelDir.
+        const THROTTLE_MS    = 250;
+        const THROTTLE_BYTES = 2_097_152; // 2 MB
 
-        // Multi-file models: use Python huggingface_hub.snapshot_download
-        // Single-file models: download directly via Node https
-        if (spec.runnerProfile === 'ace-step' || spec.runnerProfile === 'f5-tts'
-            || spec.runnerProfile === 'musicgen' || spec.runnerProfile === 'yue') {
-          // Spawn Python to run snapshot_download — requires active PyTorch env
-          const { spawn } = await import('child_process');
-          const destDir   = audioModelDir(spec);
-          const script    = [
-            'from huggingface_hub import snapshot_download, hf_hub_download',
-            'import sys, json',
-            `repo = ${JSON.stringify(spec.hfRepo)}`,
-            `dest = ${JSON.stringify(destDir)}`,
-            'snapshot_download(repo_id=repo, local_dir=dest)',
-            'print(json.dumps({"type":"done"}))',
-          ].join('\n');
+        const destPath = path.join(audioModelDir(spec), spec.hfFile);
+        const tmpPath  = destPath + '.part';
 
-          await new Promise<void>((resolve, reject) => {
-            const proc = spawn('python3', ['-c', script], { stdio: ['ignore', 'pipe', 'pipe'] });
-            let buf = '';
-            proc.stdout.on('data', (chunk: Buffer) => {
-              buf += chunk.toString();
-              const lines = buf.split('\n');
-              buf = lines.pop() ?? '';
-              for (const line of lines) {
-                const t = line.trim();
-                if (!t) continue;
-                try {
-                  const evt = JSON.parse(t) as Record<string, unknown>;
-                  emit(evt);
-                } catch { /* non-JSON line — ignore */ }
-              }
-            });
-            proc.stderr.on('data', (chunk: Buffer) => {
-              // Emit stderr progress lines that match tqdm/HF hub patterns
-              const lines = chunk.toString().split('\n');
-              for (const line of lines) {
-                const t = line.trim();
-                if (t.match(/\d+%|downloading|fetching/i)) {
-                  emit({ type: 'progress', message: t });
-                }
-              }
-            });
-            proc.on('close', (code) => {
-              if (code === 0) resolve();
-              else reject(new Error(`snapshot_download exited with code ${code}`));
-            });
-            abort.signal.addEventListener('abort', () => proc.kill('SIGTERM'));
-          });
-        } else {
-          // Single-file download via Node https with resume support
-          const THROTTLE_MS    = 250;
-          const THROTTLE_BYTES = 2_097_152; // 2 MB
-
-          const destPath = path.join(audioModelDir(spec), spec.hfFile);
-          const tmpPath  = destPath + '.part';
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
 
           const existingBytes = fs.existsSync(tmpPath) ? fs.statSync(tmpPath).size : 0;
           let bytesReceived   = existingBytes;
@@ -1954,7 +1904,6 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
             };
             follow(hfUrl);
           });
-        }
 
         if (!abort.signal.aborted) {
           emit({ type: 'done' });

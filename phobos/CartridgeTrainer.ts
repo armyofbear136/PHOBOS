@@ -549,7 +549,13 @@ export function startLmTraining(
         // ROCm: explicitly expose device 0 to the HIP runtime.
         // Without this, hipGetDeviceCount() can return 0 on unsupported
         // architectures (gfx1150 / 890M) causing torch.cuda.is_available() = False.
-        ...(session!.vendor === 'rocm' ? { HIP_VISIBLE_DEVICES: '0' } : {}),
+        // HSA_OVERRIDE_GFX_VERSION: use gfx1100 (RDNA 3.0) kernels for gfx1150 (RDNA 3.5).
+        // UNSLOTH_SKIP_TORCHVISION_CHECK: suppress unsloth's version gate as a safety net.
+        ...(session!.vendor === 'rocm' ? {
+          HIP_VISIBLE_DEVICES:             '0',
+          HSA_OVERRIDE_GFX_VERSION:        '11.5.0',
+          UNSLOTH_SKIP_TORCHVISION_CHECK:  '1',
+        } : {}),
       };
 
       console.log(`[LM:${sessionId}] start  : ${session!.base_model_id}  rank=${session!.rank}  steps=${session!.steps || 'auto'}`);

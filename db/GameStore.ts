@@ -551,5 +551,39 @@ export class GameStore {
     return { ok: true, harvested_at: updated[0].harvested_at };
   }
 
-  
+  // ── House Storage ───────────────────────────────────────────────────────
+
+  /**
+   * Move a player inventory item into house storage.
+   * Returns a result discriminant — the route maps these to HTTP status codes.
+   */
+  async depositToHouse(id: string): Promise<'ok' | 'not_found' | 'wrong_target' | 'equipped'> {
+    const rows = await this.db.query<{ target: string; equipped: boolean }>(
+      `SELECT target, equipped FROM game_inventory WHERE id = ?`, [id]
+    );
+    if (!rows.length)                return 'not_found';
+    if (rows[0].target !== 'player') return 'wrong_target';
+    if (rows[0].equipped)            return 'equipped';
+    await this.db.run(
+      `UPDATE game_inventory SET target = 'house', equipped = false WHERE id = ?`, [id]
+    );
+    return 'ok';
+  }
+
+  /**
+   * Move a house storage item back into player inventory.
+   * Returns a result discriminant — the route maps these to HTTP status codes.
+   */
+  async withdrawFromHouse(id: string): Promise<'ok' | 'not_found' | 'wrong_target'> {
+    const rows = await this.db.query<{ target: string }>(
+      `SELECT target FROM game_inventory WHERE id = ?`, [id]
+    );
+    if (!rows.length)               return 'not_found';
+    if (rows[0].target !== 'house') return 'wrong_target';
+    await this.db.run(
+      `UPDATE game_inventory SET target = 'player' WHERE id = ?`, [id]
+    );
+    return 'ok';
+  }
+
 }

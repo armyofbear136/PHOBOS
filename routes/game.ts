@@ -371,4 +371,42 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
     return reply.send({ units, material_id, building });
   });
 
+  // ── House Storage ───────────────────────────────────────────────────────
+  //
+  // Items are stored in game_inventory with target = 'house'.
+  // Deposit:  re-targets a player item → 'house'.
+  // Withdraw: re-targets a house item  → 'player'.
+  //
+  // Both routes verify ownership (correct current target) before mutating,
+  // so they are safe against stale client state.
+
+  // POST /api/game/house/storage/deposit
+  // Moves one item from player inventory to house storage.
+  // Body: { id: string }
+  fastify.post<{
+    Body: { id: string };
+  }>('/api/game/house/storage/deposit', async (req, reply) => {
+    const { id } = req.body;
+    if (!id) return reply.status(400).send({ error: 'id required' });
+    const result = await store.depositToHouse(id);
+    if (result === 'not_found')    return reply.status(404).send({ error: 'item not found' });
+    if (result === 'wrong_target') return reply.status(409).send({ error: 'item not in player inventory' });
+    if (result === 'equipped')     return reply.status(409).send({ error: 'cannot store an equipped item' });
+    return reply.send({ ok: true });
+  });
+
+  // POST /api/game/house/storage/withdraw
+  // Moves one item from house storage to player inventory.
+  // Body: { id: string }
+  fastify.post<{
+    Body: { id: string };
+  }>('/api/game/house/storage/withdraw', async (req, reply) => {
+    const { id } = req.body;
+    if (!id) return reply.status(400).send({ error: 'id required' });
+    const result = await store.withdrawFromHouse(id);
+    if (result === 'not_found')    return reply.status(404).send({ error: 'item not found' });
+    if (result === 'wrong_target') return reply.status(409).send({ error: 'item not in house storage' });
+    return reply.send({ ok: true });
+  });
+
 }

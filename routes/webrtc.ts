@@ -40,13 +40,11 @@ export async function registerWebRTCRoutes(fastify: FastifyInstance): Promise<vo
     const status = _ctx.webrtcServer?.getStatus() ?? {
       connected:  false,
       iceState:   'closed',
-      activeUser: null,
       channels:   { control: false, mediaIndex: false, mediaUpload: false },
     };
     return reply.send({
       connected:      status.connected,
       iceState:       status.iceState,
-      activeUser:     status.activeUser,
       channels:       status.channels,
       relayConnected: (_ctx.signalingClient?.getCode() ?? null) !== null,
       accessCode:     _ctx.signalingClient?.getCode() ?? null,

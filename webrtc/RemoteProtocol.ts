@@ -200,3 +200,56 @@ export interface SignalConsumed {
 
 export type RelayInbound  = SignalRegistered | SignalOffer | SignalIce | SignalConsumed;
 export type RelayOutbound = SignalRegister   | SignalAnswer | SignalIce;
+
+// ── Auth handshake — control channel, immediately after DC open ───────────────
+//
+// Flow:
+//   core → mobile : AuthChallenge
+//   mobile → core : AuthResponse  (sends access code + optional username)
+//   core → mobile : SessionReady | NeedsUsername | AuthError
+//
+// For self-access the mobile sends the relay code it connected with.
+// For guest-access it sends the 6-char code the owner shared out-of-band.
+// If the code is a guest code with no bound username, core replies NeedsUsername.
+// Mobile collects a username and sends AuthResponse again with requestedUsername set.
+
+/** core → mobile: sent immediately when control DC opens. */
+export interface AuthChallenge {
+  kind: 'auth-challenge';
+}
+
+/**
+ * mobile → core: present the access code.
+ * requestedUsername is only set on the second send, after NeedsUsername.
+ */
+export interface AuthResponse {
+  kind:               'auth-response';
+  code:               string;
+  requestedUsername?: string;
+}
+
+/** core → mobile: auth accepted, session is live under this username. */
+export interface SessionReady {
+  kind:     'session-ready';
+  username: string;
+  role:     'owner' | 'admin' | 'full' | 'guest' | 'read';
+}
+
+/** core → mobile: code is valid but no username bound yet — mobile must ask user. */
+export interface NeedsUsername {
+  kind: 'needs-username';
+}
+
+/** core → mobile: auth failed — DC will be closed immediately after. */
+export interface AuthError {
+  kind:   'auth-error';
+  reason: 'invalid_code' | 'expired_code' | 'username_taken' | 'username_invalid' | 'internal';
+}
+
+export type AuthFrame =
+  | AuthChallenge
+  | AuthResponse
+  | SessionReady
+  | NeedsUsername
+  | AuthError;
+

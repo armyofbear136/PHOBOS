@@ -9,17 +9,19 @@
  * Install: npm install node-datachannel
  */
 
-import NodeDataChannel from 'node-datachannel';
-import type { PeerConnection, DataChannel } from 'node-datachannel';
+import * as NodeDataChannel from 'node-datachannel';
+import type { PeerConnection, DataChannel, IceServer } from 'node-datachannel';
+import { DescriptionType } from 'node-datachannel';
 import type { SignalingClient } from './SignalingClient.js';
 import type { SignalOffer, SignalIce } from './RemoteProtocol.js';
 import { DataChannelHandler } from './DataChannelHandler.js';
 import type { FastifyInstance } from 'fastify';
+import { DatabaseManager } from '../db/DatabaseManager.js';
 
 export interface WebRTCServerOptions {
   fastify:          FastifyInstance;
   signalingClient:  SignalingClient;
-  activeUser:       string;
+  systemDb:         DatabaseManager;
   onConnected:      () => void;
   onDisconnected:   () => void;
 }
@@ -32,7 +34,6 @@ interface SessionState {
   mediaUploadDC:   DataChannel | null;
   openCount:       number;
   code:            string;
-  activeUser:      string;
 }
 
 export class WebRTCServer {
@@ -46,18 +47,16 @@ export class WebRTCServer {
   getStatus(): {
     connected:    boolean;
     iceState:     string;
-    activeUser:   string | null;
     channels:     { control: boolean; mediaIndex: boolean; mediaUpload: boolean };
   } {
     if (!this._session) {
-      return { connected: false, iceState: 'closed', activeUser: null,
+      return { connected: false, iceState: 'closed',
                channels: { control: false, mediaIndex: false, mediaUpload: false } };
     }
     const s = this._session;
     return {
       connected:  s.openCount === 3,
       iceState:   s.pc.state(),
-      activeUser: s.activeUser,
       channels: {
         control:     s.controlDC   !== null,
         mediaIndex:  s.mediaIndexDC  !== null,
@@ -78,16 +77,17 @@ export class WebRTCServer {
           port:     parseInt(new URL(url).port || '3478', 10),
           username: s.username ?? '',
           password: (s as { credential?: string }).credential ?? '',
-          relayType: url.startsWith('turn') ? ('TurnTls' as const) : ('Stun' as const),
-        })));
+          relayType: url.startsWith('turn') ? 'TurnTls' : undefined,
+        }))) as IceServer[];
 
     const pc = new NodeDataChannel.PeerConnection(`phobos-host-${offer.code}`, {
       iceServers,
     });
 
     const handler = new DataChannelHandler({
-      fastify:    this.opts.fastify,
-      activeUser: offer.activeUser,
+      fastify:   this.opts.fastify,
+      systemDb:  this.opts.systemDb,
+      relayCode: offer.code,
     });
 
     const session: SessionState = {
@@ -97,16 +97,15 @@ export class WebRTCServer {
       mediaUploadDC: null,
       openCount:    0,
       code:         offer.code,
-      activeUser:   offer.activeUser,
     };
     this._session = session;
 
     // Wire ICE candidate emission
-    pc.onLocalCandidate((candidate, mid) => {
+    pc.onLocalCandidate((candidate: string, mid: string) => {
       this.opts.signalingClient.sendIce(offer.code, candidate, mid, null);
     });
 
-    pc.onStateChange((state) => {
+    pc.onStateChange((state: string) => {
       console.log(`[WebRTCServer] PeerConnection state: ${state}`);
       if (state === 'disconnected' || state === 'failed' || state === 'closed') {
         this._teardown();
@@ -116,12 +115,12 @@ export class WebRTCServer {
 
     // Core is answerer — data channels are created by mobile (offerer)
     // and arrive here via onDataChannel
-    pc.onDataChannel((dc) => {
+    pc.onDataChannel((dc: DataChannel) => {
       this._acceptDataChannel(session, dc);
     });
 
     // Set remote description and generate answer
-    pc.setRemoteDescription(offer.sdp, 'offer');
+    pc.setRemoteDescription(offer.sdp, DescriptionType.Offer);
     const answerSdp = pc.localDescription()?.sdp;
     if (!answerSdp) {
       console.error('[WebRTCServer] Failed to generate answer SDP');

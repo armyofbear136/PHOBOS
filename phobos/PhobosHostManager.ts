@@ -798,10 +798,16 @@ export async function setEqBand(
   params: EqBandState,
 ): Promise<void> {
   if (band < 0 || band > 7) throw new Error(`setEqBand: band must be 0-7 (got ${band})`);
+  if (params.gainDb < -18 || params.gainDb > 18) {
+    throw new Error(`setEqBand: gainDb must be in [-18, 18] (got ${params.gainDb})`);
+  }
+  if (params.q < 0.1 || params.q > 10) {
+    throw new Error(`setEqBand: q must be in [0.1, 10] (got ${params.q})`);
+  }
   await requireControl().call('setEqBand', {
     band,
-    gainDb:  Math.max(-18, Math.min(18, params.gainDb)),
-    q:       Math.max(0.1, Math.min(10, params.q)),
+    gainDb:  params.gainDb,
+    q:       params.q,
     enabled: params.enabled,
   });
 }

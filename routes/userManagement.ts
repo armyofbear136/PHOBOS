@@ -32,14 +32,12 @@
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as crypto from 'node:crypto';
-import * as fs     from 'node:fs';
-import * as path   from 'node:path';
-import * as os     from 'node:os';
 import bcrypt      from 'bcryptjs';
-import { DatabaseManager, getActiveUser, writeActiveUser, userDir } from '../db/DatabaseManager.js';
+import { DatabaseManager, getActiveUser, writeActiveUser } from '../db/DatabaseManager.js';
 import { SecurityStore }                           from '../db/SecurityStore.js';
 import { UserStore, type UserRole }               from '../db/UserStore.js';
 import { UserServiceTokenStore }                   from '../db/UserServiceTokenStore.js';
+import { provisionSystemUser, deprovisionSystemUser, type ProvisionResult } from '../db/UserProvisioner.js';
 import {
   provisionUser  as jellyfinProvisionUser,
   deprovisionUser as jellyfinDeprovisionUser,
@@ -108,107 +106,9 @@ function generateAccessCode(): string {
 
 // ── User provisioning ──────────────────────────────────────────────────────────
 
-interface ProvisionResult {
-  jellyfinOk: boolean;
-  kavitaOk:   boolean;
-  errors:     string[];
-}
+// ── Route registration ─────────────────────────────────────────────────────────
 
-async function provisionSystemUser(
-  username:     string,
-  role:         UserRole,
-  userStore:    UserStore,
-  display_name?: string,
-): Promise<ProvisionResult> {
-  const result: ProvisionResult = { jellyfinOk: false, kavitaOk: false, errors: [] };
 
-  // 1. Insert users row.
-  await userStore.create({ username, display_name: display_name ?? username, role });
-
-  // 2. Initialize user DB (applies USER_SCHEMA).
-  const userDb = DatabaseManager.getUserDb(username);
-  await userDb.initialize();
-
-  // 3. Provision user directories.
-  const base = userDir(username);
-  fs.mkdirSync(path.join(base, 'workspaces'), { recursive: true });
-  fs.mkdirSync(path.join(base, 'vault'),      { recursive: true });
-  fs.mkdirSync(path.join(base, 'skills'),     { recursive: true });
-
-  // 4. Provision media directories.
-  const phobosDir = path.join(os.homedir(), '.phobos');
-  fs.mkdirSync(path.join(phobosDir, 'media', 'jellyfin', username),                  { recursive: true });
-  fs.mkdirSync(path.join(phobosDir, 'media', 'kavita',   username, 'phobosDocs'),    { recursive: true });
-  fs.mkdirSync(path.join(phobosDir, 'media', 'meridian', username),                  { recursive: true });
-
-  // 5. Jellyfin account — best-effort.
-  try {
-    const jf = await jellyfinProvisionUser(username);
-    const tokenStore = new UserServiceTokenStore(userDb);
-    await tokenStore.setJellyfin({ user_id: jf.userId, access_token: jf.accessToken });
-    result.jellyfinOk = true;
-  } catch (err) {
-    const msg = (err as Error).message ?? String(err);
-    result.errors.push(`Jellyfin: ${msg}`);
-    console.warn(`[UserMgmt] Jellyfin provision failed for ${username} (non-fatal): ${msg}`);
-  }
-
-  // 6. Kavita account — best-effort.
-  try {
-    const kv = await kavitaProvisionUser(username);
-    const tokenStore = new UserServiceTokenStore(userDb);
-    await tokenStore.setKavita({
-      user_id:       kv.userId,
-      jwt:           kv.jwt,
-      refresh_token: kv.refreshToken,
-      api_key:       kv.apiKey,
-    });
-    result.kavitaOk = true;
-  } catch (err) {
-    const msg = (err as Error).message ?? String(err);
-    result.errors.push(`Kavita: ${msg}`);
-    console.warn(`[UserMgmt] Kavita provision failed for ${username} (non-fatal): ${msg}`);
-  }
-
-  return result;
-}
-
-async function deprovisionSystemUser(username: string, systemDb: DatabaseManager, userStore: UserStore): Promise<void> {
-  // 1. Revoke all outstanding access codes for this user.
-  await systemDb.execWithParams(
-    `UPDATE access_codes SET consumed = true
-     WHERE (issuing_username = ? OR target_username = ?) AND consumed = false`,
-    [username, username],
-  );
-
-  // 2. Remove Jellyfin account — best-effort.
-  try {
-    const userDb     = DatabaseManager.getUserDb(username);
-    const tokenStore = new UserServiceTokenStore(userDb);
-    const jfTokens   = await tokenStore.getJellyfin();
-    if (jfTokens?.user_id) {
-      await jellyfinDeprovisionUser(jfTokens.user_id);
-    }
-  } catch (err) {
-    console.warn(`[UserMgmt] Jellyfin deprovision failed for ${username} (non-fatal):`, err);
-  }
-
-  // 3. Remove Kavita account — best-effort.
-  try {
-    const userDb     = DatabaseManager.getUserDb(username);
-    const tokenStore = new UserServiceTokenStore(userDb);
-    const kvTokens   = await tokenStore.getKavita();
-    if (kvTokens?.user_id) {
-      await kavitaDeprovisionUser(kvTokens.user_id);
-    }
-  } catch (err) {
-    console.warn(`[UserMgmt] Kavita deprovision failed for ${username} (non-fatal):`, err);
-  }
-
-  // 4. Delete users row.
-  await userStore.delete(username);
-  // Data directory at ~/.phobos/users/{username}/ is preserved.
-}
 
 // ── Route registration ─────────────────────────────────────────────────────────
 

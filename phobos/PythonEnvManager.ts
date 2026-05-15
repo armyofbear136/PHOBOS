@@ -110,8 +110,8 @@ interface EnvManifest {
 //       SageAttention post4 ABI3 wheel now installs automatically on CUDA.
 //       triton-windows added to CUDA install on Windows (was missing, only Linux CUDA
 //       wheels bundle triton).
-//  6 - incrementing during testing
-const REQUIRED_ENV_VERSION = 21; // v21: diffusers 0.37.1, ftfy (WanPipeline dep), torchao (BF16 native quantization path)
+//  6+ - incrementing during testing
+const REQUIRED_ENV_VERSION = 22; // v21: diffusers 0.37.1, ftfy (WanPipeline dep), torchao (BF16 native quantization path)
 
 // ── Module state ─────────────────────────────────────────────────────────────
 
@@ -746,14 +746,20 @@ async function installRocmWindowsTorch(pyBin: string): Promise<{ ok: boolean; er
   ]);
   if (!torchResult.ok) return { ok: false, error: `torch install failed: ${torchResult.error}` };
 
-  // torchvision: the AMD-provided 0.24.1+rocmsdk wheel is ABI-incompatible with
-  // torch 2.9.1 on Windows and causes `import diffusers` to fail at runtime
-  // (CLIPTextModel and other pipeline classes become unreachable). Install the
-  // CPU stub from PyPI instead — diffusers only uses torchvision for PIL image
-  // transforms which work identically without the ROCm C extension.
-  const tvResult = await runPip(pyBin, ['-m', 'pip', 'install', '--no-cache-dir', 'torchvision']);
+  // torchvision: install the matched AMD ROCm 7.2 Windows wheel with --no-deps.
+  // --no-deps is critical: without it pip's resolver sees torch as a dependency
+  // and silently replaces torch+rocmsdk with the CPU build from PyPI (ROCm issue #5733).
+  // The rocmsdk wheel (torchvision-0.24.1+rocmsdk20260116) matches torch 2.9.1+rocmsdk,
+  // satisfying unsloth's torchvision_compatibility_check() which requires >=0.24.0 for
+  // torch 2.9.x. A CPU stub from PyPI resolves to 0.21.0 (the last pure-CPU wheel for
+  // cp312/win_amd64 on PyPI) which fails unsloth's version check and causes the import
+  // to crash in 88ms, re-triggering the full install loop on every training run.
+  const tvResult = await runPip(pyBin, [
+    '-m', 'pip', 'install', '--no-cache-dir', '--no-deps',
+    `${AMD_ROCM_WIN_BASE}/torchvision-0.24.1%2Brocmsdk20260116-cp312-cp312-win_amd64.whl`,
+  ]);
   if (!tvResult.ok) {
-    console.warn(`[PythonEnvManager] torchvision CPU stub install failed (non-fatal): ${tvResult.error}`);
+    console.warn(`[PythonEnvManager] torchvision ROCm wheel install failed (non-fatal): ${tvResult.error}`);
   }
 
   return { ok: true };
@@ -1286,8 +1292,12 @@ export async function ensureCartridgeDeps(vendor: GpuVendor): Promise<void> {
     ...process.env,
     PYTHONUTF8: '1',
     ...(vendor === 'rocm' ? {
-      HIP_VISIBLE_DEVICES:       '0',
-      HSA_OVERRIDE_GFX_VERSION:  '11.5.0',
+      HIP_VISIBLE_DEVICES:              '0',
+      HSA_OVERRIDE_GFX_VERSION:         '11.5.0',
+      // Suppress unsloth's torchvision version check as a secondary guard.
+      // Primary fix is installing the matched rocmsdk torchvision wheel; this
+      // env var prevents a hard ImportError if there's ever a version skew.
+      UNSLOTH_SKIP_TORCHVISION_CHECK:   '1',
     } : {}),
   };
 
@@ -1392,6 +1402,146 @@ export async function ensureCartridgeDeps(vendor: GpuVendor): Promise<void> {
       console.log('[PythonEnvManager] Applied unsloth_zoo/utils.py patch from', unslothZooPatchSrc);
     } else if (!unslothZooPatchSrc) {
       console.warn('[PythonEnvManager] unsloth_zoo_utils.py patch source not found — ROCm LM training will fail at import');
+    }
+
+    // Step 2d (ROCm only): install phobos_rocm_patch.pth + phobos_rocm_patch.py into
+    // site-packages.  Python executes .pth files at startup before any user import,
+    // so this fires before unsloth_zoo/device_type.py can run its module-level
+    // DEVICE_TYPE = get_device_type() call — bypassing the stale .pyc problem entirely.
+    // The patch inserts a meta path finder that intercepts `unsloth_zoo.device_type`
+    // and replaces get_device_type() with a version that returns "cuda" on Windows
+    // rocmsdk builds where hipGetDeviceCount() is deferred at module-load time.
+    const sitePackages = path.join(path.dirname(pyBin), '..', 'Lib', 'site-packages');
+    const pthCandidates = unslothZooPatchCandidates.map(p =>
+      p.replace('unsloth_zoo_utils.py', 'phobos_rocm_patch.py'),
+    );
+    const pthSrc = pthCandidates.find(p => fs.existsSync(p)) ?? '';
+    if (pthSrc && fs.existsSync(sitePackages)) {
+      const pthContent = `import sys; exec(open(__import__('os').path.join(__import__('os').path.dirname(__file__), 'phobos_rocm_patch.py'), encoding='utf-8').read()) if __import__('os').path.exists(__import__('os').path.join(__import__('os').path.dirname(__file__), 'phobos_rocm_patch.py')) else None\n`;
+      fs.writeFileSync(path.join(sitePackages, 'phobos_rocm_patch.pth'), pthContent, 'utf-8');
+      fs.copyFileSync(pthSrc, path.join(sitePackages, 'phobos_rocm_patch.py'));
+      console.log('[PythonEnvManager] Installed ROCm startup patch (phobos_rocm_patch.pth) from', pthSrc);
+    } else if (!pthSrc) {
+      console.warn('[PythonEnvManager] phobos_rocm_patch.py source not found — ROCm LM training will fail at import');
+    }
+
+    // Step 2e (ROCm only): patch torchao/dtypes/nf4tensor.py.
+    // NF4_OPS_TABLE is a module-level dict literal whose keys reference
+    // torch.ops._c10d_functional.all_gather_into_tensor — an op not registered
+    // in the AMD Windows ROCm torch build.  Evaluating the dict key crashes the
+    // import.  The patched version wraps it in try/except AttributeError and
+    // falls back to an empty dict (the table is only used for multi-GPU all_gather,
+    // never exercised in single-GPU 890M training).
+    const nf4Candidates = unslothZooPatchCandidates.map(p =>
+      p.replace('unsloth_zoo_utils.py', 'nf4tensor.py'),
+    );
+    const nf4Src = nf4Candidates.find(p => fs.existsSync(p)) ?? '';
+    const nf4Dest = path.join(sitePackages, 'torchao', 'dtypes', 'nf4tensor.py');
+    if (nf4Src && fs.existsSync(path.dirname(nf4Dest))) {
+      fs.copyFileSync(nf4Src, nf4Dest);
+      // Invalidate bytecode cache so Python loads the patched source.
+      try {
+        const nf4Pyc = path.join(path.dirname(nf4Dest), '__pycache__');
+        fs.readdirSync(nf4Pyc)
+          .filter(f => f.startsWith('nf4tensor.cpython-'))
+          .forEach(f => fs.rmSync(path.join(nf4Pyc, f)));
+      } catch { /* pycache absent */ }
+      console.log('[PythonEnvManager] Applied torchao/dtypes/nf4tensor.py patch from', nf4Src);
+    } else if (!nf4Src) {
+      console.warn('[PythonEnvManager] nf4tensor.py patch source not found — ROCm LM training may fail at import');
+    }
+
+    // Step 2f (ROCm only): patch unsloth_zoo/temporary_patches/utils.py.
+    // The file imports transformers.processing_utils at module level, which triggers
+    // torch.distributed, which does `import torch._C._distributed_c10d`.
+    // On AMD Windows ROCm, torch._C is a C extension module (not a package), so
+    // submodule imports raise ModuleNotFoundError.  The error falls through the elif
+    // chain and hits `raise Exception(e)`.  The patched version adds an elif that
+    // catches this specific error and passes silently — safe for single-GPU training.
+    const tpUtilsCandidates = unslothZooPatchCandidates.map(p =>
+      p.replace('unsloth_zoo_utils.py', 'unsloth_zoo_temporary_patches_utils.py'),
+    );
+    const tpUtilsSrc = tpUtilsCandidates.find(p => fs.existsSync(p)) ?? '';
+    const tpUtilsDest = path.join(unslothZooPkg, 'temporary_patches', 'utils.py');
+    if (tpUtilsSrc && fs.existsSync(path.dirname(tpUtilsDest))) {
+      fs.copyFileSync(tpUtilsSrc, tpUtilsDest);
+      try {
+        const tpPyc = path.join(path.dirname(tpUtilsDest), '__pycache__');
+        fs.readdirSync(tpPyc)
+          .filter(f => f.startsWith('utils.cpython-'))
+          .forEach(f => fs.rmSync(path.join(tpPyc, f)));
+      } catch { /* pycache absent */ }
+      console.log('[PythonEnvManager] Applied unsloth_zoo/temporary_patches/utils.py patch from', tpUtilsSrc);
+    } else if (!tpUtilsSrc) {
+      console.warn('[PythonEnvManager] unsloth_zoo_temporary_patches_utils.py patch source not found — ROCm LM training may fail at import');
+    }
+
+    // Step 2g (ROCm only): patch torchao/float8/distributed_utils.py.
+    // This file unconditionally imports torch.distributed._functional_collectives
+    // which imports torch.distributed.distributed_c10d which unconditionally does
+    //   from torch._C._distributed_c10d import (...)
+    // torch._C is a C extension (not a package) on AMD Windows ROCm, so this raises
+    // ModuleNotFoundError and crashes torchao → transformers → unsloth at import time.
+    // The patched version wraps the distributed imports in try/except and guards the
+    // isinstance checks — safe since distributed float8 is never used on single-GPU 890M.
+    const f8DistCandidates = unslothZooPatchCandidates.map(p =>
+      p.replace('unsloth_zoo_utils.py', 'torchao_float8_distributed_utils.py'),
+    );
+    const f8DistSrc = f8DistCandidates.find(p => fs.existsSync(p)) ?? '';
+    const f8DistDest = path.join(sitePackages, 'torchao', 'float8', 'distributed_utils.py');
+    if (f8DistSrc && fs.existsSync(path.dirname(f8DistDest))) {
+      fs.copyFileSync(f8DistSrc, f8DistDest);
+      try {
+        const f8Pyc = path.join(path.dirname(f8DistDest), '__pycache__');
+        fs.readdirSync(f8Pyc)
+          .filter(f => f.startsWith('distributed_utils.cpython-'))
+          .forEach(f => fs.rmSync(path.join(f8Pyc, f)));
+      } catch { /* pycache absent */ }
+      console.log('[PythonEnvManager] Applied torchao/float8/distributed_utils.py patch from', f8DistSrc);
+    } else if (!f8DistSrc) {
+      console.warn('[PythonEnvManager] torchao_float8_distributed_utils.py patch source not found — ROCm LM training may fail at import');
+    }
+
+    // Step 2h (ROCm only): patch torch/distributed/distributed_c10d.py.
+    // This is the single choke point — every path through torch.distributed,
+    // torch.distributed._tensor, torch.distributed._functional_collectives etc.
+    // eventually hits this file's unconditional:
+    //   from torch._C._distributed_c10d import (...)
+    // which crashes on AMD Windows ROCm (torch._C is a C extension, not a package).
+    // The patched version wraps it in try/except and provides no-op stubs so the
+    // module loads cleanly. Distributed ops are never used on single-GPU 890M.
+    const c10dCandidates = unslothZooPatchCandidates.map(p =>
+      p.replace('unsloth_zoo_utils.py', 'torch_distributed_c10d.py'),
+    );
+    const c10dSrc = c10dCandidates.find(p => fs.existsSync(p)) ?? '';
+    const c10dDest = path.join(sitePackages, 'torch', 'distributed', 'distributed_c10d.py');
+    if (c10dSrc && fs.existsSync(path.dirname(c10dDest))) {
+      fs.copyFileSync(c10dSrc, c10dDest);
+      try {
+        const c10dPyc = path.join(path.dirname(c10dDest), '__pycache__');
+        fs.readdirSync(c10dPyc)
+          .filter(f => f.startsWith('distributed_c10d.cpython-'))
+          .forEach(f => fs.rmSync(path.join(c10dPyc, f)));
+      } catch { /* pycache absent */ }
+      console.log('[PythonEnvManager] Applied torch/distributed/distributed_c10d.py patch from', c10dSrc);
+    } else if (!c10dSrc) {
+      console.warn('[PythonEnvManager] torch_distributed_c10d.py patch source not found — ROCm LM training may fail at import');
+    }
+
+    // Step 2i (ROCm only): patch torch/distributed/constants.py.
+    // Also imports _DEFAULT_PG_TIMEOUT from torch._C._distributed_c10d unconditionally.
+    const constCandidates = unslothZooPatchCandidates.map(p =>
+      p.replace('unsloth_zoo_utils.py', 'torch_distributed_constants.py'),
+    );
+    const constSrc = constCandidates.find(p => fs.existsSync(p)) ?? '';
+    const constDest = path.join(sitePackages, 'torch', 'distributed', 'constants.py');
+    if (constSrc && fs.existsSync(path.dirname(constDest))) {
+      fs.copyFileSync(constSrc, constDest);
+      try {
+        const cPyc = path.join(path.dirname(constDest), '__pycache__');
+        fs.readdirSync(cPyc).filter(f => f.startsWith('constants.cpython-')).forEach(f => fs.rmSync(path.join(cPyc, f)));
+      } catch { /* pycache absent */ }
+      console.log('[PythonEnvManager] Applied torch/distributed/constants.py patch from', constSrc);
     }
   }
 

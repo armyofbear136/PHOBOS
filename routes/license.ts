@@ -87,8 +87,17 @@ async function verifyOnline(transactionId: string): Promise<VerifyResult> {
 
     clearTimeout(timeout);
 
+    // 4xx — autarch server gave a definitive answer (TX not found, bad request, etc.)
+    // Do NOT fall through to offline; that would grant licenses for unknown transactions.
+    if (res.status >= 400 && res.status < 500) {
+      const body = await res.json().catch(() => ({})) as { reason?: string };
+      return { valid: false, reason: body.reason ?? `http_${res.status}`, source: 'online' };
+    }
+
+    // 5xx — autarch server is down. Fall back to offline keygen so users aren't blocked
+    // by a Render outage. Log loudly so you know when this triggers.
     if (!res.ok) {
-      console.warn(`License server returned ${res.status} — falling back to offline`);
+      console.warn(`License server returned ${res.status} — falling back to offline keygen`);
       return { valid: true, source: 'offline', reason: 'server_error_fallback' };
     }
 

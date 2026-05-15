@@ -51,43 +51,53 @@ export class CopilotIndex {
    * Grouped by project_id.
    */
   async getAllThreadSummaries(): Promise<ThreadSummary[]> {
-    const threads = await this.db.query<{
+    // Single JOIN query — replaces the former N+1 pattern (one query per thread).
+    // Left join so threads with no files still appear with an empty files array.
+    const rows = await this.db.query<{
       id: string;
       title: string;
       project_id: string | null;
+      filename: string | null;
+      language: string | null;
+      note: string | null;
+      size_bytes: number | null;
+      updated_at: string | null;
     }>(
-      `SELECT id, title, project_id FROM threads
-       WHERE id NOT IN ('copilot-global', 'copilot-sayon', 'copilot-seren')
-       ORDER BY updated_at DESC`
+      `SELECT t.id, t.title, t.project_id,
+              wf.filename, wf.language, wf.note, wf.size_bytes, wf.updated_at
+       FROM threads t
+       LEFT JOIN workspace_files wf ON wf.thread_id = t.id
+       WHERE t.id NOT IN ('copilot-global', 'copilot-sayon', 'copilot-seren')
+       ORDER BY t.updated_at DESC, wf.updated_at DESC`
     );
 
-    const summaries: ThreadSummary[] = [];
-
-    for (const thread of threads) {
-      const files = await this.db.query<{
-        filename: string;
-        language: string;
-        note: string | null;
-        size_bytes: number;
-        updated_at: string;
-      }>(
-        `SELECT filename, language, note, size_bytes, updated_at
-         FROM workspace_files
-         WHERE thread_id = ?
-         ORDER BY updated_at DESC`,
-        [thread.id]
-      );
-
-      summaries.push({
-        threadId: thread.id,
-        title: thread.title,
-        projectId: thread.project_id,
-        fileCount: files.length,
-        files,
-      });
+    // Collapse flat rows into per-thread summaries, preserving thread order.
+    const seen = new Map<string, ThreadSummary>();
+    for (const row of rows) {
+      let summary = seen.get(row.id);
+      if (!summary) {
+        summary = {
+          threadId:  row.id,
+          title:     row.title,
+          projectId: row.project_id,
+          fileCount: 0,
+          files:     [],
+        };
+        seen.set(row.id, summary);
+      }
+      if (row.filename !== null) {
+        summary.files.push({
+          filename:   row.filename,
+          language:   row.language ?? '',
+          note:       row.note ?? null,
+          size_bytes: row.size_bytes ?? 0,
+          updated_at: row.updated_at ?? '',
+        });
+        summary.fileCount = summary.files.length;
+      }
     }
 
-    return summaries;
+    return Array.from(seen.values());
   }
 
   /**

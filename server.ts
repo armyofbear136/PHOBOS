@@ -975,7 +975,7 @@ async function continueBootSequence(
     webrtcServer = new WebRTCServer({
       fastify,
       signalingClient: webrtcSignalingClient,
-      activeUser:      'owner',
+      systemDb:        db,
       onConnected:     () => console.log('[WebRTC] Mobile session connected'),
       onDisconnected:  () => console.log('[WebRTC] Mobile session disconnected'),
     });

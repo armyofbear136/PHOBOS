@@ -4,11 +4,12 @@
 // Called by build.js (--unpacked) and build-full.js (full). Can run standalone.
 //
 // What it does:
-//   1. npm install inside app/         (skipped if node_modules already fresh)
-//   2. vite build --mode electron      (outputs to app/dist/)
-//   3. electron-builder --dir          (always; fast unpacked build for dev/testing)
-//   4. electron-builder --win/mac/linux (full pass; skipped with --unpacked)
-//   5. Stage artifact → dist/          (only on full pass — never on --unpacked)
+//   1. npm install inside app/              (skipped if node_modules already fresh)
+//   2. vite build --mode electron           (outputs renderer to app/dist/)
+//   2b. tsc electron/tsconfig.json          (compiles main.ts → dist-electron/main.cjs)
+//   3. electron-builder --dir               (always; fast unpacked build for dev/testing)
+//   4. electron-builder --win/mac/linux     (full pass; skipped with --unpacked)
+//   5. Stage artifact → dist/              (only on full pass — never on --unpacked)
 //
 // --unpacked (npm run build, npm run build:app):
 //   Runs passes 1-3 only. Produces app/electron-dist/win-unpacked/PHOBOS.exe.
@@ -92,6 +93,28 @@ if (fs.existsSync(appDist)) fs.rmSync(appDist, { recursive: true, force: true })
 const vite = path.join(APP_DIR, 'node_modules', '.bin', isWin ? 'vite.cmd' : 'vite');
 run(`"${vite}" build --mode electron`, APP_DIR);
 log('  ✅ app/dist/ built');
+
+// ── 2b. Compile electron main + preload (tsc → dist-electron/) ────────────────
+// electron-builder's asar sanity check requires dist-electron/main.cjs to exist.
+// This is the equivalent of `npm run electron:compile` in app/package.json.
+
+log('🔨 Compiling electron main/preload (tsc)...');
+
+const distElectron = path.join(APP_DIR, 'dist-electron');
+if (fs.existsSync(distElectron)) fs.rmSync(distElectron, { recursive: true, force: true });
+
+const tsc = path.join(APP_DIR, 'node_modules', '.bin', isWin ? 'tsc.cmd' : 'tsc');
+run(`"${tsc}" --project electron/tsconfig.json`, APP_DIR);
+
+// tsc outputs .js; electron-builder expects .cjs — rename in place
+for (const base of ['main', 'preload']) {
+  const jsPath  = path.join(distElectron, `${base}.js`);
+  const cjsPath = path.join(distElectron, `${base}.cjs`);
+  if (fs.existsSync(jsPath) && !fs.existsSync(cjsPath)) {
+    fs.renameSync(jsPath, cjsPath);
+  }
+}
+log('  ✅ dist-electron/main.cjs ready');
 
 // ── 3. electron-builder pass 1: --dir (always) ───────────────────────────────
 // Fast unpacked build — never touches winCodeSign so it never fails.

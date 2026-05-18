@@ -306,6 +306,7 @@ export async function syncRoutes(
       exclusions: Array<{ policy_id: string; path: string; scope: 'folder' | 'file' }>;
     }
   }>('/api/sync/policies', async (req, reply) => {
+    try {
     const deviceId = await requireSyncToken(req, reply);
     if (!deviceId) return;
 
@@ -344,5 +345,9 @@ export async function syncRoutes(
     }
 
     return reply.send({ ok: true });
+    } catch (err: unknown) {
+      console.error('[SyncRoutes] /policies error:', err);
+      return reply.status(500).send({ error: String(err) });
+    }
   });
 }

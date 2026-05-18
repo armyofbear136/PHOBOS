@@ -10,11 +10,6 @@ on:
         type: boolean
         default: false
 
-env:
-  # Opt into Node.js 24 for all actions (checkout, setup-node, cache, upload-artifact, etc.)
-  # Required before June 2, 2026 when Node 20 actions are forced to Node 24 anyway.
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   build:
     name: ${{ matrix.label }}
@@ -53,12 +48,14 @@ jobs:
             skip-electron:     true
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: 'npm'
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
       - name: Restore distutils (macOS)
         if: runner.os == 'macOS'

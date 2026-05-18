@@ -129,18 +129,25 @@ const electronBuilder = path.join(
 const ebEnv = { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: 'false' };
 
 // In CI on macOS, hardenedRuntime requires a valid Apple signing cert which
-// we don't have. Override via --config flags to disable it entirely so
-// electron-builder doesn't try to read entitlements.mac.plist during packaging.
+// we don't have. Pass an inline JSON config override that nulls out the
+// entitlements paths and disables hardened runtime entirely.
+// electron-builder's --config flag accepts inline JSON when the value starts with '{'.
 const isCI      = !!process.env.CI;
 const macCIArgs = (isMac && isCI)
   ? [
-      '--config.mac.hardenedRuntime=false',
-      '--config.mac.entitlements=',
-      '--config.mac.entitlementsInherit=',
+      '--config',
+      JSON.stringify({
+        mac: {
+          hardenedRuntime:      false,
+          entitlements:         null,
+          entitlementsInherit:  null,
+          gatekeeperAssess:     false,
+        },
+      }),
     ]
   : [];
 
-const dirResult = spawnSync(electronBuilder, ['--dir', ...macCIArgs], {
+const dirResult = spawnSync(electronBuilder, ['--dir', '--publish', 'never', ...macCIArgs], {
   stdio: 'inherit',
   cwd:   APP_DIR,
   env:   ebEnv,
@@ -171,7 +178,7 @@ const platform = isWin ? '--win' : isMac ? '--mac' : '--linux';
 
 log(`📦 electron-builder pass 2: ${platform} (single-file artifact)...`);
 
-const fullResult = spawnSync(electronBuilder, [platform, ...macCIArgs], {
+const fullResult = spawnSync(electronBuilder, [platform, '--publish', 'never', ...macCIArgs], {
   stdio: 'inherit',
   cwd:   APP_DIR,
   env:   ebEnv,

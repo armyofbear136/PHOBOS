@@ -25,6 +25,17 @@ import {
 
 import { userDir, getActiveUser } from '../db/DatabaseManager.js';
 
+import {
+  generateAceStep,
+  generateF5Tts,
+} from './AudioServerManager.js';
+
+import {
+  getAudioModelSpec,
+  audioModelDir,
+} from './PhobosLocalManager.js';
+import { isVendorReady } from './PythonEnvManager.js';
+
 // ── Workspace root (mirrors convention across codebase) ───────────────────────
 
 function workspacesRoot(): string {
@@ -69,7 +80,9 @@ export type WorkflowNodeType =
   | 'RemoveBg'
   | 'Upscale'
   | 'VideoGenerate'
-  | 'VideoFromImage';
+  | 'VideoFromImage'
+  | 'MusicGenerate'
+  | 'VoiceClone';
 
 // sd-cli generation nodes — these require RGB input
 const SD_CLI_GENERATION_TYPES = new Set<WorkflowNodeType>([
@@ -173,7 +186,9 @@ export type WorkflowNodeParams =
   | RemoveBgParams
   | UpscaleParams
   | VideoGenerateParams
-  | VideoFromImageParams;
+  | VideoFromImageParams
+  | MusicGenerateParams
+  | VoiceCloneParams;
 
 // ── Node and session types ────────────────────────────────────────────────────
 
@@ -202,13 +217,18 @@ export interface WorkflowNode {
 }
 
 export interface WorkflowSession {
-  workflowId:   string;
-  name:         string;
-  createdAt:    string;
-  modelId:      string;               // snapshotted at creation, must still be installed to run
-  workflowType: 'image' | 'video';   // determines output format (.png vs .avi) and panel behaviour
-  nodes:        WorkflowNode[];
-  threadId:     string;
+  workflowId:    string;
+  name:          string;
+  createdAt:     string;
+  modelId:       string;                        // snapshotted at creation, must still be installed to run
+  workflowType:  'image' | 'video' | 'audio';  // determines output format and panel behaviour
+  nodes:         WorkflowNode[];
+  threadId:      string;
+  // Image / video config (persisted on session)
+  targetGpuIndex?: number;
+  imageBackend?:   'auto' | 'pytorch' | 'sdcli';
+  // Audio config (persisted on session)
+  audioBackend?:   'auto' | 'gpu' | 'cpu';
 }
 
 export interface WorkflowIndexEntry {
@@ -216,8 +236,8 @@ export interface WorkflowIndexEntry {
   name:         string;
   createdAt:    string;
   modelId:      string;
-  workflowType: 'image' | 'video';
-  thumbPath:    string | null;        // path to thumbnail for image workflows; null for video
+  workflowType: 'image' | 'video' | 'audio';
+  thumbPath:    string | null;        // path to thumbnail for image workflows; null for video/audio
 }
 
 // ── SSE event types ───────────────────────────────────────────────────────────
@@ -337,7 +357,7 @@ export function createSession(
   name:         string,
   modelId:      string,
   nodes:        Omit<WorkflowNode, 'id' | 'index' | 'paramSnapshot' | 'outputPath' | 'maskPath' | 'depthPath' | 'inputSnapshot' | 'executedAt' | 'stale'>[],
-  workflowType: 'image' | 'video' = 'image',
+  workflowType: 'image' | 'video' | 'audio' = 'image',
 ): WorkflowSession {
   const session: WorkflowSession = {
     workflowId: crypto.randomUUID(),
@@ -908,19 +928,131 @@ function nextFinalN(dir: string, prefix: string, ext: string = '.png'): number {
   return maxN + 1;
 }
 
+// ── Audio param types ────────────────────────────────────────────────────────
+
+export interface MusicGenerateParams {
+  prompt:       string;
+  lyrics?:      string;
+  duration?:    number;
+  steps?:       number;
+  cfgStrength?: number;
+  seed?:        number;
+}
+
+export interface VoiceCloneParams {
+  text:      string;
+  refAudio?: string;
+  refText?:  string;
+  speed?:    number;
+  steps?:    number;
+}
+
+// ── Audio executor functions ─────────────────────────────────────────────────
+
+// ──
+async function* executeMusicGenerateImpl(
+  node:            WorkflowNode,
+  outPath:         string,
+  session:         WorkflowSession,
+  onAbortRegister?: (killFn: () => void) => void,
+): AsyncGenerator<WorkflowEvent> {
+  const p = node.params as {
+    prompt:        string;
+    lyrics?:       string;
+    duration?:     number;
+    steps?:        number;
+    cfgStrength?:  number;
+    seed?:         number;
+  };
+
+  if (!p.prompt?.trim()) throw new Error('MusicGenerate requires a prompt');
+
+  const wavOut = outPath.replace(/\.(png|jpg|webp|avi)$/, '.wav');
+  const abort  = new AbortController();
+  if (onAbortRegister) onAbortRegister(() => abort.abort());
+
+  yield { phase: 'render_phase', renderPhase: 'model_loading', detail: 'Loading ACE-Step…', nodeIndex: node.index };
+
+  const result = await generateAceStep({
+    threadId:      session.threadId,
+    prompt:        p.prompt.trim(),
+    lyrics:        p.lyrics ?? undefined,
+    duration:      p.duration   ?? 30,
+    steps:         p.steps      ?? 60,
+    cfgStrength:   p.cfgStrength ?? 15,
+    seed:          p.seed        ?? -1,
+    audioBackend:  (session as any).audioBackend ?? 'auto',
+    label:         session.name,
+    signal:        abort.signal,
+    onProgress: (_line: string) => { /* progress lines visible in backend log */ },
+  });
+
+  // Move from tmpdir to stable node output path
+  fs.renameSync(result.outputPath, wavOut);
+  node.outputPath = wavOut; // override so run() writes the correct path
+
+  yield { phase: 'render_phase', renderPhase: 'model_loaded', detail: `Done in ${(result.elapsedMs / 1000).toFixed(1)}s`, nodeIndex: node.index };
+}
+
+async function* executeVoiceClone(
+  node:            WorkflowNode,
+  outPath:         string,
+  session:         WorkflowSession,
+  onAbortRegister?: (killFn: () => void) => void,
+): AsyncGenerator<WorkflowEvent> {
+  const p = node.params as {
+    text:      string;
+    refAudio?: string;
+    refText?:  string;
+    speed?:    number;
+    steps?:    number;
+  };
+
+  if (!p.text?.trim()) throw new Error('VoiceClone requires text');
+  if (!p.refAudio || !fs.existsSync(p.refAudio)) {
+    throw new Error('VoiceClone requires a reference audio file');
+  }
+
+  const wavOut = outPath.replace(/\.(png|jpg|webp|avi)$/, '.wav');
+  const abort  = new AbortController();
+  if (onAbortRegister) onAbortRegister(() => abort.abort());
+
+  yield { phase: 'render_phase', renderPhase: 'model_loading', detail: 'Loading F5-TTS…', nodeIndex: node.index };
+
+  const result = await generateF5Tts({
+    threadId:  session.threadId,
+    text:      p.text.trim(),
+    refAudio:  p.refAudio,
+    refText:   p.refText ?? '',
+    speed:     p.speed   ?? 1.0,
+    steps:     p.steps   ?? 32,
+    label:     session.name,
+    signal:    abort.signal,
+    onProgress: (_line: string) => { /* progress lines visible in backend log */ },
+  });
+
+  fs.renameSync(result.outputPath, wavOut);
+  node.outputPath = wavOut;
+
+  yield { phase: 'render_phase', renderPhase: 'model_loaded', detail: `Done in ${(result.elapsedMs / 1000).toFixed(1)}s`, nodeIndex: node.index };
+}
+
 export async function* run(
   session:         WorkflowSession,
   targetNodeIndex: number,
-  cfg:             SdServerConfig,
+  cfg:             SdServerConfig | null,
   isFinal:         boolean = false,
   onAbortRegister?: (killFn: () => void) => void,
 ): AsyncGenerator<WorkflowEvent> {
 
   // ── Guard: model still installed ──────────────────────────────────────────
-  const modelSpec = getImageModelSpec(session.modelId);
-  if (!modelSpec || !isImageModelDownloaded(modelSpec)) {
-    yield { phase: 'model_missing', modelId: session.modelId };
-    return;
+  // Audio sessions use AudioServerManager — they don't go through the image model registry
+  if (session.workflowType !== 'audio') {
+    const modelSpec = getImageModelSpec(session.modelId);
+    if (!modelSpec || !isImageModelDownloaded(modelSpec)) {
+      yield { phase: 'model_missing', modelId: session.modelId };
+      return;
+    }
   }
 
   const { threadId, nodes } = session;
@@ -933,9 +1065,10 @@ export async function* run(
     if (lastOutput && isFinal) {
       // Still need to save to workspace even though nothing was re-generated
       const isVideo   = session.workflowType === 'video';
-      const outExt    = isVideo ? '.avi' : '.png';
-      const outSubdir = isVideo ? 'videos' : 'images';
-      const finalName = isVideo ? `final${outExt}` : 'final.png';
+      const isAudio   = session.workflowType === 'audio';
+      const outExt    = isVideo ? '.avi' : isAudio ? '.wav' : '.png';
+      const outSubdir = isVideo ? 'videos' : isAudio ? 'audio/music' : 'images';
+      const finalName = isVideo ? `final${outExt}` : isAudio ? `final${outExt}` : 'final.png';
       const finalPath = path.join(sessionDir(threadId, session.workflowId), finalName);
       fs.copyFileSync(lastOutput, finalPath);
       const workspaceOutDir = path.join(workspacesRoot(), threadId, outSubdir);
@@ -950,7 +1083,7 @@ export async function* run(
         createdAt:    session.createdAt,
         modelId:      session.modelId,
         workflowType: session.workflowType,
-        thumbPath:    isVideo ? null : finalPath,
+        thumbPath:    (isVideo || isAudio) ? null : finalPath,
       });
       yield { phase: 'workflow_done', finalOutputPath: workspaceOut, isFinal: true };
     } else if (lastOutput) {
@@ -988,7 +1121,7 @@ export async function* run(
     // Resolve stable output path for this node
     const nDir = nodeDir(threadId, session.workflowId, nodeIndex, node.type);
     fs.mkdirSync(nDir, { recursive: true });
-    const outExt  = nodeOutputExt(cfg.modelType);
+    const outExt  = session.workflowType === 'audio' ? '.wav' : nodeOutputExt(cfg!.modelType);
     const outPath = path.join(nDir, `output${outExt}`);
 
     yield { phase: 'node_start', nodeIndex, nodeType: node.type, totalNodes: range.length };
@@ -1006,36 +1139,36 @@ export async function* run(
         }
 
         case 'Generate':
-          yield* executeGenerate(node, inputPath, outPath, cfg, onAbortRegister);
+          yield* executeGenerate(node, inputPath, outPath, cfg!, onAbortRegister);
           break;
 
         case 'VarySeed':
-          yield* executeVarySeed(node, inputPath, outPath, cfg, session, onAbortRegister);
+          yield* executeVarySeed(node, inputPath, outPath, cfg!, session, onAbortRegister);
           break;
 
         case 'Img2imgRefine':
           if (!inputPath) throw new Error('Img2imgRefine requires an upstream node with output');
-          yield* executeImg2imgRefine(node, inputPath, outPath, cfg, onAbortRegister);
+          yield* executeImg2imgRefine(node, inputPath, outPath, cfg!, onAbortRegister);
           break;
 
         case 'KontextEdit':
           if (!inputPath) throw new Error('KontextEdit requires an upstream node with output');
-          yield* executeKontextEdit(node, inputPath, outPath, cfg, onAbortRegister);
+          yield* executeKontextEdit(node, inputPath, outPath, cfg!, onAbortRegister);
           break;
 
         case 'FaceFix':
           if (!inputPath) throw new Error('FaceFix requires an upstream node with output');
-          yield* executeFaceFix(node, inputPath, outPath, cfg, threadId, onAbortRegister);
+          yield* executeFaceFix(node, inputPath, outPath, cfg!, threadId, onAbortRegister);
           break;
 
         case 'HandFix':
           if (!inputPath) throw new Error('HandFix requires an upstream node with output');
-          yield* executeHandFix(node, inputPath, outPath, cfg, threadId, onAbortRegister);
+          yield* executeHandFix(node, inputPath, outPath, cfg!, threadId, onAbortRegister);
           break;
 
         case 'DepthControlNet':
           if (!inputPath) throw new Error('DepthControlNet requires an upstream node with output');
-          yield* executeDepthControlNet(node, inputPath, outPath, cfg, threadId, onAbortRegister);
+          yield* executeDepthControlNet(node, inputPath, outPath, cfg!, threadId, onAbortRegister);
           break;
 
         case 'RemoveBg':
@@ -1045,16 +1178,24 @@ export async function* run(
 
         case 'Upscale':
           if (!inputPath) throw new Error('Upscale requires an upstream node with output');
-          yield* executeUpscale(node, inputPath, outPath, cfg, onAbortRegister);
+          yield* executeUpscale(node, inputPath, outPath, cfg!, onAbortRegister);
           break;
 
         case 'VideoGenerate':
-          yield* executeVideoGenerate(node, outPath, cfg, onAbortRegister);
+          yield* executeVideoGenerate(node, outPath, cfg!, onAbortRegister);
           break;
 
         case 'VideoFromImage':
           if (!inputPath) throw new Error('VideoFromImage requires an upstream node with output');
-          yield* executeVideoFromImage(node, inputPath, outPath, cfg, onAbortRegister);
+          yield* executeVideoFromImage(node, inputPath, outPath, cfg!, onAbortRegister);
+          break;
+
+        case 'MusicGenerate':
+          yield* executeMusicGenerateImpl(node, outPath, session, onAbortRegister);
+          break;
+
+        case 'VoiceClone':
+          yield* executeVoiceClone(node, outPath, session, onAbortRegister);
           break;
 
         default:
@@ -1122,9 +1263,10 @@ export async function* run(
   // ── Generate Final: write to workspace ───────────────────────────────────
   if (isFinal && lastOutputPath) {
     const isVideo   = session.workflowType === 'video';
-    const outExt    = isVideo ? '.avi' : '.png';
-    const outSubdir = isVideo ? 'videos' : 'images';
-    const finalName = isVideo ? `final${outExt}` : 'final.png';
+    const isAudio   = session.workflowType === 'audio';
+    const outExt    = isVideo ? '.avi' : isAudio ? '.wav' : '.png';
+    const outSubdir = isVideo ? 'videos' : isAudio ? 'audio/music' : 'images';
+    const finalName = isVideo ? `final${outExt}` : isAudio ? `final${outExt}` : 'final.png';
     const finalPath = path.join(sessionDir(threadId, session.workflowId), finalName);
     fs.copyFileSync(lastOutputPath, finalPath);
 
@@ -1141,7 +1283,7 @@ export async function* run(
       createdAt:    session.createdAt,
       modelId:      session.modelId,
       workflowType: session.workflowType,
-      thumbPath:    isVideo ? null : finalPath,
+      thumbPath:    (isVideo || isAudio) ? null : finalPath,
     });
 
     yield { phase: 'workflow_done', finalOutputPath: workspaceOut, isFinal: true };
@@ -1149,13 +1291,14 @@ export async function* run(
   }
 
   // Non-final generate: update thumbnail to last node output and signal done
+  const isAudioNonFinal = session.workflowType === 'audio';
   updateIndex(threadId, {
     workflowId:   session.workflowId,
     name:         session.name,
     createdAt:    session.createdAt,
     modelId:      session.modelId,
     workflowType: session.workflowType,
-    thumbPath:    session.workflowType === 'video' ? null : lastOutputPath,
+    thumbPath:    (session.workflowType === 'video' || isAudioNonFinal) ? null : lastOutputPath,
   });
 
   yield { phase: 'workflow_done', finalOutputPath: lastOutputPath, isFinal: false };

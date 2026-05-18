@@ -138,9 +138,11 @@ import {
 import {
   isAudioModelDownloaded,
   getAudioModelSpec,
+  audioModelDir,
   isWhisperDownloaded,
   AUDIO_MODEL_CATALOGUE,
 } from '../phobos/PhobosLocalManager.js';
+import { isVendorReady } from '../phobos/PythonEnvManager.js';
 import crypto from 'crypto';
 
 const execFileAsync = promisify(execFile);
@@ -1295,10 +1297,25 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
   fastify.get('/api/audio/dep-status', async (_req, reply) => {
     const binDir = resolveBinDir();
     const ext    = process.platform === 'win32' ? '.exe' : '';
+
+    // CPU route: C++ binaries present
+    const aceLmExists = fs.existsSync(path.join(binDir, 'ace-step', `ace-lm${ext}`));
+
+    // GPU route: PyTorch venv ready + full HF snapshot (transformer/ subdir proves it)
+    const gpuVendors = ['cuda', 'rocm', 'apple'] as const;
+    const gpuVenvReady  = gpuVendors.some(v => isVendorReady(v));
+    const aceStepSpec   = getAudioModelSpec('ace-step-v1.5');
+    const snapshotReady = aceStepSpec
+      ? fs.existsSync(path.join(audioModelDir(aceStepSpec), 'acestep-v15-turbo'))
+      : false;
+    const aceStepGpu    = gpuVenvReady && snapshotReady;
+
     return reply.send({
-      kokoro:  fs.existsSync(path.join(binDir, 'kokoro', 'onnx', 'model_quantized.onnx')),
-      whisper: fs.existsSync(path.join(binDir, `whisper-cli${ext}`)),
-      aceStep: fs.existsSync(path.join(binDir, 'ace-step', `ace-lm${ext}`)),
+      kokoro:     fs.existsSync(path.join(binDir, 'kokoro', 'onnx', 'model_quantized.onnx')),
+      whisper:    fs.existsSync(path.join(binDir, `whisper-cli${ext}`)),
+      aceStep:    aceLmExists || aceStepGpu,  // true if either route is available
+      aceStepGpu: aceStepGpu,                 // true only if GPU route is ready
+      aceStepCpu: aceLmExists,                // true only if CPU route is ready
     });
   });
 
@@ -1306,13 +1323,18 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
   //
   // Reports presence of the large user-downloaded models in ~/.phobos/models/audio/.
   // Binary deps (Kokoro ONNX, whisper-cli) are covered by /api/audio/dep-status.
+  //
+  // Whisper is downloaded via the SSE download route into
+  //   models/audio/whisper/whisper-large-v3/ggml-large-v3.bin
+  // NOT into the DepPrep services/whisper path — isWhisperDownloaded() checks
+  // the wrong location; use isAudioModelDownloaded with the whisper spec here.
 
   fastify.get('/api/audio/model-status', async (_req, reply) => {
     const whisperSpec  = getAudioModelSpec('whisper-large-v3');
     const aceStepSpec  = getAudioModelSpec('ace-step-v1.5');
     const f5TtsSpec    = getAudioModelSpec('f5-tts-v1-base');
     return reply.send({
-      whisperLargeV3: isWhisperDownloaded(),
+      whisperLargeV3: whisperSpec  ? isAudioModelDownloaded(whisperSpec)  : false,
       aceStepModels:  aceStepSpec  ? isAudioModelDownloaded(aceStepSpec)  : false,
       f5tts:          f5TtsSpec    ? isAudioModelDownloaded(f5TtsSpec)    : false,
     });
@@ -1546,19 +1568,20 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
 
   fastify.post<{
     Body: {
-      prompt:      string;
-      threadId:    string;
-      lyrics?:     string;
-      duration?:   number;
-      steps?:      number;
-      cfgStrength?: number;
-      seed?:       number;
-      label?:      string;
+      prompt:        string;
+      threadId:      string;
+      lyrics?:       string;
+      duration?:     number;
+      steps?:        number;
+      cfgStrength?:  number;
+      seed?:         number;
+      label?:        string;
+      audioBackend?: 'auto' | 'gpu' | 'cpu';
     };
   }>('/api/audio/music', async (req, reply) => {
     const {
       prompt, threadId, lyrics,
-      duration, steps, cfgStrength, seed, label,
+      duration, steps, cfgStrength, seed, label, audioBackend,
     } = req.body ?? {};
 
     if (typeof prompt !== 'string' || prompt.trim().length === 0) {
@@ -1582,14 +1605,15 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     try {
       const result = await generateAceStep({
         threadId,
-        prompt:      prompt.trim(),
-        lyrics:      typeof lyrics === 'string' ? lyrics : undefined,
-        duration:    clampedDuration,
-        steps:       typeof steps      === 'number' ? steps      : 50,
-        cfgStrength: typeof cfgStrength === 'number' ? cfgStrength : 7.0,
-        seed:        typeof seed       === 'number' ? seed       : -1,
-        label:       typeof label      === 'string' ? label      : 'music',
-        signal:      abort.signal,
+        prompt:        prompt.trim(),
+        lyrics:        typeof lyrics       === 'string' ? lyrics       : undefined,
+        duration:      clampedDuration,
+        steps:         typeof steps        === 'number' ? steps        : 50,
+        cfgStrength:   typeof cfgStrength  === 'number' ? cfgStrength  : 7.0,
+        seed:          typeof seed         === 'number' ? seed         : -1,
+        label:         typeof label        === 'string' ? label        : 'music',
+        audioBackend:  audioBackend === 'gpu' || audioBackend === 'cpu' ? audioBackend : 'auto',
+        signal:        abort.signal,
         onProgress: (line) => {
           if (abort.signal.aborted) return;
 

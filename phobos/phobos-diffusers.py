@@ -686,11 +686,87 @@ def load_zimage_pipeline(args, device: str, dtype):
     log("loading tensors completed")
     return pipe
 
+def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
+    """Load a FLUX/Chroma transformer from a pre-converted diffusers directory.
+
+    phobos-convert.py saves only the transformer component to
+    ~/.phobos/models/image/pytorch/<modelId>/transformer/.
+    VAE, T5, and CLIP are still loaded from their aux file paths — identical to
+    the GGUF path. Skips de-quantization; loads in seconds on subsequent runs.
+    """
+    from diffusers import (
+        FluxPipeline, FluxTransformer2DModel,
+        ChromaPipeline, ChromaTransformer2DModel,
+        AutoencoderKL,
+    )
+    from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
+    from transformers import CLIPTextModel, CLIPTokenizer, T5EncoderModel, T5TokenizerFast
+
+    is_chroma = args.model_type == "chroma"
+    transformer_dir = os.path.join(variant_dir, "transformer")
+    TransformerClass = ChromaTransformer2DModel if is_chroma else FluxTransformer2DModel
+    PipelineClass    = ChromaPipeline           if is_chroma else FluxPipeline
+    vae_config       = "lodestones/Chroma1-HD"  if is_chroma else "ostris/Flex.1-alpha"
+
+    log(f"loading diffusion model from pytorch variant ({transformer_dir})")
+    transformer = TransformerClass.from_pretrained(transformer_dir, torch_dtype=dtype)
+    log("loading diffusion model completed")
+
+    vae = None
+    if args.vae_path and os.path.exists(args.vae_path):
+        log(f"loading vae from {Path(args.vae_path).name}")
+        vae = AutoencoderKL.from_single_file(args.vae_path, config=vae_config,
+                                              subfolder="vae", torch_dtype=dtype)
+        log("loading vae completed")
+
+    text_encoder_2 = None
+    tokenizer_2    = None
+    if args.t5_path and os.path.exists(args.t5_path):
+        log(f"loading t5xxl from {Path(args.t5_path).name} ({('GGUF' if is_gguf(args.t5_path) else 'safetensors')})")
+        if is_gguf(args.t5_path):
+            from transformers import GGUFQuantizationConfig as TGGUFConfig
+            text_encoder_2 = T5EncoderModel.from_pretrained(
+                "city96/t5-v1_1-xxl-encoder-gguf",
+                gguf_file=Path(args.t5_path).name,
+                quantization_config=TGGUFConfig(compute_dtype=dtype),
+                torch_dtype=dtype,
+            )
+        else:
+            text_encoder_2 = T5EncoderModel.from_pretrained(args.t5_path, torch_dtype=dtype)
+        tokenizer_2 = T5TokenizerFast.from_pretrained("google/t5-v1_1-xxl", legacy=False)
+
+    text_encoder = None
+    tokenizer    = None
+    if not is_chroma and args.clip_path and os.path.exists(args.clip_path):
+        log(f"loading clip from {Path(args.clip_path).name}")
+        text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14", torch_dtype=dtype)
+        tokenizer    = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+
+    scheduler = FlowMatchEulerDiscreteScheduler()
+    pipe = PipelineClass(
+        transformer=transformer, vae=vae,
+        text_encoder=text_encoder, tokenizer=tokenizer,
+        text_encoder_2=text_encoder_2, tokenizer_2=tokenizer_2,
+        scheduler=scheduler,
+    )
+    log("loading tensors completed")
+    if args.offload_cpu:
+        pipe.enable_model_cpu_offload()
+    else:
+        pipe = pipe.to(device)
+    return pipe
+
+
 def load_pipeline(args, device: str, dtype):
     """Load the appropriate pipeline based on model type and format."""
     model_type = args.model_type
 
     if model_type in ("flux", "chroma"):
+        # Pre-converted path: use transformer/ directory if present and not overridden.
+        # Falls back to inline GGUF de-quantization when no conversion exists.
+        variant_dir = getattr(args, 'pytorch_variant_dir', None)
+        if variant_dir and os.path.isdir(variant_dir) and                 os.path.exists(os.path.join(variant_dir, 'transformer', 'config.json')):
+            return load_flux_pretrained_pipeline(args, device, dtype, variant_dir)
         if is_gguf(args.model_path):
             return load_flux_gguf_pipeline(args, device, dtype)
         else:

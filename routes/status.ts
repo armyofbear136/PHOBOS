@@ -30,6 +30,12 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
     return reply.send({ version: CORE_VERSION });
   });
 
+  // GET /api/ping — lightweight liveness check used by the mobile app.
+  // Returns immediately with no DB or inference involvement.
+  fastify.get('/api/ping', async (_req, reply) => {
+    return reply.send({ ok: true });
+  });
+
   // GET /api/status
   fastify.get('/api/status', async (_req, reply) => {
     const health = await checkBackendHealth();

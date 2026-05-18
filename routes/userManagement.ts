@@ -34,6 +34,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as crypto from 'node:crypto';
 import bcrypt      from 'bcryptjs';
 import { DatabaseManager, getActiveUser, writeActiveUser } from '../db/DatabaseManager.js';
+import { encodeAccessCode, generateNonce, decodeAccessCode, isStructuredCode } from '../webrtc/AccessCodeEncoder.js';
 import { SecurityStore }                           from '../db/SecurityStore.js';
 import { UserStore, type UserRole }               from '../db/UserStore.js';
 import { UserServiceTokenStore }                   from '../db/UserServiceTokenStore.js';
@@ -51,10 +52,6 @@ import {
 
 const SALT_ROUNDS    = 12;
 const SESSION_TTL_MS = 30 * 60 * 1000;   // 30 minutes
-
-// Access code alphabet — no ambiguous chars (0/O, 1/I/L)
-const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-const CODE_LENGTH   = 6;
 
 const VALID_ROLES = new Set<UserRole>(['admin', 'full', 'guest', 'read']);
 
@@ -97,12 +94,6 @@ function isValidUsername(u: string): boolean {
   return /^[a-z0-9][a-z0-9-]{0,31}$/.test(u);
 }
 
-// ── Access code generation ─────────────────────────────────────────────────────
-
-function generateAccessCode(): string {
-  const bytes = crypto.randomBytes(CODE_LENGTH);
-  return Array.from(bytes, b => CODE_ALPHABET[b % CODE_ALPHABET.length]).join('');
-}
 
 // ── User provisioning ──────────────────────────────────────────────────────────
 
@@ -112,8 +103,32 @@ function generateAccessCode(): string {
 
 // ── Route registration ─────────────────────────────────────────────────────────
 
-export async function registerUserManagementRoutes(fastify: FastifyInstance): Promise<void> {
-  const systemDb      = DatabaseManager.getInstance();
+interface UserMgmtContext {
+  systemDb:   ReturnType<typeof DatabaseManager.getInstance> | null;
+  instanceId: string;
+  relayUrl:   string;
+}
+
+let _ctx: UserMgmtContext = {
+  systemDb:   null,
+  instanceId: '',
+  relayUrl:   '',
+};
+
+export function setUserManagementContext(
+  systemDb:   ReturnType<typeof DatabaseManager.getInstance>,
+  instanceId: string,
+  relayUrl:   string,
+): void {
+  _ctx.systemDb   = systemDb;
+  _ctx.instanceId = instanceId;
+  _ctx.relayUrl   = relayUrl;
+}
+
+export async function registerUserManagementRoutes(
+  fastify: FastifyInstance,
+): Promise<void> {
+  const systemDb      = _ctx.systemDb ?? DatabaseManager.getInstance();
   const securityStore = new SecurityStore(systemDb);
   const userStore     = new UserStore(systemDb);
 
@@ -369,7 +384,7 @@ export async function registerUserManagementRoutes(fastify: FastifyInstance): Pr
     return reply.send(result);
   });
 
-  // ── GET /api/admin/access-codes — list codes [token required] ─────────────
+  // ── GET /api/admin/access-codes — list codes [token required] ─────────────────────────
 
   fastify.get('/api/admin/access-codes', { preHandler: requireToken }, async (_req, reply) => {
     const activeUser = getActiveUser();
@@ -378,13 +393,12 @@ export async function registerUserManagementRoutes(fastify: FastifyInstance): Pr
       issuing_username: string;
       target_username:  string | null;
       code_type:        string;
-      single_use:       boolean;
       consumed:         boolean;
       created_at:       string;
       expires_at:       string;
     }>(
       `SELECT code, issuing_username, target_username, code_type,
-              single_use, consumed,
+              consumed,
               created_at::VARCHAR AS created_at,
               expires_at::VARCHAR AS expires_at
        FROM access_codes
@@ -392,19 +406,30 @@ export async function registerUserManagementRoutes(fastify: FastifyInstance): Pr
        ORDER BY created_at DESC`,
       [activeUser],
     );
-    return reply.send({ codes: rows });
+
+    // Re-encode each nonce into its full PH1.* string for display.
+    const codes = rows.map(row => ({
+      ...row,
+      encoded_code: encodeAccessCode(
+        row.code_type === 'self' ? 'OWN' : 'GST',
+        _ctx.instanceId,
+        _ctx.relayUrl,
+        new Date(row.expires_at),
+        row.code,
+      ),
+    }));
+
+    return reply.send({ codes });
   });
 
-  // ── POST /api/admin/access-codes — generate a code [token required] ───────
+  // ── POST /api/admin/access-codes — generate a code [token required] ───────────
 
   fastify.post('/api/admin/access-codes', { preHandler: requireToken }, async (req, reply) => {
     const {
-      code_type      = 'guest',
-      single_use     = true,
+      code_type        = 'guest',
       expires_in_hours = 72,
     } = req.body as {
       code_type?:        'guest' | 'self';
-      single_use?:       boolean;
       expires_in_hours?: number;
     };
 
@@ -412,34 +437,44 @@ export async function registerUserManagementRoutes(fastify: FastifyInstance): Pr
       return reply.status(400).send({ error: 'code_type must be guest or self' });
     }
 
-    const activeUser = getActiveUser();
-    const code       = generateAccessCode();
-    const expiresAt  = new Date(Date.now() + expires_in_hours * 3_600_000).toISOString();
+    const activeUser  = getActiveUser();
+    const nonce       = generateNonce();
+    const expiresAt   = new Date(Date.now() + expires_in_hours * 3_600_000);
+    const encoderType = code_type === 'self' ? 'OWN' : 'GST';
+    const encodedCode = encodeAccessCode(encoderType, _ctx.instanceId, _ctx.relayUrl, expiresAt, nonce);
 
     await systemDb.execWithParams(
       `INSERT INTO access_codes
          (code, issuing_username, target_username, code_type, single_use, consumed, created_at, expires_at)
-       VALUES (?, ?, NULL, ?, ?, false, now(), ?)`,
-      [code, activeUser, code_type, single_use, expiresAt],
+       VALUES (?, ?, NULL, ?, true, false, now(), ?)`,
+      [nonce, activeUser, code_type, expiresAt.toISOString()],
     );
 
-    const row = await systemDb.query<{ code: string; expires_at: string }>(
-      `SELECT code, expires_at::VARCHAR AS expires_at FROM access_codes WHERE code = ?`,
-      [code],
-    );
-
-    return reply.status(201).send({ code: row[0] });
+    return reply.status(201).send({
+      code: {
+        nonce,
+        encoded_code:     encodedCode,
+        code_type,
+        issuing_username: activeUser,
+        consumed:         false,
+        expires_at:       expiresAt.toISOString(),
+      },
+    });
   });
 
-  // ── DELETE /api/admin/access-codes/:code — revoke a code [token required] ─
+  // ── DELETE /api/admin/access-codes/:code — revoke a code [token required] ─────────
+  // :code accepts either the raw nonce or the full PH1.* string.
 
   fastify.delete('/api/admin/access-codes/:code', { preHandler: requireToken }, async (req, reply) => {
     const { code } = req.params as { code: string };
     const activeUser = getActiveUser();
 
+    // Support both nonce and full encoded code for flexibility.
+    const nonce = isStructuredCode(code) ? (decodeAccessCode(code)?.nonce ?? code) : code;
+
     const rows = await systemDb.query<{ issuing_username: string }>(
       `SELECT issuing_username FROM access_codes WHERE code = ?`,
-      [code],
+      [nonce],
     );
     if (rows.length === 0) return reply.status(404).send({ error: 'Code not found' });
     if (rows[0].issuing_username !== activeUser) {
@@ -448,7 +483,7 @@ export async function registerUserManagementRoutes(fastify: FastifyInstance): Pr
 
     await systemDb.execWithParams(
       `UPDATE access_codes SET consumed = true WHERE code = ?`,
-      [code],
+      [nonce],
     );
     return reply.send({ ok: true });
   });

@@ -102,16 +102,24 @@ interface EnvManifest {
 // Version history:
 //   1 — initial (diffusers <0.34, transformers <5.0)
 //   2 — diffusers >=0.36 (ZImagePipeline), transformers <4.52 (SDXL from_pretrained)
-//   3 — exact pins: diffusers==0.36.0, transformers==4.51.3, safetensors==0.4.5
+//   3 — exact pins: diffusers==0.36.0, transformers==4.51.3, safetensors==0.4.5 (stale — 0.4.x incompatible with diffusers>=0.38.0)
 //       (cascade prevention). transformers 4.51.3 wheel had bad modeling_utils.py.
 //   4 — transformers==4.54.0: Qwen3 GGUF support lands in GGUF_CONFIG_MAPPING.
+//   ...
+//   28 — full stack update: transformers==4.56.2, trl==0.24.0, datasets==4.3.0,
+//        tokenizers>=0.22.0,<0.24.0, xformers==0.0.33.post2 (torch==2.9.1 exact pin),
+//        bitsandbytes/xformers skipped on ROCm Windows.
+//  v29 — --no-cache-dir added to CUDA torch install (pip was serving torch 2.9.1+cpu from
+//        local cache instead of fetching 2.11.0+cu128 from the CUDA index).
+//        xformers bumped 0.0.33.post2→0.0.35 (0.0.33.post2 required torch==2.9.1 exactly,
+//        conflicting with CUDA's torch 2.11.0+cu128; 0.0.35 requires torch>=2.10).
 //       DTensor import now properly guarded — no patch needed on ROCm Windows.
 //   5 — CUDA index bumped from cu121 (torch ~2.6) to cu128 (torch 2.7.0 stable).
 //       SageAttention post4 ABI3 wheel now installs automatically on CUDA.
 //       triton-windows added to CUDA install on Windows (was missing, only Linux CUDA
 //       wheels bundle triton).
 //  6+ - incrementing during testing
-const REQUIRED_ENV_VERSION = 22; // v21: diffusers 0.37.1, ftfy (WanPipeline dep), torchao (BF16 native quantization path)
+const REQUIRED_ENV_VERSION = 29; // v29: --no-cache-dir on CUDA torch install (was serving 2.9.1+cpu from pip cache); xformers 0.0.35 (0.0.33.post2 required torch==2.9.1 exactly, conflicts with CUDA torch 2.11.0)
 
 // ── Module state ─────────────────────────────────────────────────────────────
 
@@ -583,8 +591,9 @@ export async function* install(vendor: GpuVendor): AsyncGenerator<InstallProgres
     // ── Phase: packages ────────────────────────────────────────────────────
     yield { phase: 'packages', vendor, label: 'Installing diffusers stack…', progress: -1, done: false };
 
-    const pkgResult = await installDiffusersStack(pyBin, indexUrl);
+    const pkgResult = await installDiffusersStack(pyBin, indexUrl, vendor);
     if (!pkgResult.ok) {
+      console.error(`[PythonEnvManager] installDiffusersStack failed for ${vendor}: ${pkgResult.error}`);
       yield { phase: 'error', vendor, label: pkgResult.error!, progress: -1, done: true, error: pkgResult.error! };
       return;
     }
@@ -709,7 +718,11 @@ async function installTorchPackages(
     return installRocmWindowsTorch(pyBin);
   }
 
-  const args = ['-m', 'pip', 'install', 'torch', 'torchvision', 'torchaudio'];
+  // --no-cache-dir is required: pip's local cache can contain a CPU-only
+  // torch wheel (e.g. 2.9.1+cpu from a previous PyPI install). Without this
+  // flag pip serves the cached wheel instead of fetching the CUDA/XPU build
+  // from the vendor index, resulting in torch=X.Y.Z+cpu in the CUDA venv.
+  const args = ['-m', 'pip', 'install', '--no-cache-dir', 'torch', 'torchvision', 'torchaudio'];
   if (indexUrl) args.push('--index-url', indexUrl);
 
   const result = await runPip(pyBin, args);
@@ -762,6 +775,17 @@ async function installRocmWindowsTorch(pyBin: string): Promise<{ ok: boolean; er
     console.warn(`[PythonEnvManager] torchvision ROCm wheel install failed (non-fatal): ${tvResult.error}`);
   }
 
+  // Step 3 — triton-windows: unsloth hard-declares `triton-windows; sys_platform == "win32"`
+  // as a core dependency. It provides the `triton` module used at import time.
+  // pytorch-triton-rocm is Linux-only — triton-windows works correctly on ROCm Windows
+  // since we run on the HIP-as-CUDA path.
+  const tritonResult = await runPip(pyBin, ['-m', 'pip', 'install', 'triton-windows']);
+  if (!tritonResult.ok) {
+    console.warn(`[PythonEnvManager] triton-windows install failed (non-fatal): ${tritonResult.error}`);
+  } else {
+    console.log('[PythonEnvManager] Installed triton-windows for ROCm Windows');
+  }
+
   return { ok: true };
 }
 
@@ -770,19 +794,17 @@ async function installTriton(
   vendor: GpuVendor,
   indexUrl: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  // Windows ROCm: Triton is not separately required — skip silently.
-  if (vendor === 'rocm' && process.platform === 'win32') return { ok: true };
-
   switch (vendor) {
     case 'cuda':
-      // On Linux, triton is bundled with the CUDA torch wheel — nothing to do.
-      // On Windows, triton is not bundled; install triton-windows from PyPI.
-      // triton-windows bundles its own CUDA toolchain (≥3.2.0.post11) and TinyCC
-      // (≥3.2.0.post13) — no VS Build Tools or CUDA Toolkit required on the host.
+    case 'rocm':
+      // On Linux, triton is bundled with the torch wheel — nothing to do.
+      // On Windows (both CUDA and ROCm), triton is not bundled. Install triton-windows
+      // from PyPI — it provides the `triton` module that unsloth requires at import time.
+      // unsloth declares `triton-windows; sys_platform == "win32"` as a hard dependency.
+      // triton-windows bundles its own CUDA toolchain and TinyCC — no VS Build Tools needed.
+      // ROCm Windows runs on the HIP-as-CUDA path so triton-windows works correctly.
       if (process.platform !== 'win32') return { ok: true };
       return runPip(pyBin, ['-m', 'pip', 'install', 'triton-windows']);
-    case 'rocm':
-      return runPip(pyBin, ['-m', 'pip', 'install', 'pytorch-triton-rocm', '--index-url', indexUrl]);
     case 'xpu':
       return runPip(pyBin, ['-m', 'pip', 'install', 'triton-xpu', '--extra-index-url', indexUrl]);
     default:
@@ -793,12 +815,13 @@ async function installTriton(
 async function installDiffusersStack(
   pyBin: string,
   indexUrl: string,
+  vendor: GpuVendor = 'cuda',
 ): Promise<{ ok: boolean; error?: string }> {
   // ── Pass 1: core image-gen stack with pinned versions ─────────────────────
   // All pins must be in one invocation so pip's resolver sees the full constraint
   // graph simultaneously. Installing separately allows later calls to override pins.
   //
-  // diffusers 0.36.0: first version with ZImagePipeline.
+  // diffusers 0.38.0: requires safetensors>=0.8.0-rc.0 (safetensors 0.4.x is incompatible).
   // transformers 4.54.0: first version with Qwen3 GGUF support. f5-tts pulls
   //   transformers>=5.x. It is installed in Pass 2 and transformers is immediately
   //   force-repinned to 4.54.0 after.
@@ -806,44 +829,89 @@ async function installDiffusersStack(
   // torchvision/timm/einops are NOT included here — torchvision must come from
   //   the vendor index (cu128/rocm) not PyPI or it installs a CPU-only wheel.
   //   timm and einops are Florence-2 caption deps, not needed for image gen.
+  // ── Pass 1a: core training + inference stack (pure Python, always safe) ──
+  // All core packages in one resolver pass so pip sees the full constraint graph.
+  // These are pure-Python wheels or have universal wheels — safe on all vendors.
+  //
+  // transformers 4.56.2: latest 4.x version compatible with both unsloth 2026.5.x
+  //   (allows >=4.51.3,<=5.5.0, blocks 4.52.x/4.53.0/4.54.0/4.55.x/4.57.0/4.57.4-5)
+  //   and trl 0.24.0 (requires >=4.56.1). Also compatible with ace-step (>=4.50.0).
+  // tokenizers 0.22.x: required by transformers 4.56.x (>=0.22.0,<=0.23.0).
+  //   Previous pin <0.22 was for transformers==4.54.0 which is now replaced.
+  // safetensors >=0.8.0rc0: diffusers 0.38.0 requires >=0.8.0-rc.0. No stable
+  //   0.8.0 exists yet — latest is 0.8.0rc0.
+  // datasets 4.3.0: latest version compatible with unsloth (<4.4.0). Installed
+  //   here (not in CARTRIDGE_BASE_DEPS) so its transitive deps land correctly.
   const pipResult = await runPip(pyBin, [
     '-m', 'pip', 'install',
-    'diffusers==0.37.1',
-    'transformers==4.54.0',
-    'safetensors==0.4.5',
+    'diffusers==0.38.0',
+    'transformers==4.56.2',
+    'safetensors>=0.8.0rc0',
     'accelerate>=0.20.0',
     'gguf>=0.10.0',
     'sentencepiece',
     'protobuf',
     'peft>=0.10.0',
-    'bitsandbytes>=0.43.0',
-    'prodigyopt>=1.0',
     'Pillow',
     'einops',
-    // soundfile: audio I/O used by the torchcodec fallback patch and directly
-    // by audio processing paths. Declared here to ensure it is present regardless
-    // of f5-tts install order.
     'soundfile',
-    // hf_xet: Xet storage accelerator for HuggingFace downloads. Optional but
-    // eliminates the warning on model downloads. Pure Python, no conflicts.
-    'hf_xet',
-    // ftfy: text normalization required by WanPipeline.__call__ at inference time.
-    // diffusers does not declare it as a dependency. Pure Python, no conflicts.
     'ftfy',
-    // torchao: PyTorch-native quantization library. Enables int4/int8 weight-only
-    // quantization on Ampere, FP8 on Ada+, NVFP4 on Blackwell — hardware-detected
-    // at load time in phobos-diffusers.py. ~3x faster model loads via native BF16
-    // from_pretrained vs GGUF from_single_file. No interaction with training path.
-    'torchao',
-    // tokenizers must be pinned alongside transformers. transformers==4.54.0
-    // requires tokenizers>=0.21,<0.22. f5-tts/trl/datasets install 0.22.x which
-    // makes transformers unimportable. Pin it here so the resolver sees the
-    // constraint in the same pass as transformers==4.54.0.
-    'tokenizers>=0.21,<0.22',
+    'hf_xet',
+    'datasets==4.3.0',
+    // tokenizers pinned alongside transformers in the same resolver pass.
+    // transformers 4.56.2 requires tokenizers>=0.22.0,<=0.23.0.
+    'tokenizers>=0.22.0,<0.24.0',
   ]);
   if (!pipResult.ok) return pipResult;
 
-  // ── Pass 2: F5-TTS install under constraints ──────────────────────────
+  // ── Pass 1b: compiled optional deps — isolated so failures don't abort core ─
+  // These have compiled C++ extensions with no guaranteed ROCm Windows wheel.
+  // Each is installed separately and failures are non-fatal (logged as warnings).
+  // bitsandbytes: CUDA-only quantization. No ROCm Windows wheel exists.
+  //   ROCm Windows: load_in_4bit=False for training, Vulkan sd-cli for image gen.
+  // prodigyopt: Prodigy optimizer with C++ kernels. No ROCm Windows wheel.
+  //   ROCm training uses AdamW (unsloth default) — prodigyopt not needed.
+  // torchao: PyTorch-native quantization. Excluded entirely on Windows ROCm
+  //   (unconditional torch._C._distributed_c10d import crashes on AMD Windows).
+  const optionalDeps: Array<{ pkg: string; skip?: boolean; reason: string }> = [
+    {
+      pkg: 'bitsandbytes>=0.43.0',
+      skip: vendor === 'rocm' && process.platform === 'win32',
+      reason: 'no ROCm Windows wheel — CUDA-only compiled extension',
+    },
+    {
+      pkg: 'prodigyopt>=1.0',
+      skip: vendor === 'rocm' && process.platform === 'win32',
+      reason: 'no ROCm Windows wheel — C++ compiled optimizer',
+    },
+    {
+      pkg: 'torchao',
+      skip: vendor === 'rocm' && process.platform === 'win32',
+      reason: 'crashes on Windows ROCm via unconditional torch._C._distributed_c10d import',
+    },
+    {
+      // xformers 0.0.35 requires torch>=2.10 — matches CUDA torch 2.11.0+cu128.
+      // 0.0.33.post2 pinned torch==2.9.1 exactly (ROCm Windows build), which would
+      // conflict with CUDA's torch 2.11.0 and be rejected by pip's resolver.
+      // xformers is excluded on ROCm Windows because it has no HIP kernel support
+      // there — unsloth uses flash_attn fallback instead.
+      pkg: 'xformers==0.0.35',
+      skip: vendor === 'rocm' && process.platform === 'win32',
+      reason: 'no HIP kernel support on Windows ROCm — unsloth uses flash_attn fallback instead',
+    },
+  ];
+  for (const dep of optionalDeps) {
+    if (dep.skip) {
+      console.log(`[PythonEnvManager] Skipping ${dep.pkg} on ${vendor}/${process.platform}: ${dep.reason}`);
+      continue;
+    }
+    const depResult = await runPip(pyBin, ['-m', 'pip', 'install', dep.pkg]);
+    if (!depResult.ok) {
+      console.warn(`[PythonEnvManager] Optional dep ${dep.pkg} failed (non-fatal): ${depResult.error}`);
+    }
+  }
+
+
   // After Pass 1 succeeds, freeze the entire env into a temp constraints file.
   // pip's -c flag treats every line as a hard ceiling — f5-tts can declare
   // transformers>=5.x in its metadata all it wants; pip will refuse to upgrade
@@ -874,6 +942,26 @@ async function installDiffusersStack(
   // Clean up constraints file — it's env-specific and must not persist across rebuilds.
   if (constraintsWritten) {
     try { fs.unlinkSync(constraintsPath); } catch { /* non-fatal */ }
+  }
+
+  // ── Pass 3: ACE-Step from GitHub (latest v1.5 API) ────────────────────────
+  // Must come AFTER f5-tts and constraints cleanup. ace-step pulls its own
+  // deps (torchaudio, librosa, audiocraft bits) and must not be constrained
+  // by the f5-tts constraint file — they don't conflict but pip would reject.
+  // git+https is required because PyPI ace-step 0.1.0 is v1 API only.
+  // Install lightweight acestep deps that --no-deps would skip.
+  // py3langid has no torch/diffusers dependency — safe to install freely.
+  await runPip(pyBin, ['-m', 'pip', 'install', 'py3langid', 'einops', 'omegaconf']);
+
+  const aceResult = await runPip(pyBin, [
+    '-m', 'pip', 'install',
+    'git+https://github.com/ace-step/ACE-Step.git',
+    // No --no-deps: acestep has lightweight language-id deps (py3langid,
+    // hangul_romanize, etc.) that must be pulled. torch/diffusers conflicts
+    // are avoided by the constraints file having already been removed above.
+  ]);
+  if (!aceResult.ok) {
+    console.warn(`[PythonEnvManager] acestep install failed (non-fatal): ${aceResult.error}`);
   }
 
   return { ok: true };
@@ -1033,9 +1121,10 @@ async function runPip(pyBin: string, args: string[]): Promise<{ ok: boolean; err
     });
     return { ok: true };
   } catch (err) {
-    const error = (err as { stderr?: string; message?: string });
-    const msg = error.stderr?.trim().split('\n').slice(-5).join('\n') || error.message || 'pip install failed';
-    return { ok: false, error: msg };
+    const error = (err as { stderr?: string; stdout?: string; message?: string });
+    const tail = error.stderr?.trim().split('\n').slice(-20).join('\n') || error.message || 'pip install failed';
+    console.error(`[PythonEnvManager] pip failed (args: ${args.slice(0, 6).join(' ')}...):\n${tail}`);
+    return { ok: false, error: tail };
   }
 }
 
@@ -1230,16 +1319,33 @@ export async function* downloadAndInstallPython(): AsyncGenerator<PythonInstallP
 
 // Non-torch deps installed first (no build-time torch dependency).
 const CARTRIDGE_BASE_DEPS = [
-  // tokenizers must stay pinned to <0.22 — transformers==4.54.0 requires it.
-  // ensureCartridgeDeps installs trl/datasets which want 0.22.x; this pin
-  // prevents them from upgrading it and breaking the transformers import.
-  'tokenizers>=0.21,<0.22',
-  // All cartridge training deps installed with --no-deps to prevent any of
-  // them from upgrading torch, transformers, or tokenizers.
-  // trl must be exactly 1.3.0 — chat_template_utils.py removed in later versions.
-  'trl==1.3.0',
-  'datasets>=2.18.0',
-  'huggingface_hub>=0.23.0',
+  // tokenizers: transformers 4.56.2 requires >=0.22.0,<=0.23.0. Previously pinned
+  // <0.22 for transformers==4.54.0 which is now replaced.
+  'tokenizers>=0.22.0,<0.24.0',
+  // trl 0.24.0: latest version compatible with unsloth (<=0.24.0,>=0.18.2) and
+  // transformers 4.56.2 (trl 0.24.0 requires transformers>=4.56.1). trl 1.3.0 was
+  // incompatible with unsloth's declared constraint.
+  'trl==0.24.0',
+  // datasets 4.3.0: already installed in Pass 1a. Listed here so the --no-deps
+  // check passes. Transitive deps (multiprocess, dill, pyarrow, etc.) installed
+  // below — they are not pulled in by Pass 1a since datasets is the top-level.
+  'datasets==4.3.0',
+  // datasets transitive deps — must be explicit since CARTRIDGE_BASE_DEPS uses
+  // --no-deps and datasets itself was installed without deps in Pass 1a.
+  'multiprocess<0.70.17',
+  'dill<0.4.1,>=0.3.0',
+  'pyarrow>=21.0.0',
+  'xxhash',
+  'pandas',
+  // unsloth hard deps not covered by Pass 1a:
+  'hf_transfer',
+  'nest-asyncio',
+  'pydantic',
+  'typer',
+  'tyro',
+  'wheel>=0.42.0',
+  'psutil',
+  'huggingface_hub>=0.34.0',
   'sentencepiece>=0.2.0',
   'protobuf>=3.20.0',
   'pypdf>=4.0.0',
@@ -1403,145 +1509,143 @@ export async function ensureCartridgeDeps(vendor: GpuVendor): Promise<void> {
     } else if (!unslothZooPatchSrc) {
       console.warn('[PythonEnvManager] unsloth_zoo_utils.py patch source not found — ROCm LM training will fail at import');
     }
+  }
 
-    // Step 2d (ROCm only): install phobos_rocm_patch.pth + phobos_rocm_patch.py into
-    // site-packages.  Python executes .pth files at startup before any user import,
-    // so this fires before unsloth_zoo/device_type.py can run its module-level
-    // DEVICE_TYPE = get_device_type() call — bypassing the stale .pyc problem entirely.
-    // The patch inserts a meta path finder that intercepts `unsloth_zoo.device_type`
-    // and replaces get_device_type() with a version that returns "cuda" on Windows
-    // rocmsdk builds where hipGetDeviceCount() is deferred at module-load time.
-    const sitePackages = path.join(path.dirname(pyBin), '..', 'Lib', 'site-packages');
-    const pthCandidates = unslothZooPatchCandidates.map(p =>
-      p.replace('unsloth_zoo_utils.py', 'phobos_rocm_patch.py'),
-    );
-    const pthSrc = pthCandidates.find(p => fs.existsSync(p)) ?? '';
-    if (pthSrc && fs.existsSync(sitePackages)) {
-      const pthContent = `import sys; exec(open(__import__('os').path.join(__import__('os').path.dirname(__file__), 'phobos_rocm_patch.py'), encoding='utf-8').read()) if __import__('os').path.exists(__import__('os').path.join(__import__('os').path.dirname(__file__), 'phobos_rocm_patch.py')) else None\n`;
-      fs.writeFileSync(path.join(sitePackages, 'phobos_rocm_patch.pth'), pthContent, 'utf-8');
-      fs.copyFileSync(pthSrc, path.join(sitePackages, 'phobos_rocm_patch.py'));
-      console.log('[PythonEnvManager] Installed ROCm startup patch (phobos_rocm_patch.pth) from', pthSrc);
-    } else if (!pthSrc) {
-      console.warn('[PythonEnvManager] phobos_rocm_patch.py source not found — ROCm LM training will fail at import');
+  // Step 2d (ROCm only): deploy phobos_rocm_patch.py + phobos_rocm_patch.pth into site-packages.
+  // The .pth file is executed by Python at process startup (before any import), making it the
+  // only reliable injection point for pre-torch stubs. It exec()s phobos_rocm_patch.py which:
+  //   Patch 1 (top-level, before torch): injects a stub for torch._C._distributed_c10d into
+  //           sys.modules so the unconditional `from torch._C._distributed_c10d import (...)`
+  //           in torch/distributed/distributed_c10d.py doesn't crash on Windows ROCm.
+  //   Patch 2 (after torch imports): installs a sys.meta_path interceptor for
+  //           unsloth_zoo.device_type that replaces get_device_type() with a version that
+  //           returns 'cuda' on Windows rocmsdk builds without calling torch.cuda.is_available()
+  //           at module-load time (which returns False on gfx1150 before HIP enumeration).
+  if (vendor === 'rocm') {
+    const rocmPatchCandidates: string[] = [
+      path.join(process.cwd(), 'phobos', 'phobos_rocm_patch.py'),
+      path.join(process.cwd(), 'dist', 'phobos_rocm_patch.py'),
+      path.join(process.cwd(), 'phobos_rocm_patch.py'),
+      path.join(process.execPath.replace(/[\\/][^\\/]+$/, ''), 'phobos_rocm_patch.py'),
+    ];
+    if (typeof __filename !== 'undefined') {
+      rocmPatchCandidates.unshift(path.join(path.dirname(__filename), 'phobos', 'phobos_rocm_patch.py'));
+      rocmPatchCandidates.unshift(path.join(path.dirname(__filename), 'phobos_rocm_patch.py'));
     }
+    if (process.env['PHOBOS_BIN_DIR']) {
+      rocmPatchCandidates.unshift(path.join(process.env['PHOBOS_BIN_DIR'], 'phobos_rocm_patch.py'));
+    }
+    const rocmPatchSrc = rocmPatchCandidates.find(p => fs.existsSync(p)) ?? '';
+    const sitePackagesForPatch = process.platform === 'win32'
+      ? path.join(path.dirname(pyBin), '..', 'Lib', 'site-packages')
+      : path.join(path.dirname(pyBin), '..', 'lib',
+          fs.readdirSync(path.join(path.dirname(pyBin), '..', 'lib')).find(d => d.startsWith('python')) ?? 'python3',
+          'site-packages');
+    if (rocmPatchSrc && fs.existsSync(sitePackagesForPatch)) {
+      const patchDest = path.join(sitePackagesForPatch, 'phobos_rocm_patch.py');
+      const pthDest   = path.join(sitePackagesForPatch, 'phobos_rocm_patch.pth');
+      fs.copyFileSync(rocmPatchSrc, patchDest);
+      // Touch the file so its mtime is newer than any stale .pyc
+      const now = new Date();
+      fs.utimesSync(patchDest, now, now);
+      // .pth line uses __file__ to locate the .py alongside it
+      const pthContent = `import sys; exec(open(__import__('os').path.join(__import__('os').path.dirname(__file__), 'phobos_rocm_patch.py'), encoding='utf-8').read()) if __import__('os').path.exists(__import__('os').path.join(__import__('os').path.dirname(__file__), 'phobos_rocm_patch.py')) else None\n`;
+      fs.writeFileSync(pthDest, pthContent, 'utf-8');
+      console.log('[PythonEnvManager] Deployed phobos_rocm_patch.py + .pth from', rocmPatchSrc);
+    } else if (!rocmPatchSrc) {
+      console.warn('[PythonEnvManager] phobos_rocm_patch.py not found — ROCm device_type fix will not be active');
+    }
+  }
 
-    // Step 2e (ROCm only): patch torchao/dtypes/nf4tensor.py.
-    // NF4_OPS_TABLE is a module-level dict literal whose keys reference
-    // torch.ops._c10d_functional.all_gather_into_tensor — an op not registered
-    // in the AMD Windows ROCm torch build.  Evaluating the dict key crashes the
-    // import.  The patched version wraps it in try/except AttributeError and
-    // falls back to an empty dict (the table is only used for multi-GPU all_gather,
-    // never exercised in single-GPU 890M training).
-    const nf4Candidates = unslothZooPatchCandidates.map(p =>
-      p.replace('unsloth_zoo_utils.py', 'nf4tensor.py'),
-    );
+  // Step 2e (ROCm only): copy patched torchao/dtypes/nf4tensor.py.
+  // torchao/dtypes/nf4tensor.py has module-level dict literals and @implements decorator calls
+  // that reference torch.ops._c10d_functional.all_gather_into_tensor.default and
+  // _c10d_functional.wait_tensor.default. These ops are not registered in the AMD Windows ROCm
+  // torch build — OpNamespace.__getattr__ raises AttributeError at import time.
+  // The patched file wraps all four references in try/except AttributeError.
+  // With torchao excluded from the ROCm venv this step is belt-and-suspenders for future
+  // torchao versions that fix PR #4017 and get re-added to the install list.
+  if (vendor === 'rocm') {
+    const nf4Candidates: string[] = [
+      path.join(process.cwd(), 'phobos', 'nf4tensor.py'),
+      path.join(process.cwd(), 'dist', 'nf4tensor.py'),
+      path.join(process.cwd(), 'nf4tensor.py'),
+      path.join(process.execPath.replace(/[\\/][^\\/]+$/, ''), 'nf4tensor.py'),
+    ];
+    if (typeof __filename !== 'undefined') {
+      nf4Candidates.unshift(path.join(path.dirname(__filename), 'phobos', 'nf4tensor.py'));
+      nf4Candidates.unshift(path.join(path.dirname(__filename), 'nf4tensor.py'));
+    }
+    if (process.env['PHOBOS_BIN_DIR']) {
+      nf4Candidates.unshift(path.join(process.env['PHOBOS_BIN_DIR'], 'nf4tensor.py'));
+    }
     const nf4Src = nf4Candidates.find(p => fs.existsSync(p)) ?? '';
-    const nf4Dest = path.join(sitePackages, 'torchao', 'dtypes', 'nf4tensor.py');
+    const sitePackagesForNf4 = process.platform === 'win32'
+      ? path.join(path.dirname(pyBin), '..', 'Lib', 'site-packages')
+      : path.join(path.dirname(pyBin), '..', 'lib',
+          fs.readdirSync(path.join(path.dirname(pyBin), '..', 'lib')).find(d => d.startsWith('python')) ?? 'python3',
+          'site-packages');
+    const nf4Dest = path.join(sitePackagesForNf4, 'torchao', 'dtypes', 'nf4tensor.py');
     if (nf4Src && fs.existsSync(path.dirname(nf4Dest))) {
       fs.copyFileSync(nf4Src, nf4Dest);
-      // Invalidate bytecode cache so Python loads the patched source.
-      try {
-        const nf4Pyc = path.join(path.dirname(nf4Dest), '__pycache__');
-        fs.readdirSync(nf4Pyc)
-          .filter(f => f.startsWith('nf4tensor.cpython-'))
-          .forEach(f => fs.rmSync(path.join(nf4Pyc, f)));
-      } catch { /* pycache absent */ }
+      const now = new Date();
+      fs.utimesSync(nf4Dest, now, now);
+      // Invalidate stale bytecode
+      const nf4Pyc = path.join(path.dirname(nf4Dest), '__pycache__');
+      if (fs.existsSync(nf4Pyc)) {
+        for (const f of fs.readdirSync(nf4Pyc)) {
+          if (f.startsWith('nf4tensor.cpython')) {
+            try { fs.unlinkSync(path.join(nf4Pyc, f)); } catch { /* ignore */ }
+          }
+        }
+      }
       console.log('[PythonEnvManager] Applied torchao/dtypes/nf4tensor.py patch from', nf4Src);
-    } else if (!nf4Src) {
-      console.warn('[PythonEnvManager] nf4tensor.py patch source not found — ROCm LM training may fail at import');
     }
+    // Non-fatal: torchao is excluded from ROCm venv install; this is belt-and-suspenders only.
+  }
 
-    // Step 2f (ROCm only): patch unsloth_zoo/temporary_patches/utils.py.
-    // The file imports transformers.processing_utils at module level, which triggers
-    // torch.distributed, which does `import torch._C._distributed_c10d`.
-    // On AMD Windows ROCm, torch._C is a C extension module (not a package), so
-    // submodule imports raise ModuleNotFoundError.  The error falls through the elif
-    // chain and hits `raise Exception(e)`.  The patched version adds an elif that
-    // catches this specific error and passes silently — safe for single-GPU training.
-    const tpUtilsCandidates = unslothZooPatchCandidates.map(p =>
-      p.replace('unsloth_zoo_utils.py', 'unsloth_zoo_temporary_patches_utils.py'),
-    );
+  // Step 2f (ROCm only): copy patched unsloth_zoo/temporary_patches/utils.py.
+  // The patched file adds '_distributed_c10d' to the ImportError elif chain and moves
+  // the raise RuntimeError into else: (so the ROCm path hits pass and exits cleanly),
+  // and aliases Unpack = t_Unpack so line 312's TYPE_MAPPINGS dict doesn't raise NameError.
+  if (vendor === 'rocm') {
+    const tpUtilsCandidates: string[] = [
+      path.join(process.cwd(), 'phobos', 'unsloth_zoo_temporary_patches_utils.py'),
+      path.join(process.cwd(), 'dist', 'unsloth_zoo_temporary_patches_utils.py'),
+      path.join(process.cwd(), 'unsloth_zoo_temporary_patches_utils.py'),
+      path.join(process.execPath.replace(/[\\/][^\\/]+$/, ''), 'unsloth_zoo_temporary_patches_utils.py'),
+    ];
+    if (typeof __filename !== 'undefined') {
+      tpUtilsCandidates.unshift(path.join(path.dirname(__filename), 'phobos', 'unsloth_zoo_temporary_patches_utils.py'));
+      tpUtilsCandidates.unshift(path.join(path.dirname(__filename), 'unsloth_zoo_temporary_patches_utils.py'));
+    }
+    if (process.env['PHOBOS_BIN_DIR']) {
+      tpUtilsCandidates.unshift(path.join(process.env['PHOBOS_BIN_DIR'], 'unsloth_zoo_temporary_patches_utils.py'));
+    }
     const tpUtilsSrc = tpUtilsCandidates.find(p => fs.existsSync(p)) ?? '';
-    const tpUtilsDest = path.join(unslothZooPkg, 'temporary_patches', 'utils.py');
+    const unslothZooPkg2 = process.platform === 'win32'
+      ? path.join(path.dirname(pyBin), '..', 'Lib', 'site-packages', 'unsloth_zoo')
+      : (() => {
+          const lib = path.join(path.dirname(pyBin), '..', 'lib');
+          const pyVer = fs.readdirSync(lib).find(d => d.startsWith('python')) ?? 'python3';
+          return path.join(lib, pyVer, 'site-packages', 'unsloth_zoo');
+        })();
+    const tpUtilsDest = path.join(unslothZooPkg2, 'temporary_patches', 'utils.py');
     if (tpUtilsSrc && fs.existsSync(path.dirname(tpUtilsDest))) {
       fs.copyFileSync(tpUtilsSrc, tpUtilsDest);
-      try {
-        const tpPyc = path.join(path.dirname(tpUtilsDest), '__pycache__');
-        fs.readdirSync(tpPyc)
-          .filter(f => f.startsWith('utils.cpython-'))
-          .forEach(f => fs.rmSync(path.join(tpPyc, f)));
-      } catch { /* pycache absent */ }
+      const now = new Date();
+      fs.utimesSync(tpUtilsDest, now, now);
+      const tpPyc = path.join(path.dirname(tpUtilsDest), '__pycache__');
+      if (fs.existsSync(tpPyc)) {
+        for (const f of fs.readdirSync(tpPyc)) {
+          if (f.startsWith('utils.cpython')) {
+            try { fs.unlinkSync(path.join(tpPyc, f)); } catch { /* ignore */ }
+          }
+        }
+      }
       console.log('[PythonEnvManager] Applied unsloth_zoo/temporary_patches/utils.py patch from', tpUtilsSrc);
     } else if (!tpUtilsSrc) {
-      console.warn('[PythonEnvManager] unsloth_zoo_temporary_patches_utils.py patch source not found — ROCm LM training may fail at import');
-    }
-
-    // Step 2g (ROCm only): patch torchao/float8/distributed_utils.py.
-    // This file unconditionally imports torch.distributed._functional_collectives
-    // which imports torch.distributed.distributed_c10d which unconditionally does
-    //   from torch._C._distributed_c10d import (...)
-    // torch._C is a C extension (not a package) on AMD Windows ROCm, so this raises
-    // ModuleNotFoundError and crashes torchao → transformers → unsloth at import time.
-    // The patched version wraps the distributed imports in try/except and guards the
-    // isinstance checks — safe since distributed float8 is never used on single-GPU 890M.
-    const f8DistCandidates = unslothZooPatchCandidates.map(p =>
-      p.replace('unsloth_zoo_utils.py', 'torchao_float8_distributed_utils.py'),
-    );
-    const f8DistSrc = f8DistCandidates.find(p => fs.existsSync(p)) ?? '';
-    const f8DistDest = path.join(sitePackages, 'torchao', 'float8', 'distributed_utils.py');
-    if (f8DistSrc && fs.existsSync(path.dirname(f8DistDest))) {
-      fs.copyFileSync(f8DistSrc, f8DistDest);
-      try {
-        const f8Pyc = path.join(path.dirname(f8DistDest), '__pycache__');
-        fs.readdirSync(f8Pyc)
-          .filter(f => f.startsWith('distributed_utils.cpython-'))
-          .forEach(f => fs.rmSync(path.join(f8Pyc, f)));
-      } catch { /* pycache absent */ }
-      console.log('[PythonEnvManager] Applied torchao/float8/distributed_utils.py patch from', f8DistSrc);
-    } else if (!f8DistSrc) {
-      console.warn('[PythonEnvManager] torchao_float8_distributed_utils.py patch source not found — ROCm LM training may fail at import');
-    }
-
-    // Step 2h (ROCm only): patch torch/distributed/distributed_c10d.py.
-    // This is the single choke point — every path through torch.distributed,
-    // torch.distributed._tensor, torch.distributed._functional_collectives etc.
-    // eventually hits this file's unconditional:
-    //   from torch._C._distributed_c10d import (...)
-    // which crashes on AMD Windows ROCm (torch._C is a C extension, not a package).
-    // The patched version wraps it in try/except and provides no-op stubs so the
-    // module loads cleanly. Distributed ops are never used on single-GPU 890M.
-    const c10dCandidates = unslothZooPatchCandidates.map(p =>
-      p.replace('unsloth_zoo_utils.py', 'torch_distributed_c10d.py'),
-    );
-    const c10dSrc = c10dCandidates.find(p => fs.existsSync(p)) ?? '';
-    const c10dDest = path.join(sitePackages, 'torch', 'distributed', 'distributed_c10d.py');
-    if (c10dSrc && fs.existsSync(path.dirname(c10dDest))) {
-      fs.copyFileSync(c10dSrc, c10dDest);
-      try {
-        const c10dPyc = path.join(path.dirname(c10dDest), '__pycache__');
-        fs.readdirSync(c10dPyc)
-          .filter(f => f.startsWith('distributed_c10d.cpython-'))
-          .forEach(f => fs.rmSync(path.join(c10dPyc, f)));
-      } catch { /* pycache absent */ }
-      console.log('[PythonEnvManager] Applied torch/distributed/distributed_c10d.py patch from', c10dSrc);
-    } else if (!c10dSrc) {
-      console.warn('[PythonEnvManager] torch_distributed_c10d.py patch source not found — ROCm LM training may fail at import');
-    }
-
-    // Step 2i (ROCm only): patch torch/distributed/constants.py.
-    // Also imports _DEFAULT_PG_TIMEOUT from torch._C._distributed_c10d unconditionally.
-    const constCandidates = unslothZooPatchCandidates.map(p =>
-      p.replace('unsloth_zoo_utils.py', 'torch_distributed_constants.py'),
-    );
-    const constSrc = constCandidates.find(p => fs.existsSync(p)) ?? '';
-    const constDest = path.join(sitePackages, 'torch', 'distributed', 'constants.py');
-    if (constSrc && fs.existsSync(path.dirname(constDest))) {
-      fs.copyFileSync(constSrc, constDest);
-      try {
-        const cPyc = path.join(path.dirname(constDest), '__pycache__');
-        fs.readdirSync(cPyc).filter(f => f.startsWith('constants.cpython-')).forEach(f => fs.rmSync(path.join(cPyc, f)));
-      } catch { /* pycache absent */ }
-      console.log('[PythonEnvManager] Applied torch/distributed/constants.py patch from', constSrc);
+      console.warn('[PythonEnvManager] unsloth_zoo_temporary_patches_utils.py not found — ROCm import fix inactive');
     }
   }
 

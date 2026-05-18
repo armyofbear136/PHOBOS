@@ -212,45 +212,50 @@ console.log(`   codes before: ${codesBefore.length}`);
 
 // Generate a guest code
 const codeRes = await api('POST', '/api/admin/access-codes', {
-  code_type:       'guest',
-  single_use:      true,
+  code_type:        'guest',
   expires_in_hours: 24,
 }, token);
 ok('POST /api/admin/access-codes → 201', codeRes.status === 201);
-ok('code returned', typeof (codeRes.data.code as Record<string, unknown>)?.code === 'string');
-const generatedCode = (codeRes.data.code as Record<string, unknown>)?.code as string;
-console.log(`   generated code: ${generatedCode}`);
-ok('code is 6 chars', typeof generatedCode === 'string' && generatedCode.length === 6);
-ok('code is uppercase alphanumeric', /^[A-Z2-9]{6}$/.test(generatedCode ?? ''));
+const codeObj = codeRes.data.code as Record<string, unknown>;
+ok('nonce returned',        typeof codeObj?.nonce        === 'string');
+ok('encoded_code returned', typeof codeObj?.encoded_code === 'string');
+const generatedNonce   = codeObj?.nonce        as string;
+const generatedEncoded = codeObj?.encoded_code as string;
+console.log(`   nonce:        ${generatedNonce}`);
+console.log(`   encoded_code: ${generatedEncoded}`);
+ok('nonce is 32-char hex',       /^[0-9a-f]{32}$/.test(generatedNonce ?? ''));
+ok('encoded starts with PH1.GST', generatedEncoded?.startsWith('PH1.GST.'));
 
-// Verify it appears in listing
+// Verify it appears in listing (by nonce)
 const codeListAfter = await api('GET', '/api/admin/access-codes', undefined, token);
-const codesAfter = codeListAfter.data.codes as Array<{ code: string; consumed: boolean }>;
-ok('new code in listing', codesAfter.some(c => c.code === generatedCode));
-ok('code is not consumed', codesAfter.find(c => c.code === generatedCode)?.consumed === false);
+const codesAfter = codeListAfter.data.codes as Array<{ code: string; consumed: boolean; encoded_code: string }>;
+ok('new code in listing',       codesAfter.some(c => c.code === generatedNonce));
+ok('code is not consumed',      codesAfter.find(c => c.code === generatedNonce)?.consumed === false);
+ok('listing re-encodes PH1.*',  codesAfter.find(c => c.code === generatedNonce)?.encoded_code?.startsWith('PH1.GST.') === true);
 
 // Generate a self-access code
 const selfCodeRes = await api('POST', '/api/admin/access-codes', {
-  code_type:       'self',
-  single_use:      false,
+  code_type:        'self',
   expires_in_hours: 168,
 }, token);
 ok('generate self code → 201', selfCodeRes.status === 201);
+const selfCodeObj = selfCodeRes.data.code as Record<string, unknown>;
+ok('self code starts with PH1.OWN', (selfCodeObj?.encoded_code as string)?.startsWith('PH1.OWN.'));
 
 // ── [ 8 ] Access codes — revocation ──────────────────────────────────────────
 
 console.log('\n[ 8 ] Access codes — revocation...');
-const revokeRes = await api('DELETE', `/api/admin/access-codes/${generatedCode}`, undefined, token);
-ok('DELETE /api/admin/access-codes/:code → 200', revokeRes.ok);
+const revokeRes = await api('DELETE', `/api/admin/access-codes/${generatedNonce}`, undefined, token);
+ok('DELETE /api/admin/access-codes/:nonce → 200', revokeRes.ok);
 
 // Verify consumed state
 const codeListRevoked = await api('GET', '/api/admin/access-codes', undefined, token);
 const revokedCode = (codeListRevoked.data.codes as Array<{ code: string; consumed: boolean }>)
-  .find(c => c.code === generatedCode);
+  .find(c => c.code === generatedNonce);
 ok('revoked code shows consumed=true', revokedCode?.consumed === true);
 
 // Revoke non-existent code → 404
-const badRevokeRes = await api('DELETE', '/api/admin/access-codes/XXXXXX', undefined, token);
+const badRevokeRes = await api('DELETE', '/api/admin/access-codes/0000000000000000000000000000ffff', undefined, token);
 ok('revoke non-existent code → 404', badRevokeRes.status === 404);
 
 // ── [ 9 ] Guard — cannot delete owner ────────────────────────────────────────
@@ -271,12 +276,17 @@ const listAfterDelete = await api('GET', '/api/admin/users', undefined, token);
 const usersAfterDelete = listAfterDelete.data.users as Array<{ username: string }>;
 ok('user no longer in listing', !usersAfterDelete.some(u => u.username === TEST_USER));
 
-// ── [ 11 ] Phase 5 placeholder — WebRTC access code validation ───────────────
+// ── [ 11 ] Phase 6 — structured codes and instance identity ──────────────────
 
-console.log('\n[ 11 ] Phase 5 — WebRTC session binding...');
-skip('WebRTC guest provisioning on connect (E4 — requires live WebRTC session)');
-skip('DataChannelHandler sessionUsername binding (E4)');
-skip('Per-request getUserDb(sessionUsername) on WebRTC path (E4)');
+console.log('\n[ 11 ] Phase 6 — instance identity endpoint...');
+const webrtcCodeRes = await api('GET', '/api/webrtc/code');
+ok('GET /api/webrtc/code → 200',      webrtcCodeRes.ok);
+ok('instanceId present',              typeof webrtcCodeRes.data.instanceId === 'string' || webrtcCodeRes.data.instanceId === null);
+ok('relayUrl present',                typeof webrtcCodeRes.data.relayUrl   === 'string' || webrtcCodeRes.data.relayUrl   === null);
+ok('connected boolean',               typeof webrtcCodeRes.data.connected  === 'boolean');
+ok('relayConnected boolean',          typeof webrtcCodeRes.data.relayConnected === 'boolean');
+console.log(`   instanceId:     ${webrtcCodeRes.data.instanceId ?? '(relay offline)'}`);
+console.log(`   relayConnected: ${webrtcCodeRes.data.relayConnected}`);
 
 // ── Summary ───────────────────────────────────────────────────────────────────
 

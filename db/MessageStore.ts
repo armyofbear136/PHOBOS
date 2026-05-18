@@ -73,6 +73,37 @@ export class MessageStore {
     );
   }
 
+  /**
+   * Fetch the most recent `limit` messages in a thread, optionally paging
+   * backward via `beforeCreatedAt` (exclusive — the created_at of the oldest
+   * message the caller already has). Returns messages in chronological order.
+   */
+  async getRecentByThread(
+    threadId: string,
+    limit: number,
+    beforeCreatedAt?: string,
+  ): Promise<Message[]> {
+    const cols = 'id, thread_id, role, content, distilled_content, NULL as thinking_trace, dispatch_id, attempt_number, review_score, created_at';
+    let rows: Message[];
+    if (beforeCreatedAt) {
+      rows = await this.db.query<Message>(
+        `SELECT ${cols} FROM messages
+         WHERE thread_id = ? AND created_at < ?
+         ORDER BY created_at DESC LIMIT ?`,
+        [threadId, beforeCreatedAt, limit],
+      );
+    } else {
+      rows = await this.db.query<Message>(
+        `SELECT ${cols} FROM messages
+         WHERE thread_id = ?
+         ORDER BY created_at DESC LIMIT ?`,
+        [threadId, limit],
+      );
+    }
+    // Return in chronological order so callers don't need to reverse.
+    return rows.reverse();
+  }
+
   async insert(input: CreateMessageInput): Promise<Message> {
     const id = randomUUID();
     const now = new Date().toISOString();

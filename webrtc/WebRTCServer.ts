@@ -5,23 +5,37 @@
  * Accepts offers from SignalingClient, generates answers, opens three data
  * channels, hands them to DataChannelHandler.
  *
- * node-datachannel is used for Node.js RTCPeerConnection support.
- * Install: npm install node-datachannel
+ * node-datachannel is loaded via createRequire anchored to process.execPath
+ * so the SEA runtime resolves it from dist/node_modules/ rather than
+ * treating it as a built-in module.
  */
 
-import * as NodeDataChannel from 'node-datachannel';
+import { createRequire } from 'node:module';
 import type { PeerConnection, DataChannel, IceServer } from 'node-datachannel';
-import { DescriptionType } from 'node-datachannel';
 import type { SignalingClient } from './SignalingClient.js';
 import type { SignalOffer, SignalIce } from './RemoteProtocol.js';
 import { DataChannelHandler } from './DataChannelHandler.js';
 import type { FastifyInstance } from 'fastify';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 
+// Loaded once on first handleOffer() call — avoids SEA built-in intercept.
+// Uses __filename (CJS) so the SEA runtime resolves from dist/node_modules/.
+let _ndc: typeof import('node-datachannel') | null = null;
+
+function getNdc(): typeof import('node-datachannel') {
+  if (_ndc) return _ndc;
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const req = createRequire(typeof __filename !== 'undefined' ? __filename : process.execPath);
+  _ndc = req('node-datachannel') as typeof import('node-datachannel');
+  return _ndc;
+}
+
 export interface WebRTCServerOptions {
   fastify:          FastifyInstance;
   signalingClient:  SignalingClient;
   systemDb:         DatabaseManager;
+  instanceId:       string;
+  relayUrl:         string;
   onConnected:      () => void;
   onDisconnected:   () => void;
 }
@@ -80,14 +94,17 @@ export class WebRTCServer {
           relayType: url.startsWith('turn') ? 'TurnTls' : undefined,
         }))) as IceServer[];
 
-    const pc = new NodeDataChannel.PeerConnection(`phobos-host-${offer.code}`, {
+    const ndc = getNdc();
+    const pc = new ndc.PeerConnection(`phobos-host-${offer.code}`, {
       iceServers,
     });
 
     const handler = new DataChannelHandler({
-      fastify:   this.opts.fastify,
-      systemDb:  this.opts.systemDb,
-      relayCode: offer.code,
+      fastify:    this.opts.fastify,
+      systemDb:   this.opts.systemDb,
+      instanceId: this.opts.instanceId,
+      relayUrl:   this.opts.relayUrl,
+      relayCode:  offer.code,
     });
 
     const session: SessionState = {
@@ -102,14 +119,26 @@ export class WebRTCServer {
 
     // Wire ICE candidate emission
     pc.onLocalCandidate((candidate: string, mid: string) => {
-      this.opts.signalingClient.sendIce(offer.code, candidate, mid, null);
+      const bare = candidate.startsWith('a=') ? candidate.slice(2) : candidate;
+      // node-datachannel mid may be empty — fall back to sdpMLineIndex 0 so the
+      // browser's addIceCandidate doesn't silently reject the candidate.
+      const sdpMid         = mid || null;
+      const sdpMLineIndex  = mid ? null : 0;
+      console.log(`[WebRTCServer] Local ICE mid=${mid || '(empty)'}: ${bare.substring(0, 80)}`);
+      this.opts.signalingClient.sendIce(offer.code, bare, sdpMid, sdpMLineIndex);
     });
 
+    const thisPC = pc;  // capture for closure
     pc.onStateChange((state: string) => {
       console.log(`[WebRTCServer] PeerConnection state: ${state}`);
       if (state === 'disconnected' || state === 'failed' || state === 'closed') {
-        this._teardown();
-        this.opts.onDisconnected();
+        // Only tear down if this PC is still the active session's PC.
+        // If handleOffer() was called again, _session.pc is already the new one —
+        // don't tear it down when the old PC's close event fires.
+        if (this._session?.pc === thisPC) {
+          this._teardown();
+          this.opts.onDisconnected();
+        }
       }
     });
 
@@ -119,29 +148,32 @@ export class WebRTCServer {
       this._acceptDataChannel(session, dc);
     });
 
-    // Set remote description and generate answer
-    pc.setRemoteDescription(offer.sdp, DescriptionType.Offer);
-    const answerSdp = pc.localDescription()?.sdp;
-    if (!answerSdp) {
-      console.error('[WebRTCServer] Failed to generate answer SDP');
-      this._teardown();
-      return;
-    }
+    // node-datachannel generates the answer SDP asynchronously after
+    // setRemoteDescription. onLocalDescription fires with type 'answer'
+    // once ready — send it then drain pending ICE.
+    pc.onLocalDescription((sdp: string, type: string) => {
+      if (type !== 'answer') return;
+      console.log('[WebRTCServer] Answer SDP ready — sending to relay');
+      this.opts.signalingClient.sendAnswer(offer.code, sdp);
 
-    this.opts.signalingClient.sendAnswer(offer.code, answerSdp);
-
-    // Drain any ICE candidates that arrived before the session was ready
-    for (const ice of this._pendingIce) {
-      if (ice.code === offer.code) {
-        pc.addRemoteCandidate(ice.candidate, ice.sdpMid ?? '');
+      // Drain any ICE candidates that arrived before the answer was sent
+      for (const ice of this._pendingIce) {
+        if (ice.code === offer.code) {
+          console.log(`[WebRTCServer] Remote ICE (drained): ${ice.candidate.substring(0, 80)}`);
+          pc.addRemoteCandidate(ice.candidate, ice.sdpMid ?? '');
+        }
       }
-    }
-    this._pendingIce = [];
+      this._pendingIce = [];
+    });
+
+    // Trigger async SDP negotiation — answer fires via onLocalDescription above
+    pc.setRemoteDescription(offer.sdp, ndc.DescriptionType.Offer);
   }
 
   /** Called by SignalingClient when relay forwards a trickle ICE candidate. */
   addIceCandidate(ice: SignalIce): void {
     if (this._session && this._session.code === ice.code) {
+      console.log(`[WebRTCServer] Remote ICE: ${ice.candidate.substring(0, 80)}`);
       this._session.pc.addRemoteCandidate(ice.candidate, ice.sdpMid ?? '');
     } else {
       // Offer may not have been processed yet — buffer
@@ -164,7 +196,14 @@ export class WebRTCServer {
     switch (label) {
       case 'phobos-control':
         session.controlDC = dc;
-        session.handler.attachControlChannel(dc);
+        dc.onOpen(() => {
+          session.openCount++;
+          session.handler.attachControlChannel(dc);
+          if (session.openCount === 3) {
+            console.log('[WebRTCServer] All channels open — session CONNECTED');
+            this.opts.onConnected();
+          }
+        });
         break;
       case 'phobos-media-index':
         session.mediaIndexDC = dc;
@@ -179,13 +218,15 @@ export class WebRTCServer {
         return;
     }
 
-    dc.onOpen(() => {
-      session.openCount++;
-      if (session.openCount === 3) {
-        console.log('[WebRTCServer] All channels open — session CONNECTED');
-        this.opts.onConnected();
-      }
-    });
+    if (label !== 'phobos-control') {
+      dc.onOpen(() => {
+        session.openCount++;
+        if (session.openCount === 3) {
+          console.log('[WebRTCServer] All channels open — session CONNECTED');
+          this.opts.onConnected();
+        }
+      });
+    }
 
     dc.onClosed(() => {
       session.openCount = Math.max(0, session.openCount - 1);

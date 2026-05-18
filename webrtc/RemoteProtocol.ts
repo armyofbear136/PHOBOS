@@ -156,8 +156,9 @@ export type MediaUploadFrameInbound = MediaUploadAck;
 
 /** Core → relay: register this instance and request a code. */
 export interface SignalRegister {
-  type:       'register';
-  activeUser: string;                   // 'owner' for E2
+  type:        'register';
+  instanceId?: string;                  // permanent instance UUID — optional for backward compat
+  activeUser:  string;                  // 'owner' for E2
 }
 
 /** relay → core: code issued, ICE servers provided. */
@@ -203,15 +204,24 @@ export type RelayOutbound = SignalRegister   | SignalAnswer | SignalIce;
 
 // ── Auth handshake — control channel, immediately after DC open ───────────────
 //
-// Flow:
-//   core → mobile : AuthChallenge
-//   mobile → core : AuthResponse  (sends access code + optional username)
-//   core → mobile : SessionReady | NeedsUsername | AuthError
+// Phase 6 flow (three paths):
+//   Path A — first-time device registration:
+//     core → mobile : AuthChallenge
+//     mobile → core : AuthResponse { accessCode: 'PH1.*' }
+//     core → mobile : NeedsUsernameAndPassword  (GST codes only)
+//     mobile → core : AuthResponse { username, password }
+//     core → mobile : DeviceRegistered { token, instanceId, relayUrl }
+//     core → mobile : SessionReady
 //
-// For self-access the mobile sends the relay code it connected with.
-// For guest-access it sends the 6-char code the owner shared out-of-band.
-// If the code is a guest code with no bound username, core replies NeedsUsername.
-// Mobile collects a username and sends AuthResponse again with requestedUsername set.
+//   Path B — returning device:
+//     core → mobile : AuthChallenge
+//     mobile → core : AuthResponse { deviceToken, deviceId, username, password? }
+//     core → mobile : SessionReady
+//
+//   Legacy (Phase 5 format — kept for backward compat during transition):
+//     core → mobile : AuthChallenge
+//     mobile → core : AuthResponse { code: '6CHAR' }
+//     core → mobile : SessionReady | NeedsUsername | AuthError
 
 /** core → mobile: sent immediately when control DC opens. */
 export interface AuthChallenge {
@@ -219,13 +229,24 @@ export interface AuthChallenge {
 }
 
 /**
- * mobile → core: present the access code.
- * requestedUsername is only set on the second send, after NeedsUsername.
+ * mobile → core: present credentials.
+ * Exactly one of accessCode (Path A) or deviceToken (Path B) or code (legacy)
+ * should be set. deviceId should always be present in Phase 6 clients.
  */
 export interface AuthResponse {
   kind:               'auth-response';
-  code:               string;
-  requestedUsername?: string;
+  // Path A — first-time structured access code
+  accessCode?:        string;    // full PH1.* encoded string
+  // Path B — returning device
+  deviceToken?:       string;    // UUID from a prior DeviceRegistered frame
+  // Both Phase 6 paths
+  deviceId?:          string;    // Capacitor Device.getId() — binds token to hardware
+  username?:          string;    // returning guest, or chosen during guest registration
+  password?:          string;    // returning guest credential or new guest password
+  passwordConfirm?:   string;    // guest first registration confirmation (client validates)
+  // Legacy — Phase 5 format kept for backward compat during transition
+  code?:              string;    // bare 6-char relay code or nonce
+  requestedUsername?: string;    // Phase 5 guest username submission
 }
 
 /** core → mobile: auth accepted, session is live under this username. */
@@ -235,9 +256,27 @@ export interface SessionReady {
   role:     'owner' | 'admin' | 'full' | 'guest' | 'read';
 }
 
-/** core → mobile: code is valid but no username bound yet — mobile must ask user. */
+/** core → mobile: Phase 5 legacy — code valid but no username bound yet. */
 export interface NeedsUsername {
   kind: 'needs-username';
+}
+
+/** core → mobile: Phase 6 — GST code valid, need username + password to register. */
+export interface NeedsUsernameAndPassword {
+  kind: 'needs-username-and-password';
+}
+
+/**
+ * core → mobile: issued after successful first-time auth (Path A).
+ * Mobile persists token + instanceId + relayUrl in ServerEntry for reconnects.
+ */
+export interface DeviceRegistered {
+  kind:       'device-registered';
+  token:      string;    // device token UUID — store in Preferences
+  instanceId: string;    // core's permanent instance UUID = relay routing key
+  relayUrl:   string;    // wss://autarch.net/relay (or future relay)
+  username:   string;    // confirmed username
+  role:       'owner' | 'admin' | 'full' | 'guest' | 'read';
 }
 
 /** core → mobile: auth failed — DC will be closed immediately after. */
@@ -251,5 +290,6 @@ export type AuthFrame =
   | AuthResponse
   | SessionReady
   | NeedsUsername
+  | NeedsUsernameAndPassword
+  | DeviceRegistered
   | AuthError;
-

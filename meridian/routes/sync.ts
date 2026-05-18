@@ -125,6 +125,7 @@ export async function syncRoutes(
   fastify.post<{
     Body: { deviceId: string; deviceName: string; platform: 'ios' | 'android' }
   }>('/api/sync/register', async (req, reply) => {
+    try {
     const { deviceId, deviceName, platform } = req.body ?? {};
     if (!deviceId || !deviceName || !platform) {
       return reply.status(400).send({ error: 'deviceId, deviceName, and platform are required' });
@@ -168,6 +169,10 @@ export async function syncRoutes(
     );
 
     return reply.send({ syncToken, policies: policyRows.map(mapPolicy) });
+    } catch (err: unknown) {
+      console.error('[SyncRoutes] /register error:', err);
+      return reply.status(500).send({ error: String(err) });
+    }
   });
 
   // ── POST /api/sync/check ─────────────────────────────────────────────────

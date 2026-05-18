@@ -19,34 +19,38 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label:        win32-x64
-            runner:       windows-latest
-            artifact:     phobos-win32-x64
-            pack:         zip
+          - label:             win32-x64
+            runner:            windows-latest
+            artifact:          phobos-win32-x64
+            pack:              zip
             build-full-target: win32-x64
-          - label:        darwin-arm64
-            runner:       macos-14
-            artifact:     phobos-darwin-arm64
-            pack:         tar
+            skip-electron:     false
+
+          - label:             darwin-arm64
+            runner:            macos-14
+            artifact:          phobos-darwin-arm64
+            pack:              tar
             build-full-target: darwin-arm64
+            skip-electron:     false
 
-          - label:        linux-x64
-            runner:       ubuntu-latest
-            artifact:     phobos-linux-x64
-            pack:         tar
+          - label:             linux-x64
+            runner:            ubuntu-latest
+            artifact:          phobos-linux-x64
+            pack:              tar
             build-full-target: linux-x64
+            skip-electron:     false
 
-          - label:        linux-arm64
-            runner:       ubuntu-24.04-arm
-            artifact:     phobos-linux-arm64
-            pack:         tar
+          - label:             linux-arm64
+            runner:            ubuntu-24.04-arm
+            artifact:          phobos-linux-arm64
+            pack:              tar
             build-full-target: linux-arm64
-
+            skip-electron:     true
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
@@ -58,15 +62,23 @@ jobs:
       - name: Install dependencies
         run: npm ci --foreground-scripts
 
+      - name: Cache app/node_modules
+        uses: actions/cache@v4
+        with:
+          path: app/node_modules
+          key: app-node-modules-${{ runner.os }}-${{ hashFiles('app/package-lock.json') }}
+          restore-keys: app-node-modules-${{ runner.os }}-
+
       - name: Read version
         id: version
+        shell: bash
         run: |
           VERSION=$(node -e "const fs=require('fs'); const m=fs.readFileSync('version.ts','utf8').match(/CORE_VERSION\s*=\s*'([^']+)'/); console.log('CORE_VERSION='+m[1]);")
           echo "$VERSION" >> $GITHUB_OUTPUT
-        shell: bash
 
       - name: Read pinned binary versions from manifest
         id: pins
+        shell: bash
         run: |
           node -e "
             const fs = require('fs');
@@ -81,56 +93,62 @@ jobs:
             if (sd)    console.error('📌 Pinned sd.cpp: ' + sd);
             else       console.error('⚠️  No pinned sd.cpp version — will fetch latest');
           " >> $GITHUB_OUTPUT
-        shell: bash
 
+      - name: Enable Developer Mode (Windows — required for electron-builder symlinks)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          reg add "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v AllowDevelopmentWithoutDevLicense /d 1
+
+      # build.js flags:
+      #   --full-app        → two-pass electron build, stages PHOBOS-app-*.exe to dist/
+      #   --no-app          → skip electron entirely (linux-arm64 has no electron target)
+      #   --no-deps-backup  → never copy dist-deps-backup/ in CI (it doesn't exist anyway,
+      #                       but this makes the intent explicit and future-proof)
       - name: Build phobos-core
-        run: node build.js
+        run: node build.js ${{ matrix.skip-electron == 'true' && '--no-app' || '--full-app' }} --no-deps-backup
         env:
-          PHOBOS_LICENSE_SEED: ${{ secrets.PHOBOS_LICENSE_SEED }}
+          PHOBOS_LICENSE_SEED:         ${{ secrets.PHOBOS_LICENSE_SEED }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          CSC_LINK:                    ''
+          WIN_CSC_LINK:                ''
 
       - name: Build phobos-lite
         run: node scripts/build-lite.js ${{ matrix.build-full-target }}
         continue-on-error: true
 
       - name: Write version.txt
-        run: echo "${{ steps.version.outputs.CORE_VERSION }}" > version.txt
         shell: bash
+        run: echo "${{ steps.version.outputs.CORE_VERSION }}" > dist/version.txt
 
-      - name: Package phobos-core (tar)
+      - name: Package dist (tar)
         if: matrix.pack == 'tar'
         run: tar -czf ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.tar.gz -C dist .
 
-      - name: Package phobos-core (zip)
+      - name: Package dist (zip)
         if: matrix.pack == 'zip'
         shell: pwsh
         run: Compress-Archive -Path dist\* -DestinationPath "${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.zip"
 
-      - name: Upload phobos-core artifact (tar)
+      - name: Upload dist artifact (tar)
         if: matrix.pack == 'tar'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}
           path: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.tar.gz
           retention-days: 7
 
-      - name: Upload phobos-core artifact (zip)
+      - name: Upload dist artifact (zip)
         if: matrix.pack == 'zip'
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}
           path: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.zip
           retention-days: 7
 
-      - name: Upload version.txt
-        uses: actions/upload-artifact@v6
-        with:
-          name: version-${{ matrix.label }}
-          path: version.txt
-          retention-days: 7
-
       - name: Upload phobos-lite artifact
-        uses: actions/upload-artifact@v6
         if: hashFiles('dist-lite/*.zip') != ''
+        uses: actions/upload-artifact@v4
         with:
           name: phobos-lite-${{ matrix.build-full-target }}-${{ steps.version.outputs.CORE_VERSION }}
           path: dist-lite/*.zip
@@ -148,8 +166,8 @@ jobs:
       contents: write
 
     steps:
-      - name: Download all available artifacts
-        uses: actions/download-artifact@v6
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
         with:
           path: release-artifacts
         continue-on-error: true
@@ -162,5 +180,7 @@ jobs:
           draft:                  false
           prerelease:             false
           generate_release_notes: true
-          files:                  release-artifacts/**/*.{tar.gz,zip}
+          files: |
+            release-artifacts/**/*.tar.gz
+            release-artifacts/**/*.zip
           fail_on_unmatched_files: false

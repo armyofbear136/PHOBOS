@@ -98,6 +98,9 @@ export interface GenerateImageOptions {
   previewInterval?: number;   // Steps between preview writes (default 1)
   // Artist Plugin System — per-node plugin bindings (PyTorch path only)
   plugins?: PluginBinding[];
+  // Test/debug override: force inline GGUF de-quantization even if a pre-converted
+  // diffusers directory exists. Never set in production — test script only.
+  forceDeQuant?: boolean;
 }
 
 export interface GenerateImageResult {
@@ -691,7 +694,12 @@ function resolveConvertScript(): string {
  */
 export function getPytorchVariantDir(modelId: string): string | null {
   const dir = path.join(os.homedir(), '.phobos', 'models', 'image', 'pytorch', modelId);
+  // SDXL: full pipeline saved — sentinel is model_index.json at root
   if (fs.existsSync(path.join(dir, 'model_index.json'))) return dir;
+  // Transformer-only models (FLUX, Chroma, Wan, Qwen-Image, Z-Image, Kontext):
+  // phobos-convert.py saves only the transformer component.
+  // Sentinel is transformer/config.json (written by _materialize_and_save_transformer).
+  if (fs.existsSync(path.join(dir, 'transformer', 'config.json'))) return dir;
   return null;
 }
 
@@ -711,10 +719,12 @@ export interface ConvertProgress {
  * Converts a single-file model (GGUF/safetensors) to a split diffusers directory.
  * Yields ConvertProgress events. Caller is responsible for locking download/convert slot.
  */
+export type ConvertModelType = 'sdxl' | 'flux' | 'chroma' | 'kontext' | 'wan' | 'qwen-image' | 'z-image';
+
 export async function* convertModelToPyTorch(
   modelId:   string,
   modelPath: string,
-  modelType: 'sdxl',
+  modelType: ConvertModelType,
   vendor:    'cuda' | 'rocm' | 'xpu' | 'apple' | 'cpu',
 ): AsyncGenerator<ConvertProgress> {
   const pyBin = (await import('./PythonEnvManager.js')).getPythonPath(vendor);
@@ -800,10 +810,16 @@ export async function* convertModelToPyTorch(
     return;
   }
 
-  // Verify output exists
+  // Verify output exists — SDXL writes model_index.json at root;
+  // transformer-only models (flux/chroma/wan/qwen-image/z-image/kontext)
+  // write transformer/config.json. Both are checked by getPytorchVariantDir.
   const variantDir = path.join(outRoot, modelId);
-  if (!fs.existsSync(path.join(variantDir, 'model_index.json'))) {
-    yield { phase: 'error', pct: 1, label: 'Conversion output missing', message: `model_index.json not found in ${variantDir}` };
+  const isTransformerOnly = modelType !== 'sdxl';
+  const sentinel = isTransformerOnly
+    ? path.join(variantDir, 'transformer', 'config.json')
+    : path.join(variantDir, 'model_index.json');
+  if (!fs.existsSync(sentinel)) {
+    yield { phase: 'error', pct: 1, label: 'Conversion output missing', message: `Expected sentinel not found: ${sentinel}` };
     return;
   }
 
@@ -971,9 +987,10 @@ function buildPyTorchArgs(
   if (opts.controlScale !== undefined) args.push('--control-scale', String(opts.controlScale));
   if (opts.refImage)                  args.push('--ref-image', opts.refImage);
 
-  // SDXL: pass pre-converted diffusers directory if present — from_pretrained
-  // is faster and works with any transformers version. Falls back to from_single_file.
-  if (cfg.modelType === 'sdxl') {
+  // All model types: pass pre-converted diffusers directory if present.
+  // Falls back to inline GGUF de-quantization when no conversion exists.
+  // forceDeQuant skips the converted dir and forces inline de-quant — test script only.
+  if (!opts.forceDeQuant) {
     const variantDir = getPytorchVariantDir(spec.modelId);
     if (variantDir) args.push('--pytorch-variant-dir', variantDir);
   }

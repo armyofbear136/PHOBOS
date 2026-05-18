@@ -25,6 +25,7 @@
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
@@ -66,6 +67,7 @@ let noOffload = false;
 let sageAttention = false;
 let torchCompile = false;
 let refImage: string | null = null;
+let forceDeQuant = false;
 // Up to 3 plugins: --plugin <path>[:weight] (repeatable)
 // weight defaults to 0.8 if omitted. All three use kind=raw_lora (flat file).
 // For .phobos zip archives use kind=plugin — not yet exposed as a CLI flag.
@@ -98,6 +100,8 @@ for (let i = 2; i < process.argv.length; i++) {
     const plugPath  = hasWeight ? raw.slice(0, colonIdx) : raw;
     const plugWeight = hasWeight ? Number(raw.slice(colonIdx + 1)) : 0.8;
     pluginEntries.push({ path: plugPath, weight: plugWeight });
+  } else if (arg === '--dequant') {
+    forceDeQuant = true;
   } else if (!arg.startsWith('--')) {
     modelType = arg;
   }
@@ -551,6 +555,19 @@ if (pluginEntries.length > 0) {
 // Performance flags
 if (sageAttention) { args.push('--sage-attention'); console.log('  Sage:    enabled'); }
 if (torchCompile)  { args.push('--torch-compile');  console.log('  Compile: enabled'); }
+
+// Mirror ImageServerManager: pass pre-converted directory when present.
+// --dequant overrides this and forces inline GGUF de-quantization.
+if (!forceDeQuant) {
+  const variantDir = path.join(os.homedir(), '.phobos', 'models', 'image', 'pytorch', spec.modelId);
+  if (fs.existsSync(path.join(variantDir, 'transformer', 'config.json')) ||
+      fs.existsSync(path.join(variantDir, 'model_index.json'))) {
+    args.push('--pytorch-variant-dir', variantDir);
+    console.log(`  Variant: ${variantDir}`);
+  }
+} else {
+  console.log('  Variant: forced inline de-quant (--dequant)');
+}
 
 // Step 5: Spawn
 console.log('\nStep 5: Generating image (PyTorch)…\n');

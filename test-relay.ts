@@ -136,10 +136,11 @@ try {
     iceServers = [];
   }
 
-  if (typeof registered.expiresIn === 'number' && registered.expiresIn > 0) {
-    ok(`expiresIn = ${registered.expiresIn / 1000}s`);
+  if (typeof registered.expiresIn === 'number' && registered.expiresIn >= 0) {
+    const label = registered.expiresIn === 0 ? 'permanent (instanceId session)' : `${registered.expiresIn / 1000}s`;
+    ok(`expiresIn = ${label}`);
   } else {
-    fail('expiresIn > 0');
+    fail('expiresIn is a non-negative number');
   }
 
 } catch (err) {

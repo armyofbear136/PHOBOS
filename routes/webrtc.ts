@@ -1,9 +1,9 @@
 /**
  * routes/webrtc.ts — WebRTC status and access code management endpoints.
  *
- * GET  /api/webrtc/code      → { code, expiresIn, connected }
+ * GET  /api/webrtc/code      → { instanceId, relayUrl, connected, relayConnected }
  * GET  /api/webrtc/status    → full connection status object
- * POST /api/webrtc/refresh   → regenerate access code (does NOT disconnect existing session)
+ * POST /api/webrtc/refresh   → re-register with relay (same instanceId, new WS)
  * DELETE /api/webrtc/session → disconnect the active WebRTC session
  */
 
@@ -26,13 +26,16 @@ export function setWebRTCContext(ctx: WebRTCRouteContext): void {
 export async function registerWebRTCRoutes(fastify: FastifyInstance): Promise<void> {
 
   fastify.get('/api/webrtc/code', async (_req, reply) => {
-    const code = _ctx.signalingClient?.getCode() ?? null;
-    const status = _ctx.webrtcServer?.getStatus();
+    // instanceId is the permanent relay routing key — same as what was registered.
+    // getCode() echoes back whatever the relay confirmed in the 'registered' message.
+    const instanceId = _ctx.signalingClient?.getCode() ?? null;
+    const relayUrl   = _ctx.signalingClient?.getRelayUrl() ?? null;
+    const status     = _ctx.webrtcServer?.getStatus();
     return reply.send({
-      code,
-      expiresIn:  code ? 600_000 : 0,    // relay TTL is 10 min
-      connected:  status?.connected ?? false,
-      relayConnected: code !== null,
+      instanceId,
+      relayUrl,
+      connected:      status?.connected ?? false,
+      relayConnected: instanceId !== null,
     });
   });
 
@@ -47,7 +50,7 @@ export async function registerWebRTCRoutes(fastify: FastifyInstance): Promise<vo
       iceState:       status.iceState,
       channels:       status.channels,
       relayConnected: (_ctx.signalingClient?.getCode() ?? null) !== null,
-      accessCode:     _ctx.signalingClient?.getCode() ?? null,
+      instanceId:     _ctx.signalingClient?.getCode() ?? null,
     });
   });
 

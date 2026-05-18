@@ -1167,54 +1167,6 @@ function buildDeps(arch: PhobosArch): Dep[] {
     };
   })();
 
-  // ── PHOBOS Electron App ───────────────────────────────────────────────────
-  //
-  // Standalone desktop UI. Lives in BIN_DIR alongside phobos-core so the user
-  // can find it next to the binary they already know about.
-  //
-  // Fetched from PHOBOS-CORE-LATEST (not PHOBOS-DEPS) so it re-downloads
-  // whenever the core version bumps — version tracked via the "phobos-app"
-  // entry in bin-manifest.json deps block.
-  //
-  // Windows:  portable single .exe — run directly, no installer
-  // Linux:    AppImage — chmod +x applied automatically by DepPrep
-  // macOS:    DMG disk image — mount and drag to /Applications
-
-  const CORE_LATEST_BASE = 'https://github.com/armyofbear136/PHOBOS-BUILDS/releases/download/PHOBOS-CORE-LATEST';
-
-  function phobosAppDep(): Dep | null {
-    if (arch === 'darwin-x64') return null; // no x64 mac build
-
-    const fileMap: Partial<Record<PhobosArch, string>> = {
-      'win32-x64':    'PHOBOS-app-win-x64.exe',
-      'linux-x64':    'PHOBOS-app-linux-x64.AppImage',
-      'linux-arm64':  'PHOBOS-app-linux-x64.AppImage',
-      'darwin-arm64': 'PHOBOS-app-macOS-arm64.dmg',
-    };
-
-    const file = fileMap[arch];
-    if (!file) return null;
-
-    const destPath = path.join(BIN_DIR, file);
-
-    return {
-      id:       'phobos-app',
-      label:    'PHOBOS Desktop App',
-      file,
-      url:      `${CORE_LATEST_BASE}/${file}`,
-      minBytes: 100_000_000,
-      isPresent: () => {
-        try { return fs.statSync(destPath).size >= 100_000_000; } catch { return false; }
-      },
-      install: async (arc) => {
-        fs.mkdirSync(BIN_DIR, { recursive: true });
-        fs.copyFileSync(arc, destPath);
-        if (!isWin) fs.chmodSync(destPath, 0o755);
-      },
-    };
-  }
-
-
   // ── Audio generative pipeline ─────────────────────────────────────────────
   //
   // Three binary deps ship with phobos-core.exe in dist/:
@@ -1329,7 +1281,6 @@ function buildDeps(arch: PhobosArch): Dep[] {
     blockbenchDep,
     sculptglDep,
     godotDep,
-    phobosAppDep(),
     // Audio generative pipeline binaries
     kokoro82mDep,
     whisperCliBinDep,

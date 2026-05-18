@@ -1,0 +1,79 @@
+/* ── PHOBOS World — panel opacity rules ─────────────────────────────────────
+   body.phobos-world-bg   = UI mode (game dimmed behind panels)
+   body.phobos-world-focused = World mode (everything below header hidden, game takes over)
+   Applied by PhobosGame.tsx via document.body.classList
+*/
+
+/* UI mode — panels are 78% opaque dark, game visible through edges.
+   Uses the background token so dark mode stays near-black and
+   light mode uses the navy atmosphere instead of a black wash. */
+.phobos-world-bg .phobos-world-panel {
+  background-color: hsl(var(--background) / 0.88);
+  transition: background-color 0.3s ease;
+}
+
+/* The game canvas container is ALWAYS black regardless of theme.
+   The Phaser renderer draws into a canvas — no CSS token should
+   bleed through here. */
+#phobos-game-container,
+[data-phaser-game] {
+  background-color: #000000 !important;
+}
+
+/* World mode — hide ALL content below header bar */
+.phobos-world-focused .phobos-world-content {
+  display: none !important;
+}
+
+/* UI mode — content visible */
+.phobos-world-bg .phobos-world-content {
+  display: flex;
+}
+
+/* Header stays visible in both modes but dims slightly in world mode */
+.phobos-world-focused .phobos-header {
+  opacity: 0.6;
+  transition: opacity 0.3s ease;
+  pointer-events: auto; /* header still clickable in world mode */
+}
+.phobos-world-focused .phobos-header:hover {
+  opacity: 1;
+  transition: opacity 0.15s ease;
+}
+.phobos-world-bg .phobos-header {
+  opacity: 1;
+  transition: opacity 0.3s ease;
+}
+
+.phobos-header {
+  position: relative;
+  z-index: 60;
+}
+
+/* World mode — the UI overlay passes clicks through to the game canvas */
+.phobos-world-focused .phobos-ui-root {
+  pointer-events: none;
+}
+.phobos-world-bg .phobos-ui-root {
+  pointer-events: auto;
+}
+
+/* ── Phaser canvas baseline fix ─────────────────────────────────────────────
+   Phaser injects a <canvas> as display:inline-block by default.
+   Inline elements sit on the text baseline, leaving a gap below equal
+   to the line-height descender. Setting display:block eliminates it.
+   Also ensure the container and canvas fill their parent fully.
+*/
+#phobos-game-container canvas,
+[data-phaser-game] canvas {
+  display: block !important;
+}
+
+/* The Phaser parent div — must not collapse to zero height */
+[data-phaser-game] {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  line-height: 0;
+  font-size: 0;
+}

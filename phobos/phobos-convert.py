@@ -81,7 +81,9 @@ def _free_memory():
         pass
 
 
-def _materialize_and_save_transformer(transformer, out_dir: str, dtype, t0: float):
+def _materialize_and_save_transformer(transformer, out_dir: str, dtype, t0: float,
+                                       config_repo: str | None = None,
+                                       config_subfolder: str = "transformer"):
     """
     Dequantize all GGUF weights to BF16 and save as a standard diffusers
     transformer directory (config.json + diffusion_pytorch_model*.safetensors).
@@ -151,12 +153,32 @@ def _materialize_and_save_transformer(transformer, out_dir: str, dtype, t0: floa
         with open(index_path, "w") as f:
             json.dump(index, f, indent=2)
 
-    # Save config.json — strip quantization_config so the saved dir loads cleanly.
-    config = transformer.config.to_dict() if hasattr(transformer.config, "to_dict") else {}
-    config.pop("quantization_config", None)
-    config.pop("_pre_quantization_dtype", None)
-    with open(os.path.join(transformer_dir, "config.json"), "w") as f:
-        json.dump(config, f, indent=2)
+    # Save config.json — fetch directly from the HF repo rather than serializing
+    # from the loaded transformer object. GGUFQuantizationConfig wraps the model's
+    # config in a way that makes to_dict() return {} — the HF repo config is the
+    # correct authoritative source and is unaffected by quantization state.
+    config_saved = False
+    if config_repo:
+        try:
+            from huggingface_hub import hf_hub_download
+            config_file = hf_hub_download(
+                repo_id=config_repo,
+                filename="config.json",
+                subfolder=config_subfolder,
+            )
+            import shutil as _shutil
+            _shutil.copy(config_file, os.path.join(transformer_dir, "config.json"))
+            config_saved = True
+            emit("saving", 0.90, f"Config saved from {config_repo}/{config_subfolder}/config.json")
+        except Exception as e:
+            emit("saving", 0.90, f"Warning: could not fetch config from {config_repo}: {e} — falling back")
+    if not config_saved:
+        # Last resort: serialize from the model object (may be empty for GGUF models)
+        config = transformer.config.to_dict() if hasattr(transformer.config, "to_dict") else {}
+        config.pop("quantization_config", None)
+        config.pop("_pre_quantization_dtype", None)
+        with open(os.path.join(transformer_dir, "config.json"), "w") as f:
+            json.dump(config, f, indent=2)
 
     del state_dict, shards, transformer
     _free_memory()
@@ -196,7 +218,7 @@ def convert_flux(model_path: str, out_dir: str, dtype_str: str, config_path):
         subfolder="transformer",
         torch_dtype=dtype,
     )
-    _materialize_and_save_transformer(transformer, out_dir, dtype, t0)
+    _materialize_and_save_transformer(transformer, out_dir, dtype, t0, config_repo=config_repo)
 
 
 def convert_chroma(model_path: str, out_dir: str, dtype_str: str, config_path):
@@ -212,7 +234,7 @@ def convert_chroma(model_path: str, out_dir: str, dtype_str: str, config_path):
         subfolder="transformer",
         torch_dtype=dtype,
     )
-    _materialize_and_save_transformer(transformer, out_dir, dtype, t0)
+    _materialize_and_save_transformer(transformer, out_dir, dtype, t0, config_repo=config_repo)
 
 
 def convert_kontext(model_path: str, out_dir: str, dtype_str: str, config_path):
@@ -229,7 +251,7 @@ def convert_kontext(model_path: str, out_dir: str, dtype_str: str, config_path):
         subfolder="transformer",
         torch_dtype=dtype,
     )
-    _materialize_and_save_transformer(transformer, out_dir, dtype, t0)
+    _materialize_and_save_transformer(transformer, out_dir, dtype, t0, config_repo=config_repo)
 
 
 # ── Wan ───────────────────────────────────────────────────────────────────────
@@ -258,7 +280,7 @@ def convert_wan(model_path: str, out_dir: str, dtype_str: str, config_path):
         subfolder="transformer",
         torch_dtype=dtype,
     )
-    _materialize_and_save_transformer(transformer, out_dir, dtype, t0)
+    _materialize_and_save_transformer(transformer, out_dir, dtype, t0, config_repo=config_repo)
 
 
 # ── Qwen-Image ────────────────────────────────────────────────────────────────
@@ -276,7 +298,7 @@ def convert_qwen_image(model_path: str, out_dir: str, dtype_str: str, config_pat
         subfolder="transformer",
         torch_dtype=dtype,
     )
-    _materialize_and_save_transformer(transformer, out_dir, dtype, t0)
+    _materialize_and_save_transformer(transformer, out_dir, dtype, t0, config_repo=config_repo)
 
 
 # ── Z-Image ───────────────────────────────────────────────────────────────────

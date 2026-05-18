@@ -1,7 +1,8 @@
 {
-  "name": "dual-reasoning",
-  "version": "1.0.0",
-  "description": "Local AI Coding Engine",
+  "name": "phobos-core",
+  "version": "1.2.5",
+  "description": "Self Sovereign AI OS",
+  "author": "Richard Polidoro",
   "main": "server.ts",
   "type": "module",
   "scripts": {
@@ -26,7 +27,12 @@
     "build:lite:linux-arm": "node scripts/build-lite.js linux-arm64",
     "start": "node dist/server.js",
     "db:setup": "node scripts/setup-db.js",
-    "build:llamaarm64": "gh workflow run build-llamaarm64.yml"
+    "build:llamaarm64": "gh workflow run build-llamaarm64.yml",
+    "build:app": "node scripts/build-app.js --unpacked",
+    "build:no-app": "node build.js --no-app --no-deps-backup",
+    "build:core": "node build.js --no-app --no-deps-backup",
+    "build:app:win": "node scripts/build-app.js",
+    "zip": "node scripts/zip-project.js"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",
@@ -72,7 +78,9 @@
     "esbuild": "^0.27.3",
     "postject": "^1.0.0-alpha.6",
     "tsx": "^4.19.2",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "electron": "^35.0.0",
+    "electron-builder": "^26.8.0"
   },
   "overrides": {
     "duckdb-async": {

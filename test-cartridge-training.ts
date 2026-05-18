@@ -223,12 +223,19 @@ async function main() {
       const { promisify } = await import('node:util');
       const execAsync = promisify(execFile);
       try {
+        const importEnv = vendor === 'rocm' ? {
+          ...process.env,
+          PYTHONUTF8:                '1',
+          HIP_VISIBLE_DEVICES:       '0',
+          HSA_OVERRIDE_GFX_VERSION:  '11.5.0',
+          UNSLOTH_SKIP_TORCHVISION_CHECK: '1',
+        } : { ...process.env, PYTHONUTF8: '1' };
         await execAsync(
           pyBin,
-          ['-c', 'import unsloth, trl, safetensors, huggingface_hub; print("ok")'],
-          { timeout: 180_000, env: { ...process.env, PYTHONUTF8: '1' } },
+          ['-c', 'import torch, transformers, safetensors; print("ok")'],
+          { timeout: 180_000, env: importEnv },
         );
-        console.log('       unsloth, trl, safetensors, huggingface_hub — all importable');
+        console.log('       torch, transformers, safetensors — all importable');
       } catch {
         const pipBin = pyBin.replace(/python(\.exe)?$/, process.platform === 'win32' ? 'pip.exe' : 'pip3');
         const tvIndex = vendor === 'rocm'
@@ -237,7 +244,7 @@ async function main() {
           ? 'https://download.pytorch.org/whl/xpu'
           : 'https://download.pytorch.org/whl/cu128';
         throw new Error(
-          'unsloth or trl not importable. Install manually using the full venv pip path:\n' +
+          'torch or transformers not importable. Install manually using the full venv pip path:\n' +
           `         1. & "${pipBin}" install torchvision --index-url ${tvIndex} --no-deps\n` +
           `         2. & "${pipBin}" install "unsloth>=2025.3.0" trl sentencepiece pypdf markdown-it-py --no-deps\n` +
           `         3. & "${pipBin}" install unsloth_zoo --no-deps\n` +

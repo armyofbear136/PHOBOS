@@ -1008,6 +1008,10 @@ export interface GGUFSpec {
   kvCacheMbPer1kTokens: number;
   ramRequiredGb: number;
   contextWindow: number;
+  /** SPDX license identifier shown in the download confirm dialog. e.g. 'Apache-2.0', 'Meta-Llama-3-Community'. */
+  license: string;
+  /** URL to the full license text. Shown as a link in the download confirm dialog. */
+  licenseUrl: string;
   /** If true, model is shown in the Legacy section of the UI. Still downloadable/usable. */
   legacy?: boolean;
   /**
@@ -1087,6 +1091,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 80_000_000, ramRequiredGb: 1, contextWindow: 8192,
     kvCacheMbPer1kTokens: 0,  // embedding model — no KV cache
     activeParamsB: 0.14, speedClass: 'fast',
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
 
   // ── Llama 3 family ───────────────────────────────────────────────────────────
@@ -1099,6 +1104,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 2_020_000_000, ramRequiredGb: 3, contextWindow: 131072,
     kvCacheMbPer1kTokens: 112,  // 28 layers x 8 KV heads x 128 head_dim x 2 x F16
     activeParamsB: 3.0, sayonQuality: 2, speedClass: 'fast',
+    license: 'Meta-Llama-3-Community', licenseUrl: 'https://www.llama.com/llama3/license/',
   },
   {
     modelId: 'llama3.1-8b-q4', label: 'Llama 3.1 8B Q4', family: 'Llama 3',
@@ -1109,6 +1115,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 4_920_000_000, ramRequiredGb: 6, contextWindow: 131072,
     kvCacheMbPer1kTokens: 128,  // 32 layers x 8 KV heads x 128 head_dim x 2 x F16
     activeParamsB: 8.0, sayonQuality: 3, speedClass: 'medium',
+    license: 'Meta-Llama-3-Community', licenseUrl: 'https://www.llama.com/llama3/license/',
   },
   // ── Gemma 3 family ───────────────────────────────────────────────────────────
   {
@@ -1119,6 +1126,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 694_000_000, ramRequiredGb: 1, contextWindow: 32768,
     kvCacheMbPer1kTokens: 72,   // 18 layers x 4 KV heads x 256 head_dim x 2 x F16
     activeParamsB: 1.0, sayonQuality: 1, speedClass: 'fast',
+    license: 'Gemma-Terms', licenseUrl: 'https://ai.google.dev/gemma/terms',
   },
   {
     modelId: 'gemma3-4b-q4', label: 'Gemma 3 4B Q4', family: 'Gemma 3',
@@ -1129,6 +1137,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 2_530_000_000, ramRequiredGb: 3, contextWindow: 131072,
     kvCacheMbPer1kTokens: 72,   // 18 layers x 4 KV heads x 256 head_dim x 2 x F16
     activeParamsB: 4.0, sayonQuality: 3, speedClass: 'fast',
+    license: 'Gemma-Terms', licenseUrl: 'https://ai.google.dev/gemma/terms',
   },
   {
     modelId: 'gemma3-12b-q4', label: 'Gemma 3 12B Q4', family: 'Gemma 3',
@@ -1139,6 +1148,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 7_800_000_000, ramRequiredGb: 10, contextWindow: 131072,
     kvCacheMbPer1kTokens: 224,  // 28 layers x 8 KV heads x 256 head_dim x 2 x F16
     activeParamsB: 12.0, sayonQuality: 4, speedClass: 'medium',
+    license: 'Gemma-Terms', licenseUrl: 'https://ai.google.dev/gemma/terms',
   },
   // ── Qwen3.5 family (March 2026) ──────────────────────────────────────────────
   // Qwen3.5 replaces Qwen3 as the primary SEREN model family.
@@ -1162,6 +1172,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     // mmproj sourced from unsloth — bartowski Q4_K_M base + unsloth projector is a validated pairing.
     // sizeBytes is approximate; verify against actual download if needed.
     mmproj: { hfRepo: 'unsloth/Qwen3.5-4B-GGUF', hfFile: 'mmproj-BF16.gguf', sizeBytes: 900_000_000 },
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
   {
     modelId: 'qwen3.5-9b-q4', label: 'Qwen3.5 9B Q4', family: 'Qwen3.5',
@@ -1174,6 +1185,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     activeParamsB: 11.0, serenQuality: 4, speedClass: 'medium',  // GDN+sparse adds ~25% overhead vs Qwen3
     supportsVision: true,
     mmproj: { hfRepo: 'unsloth/Qwen3.5-9B-GGUF', hfFile: 'mmproj-BF16.gguf', sizeBytes: 900_000_000 },
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
   {
     modelId: 'qwen3.5-27b-q4', label: 'Qwen3.5 27B Q4', family: 'Qwen3.5',
@@ -1186,6 +1198,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     activeParamsB: 34.0, serenQuality: 5, speedClass: 'slow',  // GDN+sparse adds ~25% overhead vs dense
     supportsVision: true,
     mmproj: { hfRepo: 'unsloth/Qwen3.5-27B-GGUF', hfFile: 'mmproj-BF16.gguf', sizeBytes: 900_000_000 },
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
   {
     modelId: 'qwen3.5-35b-a3b-q4', label: 'Qwen3.5 35B-A3B Q4', family: 'Qwen3.5',
@@ -1197,6 +1210,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     activeParamsB: 3.8, serenQuality: 4, speedClass: 'fast',  // MoE 3B active + GDN overhead
     supportsVision: true,
     mmproj: { hfRepo: 'unsloth/Qwen3.5-35B-A3B-GGUF', hfFile: 'mmproj-BF16.gguf', sizeBytes: 900_000_000 },
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
   // ── Qwen3.6 family ──────────────────────────────────────────────────────────
   // Released April 2026. Builds on Qwen3.5 with major agentic coding improvements.
@@ -1216,6 +1230,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     activeParamsB: 27.0, serenQuality: 5, speedClass: 'slow',
     supportsVision: true,
     mmproj: { hfRepo: 'unsloth/Qwen3.6-27B-GGUF', hfFile: 'mmproj-BF16.gguf', sizeBytes: 931_000_000 },
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
   {
     modelId: 'qwen3.6-35b-a3b-q4', label: 'Qwen3.6 35B-A3B Q4', family: 'Qwen3.6',
@@ -1228,6 +1243,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     activeParamsB: 3.8, serenQuality: 4, speedClass: 'fast',
     supportsVision: true,
     mmproj: { hfRepo: 'unsloth/Qwen3.6-35B-A3B-GGUF', hfFile: 'mmproj-BF16.gguf', sizeBytes: 931_000_000 },
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
   // ── Qwen3 family (legacy) ───────────────────────────────────────────────────
   // Superseded by Qwen3.5. Still downloadable for users who prefer them.
@@ -1239,6 +1255,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 2_580_000_000, ramRequiredGb: 3, contextWindow: 32768,
     kvCacheMbPer1kTokens: 144,
     activeParamsB: 4.0, serenQuality: 2, speedClass: 'fast',  // standard attention — faster than Qwen3.5 on weak hardware
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
   {
     modelId: 'qwen3-8b-q4', label: 'Qwen3 8B Q4', family: 'Qwen3',
@@ -1248,6 +1265,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 32768,
     kvCacheMbPer1kTokens: 144,
     activeParamsB: 8.0, serenQuality: 3, speedClass: 'medium',
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
   {
     modelId: 'qwen3-14b-q4', label: 'Qwen3 14B Q4', family: 'Qwen3',
@@ -1257,6 +1275,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 9_000_000_000, ramRequiredGb: 11, contextWindow: 32768,
     kvCacheMbPer1kTokens: 160,
     activeParamsB: 14.0, serenQuality: 3, speedClass: 'slow',
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
   {
     modelId: 'qwen3-30b-a3b-q4', label: 'Qwen3 30B-A3B Q4', family: 'Qwen3',
@@ -1266,6 +1285,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 18_400_000_000, ramRequiredGb: 20, contextWindow: 32768,
     kvCacheMbPer1kTokens: 96,
     activeParamsB: 3.0, serenQuality: 3, speedClass: 'fast',
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
   // ── Mistral family ───────────────────────────────────────────────────────────
   {
@@ -1276,6 +1296,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 4_370_000_000, ramRequiredGb: 6, contextWindow: 32768,
     kvCacheMbPer1kTokens: 128,  // 32 layers x 8 KV heads x 128 head_dim x 2 x F16
     activeParamsB: 7.0, sayonQuality: 3, speedClass: 'medium',
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
   {
     modelId: 'magistral-24b-q4', label: 'Magistral 24B Q4', family: 'Mistral',
@@ -1285,6 +1306,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 14_400_000_000, ramRequiredGb: 16, contextWindow: 131072,
     kvCacheMbPer1kTokens: 128,  // 32 layers x 8 KV heads x 128 head_dim x 2 x F16
     activeParamsB: 24.0, serenQuality: 5, speedClass: 'slow',
+    license: 'Mistral-Research-License', licenseUrl: 'https://mistral.ai/licenses/MRL-0.1.md',
   },
   // ── Llama 4 family ──────────────────────────────────────────────────────────
   // Meta's April 2026 release. Mixture-of-Experts architecture.
@@ -1301,6 +1323,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 60_000_000_000, ramRequiredGb: 65, contextWindow: 131072,
     kvCacheMbPer1kTokens: 96,   // MoE: 17B active params, efficient KV footprint
     activeParamsB: 17.0, serenQuality: 5, speedClass: 'slow',
+    license: 'Meta-Llama-4-Community', licenseUrl: 'https://www.llama.com/llama4/license/',
   },
   // ── DeepSeek-R1 family ───────────────────────────────────────────────────────
   {
@@ -1312,6 +1335,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 1_100_000_000, ramRequiredGb: 2, contextWindow: 131072,
     kvCacheMbPer1kTokens: 28,  // 28 layers x 2 KV heads x 128 head_dim x 2 x F16
     activeParamsB: 1.5, serenQuality: 1, speedClass: 'fast',
+    license: 'MIT', licenseUrl: 'https://opensource.org/licenses/MIT',
   },
   {
     modelId: 'deepseek-r1-8b-q4', label: 'DeepSeek-R1 8B Q4', family: 'DeepSeek-R1',
@@ -1322,6 +1346,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 5_190_000_000, ramRequiredGb: 6, contextWindow: 131072,
     kvCacheMbPer1kTokens: 144,  // 36 layers x 8 KV heads x 128 head_dim x 2 x F16
     activeParamsB: 8.0, serenQuality: 3, speedClass: 'medium',
+    license: 'MIT', licenseUrl: 'https://opensource.org/licenses/MIT',
   },
   {
     modelId: 'deepseek-r1-14b-q4', label: 'DeepSeek-R1 14B Q4', family: 'DeepSeek-R1',
@@ -1332,6 +1357,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 9_050_000_000, ramRequiredGb: 11, contextWindow: 131072,
     kvCacheMbPer1kTokens: 192,  // 48 layers x 8 KV heads x 128 head_dim x 2 x F16
     activeParamsB: 14.0, serenQuality: 4, speedClass: 'slow',
+    license: 'MIT', licenseUrl: 'https://opensource.org/licenses/MIT',
   },
   {
     modelId: 'deepseek-r1-70b-q4', label: 'DeepSeek-R1 70B Q4', family: 'DeepSeek-R1',
@@ -1341,6 +1367,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 42_520_000_000, ramRequiredGb: 48, contextWindow: 131072,
     kvCacheMbPer1kTokens: 320,  // 80 layers x 8 KV heads x 128 head_dim x 2 x F16
     activeParamsB: 70.0, serenQuality: 5, speedClass: 'slow',
+    license: 'MIT', licenseUrl: 'https://opensource.org/licenses/MIT',
   },
   // ── Power-user / frontier models (400B+ parameter range) ────────────────────
   // These require 200–400+ GB of VRAM/unified memory. Practical only on multi-GPU
@@ -1357,6 +1384,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 236_000_000_000, ramRequiredGb: 256, contextWindow: 131072,
     kvCacheMbPer1kTokens: 256,  // 61 layers x MoE — active KV scales with expert routing
     activeParamsB: 37.0, serenQuality: 5, speedClass: 'slow',
+    license: 'MIT', licenseUrl: 'https://opensource.org/licenses/MIT',
   },
   // Llama 3.1 405B — Meta's largest dense Llama model. Apache 2.0.
   // Q3_K_M: ~175 GB — requires 192+ GB RAM/VRAM.
@@ -1368,6 +1396,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 175_000_000_000, ramRequiredGb: 192, contextWindow: 131072,
     kvCacheMbPer1kTokens: 512,  // 126 layers x 8 KV heads x 128 head_dim x 2 x F16
     activeParamsB: 405.0, serenQuality: 5, speedClass: 'slow',
+    license: 'Meta-Llama-3-Community', licenseUrl: 'https://www.llama.com/llama3/license/',
   },
   // ── Nemotron 3 family ────────────────────────────────────────────────────────
   // Hybrid Mamba-2/MoE-Transformer architecture from NVIDIA. Requires llama.cpp b6315+
@@ -1382,6 +1411,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 2_600_000_000, ramRequiredGb: 4, contextWindow: 262144,
     kvCacheMbPer1kTokens: 96,   // Mamba-2 hybrid (21 Mamba, 4 attn, 17 MLP layers) — pruned from 9B v2
     activeParamsB: 4.0, sayonQuality: 4, speedClass: 'fast',
+    license: 'NVIDIA-Open-Model', licenseUrl: 'https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/',
   },
   {
     modelId: 'nemotron3-9b-q4', label: 'Nemotron 3 Nano 9B v2 Q4', family: 'Nemotron 3',
@@ -1391,6 +1421,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 5_700_000_000, ramRequiredGb: 6, contextWindow: 262144,
     kvCacheMbPer1kTokens: 96,   // Nemotron-H Mamba-2 hybrid (Mamba-2 + 4 attn layers) — Nemotron Nano 2
     activeParamsB: 9.0, serenQuality: 3, speedClass: 'medium',
+    license: 'NVIDIA-Open-Model', licenseUrl: 'https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/',
   },
   {
     modelId: 'nemotron3-30b-a3b-q4', label: 'Nemotron 3 Nano 30B-A3B Q4', family: 'Nemotron 3',
@@ -1400,6 +1431,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 22_800_000_000, ramRequiredGb: 25, contextWindow: 262144,
     kvCacheMbPer1kTokens: 96,   // Mamba-2/MoE hybrid — ~3B active params, reasoning via chat_template_kwargs
     activeParamsB: 3.2, serenQuality: 4, speedClass: 'fast',
+    license: 'NVIDIA-Open-Model', licenseUrl: 'https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/',
   },
   // ── Nanbeige4.1 family ──────────────────────────────────────────────────────
   // Qwen2.5-based architecture (standard attention, no GDN overhead).
@@ -1414,6 +1446,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 2_440_000_000, ramRequiredGb: 3, contextWindow: 262144,
     kvCacheMbPer1kTokens: 112,  // Qwen2.5 architecture — 28 layers, standard GQA
     activeParamsB: 3.0, serenQuality: 3, speedClass: 'fast',  // standard attn = fast on weak hardware
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
   // ── SmolLM3 family ──────────────────────────────────────────────────────────
   // HuggingFace's fully open 3B model. GQA + NoPE architecture (standard attention).
@@ -1428,6 +1461,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 1_920_000_000, ramRequiredGb: 3, contextWindow: 65536,
     kvCacheMbPer1kTokens: 96,   // GQA + NoPE — lightweight KV cache
     activeParamsB: 3.0, serenQuality: 3, speedClass: 'fast',  // standard attn, competitive with 4B models
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
   // ── Phi-4 mini reasoning family ─────────────────────────────────────────────
   // Microsoft's reasoning distill from DeepSeek-R1. 3.8B params.
@@ -1443,6 +1477,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 2_390_000_000, ramRequiredGb: 3, contextWindow: 131072,
     kvCacheMbPer1kTokens: 96,   // Phi-4 architecture — efficient KV heads
     activeParamsB: 3.8, serenQuality: 3, speedClass: 'fast',  // R1 distill quality at 3.8B
+    license: 'MIT', licenseUrl: 'https://opensource.org/licenses/MIT',
   },
   // ── Ministral 3 Reasoning family ─────────────────────────────────────────────
   // Mistral's smallest reasoning model. 3B params. Trained for chain-of-thought.
@@ -1456,6 +1491,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 1_830_000_000, ramRequiredGb: 2, contextWindow: 131072,
     kvCacheMbPer1kTokens: 64,   // Mistral GQA — very efficient KV heads
     activeParamsB: 3.0, serenQuality: 2, speedClass: 'fast',  // smallest viable SEREN
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
   // ── Qwen3.5 sub-4B family ──────────────────────────────────────────────────
   // Qwen3.5 2B — ultra-constrained SEREN option. Thinking can be unstable.
@@ -1469,6 +1505,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     kvCacheMbPer1kTokens: 80,   // GDN hybrid — lower layers than 4B variant
     activeParamsB: 2.5, serenQuality: 1, speedClass: 'fast',  // GDN overhead + unstable thinking at 2B
     supportsVision: true,
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
   // ── Qwen3-VL family ──────────────────────────────────────────────────────────
   // Alibaba's dedicated vision-language branch of Qwen3. Separate from Qwen3.5.
@@ -1486,6 +1523,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     activeParamsB: 8.0, serenQuality: 4, speedClass: 'medium',
     supportsVision: true,
     mmproj: { hfRepo: 'Qwen/Qwen3-VL-8B-Instruct-GGUF', hfFile: 'mmproj-Qwen3VL-8B-Instruct-F16.gguf', sizeBytes: 900_000_000 },
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
 
   // ── Gemma 4 family ───────────────────────────────────────────────────────────
@@ -1505,6 +1543,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     activeParamsB: 4.0, sayonQuality: 5, speedClass: 'fast',
     supportsVision: true,
     mmproj: { hfRepo: 'bartowski/google_gemma-4-E4B-it-GGUF', hfFile: 'mmproj-google_gemma-4-E4B-it-bf16.gguf', sizeBytes: 992_000_000 },
+    license: 'Gemma-Terms', licenseUrl: 'https://ai.google.dev/gemma/terms',
   },
   {
     modelId: 'gemma4-26b-a4b-q4', label: 'Gemma 4 26B-A4B Q4', family: 'Gemma 4',
@@ -1516,6 +1555,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     activeParamsB: 4.0, serenQuality: 5, speedClass: 'fast',
     supportsVision: true,
     mmproj: { hfRepo: 'bartowski/google_gemma-4-26B-A4B-it-GGUF', hfFile: 'mmproj-google_gemma-4-26B-A4B-it-bf16.gguf', sizeBytes: 1_190_000_000 },
+    license: 'Gemma-Terms', licenseUrl: 'https://ai.google.dev/gemma/terms',
   },
   // ── Qwen3.5 Claude Opus reasoning distill family ─────────────────────────────  // Fine-tunes of Qwen3.5-27B by Jackrong trained on Claude 4.6 Opus CoT data.
   // Optimised for concise structured reasoning and agentic tool-calling.
@@ -1531,6 +1571,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 16_500_000_000, ramRequiredGb: 18, contextWindow: 262144,
     kvCacheMbPer1kTokens: 224,  // 27B dense Qwen3.5 — standard GQA KV cost
     activeParamsB: 27.0, serenQuality: 5, speedClass: 'medium',
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
   {
     modelId: 'qwen3.5-27b-opus-distill-v2-q4', label: 'Qwen3.5 27B Opus Distill v2 Q4', family: 'Qwen3.5',
@@ -1540,6 +1581,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 16_500_000_000, ramRequiredGb: 18, contextWindow: 262144,
     kvCacheMbPer1kTokens: 224,  // same base architecture as v1
     activeParamsB: 27.0, serenQuality: 5, speedClass: 'medium',
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
   {
     modelId: 'qwen3.5-9b-opus-distill-q4', label: 'Qwen3.5 9B Opus Distill Q4', family: 'Qwen3.5',
@@ -1549,6 +1591,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 5_800_000_000, ramRequiredGb: 7, contextWindow: 262144,
     kvCacheMbPer1kTokens: 144,  // 9B dense Qwen3.5 — GDN hybrid, moderate KV
     activeParamsB: 9.0, serenQuality: 4, speedClass: 'medium',
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
   {
     modelId: 'qwen3.5-2b-opus-distill-q4', label: 'Qwen3.5 2B Opus Distill Q4', family: 'Qwen3.5',
@@ -1558,6 +1601,7 @@ export const GGUF_CATALOGUE: GGUFSpec[] = [
     sizeBytes: 1_270_804_416, ramRequiredGb: 2, contextWindow: 262144,
     kvCacheMbPer1kTokens: 80,   // 2B dense — low KV cost, good for coordinator role
     activeParamsB: 2.0, sayonQuality: 3, speedClass: 'fast',
+    license: 'Apache-2.0', licenseUrl: 'https://www.apache.org/licenses/LICENSE-2.0',
   },
 ];
 
@@ -4511,9 +4555,9 @@ export const ACE_STEP_CATALOGUE: AudioModelSpec[] = [
     displayName:    'ACE-Step 1.5',
     runnerProfile:  'ace-step',
     category:       'music',
-    hfRepo:         'ACE-Step/ACE-Step-v1.5',
-    hfFile:         'model_index.json',
-    sizeBytes:      8_500_000_000,
+    hfRepo:         'ACE-Step/Ace-Step1.5',
+    hfFile:         'config.json',
+    sizeBytes:      10_100_000_000,
     vramMb:         3_800,
     cpuOnly:        false,
     license:        'Apache-2.0',
@@ -4684,6 +4728,16 @@ export function getAudioModelSpec(modelId: string): AudioModelSpec | undefined {
 export function isAudioModelDownloaded(spec: AudioModelSpec): boolean {
   const sentinelPath = path.join(audioModelDir(spec), spec.hfFile);
   if (!fs.existsSync(sentinelPath)) return false;
+  // For ace-step snapshot: config.json is the sentinel but we also need
+  // at least one weight subdirectory to be present (acestep-v15-turbo or
+  // acestep-5Hz-lm-1.7B), otherwise only the sentinel was written.
+  if (spec.runnerProfile === 'ace-step') {
+    const dir = path.dirname(sentinelPath);
+    const hasWeights = ['acestep-v15-turbo', 'acestep-5Hz-lm-1.7B', 'vae'].some(
+      (sub) => fs.existsSync(path.join(dir, sub)),
+    );
+    return hasWeights;
+  }
   return fs.statSync(sentinelPath).size >= spec.sizeBytes * 0.9;
 }
 

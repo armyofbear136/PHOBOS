@@ -36,6 +36,14 @@ import {
   startServer,
 } from '../phobos/LlamaServerManager.js';
 
+import {
+  getAudioModelSpec,
+  audioModelDir,
+  isAudioModelDownloaded,
+} from '../phobos/PhobosLocalManager.js';
+
+import { isVendorReady } from '../phobos/PythonEnvManager.js';
+
 import { gsm } from '../game/GameStateManager.js';
 
 // ── Default node for a brand-new workflow ────────────────────────────────────
@@ -73,6 +81,35 @@ function defaultVideoGenerateNode(profile?: ImageModelProfile | null) {
       seed:           -1,
       fps:            12,
       videoFrames:    49,    // ~4s at 12fps — safe default for both 1.3B and 14B
+    },
+  };
+}
+
+function defaultMusicGenerateNode() {
+  return {
+    type: 'MusicGenerate' as const,
+    label: 'Generate Music',
+    params: {
+      prompt:      '',
+      lyrics:      '',
+      duration:    30,
+      steps:       60,
+      cfgStrength: 15.0,
+      seed:        -1,
+    },
+  };
+}
+
+function defaultVoiceCloneNode() {
+  return {
+    type: 'VoiceClone' as const,
+    label: 'Voice Clone',
+    params: {
+      text:         '',
+      refAudioPath: '',
+      refText:      '',
+      speed:        1.0,
+      steps:        32,
     },
   };
 }
@@ -142,35 +179,49 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
   // Body: { name?: string, modelId?: string }
   fastify.post<{
     Params: { threadId: string };
-    Body:   { name?: string; modelId?: string; workflowType?: 'image' | 'video' };
+    Body:   { name?: string; modelId?: string; workflowType?: 'image' | 'video' | 'audio'; audioMode?: 'music' | 'clone' };
   }>(
     '/api/threads/:threadId/workflows',
     async (req, reply) => {
       const { threadId } = req.params;
       if (!threadId) return reply.status(400).send({ error: 'threadId required' });
 
-      const workflowType: 'image' | 'video' = req.body?.workflowType === 'video' ? 'video' : 'image';
+      const workflowType: 'image' | 'video' | 'audio' =
+        req.body?.workflowType === 'video' ? 'video'
+        : req.body?.workflowType === 'audio' ? 'audio'
+        : 'image';
+      const audioMode: 'music' | 'clone' = req.body?.audioMode === 'clone' ? 'clone' : 'music';
 
-      // Use explicit modelId from frontend, fall back to auto-detect (image only)
+      // For audio workflows, set modelId from catalogue; for image/video, auto-detect
       let modelId = req.body?.modelId?.trim() || '';
-      if (!modelId && workflowType === 'image') {
-        try {
-          const cfg = await buildSdConfig();
-          if (cfg) modelId = cfg.fluxSpec.modelId;
-        } catch { /* no model installed */ }
+      if (!modelId) {
+        if (workflowType === 'audio') {
+          modelId = audioMode === 'clone' ? 'f5-tts-v1-base' : 'ace-step-v1.5';
+        } else if (workflowType === 'image') {
+          try {
+            const cfg = await buildSdConfig();
+            if (cfg) modelId = cfg.fluxSpec.modelId;
+          } catch { /* no model installed */ }
+        }
       }
       if (!modelId) modelId = 'unknown';
 
-      const defaultLabel = workflowType === 'video' ? 'Video' : 'Image';
+      const defaultLabel = workflowType === 'video' ? 'Video' : workflowType === 'audio' ? (audioMode === 'clone' ? 'Voice Clone' : 'Music') : 'Image';
       const name = req.body?.name?.trim() || `${defaultLabel} ${new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`;
 
-      const spec = modelId !== 'unknown' ? getImageModelSpec(modelId) : null;
-      const profile = spec?.profile ?? null;
-      const variant = spec?.variant;
-
-      const nodes = workflowType === 'video'
-        ? [defaultVideoGenerateNode(profile)]
-        : [defaultGenerateNode(profile, variant)];
+      let nodes: Parameters<typeof createSession>[3];
+      if (workflowType === 'audio') {
+        nodes = audioMode === 'clone'
+          ? [defaultVoiceCloneNode()]
+          : [defaultMusicGenerateNode()];
+      } else {
+        const spec    = modelId !== 'unknown' ? getImageModelSpec(modelId) : null;
+        const profile = spec?.profile ?? null;
+        const variant = spec?.variant;
+        nodes = workflowType === 'video'
+          ? [defaultVideoGenerateNode(profile)]
+          : [defaultGenerateNode(profile, variant)];
+      }
 
       const session = createSession(threadId, name, modelId, nodes, workflowType);
 
@@ -224,7 +275,7 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
   // Used by the model/GPU/backend dropdowns in the workflow panel header.
   fastify.patch<{
     Params: { threadId: string; workflowId: string };
-    Body:   { modelId?: string; targetGpuIndex?: number | null; imageBackend?: 'auto' | 'pytorch' | 'sdcli' };
+    Body:   { modelId?: string; targetGpuIndex?: number | null; imageBackend?: 'auto' | 'pytorch' | 'sdcli'; audioBackend?: 'auto' | 'gpu' | 'cpu' };
   }>(
     '/api/threads/:threadId/workflows/:workflowId/config',
     async (req, reply) => {
@@ -248,6 +299,12 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
       // imageBackend: 'auto' | 'pytorch' | 'sdcli'
       if (req.body?.imageBackend !== undefined) {
         (session as any).imageBackend = req.body.imageBackend;
+        changed = true;
+      }
+
+      // audioBackend: 'auto' | 'gpu' | 'cpu'
+      if (req.body?.audioBackend !== undefined) {
+        (session as any).audioBackend = req.body.audioBackend;
         changed = true;
       }
 
@@ -672,24 +729,25 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
 
       const resolvedTarget = targetNodeIndex ?? (session.nodes.length - 1);
 
+      const isAudioSession = session.workflowType === 'audio';
+
       // Per-node model: read modelId from the target node's params if set,
-      // falling back to the session-level default. This lets each node remember
-      // which model was used to generate it.
+      // falling back to the session-level default.
       const targetNode = session.nodes[resolvedTarget];
       const effectiveModelId = ((targetNode?.params as Record<string, unknown>)?.modelId as string) || session.modelId;
-
-      // Sync session-level modelId so the WorkflowEngine (which reads session.modelId)
-      // uses the node's model. This is a runtime override — the persisted session keeps
-      // its original modelId as the default for new nodes.
       session.modelId = effectiveModelId;
 
-      let sdCfg = await buildSdConfig({
-        modelId: effectiveModelId,
-        targetGpuIndex: (session as any).targetGpuIndex,
-        imageBackend: (session as any).imageBackend,
-      });
-      if (!sdCfg) {
-        return reply.status(503).send({ error: 'No image model is downloaded.' });
+      // Audio sessions bypass the image model/SdServerConfig system entirely
+      let sdCfg: SdServerConfig | null = null;
+      if (!isAudioSession) {
+        sdCfg = await buildSdConfig({
+          modelId: effectiveModelId,
+          targetGpuIndex: (session as any).targetGpuIndex,
+          imageBackend: (session as any).imageBackend,
+        });
+        if (!sdCfg) {
+          return reply.status(503).send({ error: 'No image model is downloaded.' });
+        }
       }
 
       // Force-dirty the clicked node (but not Source nodes — they don't generate)
@@ -698,11 +756,12 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
         session.nodes[forceNodeIndex].paramSnapshot = null;
       }
 
+      // Audio sessions handle their own GPU access — never stop LLM servers
       // Check if any non-Source nodes need rendering before stopping LLM servers.
-      const needsRender = (() => {
+      const needsRender = !isAudioSession && (() => {
         for (let i = 0; i <= resolvedTarget; i++) {
           const n = session.nodes[i];
-          if (n.type === 'Source') continue; // Source nodes don't need GPU
+          if (n.type === 'Source') continue;
           if (!n.executedAt || !n.paramSnapshot || n.stale) return true;
           if (JSON.stringify(n.params) !== JSON.stringify(n.paramSnapshot)) return true;
         }
@@ -722,8 +781,10 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
         abort:       null as (() => void) | null,
       };
       runStatus.set(workflowId, status);
-      _imageGenerating = true;
-      gsm.setImageGenerating(true);
+      if (!isAudioSession) {
+        _imageGenerating = true;
+        gsm.setImageGenerating(true);
+      }
 
       const pushPhase = (renderPhase: string, detail: string) => {
         for (const p of status.phases) p.done = true;
@@ -834,13 +895,12 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
         } catch (err) {
           status.error = (err as Error).message;
         } finally {
-          // Mark generation as complete FIRST so the frontend overlay clears
-          // immediately. LLM restart happens in the background — if SEREN
-          // fails to come back (OOM, wrong GPU, etc.), the user shouldn't
-          // be stuck on the generating screen.
+          // Mark generation as complete FIRST so the frontend overlay clears immediately.
           status.generating = false;
-          _imageGenerating = false;
-          gsm.setImageGenerating(false);
+          if (!isAudioSession) {
+            _imageGenerating = false;
+            gsm.setImageGenerating(false);
+          }
           status.completedAt = Date.now();
 
           // Restart all LLM servers that were stopped (background, non-blocking)

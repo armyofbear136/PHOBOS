@@ -1,3 +1,3 @@
 // Bump this when releasing a new build.
 // The frontend CLIENT_VERSION must match or the UI shows the update screen.
-export const CORE_VERSION = '1.2.4';
+export const CORE_VERSION = '1.2.5';

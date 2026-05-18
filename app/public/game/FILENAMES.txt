@@ -1,0 +1,327 @@
+THE FILES ARE TOO BIG TO UPLOAD
+
+HERE ARE WHAT IS SUPPOSED TO BE IN HERE
+
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+Install the latest PowerShell for new features and improvements! https://aka.ms/PSWindows
+
+Loading personal and system profiles took 4120ms.
+(base) PS C:\Users\armyo\NodeJS\Projects\code-companion\public\game> dir -recurse
+
+
+    Directory: C:\Users\armyo\NodeJS\Projects\code-companion\public\game
+
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+d-----          4/9/2026   5:13 PM                Aseprite Files
+d-----          4/9/2026   5:14 PM                Atlas
+d-----          4/9/2026   4:56 PM                Decorations_tiles
+d-----         4/23/2026   9:25 PM                sprites
+d-----          4/9/2026   5:43 PM                Tiles
+-a----         4/10/2026   8:15 AM           1086 README.txt
+
+
+    Directory: C:\Users\armyo\NodeJS\Projects\code-companion\public\game\Aseprite Files
+
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a----         4/10/2026   6:32 AM           2693 Decorations_tileset.aseprite
+-a----         4/10/2026   6:32 AM           7245 Moon_tileset.aseprite
+
+
+    Directory: C:\Users\armyo\NodeJS\Projects\code-companion\public\game\Atlas
+
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a----          4/9/2026   5:07 PM           3526 Decorations_tileset_atlas.png
+-a----          4/9/2026   5:07 PM           7537 Moon_tileset_Atlas.png
+
+
+    Directory: C:\Users\armyo\NodeJS\Projects\code-companion\public\game\Decorations_tiles
+
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a----          4/9/2026   4:56 PM            456 Big_asteroid_impact_1.png
+-a----          4/9/2026   4:56 PM            552 Big_asteroid_impact_2.png
+-a----          4/9/2026   4:56 PM            470 Big_Crater_hit_1.png
+-a----          4/9/2026   4:56 PM            557 Big_rocks_1.png
+-a----          4/9/2026   4:56 PM            234 medium_asteroid_impact_1.png
+-a----          4/9/2026   4:56 PM            299 Medium_rocks_1.png
+-a----          4/9/2026   4:56 PM            279 Medium_rocks_2.png
+-a----          4/9/2026   4:56 PM            255 Medium_rocks_3.png
+-a----          4/9/2026   4:56 PM            233 Medium_rocks_4.png
+-a----          4/9/2026   4:56 PM            257 Medium_rocks_5.png
+-a----          4/9/2026   4:56 PM            236 Medium_rocks_6.png
+-a----          4/9/2026   4:56 PM            260 small_asteroid_impact_1.png
+-a----          4/9/2026   4:56 PM            180 small_asteroid_impact_2.png
+-a----          4/9/2026   4:56 PM            288 Small_Crater_hit_1.png
+-a----          4/9/2026   4:56 PM            207 Small_Crater_hit_2.png
+-a----          4/9/2026   4:56 PM            242 Small_rocks_1.png
+-a----          4/9/2026   4:56 PM            252 Small_rocks_2.png
+-a----          4/9/2026   4:56 PM            194 Small_rocks_3.png
+-a----          4/9/2026   4:56 PM            253 Spike_rock_1.png
+-a----          4/9/2026   4:56 PM            441 Spike_rock_2.png
+
+
+    Directory: C:\Users\armyo\NodeJS\Projects\code-companion\public\game\sprites
+
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+d-----          4/9/2026   5:10 PM                buildings
+d-----         4/23/2026   9:33 PM                fx
+d-----         4/10/2026   7:32 AM                machines
+d-----          4/9/2026   4:49 PM                materials
+d-----          4/9/2026   5:10 PM                minerals
+-a----         4/12/2026   1:22 AM            126 coin.png
+-a----         4/12/2026   1:22 AM            187 fighter-a-action.png
+-a----         4/12/2026   1:22 AM            241 fighter-a-move.png
+-a----         4/12/2026   1:22 AM            187 fighter-b-action.png
+-a----         4/12/2026   1:22 AM            241 fighter-b-move.png
+-a----         4/12/2026   1:22 AM            190 healer-a-action.png
+-a----         4/12/2026   1:22 AM            244 healer-a-move.png
+-a----         4/12/2026   1:22 AM            190 healer-b-action.png
+-a----         4/12/2026   1:22 AM            244 healer-b-move.png
+-a----         4/12/2026   1:22 AM            187 rogue-a-action.png
+-a----         4/12/2026   1:22 AM            241 rogue-a-move.png
+-a----         4/12/2026   1:22 AM            187 rogue-b-action.png
+-a----         4/12/2026   1:22 AM            241 rogue-b-move.png
+-a----         4/22/2026   5:49 PM        3256496 sayon-action.png
+-a----         4/22/2026   5:30 PM       32810880 sayon-move.png
+-a----         4/12/2026   1:22 AM            193 seren-action.png
+-a----         4/12/2026   1:22 AM            246 seren-move.png
+-a----         4/12/2026   1:22 AM            194 sybil-action.png
+-a----         4/12/2026   1:22 AM            247 sybil-move.png
+-a----         4/12/2026   1:22 AM            189 tank-a-action.png
+-a----         4/12/2026   1:22 AM            243 tank-a-move.png
+-a----         4/12/2026   1:22 AM            189 tank-b-action.png
+-a----         4/12/2026   1:22 AM            243 tank-b-move.png
+
+
+    Directory: C:\Users\armyo\NodeJS\Projects\code-companion\public\game\sprites\buildings
+
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a----          4/9/2026   5:10 PM           6617 Buildings_tileset.aseprite
+-a----          4/9/2026   4:52 PM           1678 ControlBase.png
+-a----          4/9/2026   4:52 PM           3019 ProducerBuilding_Empty.png
+-a----          4/9/2026   4:52 PM           3073 ProducerBulding_full.png
+-a----          4/9/2026   4:52 PM           1552 StorageContainer_closed.png
+-a----          4/9/2026   4:52 PM           1653 StorageContainer_opened.png
+-a----          4/9/2026   4:52 PM           1479 Uncharged_zone.png
+
+
+    Directory: C:\Users\armyo\NodeJS\Projects\code-companion\public\game\sprites\fx
+
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a----         4/23/2026   9:28 PM            427 particle-dot.png
+-a----         4/23/2026   9:27 PM           1322 shadow-oval.png
+-a----         4/23/2026   9:33 PM          23480 snowflake.png
+
+
+    Directory: C:\Users\armyo\NodeJS\Projects\code-companion\public\game\sprites\machines
+
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a----         4/10/2026   7:32 AM            460 Big_PC_machine.png
+-a----         4/10/2026   7:31 AM            793 Big_SolarPanel_machine.png
+-a----         4/10/2026   7:31 AM            908 Comunication_machine.png
+-a----         4/10/2026   7:32 AM           1079 Cool_machine.png
+-a----         4/10/2026   7:32 AM            607 Drill_machine.png
+-a----         4/10/2026   7:32 AM            371 Extension_machine_1.png
+-a----         4/10/2026   7:32 AM            307 Extension_machine_2.png
+-a----         4/10/2026   7:32 AM            739 General_machine_1.png
+-a----         4/10/2026   7:32 AM            741 General_machine_2.png
+-a----         4/10/2026   7:32 AM           1200 General_machine_3.png
+-a----         4/10/2026   7:32 AM            589 Grab_machine.png
+-a----         4/10/2026   7:32 AM            459 Hammer_machine.png
+-a----         4/10/2026   7:32 AM            345 Medium_PC_machine.png
+-a----         4/10/2026   7:31 AM            533 Medium_SolarPanel_machine.png
+-a----         4/10/2026   7:32 AM            481 Metal_box.png
+-a----         4/10/2026   7:32 AM            490 Oil_extractor_machine.png
+-a----         4/10/2026   7:32 AM            483 Pilar_1.png
+-a----         4/10/2026   7:32 AM            393 Pilar_2.png
+-a----         4/10/2026   7:32 AM            375 Pilar_3.png
+-a----         4/10/2026   7:32 AM            332 Pilar_4.png
+-a----         4/10/2026   7:32 AM            719 Pilar_5.png
+-a----         4/10/2026   7:32 AM            611 Processor_machine_1.png
+-a----         4/10/2026   7:31 AM           1465 Refill_machine.png
+-a----         4/10/2026   7:32 AM            423 Slice 21.png
+-a----         4/10/2026   7:32 AM            521 Slice 22.png
+-a----         4/10/2026   7:32 AM            301 Small_PC_machine.png
+-a----         4/10/2026   7:31 AM            321 Small_SolarPanel_machine.png
+
+
+    Directory: C:\Users\armyo\NodeJS\Projects\code-companion\public\game\sprites\materials
+
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a----          4/9/2026   4:48 PM            433 Black_box.png
+-a----          4/9/2026   4:48 PM            416 black_capsule.png
+-a----          4/9/2026   4:48 PM            460 black_column.png
+-a----          4/9/2026   4:48 PM            271 Black_liquid_material.png
+-a----          4/9/2026   4:48 PM            332 Black_material_1.png
+-a----          4/9/2026   4:48 PM            389 Black_material_2.png
+-a----          4/9/2026   4:48 PM            390 Black_material_3.png
+-a----          4/9/2026   4:48 PM            391 Black_material_4.png
+-a----          4/9/2026   4:48 PM            439 Blue_box.png
+-a----          4/9/2026   4:48 PM            477 Blue_capsule.png
+-a----          4/9/2026   4:48 PM            300 Blue_liquid_material.png
+-a----          4/9/2026   4:48 PM            294 Blue_material_1.png
+-a----          4/9/2026   4:47 PM            351 Blue_material_2.png
+-a----          4/9/2026   4:47 PM            363 Blue_material_3.png
+-a----          4/9/2026   4:47 PM            364 Blue_material_4.png
+-a----          4/9/2026   4:48 PM            488 Brown_capsule.png
+-a----          4/9/2026   4:48 PM            484 Brown_column.png
+-a----          4/9/2026   4:48 PM            286 Brown_liquid_material.png
+-a----          4/9/2026   4:48 PM            292 Brown_material_1.png
+-a----          4/9/2026   4:48 PM            353 Brown_material_2.png
+-a----          4/9/2026   4:48 PM            361 Brown_material_3.png
+-a----          4/9/2026   4:48 PM            361 Brown_material_4.png
+-a----          4/9/2026   4:48 PM            468 Darkblue_column.png
+-a----          4/9/2026   4:48 PM            373 Empty_capsule.png
+-a----          4/9/2026   4:48 PM            411 empty_column.png
+-a----          4/9/2026   4:48 PM            445 Green_box.png
+-a----          4/9/2026   4:48 PM            609 Green_capsule.png
+-a----          4/9/2026   4:48 PM            479 Green_column.png
+-a----          4/9/2026   4:48 PM            294 Green_liquid_material.png
+-a----          4/9/2026   4:48 PM            288 Green_material_1.png
+-a----          4/9/2026   4:48 PM            350 Green_material_2.png
+-a----          4/9/2026   4:48 PM            351 Green_material_3.png
+-a----          4/9/2026   4:48 PM            352 Green_material_4.png
+-a----          4/9/2026   4:48 PM            461 LightBlue_column.png
+-a----          4/9/2026   4:48 PM            474 Orange_capsule.png
+-a----          4/9/2026   4:48 PM            480 Orange_column.png
+-a----          4/9/2026   4:48 PM            296 Orange_liquid_material.png
+-a----          4/9/2026   4:48 PM            436 Pink_box.png
+-a----          4/9/2026   4:48 PM            488 Pink_capsule.png
+-a----          4/9/2026   4:48 PM            468 Pink_column.png
+-a----          4/9/2026   4:48 PM            298 Pink_liquid_material.png
+-a----          4/9/2026   4:48 PM            302 Pink_material_1.png
+-a----          4/9/2026   4:48 PM            365 Pink_material_2.png
+-a----          4/9/2026   4:48 PM            371 Pink_material_3.png
+-a----          4/9/2026   4:48 PM            373 Pink_material_4.png
+-a----          4/9/2026   4:48 PM            438 Red_box.png
+-a----          4/9/2026   4:48 PM            463 Red_capsule.png
+-a----          4/9/2026   4:48 PM            490 Red_column.png
+-a----          4/9/2026   4:48 PM            284 Red_liquid_material.png
+-a----          4/9/2026   4:48 PM            293 Red_material_1.png
+-a----          4/9/2026   4:48 PM            358 Red_material_2.png
+-a----          4/9/2026   4:48 PM            361 Red_material_3.png
+-a----          4/9/2026   4:48 PM            362 Red_material_4.png
+-a----          4/9/2026   4:48 PM            427 White_box.png
+-a----          4/9/2026   4:48 PM            296 White_material_1.png
+-a----          4/9/2026   4:48 PM            360 White_material_2.png
+-a----          4/9/2026   4:48 PM            374 White_material_3.png
+-a----          4/9/2026   4:48 PM            376 White_material_4.png
+-a----          4/9/2026   4:48 PM            441 Yellow_capsule.png
+-a----          4/9/2026   4:48 PM            462 Yellow_column.png
+-a----          4/9/2026   4:48 PM            298 Yellow_liquid_material.png
+-a----          4/9/2026   4:48 PM            283 Yellow_material_1.png
+-a----          4/9/2026   4:48 PM            349 Yellow_material_2.png
+-a----          4/9/2026   4:48 PM            351 Yellow_material_3.png
+-a----          4/9/2026   4:48 PM            352 Yellow_material_4.png
+
+
+    Directory: C:\Users\armyo\NodeJS\Projects\code-companion\public\game\sprites\minerals
+
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a----          4/9/2026   5:01 PM            556 Big_Black_Mineral.png
+-a----          4/9/2026   5:01 PM            857 Big_Blue_Mineral.png
+-a----          4/9/2026   5:01 PM            856 Big_Brown_Mineral.png
+-a----          4/9/2026   5:01 PM            887 Big_Green_Mineral.png
+-a----          4/9/2026   5:01 PM            848 Big_Pink_Mineral.png
+-a----          4/9/2026   5:01 PM            873 Big_red_Mineral.png
+-a----          4/9/2026   5:01 PM            854 Big_Yellow_Mineral.png
+-a----          4/9/2026   5:01 PM            465 Medium_Black_Mineral.png
+-a----          4/9/2026   5:01 PM            665 Medium_Blue_Mineral.png
+-a----          4/9/2026   5:01 PM            642 Medium_Brown_Mineral.png
+-a----          4/9/2026   5:01 PM            692 Medium_Green_Mineral.png
+-a----          4/9/2026   5:01 PM            658 Medium_Pink_Mineral.png
+-a----          4/9/2026   5:01 PM            664 Medium_red_Mineral.png
+-a----          4/9/2026   5:01 PM            633 Medium_Yellow_Mineral.png
+-a----          4/9/2026   5:10 PM           5784 Minerals_tileset.aseprite
+-a----          4/9/2026   5:01 PM            273 Small_Black_Mineral.png
+-a----          4/9/2026   5:01 PM            382 Small_Blue_Mineral.png
+-a----          4/9/2026   5:01 PM            384 Small_Brown_Mineral.png
+-a----          4/9/2026   5:01 PM            390 Small_Green_Mineral.png
+-a----          4/9/2026   5:01 PM            376 Small_Pink_Mineral.png
+-a----          4/9/2026   5:01 PM            390 small_red_Mineral.png
+-a----          4/9/2026   5:01 PM            380 Small_Yellow_Mineral.png
+
+
+    Directory: C:\Users\armyo\NodeJS\Projects\code-companion\public\game\Tiles
+
+
+Mode                 LastWriteTime         Length Name
+----                 -------------         ------ ----
+-a----          4/9/2026   5:06 PM            516 Slice 1.png
+-a----          4/9/2026   5:05 PM            443 Slice 10.png
+-a----          4/9/2026   5:05 PM            415 Slice 11.png
+-a----          4/9/2026   5:05 PM            464 Slice 12.png
+-a----          4/9/2026   5:05 PM            449 Slice 13.png
+-a----          4/9/2026   5:05 PM            290 Slice 14.png
+-a----          4/9/2026   5:05 PM            336 Slice 15.png
+-a----          4/9/2026   5:05 PM            515 Slice 16.png
+-a----          4/9/2026   5:05 PM            494 Slice 17.png
+-a----          4/9/2026   5:05 PM            446 Slice 18.png
+-a----          4/9/2026   5:05 PM            444 Slice 19.png
+-a----          4/9/2026   5:06 PM            475 Slice 2.png
+-a----          4/9/2026   5:05 PM            451 Slice 20.png
+-a----          4/9/2026   5:05 PM            461 Slice 21.png
+-a----          4/9/2026   5:05 PM            484 Slice 22.png
+-a----          4/9/2026   5:05 PM            465 Slice 23.png
+-a----          4/9/2026   5:05 PM            459 Slice 24.png
+-a----          4/9/2026   5:05 PM            450 Slice 25.png
+-a----          4/9/2026   5:05 PM            465 Slice 26.png
+-a----          4/9/2026   5:05 PM            425 Slice 27.png
+-a----          4/9/2026   5:05 PM            444 Slice 28.png
+-a----          4/9/2026   5:05 PM            436 Slice 29.png
+-a----          4/9/2026   5:06 PM            518 Slice 3.png
+-a----          4/9/2026   5:05 PM            483 Slice 30.png
+-a----          4/9/2026   5:05 PM            474 Slice 31.png
+-a----          4/9/2026   5:05 PM            480 Slice 32.png
+-a----          4/9/2026   5:05 PM            455 Slice 33.png
+-a----          4/9/2026   5:05 PM            393 Slice 34.png
+-a----          4/9/2026   5:05 PM            400 Slice 35.png
+-a----          4/9/2026   5:05 PM            373 Slice 36.png
+-a----          4/9/2026   5:05 PM            423 Slice 37.png
+-a----          4/9/2026   5:05 PM            428 Slice 38.png
+-a----          4/9/2026   5:05 PM            457 Slice 39.png
+-a----          4/9/2026   5:06 PM            498 Slice 4.png
+-a----          4/9/2026   5:05 PM            442 Slice 40.png
+-a----          4/9/2026   5:05 PM            479 Slice 41.png
+-a----          4/9/2026   5:05 PM            496 Slice 42.png
+-a----          4/9/2026   5:05 PM            408 Slice 43.png
+-a----          4/9/2026   5:05 PM            421 Slice 44.png
+-a----          4/9/2026   5:05 PM            400 Slice 45.png
+-a----          4/9/2026   5:05 PM            457 Slice 46.png
+-a----          4/9/2026   5:05 PM            431 Slice 47.png
+-a----          4/9/2026   5:05 PM            511 Slice 48.png
+-a----          4/9/2026   5:05 PM            525 Slice 49.png
+-a----          4/9/2026   5:06 PM            303 Slice 5.png
+-a----          4/9/2026   5:05 PM            475 Slice 50.png
+-a----          4/9/2026   5:05 PM            489 Slice 51.png
+-a----          4/9/2026   5:05 PM            426 Slice 52.png
+-a----          4/9/2026   5:05 PM            442 Slice 53.png
+-a----          4/9/2026   5:05 PM            452 Slice 54.png
+-a----          4/9/2026   5:06 PM            340 Slice 6.png
+-a----          4/9/2026   5:06 PM            593 Slice 7.png
+-a----          4/9/2026   5:05 PM            435 Slice 8.png
+-a----          4/9/2026   5:05 PM            609 Slice 9.png
+
+
+(base) PS C:\Users\armyo\NodeJS\Projects\code-companion\public\game>

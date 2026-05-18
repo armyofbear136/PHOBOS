@@ -17,6 +17,7 @@ import type { RelayInbound, RelayOutbound, SignalOffer, SignalIce } from './Remo
 export interface SignalingClientOptions {
   relayUrl:        string;
   activeUser:      string;
+  instanceId:      string;
   onOffer:         (offer: SignalOffer) => void;
   onIce:           (candidate: SignalIce) => void;
   onCode:          (code: string, iceServers: RTCIceServer[]) => void;
@@ -24,22 +25,29 @@ export interface SignalingClientOptions {
   onRelayDisconnect: () => void;
 }
 
-const BACKOFF_INIT_MS = 1_000;
-const BACKOFF_MAX_MS  = 30_000;
+const BACKOFF_INIT_MS    = 1_000;
+const BACKOFF_MAX_MS     = 30_000;
+// On first connect, wait up to this long for the relay to wake (render.com cold start).
+const STARTUP_GRACE_MS   = 5 * 60 * 1_000;   // 5 minutes
 
 export class SignalingClient {
-  private _ws:          WebSocket | null = null;
-  private _code:        string | null    = null;
-  private _iceServers:  RTCIceServer[]   = [];
-  private _backoffMs:   number           = BACKOFF_INIT_MS;
-  private _destroyed:   boolean          = false;
+  private _ws:             WebSocket | null = null;
+  private _code:           string | null    = null;
+  private _iceServers:     RTCIceServer[]   = [];
+  private _backoffMs:      number           = BACKOFF_INIT_MS;
+  private _destroyed:      boolean          = false;
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private _pingTimer:      ReturnType<typeof setInterval> | null = null;
+  // Deadline for first successful registration — relay gets STARTUP_GRACE_MS to wake up.
+  private _startupDeadline: number          = Date.now() + STARTUP_GRACE_MS;
+  private _registered:      boolean         = false;
 
   constructor(private readonly opts: SignalingClientOptions) {}
 
   // ── Public API ──────────────────────────────────────────────────────────────
 
   getCode(): string | null        { return this._code; }
+  getRelayUrl(): string           { return this.opts.relayUrl; }
   getIceServers(): RTCIceServer[] { return this._iceServers; }
 
   connect(): void {
@@ -72,6 +80,10 @@ export class SignalingClient {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
     }
+    if (this._pingTimer !== null) {
+      clearInterval(this._pingTimer);
+      this._pingTimer = null;
+    }
     this._ws?.close();
     this._ws = null;
   }
@@ -94,6 +106,12 @@ export class SignalingClient {
       this._backoffMs = BACKOFF_INIT_MS;
       this.opts.onRelayConnect();
       this._register();
+      // Keep the WebSocket alive through hosting-provider idle timeouts (typically 60s).
+      this._pingTimer = setInterval(() => {
+        if (this._ws?.readyState === WebSocket.OPEN) {
+          this._ws.ping();
+        }
+      }, 20_000);
     });
 
     this._ws.on('message', (raw: Buffer | string) => {
@@ -109,6 +127,7 @@ export class SignalingClient {
     this._ws.on('close', () => {
       console.warn('[SignalingClient] Relay WebSocket closed');
       this.opts.onRelayDisconnect();
+      if (this._pingTimer !== null) { clearInterval(this._pingTimer); this._pingTimer = null; }
       this._ws = null;
       this._scheduleReconnect();
     });
@@ -120,7 +139,7 @@ export class SignalingClient {
   }
 
   private _register(): void {
-    const msg: RelayOutbound = { type: 'register', activeUser: this.opts.activeUser };
+    const msg: RelayOutbound = { type: 'register', instanceId: this.opts.instanceId, activeUser: this.opts.activeUser };
     this._send(msg);
   }
 
@@ -129,7 +148,8 @@ export class SignalingClient {
       case 'registered':
         this._code       = msg.code;
         this._iceServers = msg.iceServers;
-        console.log(`[SignalingClient] Access code: ${msg.code} (expires in ${msg.expiresIn / 1000}s)`);
+        this._registered = true;
+        console.log(`[SignalingClient] Registered instanceId: ${msg.code}${msg.expiresIn ? ` (expires in ${msg.expiresIn / 1000}s)` : ' (permanent)'}`);
         this.opts.onCode(msg.code, msg.iceServers);
         break;
 
@@ -159,7 +179,15 @@ export class SignalingClient {
     if (this._destroyed) return;
     const delay = this._backoffMs;
     this._backoffMs = Math.min(this._backoffMs * 2, BACKOFF_MAX_MS);
-    console.log(`[SignalingClient] Reconnecting in ${delay}ms`);
+
+    const withinGrace = !this._registered && Date.now() < this._startupDeadline;
+    const remaining   = Math.round((this._startupDeadline - Date.now()) / 1000);
+    if (withinGrace) {
+      console.log(`[SignalingClient] Relay not yet reachable — retrying in ${delay / 1000}s (grace window: ${remaining}s remaining)`);
+    } else {
+      console.log(`[SignalingClient] Reconnecting in ${delay / 1000}s`);
+    }
+
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;
       this._open();

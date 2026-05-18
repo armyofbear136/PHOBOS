@@ -8,7 +8,8 @@ import fs from 'fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
-const SKILLS_ROOT = path.join(os.homedir(), 'NodeJS', 'Projects', 'dual-reasoning', 'phobos', 'skills');
+const PHOBOS_HOME  = process.env.PHOBOS_DATA_DIR ?? path.join(os.homedir(), '.phobos');
+const SKILLS_ROOT  = path.join(PHOBOS_HOME, 'skills');
 
 const SKILLS = [
   // ── 1. context-compression ────────────────────────────────────────────────

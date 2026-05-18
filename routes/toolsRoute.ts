@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import path from 'node:path';
 import { type FastifyInstance } from 'fastify';
 import * as http from 'http';
 import {
@@ -34,6 +35,22 @@ import {
   GODOT_DIR,
 } from '../services/GodotManager.js';
 import fastifyStatic from '@fastify/static';
+import os from 'node:os';
+
+// ── Monaco static dir ─────────────────────────────────────────────────────────
+// Resolved in priority order:
+//   1. PHOBOS_FRONTEND_DIST env var (set by electron main or .env)
+//   2. Sibling dist/ relative to this file's compiled location (packaged layout)
+//   3. CWD/dist (fallback for ts-node / dev)
+function resolveMonacoDir(): string {
+  if (process.env.PHOBOS_FRONTEND_DIST) {
+    return path.join(process.env.PHOBOS_FRONTEND_DIST, 'monaco', 'vs');
+  }
+  // __dirname is dist/ in compiled output; dist/../dist = dist in packaged layout
+  const sibling = path.join(__dirname, '..', 'dist', 'monaco', 'vs');
+  if (fs.existsSync(sibling)) return sibling;
+  return path.join(process.cwd(), 'dist', 'monaco', 'vs');
+}
 
 export async function registerToolsRoutes(fastify: FastifyInstance): Promise<void> {
 
@@ -360,5 +377,28 @@ export async function registerToolsRoutes(fastify: FastifyInstance): Promise<voi
       res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     },
   });
+
+  // ── Monaco editor workers ─────────────────────────────────────────────────
+  // Serves GET /monaco/vs/* from the frontend's built public/monaco/vs dir.
+  // Monaco's loader.config({ paths: { vs: ENGINE_URL + '/monaco/vs' } }) in
+  // MonacoPanel.tsx points here, bypassing the phobos:// custom protocol which
+  // blob workers cannot importScripts() from in Electron.
+  const MONACO_VS_DIR = resolveMonacoDir();
+  if (fs.existsSync(MONACO_VS_DIR)) {
+    await fastify.register(fastifyStatic, {
+      root:          MONACO_VS_DIR,
+      prefix:        '/monaco/vs/',
+      decorateReply: false,
+      setHeaders: (res, filePath) => {
+        // Workers need correct MIME — .js files served as application/javascript
+        // by default from @fastify/static, which is correct.
+        // Allow cross-origin fetch from phobos:// renderer.
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      },
+    });
+  } else {
+    fastify.log.warn(`[monaco] worker dir not found: ${MONACO_VS_DIR} — Monaco editor workers will fail`);
+  }
 
 }

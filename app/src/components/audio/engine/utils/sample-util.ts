@@ -1,0 +1,173 @@
+/**
+ * The MIT License (MIT)
+ *
+ * Igor Zinken 2021-2026 - https://www.igorski.nl
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to
+ * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+ * the Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+ * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+import { MP3, WAV } from "@engine/definitions/file-types";
+import type { EffluxAudioEvent } from "@engine/model/types/audio-event";
+import { PlaybackType, type Sample } from "@engine/model/types/sample";
+import Pitch from "@engine/services/audio/pitch";
+
+export const MP3_PAD_START = 1057; // samples added at the beginning of an MP3 encoded file
+
+/**
+ * Slices given Buffer for given range into a new Buffer.
+ * Returns null when an invalid range was requested.
+ * 
+ * Begin and end values are provided in seconds (relative to buffer.duration)
+ * 
+ * NOTE: AudioContext can be optional here as for creating buffers we don't require
+ * an unlocked AudioContext.
+ */
+export const sliceBuffer = ( buffer: AudioBuffer, begin: number, end: number, audioContext: BaseAudioContext = new window.AudioContext() ): AudioBuffer | null => {
+    const { duration, numberOfChannels, sampleRate } = buffer;
+
+    if ( begin < 0 || end > duration ) {
+        return null;
+    }
+    const startOffset = sampleRate * begin;
+    const endOffset   = sampleRate * end;
+    const frameCount  = endOffset - startOffset;
+
+    let outputBuffer: AudioBuffer;
+
+    try {
+        outputBuffer = audioContext.createBuffer( numberOfChannels, frameCount, sampleRate );
+        const tempChannel = new Float32Array( frameCount );
+        let offset = 0;
+
+        for ( let channel = 0; channel < numberOfChannels; ++channel ) {
+            buffer.copyFromChannel( tempChannel, channel, startOffset );
+            outputBuffer.copyToChannel( tempChannel, channel, offset );
+        }
+    } catch {
+        return null;
+    }
+    return outputBuffer;
+};
+
+export const getSliceIndexForNote = ( audioEvent: EffluxAudioEvent, sample: Sample ): number | undefined  => {
+    const max = sample.slices.length;
+    const idx = Pitch.OCTAVE_SCALE.indexOf( audioEvent.note ) + (( audioEvent.octave - 1 ) * Pitch.OCTAVE_SCALE.length );
+
+    return idx < max ? idx : undefined;
+};
+
+export const resampleBuffer = async ( buffer: AudioBuffer, sampleRate: number ): Promise<AudioBuffer> => {
+    return new Promise( resolve => {
+        const context = new OfflineAudioContext( buffer.numberOfChannels, buffer.duration * sampleRate, sampleRate );
+        context.oncomplete = ( event: OfflineAudioCompletionEvent ) => {
+            resolve( event.renderedBuffer );
+        };
+        const source  = context.createBufferSource();
+        source.buffer = buffer;
+        source.connect( context.destination );
+
+        source.start();
+        context.startRendering();
+    });
+};
+
+/**
+ * Exports given buffer to a WAV file
+ */
+export const bufferToWAV = ( buffer: AudioBuffer ): Blob => {
+    const channelAmount = buffer.numberOfChannels;
+    const length        = ( buffer.length * channelAmount * 2 ) + 44;
+    const outputBuffer  = new ArrayBuffer( length );
+    const view          = new DataView( outputBuffer );
+    const channels      = [];
+
+    let offset = 0;
+    let pos    = 0;
+
+    function setUint16( data: number ): void {
+        view.setUint16( pos, data, true );
+        pos += 2;
+    }
+
+    function setUint32( data: number ): void {
+        view.setUint32( pos, data, true );
+        pos += 4;
+    }
+
+    // write WAVE header
+    setUint32( 0x46464952 );                         // "RIFF"
+    setUint32( length - 8 );                         // file length - 8
+    setUint32( 0x45564157 );                         // "WAVE"
+
+    setUint32( 0x20746d66 );                         // "fmt " chunk
+    setUint32( 16 );                                 // length = 16
+    setUint16( 1 );                                  // PCM (uncompressed)
+    setUint16( channelAmount );
+    setUint32( buffer.sampleRate );
+    setUint32( buffer.sampleRate * 2 * channelAmount ); // avg. bytes/sec
+    setUint16( channelAmount * 2 );                    // block-align
+    setUint16( 16 );                                      // 16-bit
+
+    setUint32( 0x61746164 );                         // "data" - chunk
+    setUint32( length - pos - 4 );                   // chunk length
+
+    // write interleaved data
+    for ( let i = 0; i < channelAmount; i++ ) {
+        channels.push( buffer.getChannelData( i ));
+    }
+
+    while( pos < length ) {
+        // write channels interleaved
+        for ( let i = 0; i < channelAmount; i++ ) {
+            // clamp sample with -1 to +1 range
+            let sample = Math.max( -1, Math.min( 1, channels[ i ][ offset ]));
+            // convert to 16-bit signed value
+            sample = ( 0.5 + sample < 0 ? sample * 32768 : sample * 32767 ) | 0;
+            view.setInt16( pos, sample, true );
+            pos += 2;
+        }
+        offset++;
+    }
+    return new Blob([ outputBuffer ], { type: WAV });
+};
+
+export const canOptimize = ( sample: Sample ): boolean => {
+    const { duration } = sample.buffer;
+    const hasBinarySource = sample.source instanceof Blob;
+    const isMP3 = hasBinarySource ? ( sample.source as Blob ).type === MP3 : false;
+
+    const zeroStart = isMP3 ? 0.03 : 0; // MP3 files are padded at the start
+    const canTrim = sample.type !== PlaybackType.SLICED;
+
+    if ( canTrim && ( sample.rangeStart > zeroStart || sample.rangeEnd < duration )) {
+        return true; // samples with a custom playback range can always be trimmed
+    }
+
+    if ( isMP3 ) {
+        return false; // don't optimize MP3 sources
+    }
+    
+    if ( sample.optimized === true ) {
+        return false; // previously optimized samples should be ignored
+    }
+
+    if ( hasBinarySource ) {
+        const bitRate = (( sample.source as Blob ).size * 8 ) / ( duration * 1000 ); // in kbps
+        return bitRate > 320; // anything above this value we consider optimizable
+    }
+    return false;
+};

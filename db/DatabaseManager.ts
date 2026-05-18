@@ -133,6 +133,53 @@ CREATE TABLE IF NOT EXISTS access_codes (
   created_at        TIMESTAMP NOT NULL DEFAULT now(),
   expires_at        TIMESTAMP NOT NULL
 );
+
+-- Permanent instance identity. One row: key='instance_id', value=UUID v4.
+-- Written on first boot via InstanceConfig.getInstanceId(). Never updated.
+CREATE TABLE IF NOT EXISTS instance_config (
+  key    VARCHAR PRIMARY KEY,
+  value  VARCHAR NOT NULL
+);
+
+-- Device tokens issued to registered mobile clients.
+-- All three of (token, device_id, username) must match on reconnect.
+CREATE TABLE IF NOT EXISTS device_tokens (
+  token       VARCHAR PRIMARY KEY,
+  username    VARCHAR NOT NULL,
+  device_id   VARCHAR NOT NULL,
+  created_at  TIMESTAMP NOT NULL DEFAULT now(),
+  last_used   TIMESTAMP NOT NULL DEFAULT now()
+);
+
+-- Hashed credentials for guest users. bcryptjs cost 12.
+-- Verified as second factor alongside device_token on guest reconnect.
+CREATE TABLE IF NOT EXISTS guest_credentials (
+  username      VARCHAR PRIMARY KEY,
+  password_hash VARCHAR NOT NULL,
+  created_at    TIMESTAMP NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMP NOT NULL DEFAULT now()
+);
+
+-- Nonce tracking for outbound friend invite codes (PH1.FRD.*).
+-- Mirrors the access_codes pattern; consumed on first use.
+CREATE TABLE IF NOT EXISTS friend_invites (
+  nonce             VARCHAR PRIMARY KEY,
+  issuing_username  VARCHAR NOT NULL,
+  created_at        TIMESTAMP NOT NULL DEFAULT now(),
+  expires_at        TIMESTAMP NOT NULL,
+  consumed          BOOLEAN NOT NULL DEFAULT false
+);
+
+-- Pending friend session requests queued while Alice's UI is offline.
+-- Cleared when Alice acknowledges (accept/decline) or TTL expires.
+CREATE TABLE IF NOT EXISTS pending_friend_requests (
+  id                VARCHAR PRIMARY KEY,
+  from_instance_id  VARCHAR NOT NULL,
+  from_username     VARCHAR NOT NULL,
+  purpose           VARCHAR NOT NULL DEFAULT 'chat',
+  received_at       TIMESTAMP NOT NULL DEFAULT now(),
+  expires_at        TIMESTAMP NOT NULL
+);
 `;
 
 export const USER_SCHEMA = `

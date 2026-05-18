@@ -5,6 +5,7 @@ import os from 'node:os';
 import { mkdirSync, existsSync as fsExistsSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseManager, userDir, getActiveUser, writeActiveUser } from './db/DatabaseManager.js';
+import { getInstanceId } from './db/InstanceConfig.js';
 import { runE1Migration, MigrationFatalError } from './db/Migration.js';
 import { threadsRoute } from './routes/threads.js';
 import { messagesRoute } from './routes/messages.js';
@@ -46,7 +47,7 @@ import { initVaultCrypto }      from './vault/VaultCrypto.js';
 import { VaultStore }           from './db/VaultStore.js';
 import { initVaultManager }     from './vault/VaultManager.js';
 import { registerVaultRoutes }  from './routes/vaultRoutes.js';
-import { registerUserManagementRoutes } from './routes/userManagement.js';
+import { registerUserManagementRoutes, setUserManagementContext } from './routes/userManagement.js';
 import { registerAudioRoutes } from './routes/audio.js';
 import { shutdownKokoroDaemon } from './phobos/AudioServerManager.js';
 import { ServiceStore } from './db/ServiceStore.js';
@@ -83,6 +84,7 @@ import { registerKavitaIngestRoutes } from './routes/kavitaIngestRoutes.js';
 import { registerJellyfinIngestRoutes } from './routes/jellyfinIngestRoutes.js';
 import { registerPolarisIngestRoutes } from './routes/polarisIngestRoutes.js';
 import { registerMeridianIngestRoutes } from './routes/meridianIngestRoutes.js';
+import { registerSyncProxyRoutes }      from './routes/syncProxy.js';
 import { registerWebRTCRoutes, setWebRTCContext } from './routes/webrtc.js';
 import { registerBootEventsRoute } from './routes/bootEvents.js';
 import { runDepPrep, isPrepComplete } from './boot/DepPrep.js';
@@ -117,6 +119,7 @@ async function buildServer() {
     origin: (origin, cb) => {
       if (
         !origin ||
+        origin.startsWith('phobos://') ||
         origin.includes('localhost') ||
         origin.includes('127.0.0.1') ||
         origin.includes('autarch.net') ||
@@ -192,6 +195,7 @@ async function buildServer() {
   await registerJellyfinIngestRoutes(fastify);
   await registerPolarisIngestRoutes(fastify);
   await registerMeridianIngestRoutes(fastify);
+  await registerSyncProxyRoutes(fastify);
   await registerMpvRoutes(fastify);
   await registerIptvRoutes(fastify);
   await registerWebRTCRoutes(fastify);
@@ -415,6 +419,12 @@ async function continueBootSequence(
   if (!existingDb) await db.initialize();
   const userDb = DatabaseManager.getUserDb();
   if (!existingDb) await userDb.initialize();
+
+  // Instance identity and relay URL — resolved early so route handlers and
+  // WebRTC init both read from the same values.
+  const webrtcRelayUrl = process.env.WEBRTC_RELAY_URL ?? 'wss://autarch.net/relay';
+  const instanceId     = await getInstanceId(db);
+  console.log(`[Boot] Instance ID: ${instanceId}`);
 
   // ── PHASE 3: Core init ─────────────────────────────────────────────────────
   console.log('⚙️  [Boot] Phase 3: Core init...');
@@ -954,7 +964,6 @@ async function continueBootSequence(
   // the background. The access code routes return null until it connects.
   let webrtcSignalingClient: import('./webrtc/SignalingClient.js').SignalingClient | null = null;
   let webrtcServer: import('./webrtc/WebRTCServer.js').WebRTCServer | null = null;
-  const webrtcRelayUrl = process.env.WEBRTC_RELAY_URL ?? 'wss://autarch.net/relay';
   if (!webrtcRelayUrl) {
     console.log('[WebRTC] WEBRTC_RELAY_URL is empty — relay disabled');
   }
@@ -964,8 +973,9 @@ async function continueBootSequence(
 
     webrtcSignalingClient = new SignalingClient({
       relayUrl:   webrtcRelayUrl,
+      instanceId,
       activeUser: 'owner',
-      onCode:     (code, _ice) => console.log(`[WebRTC] Access code: ${code}`),
+      onCode:     (code, _ice) => console.log(`[WebRTC] Registered with relay: ${code}`),
       onOffer:    (offer)      => webrtcServer?.handleOffer(offer),
       onIce:      (ice)        => webrtcServer?.addIceCandidate(ice),
       onRelayConnect:    () => console.log('[WebRTC] Relay connected'),
@@ -976,6 +986,8 @@ async function continueBootSequence(
       fastify,
       signalingClient: webrtcSignalingClient,
       systemDb:        db,
+      instanceId,
+      relayUrl:        webrtcRelayUrl,
       onConnected:     () => console.log('[WebRTC] Mobile session connected'),
       onDisconnected:  () => console.log('[WebRTC] Mobile session disconnected'),
     });
@@ -985,6 +997,10 @@ async function continueBootSequence(
   } catch (err) {
     console.warn('[WebRTC] Failed to initialize (non-fatal):', (err as Error).message);
   }
+
+  // Inject context-dependent values into the user management routes now that
+  // db, instanceId, and relayUrl are all resolved.
+  setUserManagementContext(db, instanceId, webrtcRelayUrl);
 
   // ── PHASE 4: Services wait → Ready ────────────────────────────────────────
   // All service start() calls above are fire-and-forgot. Give them up to 5

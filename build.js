@@ -120,6 +120,7 @@ export async function buildForPlatform({
       'sharp',
       'tree-sitter-javascript',
       'tree-sitter-typescript',
+      'node-datachannel',
     ],
   });
 
@@ -169,6 +170,7 @@ export async function buildForPlatform({
       'sharp',
       'tree-sitter-javascript',
       'tree-sitter-typescript',
+      'node-datachannel',
     ],
   });
   log('✅ Bundle complete');
@@ -261,6 +263,35 @@ export async function buildForPlatform({
     copyDir(tsSrc, dest);
     writeFake(dest, 'node-gyp-build', FAKE_NODE_GYP_BUILD);
     log(`  ✅ tree-sitter/`);
+  }
+
+  // node-datachannel — WebRTC native addon (WebRTCServer, DataChannelHandler).
+  // Uses node-gyp-build to locate its .node binary — same pattern as tree-sitter.
+  // Staged to dist/node_modules/ so the globalPaths banner resolves require('node-datachannel').
+  const ndcSrc = path.join(__dirname, 'node_modules', 'node-datachannel');
+  if (!fs.existsSync(ndcSrc)) {
+    console.warn('  ⚠️  node-datachannel not found — run npm install (WebRTC will be unavailable)');
+  } else {
+    const dest = path.join(distDir, 'node_modules', 'node-datachannel');
+    copyDir(ndcSrc, dest);
+    writeFake(dest, 'node-gyp-build', FAKE_NODE_GYP_BUILD);
+    log(`  ✅ node-datachannel/ (WebRTC native addon)`);
+
+    // Patch phobos.cjs: replace any remaining require('node-datachannel') with a
+    // createRequire call anchored to __filename so the SEA runtime resolves it
+    // from dist/node_modules/ rather than treating it as a built-in.
+    const bundlePath2 = path.join(distDir, 'phobos.cjs');
+    if (fs.existsSync(bundlePath2)) {
+      let bundle = fs.readFileSync(bundlePath2, 'utf8');
+      if (bundle.includes("require(\"node-datachannel\")") || bundle.includes("require('node-datachannel')")) {
+        bundle = bundle.replace(
+          /require\(["']node-datachannel["']\)/g,
+          `(()=>{const{createRequire:_cr}=require("node:module");return _cr(typeof __filename!=="undefined"?__filename:process.execPath)("node-datachannel")})()`
+        );
+        fs.writeFileSync(bundlePath2, bundle, 'utf8');
+        log('    → patched phobos.cjs: node-datachannel forced via createRequire');
+      }
+    }
   }
 
   // package-lock.json — copied into dist/ so DependencyAuditor finds it in SEA context
@@ -801,11 +832,63 @@ export async function buildForPlatform({
 const isWin = process.platform === 'win32';
 const ext   = isWin ? '.exe' : '';
 
+// Flags consumed by buildAll() — passed through from npm scripts or build-full.js
+const SKIP_APP        = process.argv.includes('--no-app');
+const FULL_APP        = process.argv.includes('--full-app');   // packed single EXE, no --unpacked
+const SKIP_DEPS_BACKUP = process.argv.includes('--no-deps-backup');
+
+async function buildAll() {
+  await buildForPlatform();
+
+  // ── Electron app ────────────────────────────────────────────────────────────
+  // --no-app      → skip entirely (CI backend-only builds)
+  // --full-app    → full two-pass build, stages packed EXE to dist/  (build:full)
+  // (neither)     → --unpacked only, nothing staged to dist/          (npm run build)
+  if (SKIP_APP) {
+    console.log('\nℹ️  --no-app: skipping electron app build.');
+  } else {
+    console.log('\n🖥️  Building electron app (app/)...');
+    const { execSync } = await import('node:child_process');
+    const appScript = path.join(__dirname, 'scripts', 'build-app.js');
+    if (fs.existsSync(appScript)) {
+      const appFlags = FULL_APP ? '' : '--unpacked';
+      execSync(`node "${appScript}" ${appFlags}`.trimEnd(), { stdio: 'inherit' });
+    } else {
+      console.warn('  ⚠️  scripts/build-app.js not found — skipping electron app build.');
+    }
+  }
+
+  // ── Copy dist-deps-backup/ → dist/ ─────────────────────────────────────────
+  // Skipped when --no-deps-backup is passed (build:full, build:core, build:app).
+  // Only used by npm run build for fast local testing iteration.
+  if (SKIP_DEPS_BACKUP) {
+    console.log('\nℹ️  --no-deps-backup: skipping dist-deps-backup merge.');
+  } else {
+    const depsBackup = path.join(__dirname, 'dist-deps-backup');
+    if (fs.existsSync(depsBackup)) {
+      console.log('\n📂 Copying dist-deps-backup/ → dist/...');
+      const copyDepsDir = (src, dst) => {
+        fs.mkdirSync(dst, { recursive: true });
+        for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+          const s = path.join(src, e.name);
+          const d = path.join(dst, e.name);
+          e.isDirectory() ? copyDepsDir(s, d) : fs.copyFileSync(s, d);
+        }
+      };
+      copyDepsDir(depsBackup, DIST_DIR);
+      console.log('  ✅ dist-deps-backup/ merged into dist/');
+    } else {
+      console.log('\nℹ️  dist-deps-backup/ not found — skipping dep merge (first run or clean checkout).');
+    }
+  }
+}
+
 console.log('🚀 Starting PHOBOS build...');
-buildForPlatform()
-  .then(exe => {
+buildAll()
+  .then(() => {
+    const appNote = SKIP_APP ? '' : FULL_APP ? '  PHOBOS-app-*' : '  (unpacked, no dist staging)';
     console.log(`\n✅ Build complete → dist/phobos-core${ext}`);
-    console.log(`   dist/ layout: phobos-core${ext}  duckdb/  tree-sitter/  (.env)`);
+    console.log(`   dist/ layout: phobos-core${ext}  duckdb/  tree-sitter/${appNote}  (.env)`);
     console.log(`   Run: cd dist && .${isWin ? '\\' : '/'}phobos-core${ext}`);
   })
   .catch(err => {

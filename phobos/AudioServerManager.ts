@@ -139,6 +139,22 @@ function resolveKokoroScript(): string {
   throw new Error(`${file} not found.\nSearched:\n  ${candidates.join('\n  ')}`);
 }
 
+function resolveAceStepScript(): string {
+  const file    = 'phobos-music-acestep.py';
+  const seaDir  = path.dirname(process.execPath);
+  const candidates = [
+    path.join(seaDir, file),
+    path.join(_thisDir, file),
+    path.join(_thisDir, '..', 'phobos', file),
+    path.join(process.cwd(), 'phobos', file),
+    path.join(process.cwd(), 'dist', file),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  throw new Error(`${file} not found.\nSearched:\n  ${candidates.join('\n  ')}`);
+}
+
 // ── Portable Node binary ───────────────────────────────────────────────────────
 // In production, process.execPath is phobos.exe (SEA) — a sealed binary that
 // cannot execute .mjs scripts. A portable node binary is staged alongside it
@@ -601,17 +617,78 @@ export async function generateF5Tts(opts: F5TtsOptions): Promise<AudioGenerateRe
 // ── Music — ACE-Step (C++: ace-lm pass then ace-synth pass) ──────────────────
 
 export interface AceStepOptions extends AudioRunOptions {
-  threadId:     string;
-  prompt:       string;
-  lyrics?:      string;
-  duration?:    number;
-  steps?:       number;
-  cfgStrength?: number;
-  seed?:        number;
-  label?:       string;
+  threadId:      string;
+  prompt:        string;
+  lyrics?:       string;
+  duration?:     number;
+  steps?:        number;
+  cfgStrength?:  number;
+  seed?:         number;
+  label?:        string;
+  /** 'gpu' = Python ACEStepPipeline, 'cpu' = C++ binaries, 'auto' = GPU if available */
+  audioBackend?: 'auto' | 'gpu' | 'cpu';
 }
 
 export async function generateAceStep(opts: AceStepOptions): Promise<AudioGenerateResult> {
+  // ── Route selection: GPU (Python) vs CPU (C++ GGUF binaries) ─────────────
+  // GPU route: Python ACEStepPipeline via phobos-music-acestep.py.
+  //   Requires: PyTorch venv installed + full HF snapshot at ace-step/ace-step-v1.5/
+  // CPU route: ace-lm + ace-synth C++ binaries with GGUF models.
+  //   Requires: dist/ace-step/ binaries + ~/.phobos/models/audio/acestep/*.gguf
+  //
+  // Selection follows the same pattern as imageGen selectBackend():
+  //   'gpu'  → use GPU if available, throw if not
+  //   'cpu'  → always use C++ binaries
+  //   'auto' → GPU if available, CPU otherwise (default)
+
+  const gpuVendors = ['cuda', 'rocm', 'apple'] as const;
+  const gpuVenvReady = gpuVendors.some(v => isVendorReady(v));
+
+  const spec = getAudioModelSpec('ace-step-v1.5');
+  const snapshotReady = spec
+    ? fs.existsSync(path.join(audioModelDir(spec), 'acestep-v15-turbo'))
+    : false;
+
+  const gpuAvailable = gpuVenvReady && snapshotReady;
+
+  const requested = opts.audioBackend ?? 'auto';
+  const useGpu    = requested === 'gpu'  ? gpuAvailable
+                  : requested === 'cpu'  ? false
+                  : gpuAvailable; // 'auto'
+
+  if (requested === 'gpu' && !gpuAvailable) {
+    const why = !gpuVenvReady
+      ? 'no PyTorch GPU environment is installed'
+      : 'ACE-Step snapshot not found at ' + (spec ? audioModelDir(spec) : 'unknown');
+    throw new Error(`ACE-Step GPU route requested but unavailable: ${why}`);
+  }
+
+  if (useGpu) {
+    opts.onProgress?.('[INFO ] ACE-Step: GPU route (Python ACEStepPipeline)');
+    const { pythonBin, deviceArg } = await resolvePythonDevice();
+    const scriptPath    = resolveAceStepScript();
+    const outputPath    = path.join(os.tmpdir(), `phobos-music-${crypto.randomUUID()}.wav`);
+    const startMs       = Date.now();
+    const deviceId      = deviceArg.startsWith('cuda:') ? deviceArg.slice(5) : '0';
+    const args: string[] = [
+      scriptPath,
+      '--checkpoint-path', audioModelDir(spec!),
+      '--prompt',          opts.prompt,
+      '--lyrics',          opts.lyrics ?? '[Instrumental]',
+      '--duration',        String(opts.duration   ?? 30),
+      '--steps',           String(opts.steps      ?? 60),
+      '--cfg',             String(opts.cfgStrength ?? 15),
+      '--seed',            String(opts.seed        ?? -1),
+      '--device-id',       deviceId,
+      '--output',          outputPath,
+    ];
+    console.log(`[AudioServerManager] acestep (gpu): ${pythonBin} ${args.join(' ')}`);
+    await runProcess(pythonBin, args, outputPath, opts);
+    return { outputPath, elapsedMs: Date.now() - startMs };
+  }
+
+  // ── CPU route ─────────────────────────────────────────────────────────────
+  opts.onProgress?.('[INFO ] ACE-Step: CPU route (C++ GGUF binaries)');
   const modelsDir  = path.join(os.homedir(), '.phobos', 'models', 'audio', 'acestep');
   const lmModel    = path.join(modelsDir, 'acestep-5Hz-lm-1.7B-Q8_0.gguf');
   const ditModel   = path.join(modelsDir, 'acestep-v15-sft-Q8_0.gguf');

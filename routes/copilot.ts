@@ -181,13 +181,21 @@ export async function registerCopilotRoutes(fastify: FastifyInstance): Promise<v
   );
 
   // ── GET /api/copilot/:persona/messages ──────────────────────────────────
-  fastify.get<{ Params: { persona: string } }>(
+  // Querystring:
+  //   limit  — max messages to return (default 20, max 100)
+  //   before — created_at ISO timestamp (exclusive); returns messages older than this
+  fastify.get<{
+    Params: { persona: string };
+    Querystring: { limit?: string; before?: string };
+  }>(
     '/api/copilot/:persona/messages',
     async (req, reply) => {
       const persona = req.params.persona as CopilotPersona;
       const threadId = COPILOT_THREAD_IDS[persona];
       if (!threadId) return reply.status(400).send({ error: 'Invalid persona' });
-      const messages = await messageStore.getByThread(threadId, false);
+      const limit  = Math.min(parseInt(req.query.limit ?? '20', 10) || 20, 100);
+      const before = req.query.before;
+      const messages = await messageStore.getRecentByThread(threadId, limit, before);
       return reply.send({ messages });
     }
   );

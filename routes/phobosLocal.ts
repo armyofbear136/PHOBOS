@@ -94,6 +94,7 @@ import {
 import {
   convertModelToPyTorch,
   getPytorchVariantDir,
+  type ConvertModelType,
 } from '../phobos/ImageServerManager.js';
 
 // ── Image download lock ─────────────────────────────────────────────────────
@@ -908,6 +909,8 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
   // GET /api/phobos/image/convert?modelId=<id>
   // SSE stream — converts a single-file model to a split diffusers directory.
   // Shares the _imageDownloadActive lock so downloads and conversions are mutually exclusive.
+  // Supports all model types that phobos-convert.py handles:
+  //   sdxl, flux (→ flux), flux (chroma variant → chroma), kontext, wan, qwen-image, z-image
   fastify.get<{ Querystring: { modelId: string } }>(
     '/api/phobos/image/convert',
     async (req, reply) => {
@@ -916,9 +919,21 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       if (!spec) {
         return reply.status(400).send({ error: `Unknown image model: ${modelId}` });
       }
-      if (spec.runnerProfile !== 'sdxl') {
-        return reply.status(400).send({ error: `PyTorch conversion is only supported for SDXL models (got: ${spec.runnerProfile})` });
+
+      // Map runnerProfile → phobos-convert.py model-type
+      const RUNNER_TO_CONVERT_TYPE: Record<string, ConvertModelType> = {
+        'sdxl':       'sdxl',
+        'flux':       spec.variant === 'chroma' ? 'chroma' : 'flux',
+        'kontext':    'kontext',
+        'wan':        'wan',
+        'qwen-image': 'qwen-image',
+        'z-image':    'z-image',
+      };
+      const convertType = RUNNER_TO_CONVERT_TYPE[spec.runnerProfile];
+      if (!convertType) {
+        return reply.status(400).send({ error: `PyTorch conversion not supported for runner profile: ${spec.runnerProfile}` });
       }
+
       if (_imageDownloadActive) {
         return reply.status(409).send({ error: 'A download or conversion is already in progress' });
       }
@@ -947,9 +962,9 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         }
 
         const modelPath = fluxModelPath(spec);
-        console.log(`[phobosLocal] Converting ${modelId} to PyTorch variant — vendor: ${vendor}, path: ${modelPath}`);
+        console.log(`[phobosLocal] Converting ${modelId} (${convertType}) to PyTorch variant — vendor: ${vendor}, path: ${modelPath}`);
 
-        for await (const progress of convertModelToPyTorch(modelId, modelPath, 'sdxl', vendor)) {
+        for await (const progress of convertModelToPyTorch(modelId, modelPath, convertType, vendor)) {
           send(progress);
           if (progress.phase === 'error') return;
         }
@@ -1788,7 +1803,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
     return reply.send({ python, isPython312: isPython312(python) });
   });
 
-  // ── POST /api/phobos/audio-model/download ─────────────────────────────────
+  // ── GET /api/phobos/audio-model/download ──────────────────────────────────
   //
   // Downloads a single audio model by modelId using direct HTTPS.
   // Mirrors the LLM/image download pattern: resume-capable, progress-emitting,
@@ -1796,17 +1811,17 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
   // (hfRepo + hfFile → https://huggingface.co/<repo>/resolve/main/<file>).
   // hfFile may contain a subdirectory path (e.g. F5TTS_v1_Base/model.safetensors).
   //
-  // Body: { modelId: string }
+  // Query: ?modelId=<id>
   //
   // SSE events:
   //   { type: 'progress', bytesReceived, bytesTotal, pct }
   //   { type: 'done' }
   //   { type: 'error', message }
 
-  fastify.post<{ Body: { modelId: string } }>(
+  fastify.get<{ Querystring: { modelId: string } }>(
     '/api/phobos/audio-model/download',
     async (req, reply) => {
-      const { modelId } = req.body ?? {};
+      const { modelId } = req.query;
       if (!modelId) return reply.status(400).send({ error: '"modelId" required' });
 
       const spec = getAudioModelSpec(modelId);
@@ -1831,17 +1846,133 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       req.raw.socket?.on('close', () => abort.abort());
 
       try {
-        // All audio models download as a single file via HTTPS — the same
-        // resume-capable, redirect-following downloader used for LLM GGUFs.
-        // hfFile may contain a subdirectory (e.g. F5TTS_v1_Base/model.safetensors)
-        // so we mkdirSync on the full destPath's parent, not just audioModelDir.
-        const THROTTLE_MS    = 250;
-        const THROTTLE_BYTES = 2_097_152; // 2 MB
+        // ACE-Step is a multi-file HF snapshot — use huggingface-cli download.
+        // All other audio models are single-file HTTPS downloads.
+        const destDir  = audioModelDir(spec);
+        const destPath = path.join(destDir, spec.hfFile);
+        fs.mkdirSync(destDir, { recursive: true });
 
-        const destPath = path.join(audioModelDir(spec), spec.hfFile);
-        const tmpPath  = destPath + '.part';
+        if (spec.runnerProfile === 'ace-step') {
+          // ── Snapshot download via huggingface-cli ──────────────────────────
+          // Find any ready Python env — huggingface-cli ships with huggingface_hub
+          // which is installed in every venv. Falls back to system python.
+          const vendors: GpuVendor[] = ['cuda', 'rocm', 'xpu', 'apple'];
+          let pyBin: string | null = null;
+          for (const v of vendors) {
+            if (isVendorReady(v)) { pyBin = getPythonPath(v); if (pyBin) break; }
+          }
+          if (!pyBin) {
+            // System python fallback
+            const { execFile: execFileCb } = await import('child_process');
+            const { promisify: prom }       = await import('util');
+            try {
+              await prom(execFileCb)('python', ['--version'], { timeout: 5_000 });
+              pyBin = 'python';
+            } catch {
+              try {
+                await prom(execFileCb)('python3', ['--version'], { timeout: 5_000 });
+                pyBin = 'python3';
+              } catch { /* no python */ }
+            }
+          }
+          if (!pyBin) throw new Error('No Python found — install a GPU environment via System Settings → AI Runtimes');
 
-        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+          emit({ type: 'progress', bytesReceived: 0, bytesTotal: spec.sizeBytes, pct: 0 });
+
+          // Use snapshot_download via inline Python script — avoids huggingface-cli
+          // module path fragility across versions. Prints JSON progress lines to stdout.
+          const pyScript = [
+            'import sys, json',
+            'from huggingface_hub import snapshot_download',
+            '',
+            '# Monkey-patch tqdm wherever huggingface_hub hides it across versions',
+            'total_bytes = [0]',
+            'received_bytes = [0]',
+            '',
+            'class _PP:',
+            '    def __init__(self, *a, **kw):',
+            '        self.total = kw.get("total") or 0',
+            '        total_bytes[0] += self.total',
+            '    def update(self, n=1):',
+            '        received_bytes[0] += n',
+            '        t = total_bytes[0]',
+            '        r = received_bytes[0]',
+            '        p = min(99, int(r * 100 / t)) if t > 0 else 0',
+            '        print(json.dumps({"r": r, "t": t, "p": p}), flush=True)',
+            '    def __enter__(self): return self',
+            '    def __exit__(self, *a): pass',
+            '    def close(self): pass',
+            '    def set_postfix(self, *a, **kw): pass',
+            '',
+            'import tqdm as _tqdm_pkg',
+            '_tqdm_pkg.tqdm = _PP',
+            '_tqdm_pkg.auto.tqdm = _PP',
+            'try:',
+            '    import huggingface_hub.utils._tqdm as _hf_tqdm',
+            '    _hf_tqdm.tqdm = _PP',
+            'except ImportError:',
+            '    pass',
+            'try:',
+            '    import huggingface_hub.file_download as _fd',
+            '    _fd.tqdm = _PP',
+            'except ImportError:',
+            '    pass',
+            '',
+            'try:',
+            '    snapshot_download(',
+            '        repo_id=sys.argv[1],',
+            '        local_dir=sys.argv[2],',
+            '        local_dir_use_symlinks=False,',
+            '        ignore_patterns=["*.msgpack","*.h5","flax_model*","tf_model*","rust_model*"],',
+            '    )',
+            '    print(json.dumps({"done": True}), flush=True)',
+            'except Exception as e:',
+            '    print(json.dumps({"error": str(e)}), flush=True)',
+            '    sys.exit(1)',
+          ].join('\n');
+
+          await new Promise<void>((resolve, reject) => {
+            const { spawn: spawnProc } = require('child_process') as typeof import('child_process');
+            const proc = spawnProc(
+              pyBin!,
+              ['-c', pyScript, spec.hfRepo, destDir],
+              { stdio: ['ignore', 'pipe', 'pipe'] },
+            );
+
+            let lastEmitTime = Date.now();
+
+            proc.stdout?.on('data', (chunk: Buffer) => {
+              const lines = chunk.toString().split('\n').filter(Boolean);
+              for (const line of lines) {
+                try {
+                  const msg = JSON.parse(line);
+                  if (msg.done) return;
+                  if (msg.error) { console.error('[snapshot_download] Python error:', msg.error); reject(new Error(msg.error)); return; }
+                  const now = Date.now();
+                  if (now - lastEmitTime >= 500) {
+                    lastEmitTime = now;
+                    emit({ type: 'progress', bytesReceived: msg.r ?? 0, bytesTotal: msg.t ?? spec.sizeBytes, pct: msg.p ?? 0 });
+                  }
+                } catch { /* non-JSON line — ignore */ }
+              }
+            });
+
+            proc.stderr?.on('data', (chunk: Buffer) => { console.error('[snapshot_download:err]', chunk.toString().trimEnd()); });
+
+            proc.on('close', (code) => {
+              if (abort.signal.aborted) { resolve(); return; }
+              if (code === 0) { resolve(); } else { reject(new Error(`snapshot_download exited with code ${code}`)); }
+            });
+            proc.on('error', reject);
+            abort.signal.addEventListener('abort', () => { try { proc.kill('SIGTERM'); } catch { /**/ } });
+          });
+
+        } else {
+          // ── Single-file HTTPS download (F5-TTS, Whisper, etc.) ────────────
+          const THROTTLE_MS    = 250;
+          const THROTTLE_BYTES = 2_097_152; // 2 MB
+          const tmpPath        = destPath + '.part';
+          fs.mkdirSync(path.dirname(destPath), { recursive: true });
 
           const existingBytes = fs.existsSync(tmpPath) ? fs.statSync(tmpPath).size : 0;
           let bytesReceived   = existingBytes;
@@ -1865,7 +1996,9 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
                 { hostname: parsed.hostname, path: parsed.pathname + parsed.search, headers: reqHeaders },
                 (res) => {
                   if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) {
-                    follow(res.headers.location!, hops + 1); return;
+                    const loc  = res.headers.location!;
+                    const next = loc.startsWith('http') ? loc : new URL(loc, url).href;
+                    follow(next, hops + 1); return;
                   }
                   if (res.statusCode !== 200 && res.statusCode !== 206) {
                     reject(new Error(`HTTP ${res.statusCode}`)); return;
@@ -1904,6 +2037,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
             };
             follow(hfUrl);
           });
+        }
 
         if (!abort.signal.aborted) {
           emit({ type: 'done' });

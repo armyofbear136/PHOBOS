@@ -500,6 +500,13 @@ export class WorldScene extends Phaser.Scene {
 
     // ── Player character ───────────────────────────────────────────────
     this.player = new PlayerSprite(this);
+    // Position immediately — async fetchPlayerConfig never sets position,
+    // so without this the player sits at (0,0) inside the house cluster
+    // until the first walk input or zone-return callback fires.
+    const _initSpawn = this.tileToScreen(WorldScene.RESPAWN_TILE.tx, WorldScene.RESPAWN_TILE.ty);
+    this.player.setPosition(_initSpawn.x, _initSpawn.y);
+    this._lastValidX = _initSpawn.x;
+    this._lastValidY = _initSpawn.y;
     this.player.setWalkBounds(TileWorld.getInstance().getWalkBounds());
     this.cameras.main.startFollow(this.player, true, 0.08, 0.08);
     this.fetchPlayerConfig();
@@ -1799,6 +1806,11 @@ export class WorldScene extends Phaser.Scene {
     const tw = TileWorld.getInstance();
     const cb = tw.getCameraBounds();
     this.cameras.main.setBounds(cb.x, cb.y, cb.width, cb.height);
+    // Walk bounds expand with each reseal — player must receive the updated
+    // bounds or movement clamps at the stale boundary and the camera appears frozen.
+    if (this.player) {
+      this.player.setWalkBounds(tw.getWalkBounds());
+    }
   }
 
   // ── Exploration zone ──────────────────────────────────────────────────────

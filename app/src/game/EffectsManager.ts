@@ -107,6 +107,7 @@ export class EffectsManager {
   private _highPerf!: boolean;
   private _W!: number;
   private _H!: number;
+  private _onResize:  (() => void) | null = null;
 
   // ── Day/night ────────────────────────────────────────────────────────────
   private _tod_overlay!:  Phaser.GameObjects.Rectangle;
@@ -194,6 +195,19 @@ export class EffectsManager {
     this._highPerf = highPerf;
     this._W        = scene.scale.width  || 1280;
     this._H        = scene.scale.height || 720;
+
+    // Keep _W/_H current for the lifetime of this init — Scale.RESIZE can
+    // change dimensions at any time. The TOD overlay rectangle must track
+    // the true canvas size; weather emitters use scrollFactor(0) so their
+    // particle spawn ranges are also in screen space and must be rebuilt
+    // when the canvas grows significantly. A full re-init on resize is the
+    // safest approach; _teardown() is cheap and idempotent.
+    scene.scale.off('resize', this._onResize, this);
+    this._onResize = () => {
+      if (!this._scene) return;
+      this.init(this._scene, this._highPerf);
+    };
+    scene.scale.on('resize', this._onResize, this);
 
     this._initDayNight();
     this._initWeatherEmitters();
@@ -464,6 +478,12 @@ export class EffectsManager {
   private _teardown(): void {
     // Destroy overlay and timers if they exist from a prior init() call.
     // Called at the start of every init() to prevent object stacking.
+    // Remove resize listener before re-init so it doesn't stack.
+    try {
+      if (this._onResize && this._scene) {
+        this._scene.scale.off('resize', this._onResize, this);
+      }
+    } catch { /* first init */ }
     try { this._tod_overlay?.destroy();   } catch { /* first init */ }
     try { this._hourTimer?.remove(false); } catch { /* first init */ }
     try { this._weatherTick?.remove(false); } catch { /* first init */ }

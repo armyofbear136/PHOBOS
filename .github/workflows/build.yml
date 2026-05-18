@@ -49,6 +49,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
       - uses: actions/setup-node@v6
         with:
@@ -66,6 +68,8 @@ jobs:
 
       - name: Cache app/node_modules
         uses: actions/cache@v4
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         with:
           path: app/node_modules
           key: app-node-modules-${{ runner.os }}-${{ hashFiles('app/package-lock.json') }}
@@ -135,6 +139,8 @@ jobs:
       - name: Upload dist artifact (tar)
         if: matrix.pack == 'tar'
         uses: actions/upload-artifact@v4
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         with:
           name: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}
           path: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.tar.gz
@@ -143,6 +149,8 @@ jobs:
       - name: Upload dist artifact (zip)
         if: matrix.pack == 'zip'
         uses: actions/upload-artifact@v4
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         with:
           name: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}
           path: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.zip
@@ -151,6 +159,8 @@ jobs:
       - name: Upload phobos-lite artifact
         if: hashFiles('dist-lite/*.zip') != ''
         uses: actions/upload-artifact@v4
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         with:
           name: phobos-lite-${{ matrix.build-full-target }}-${{ steps.version.outputs.CORE_VERSION }}
           path: dist-lite/*.zip
@@ -170,6 +180,8 @@ jobs:
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         with:
           path: release-artifacts
         continue-on-error: true

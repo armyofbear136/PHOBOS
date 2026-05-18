@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { useTheme } from '@/lib/useTheme';
 import { SkillsMenu } from './SkillsMenu';
 import { PluginsMenu } from '../plugins/PluginsMenu';
 import { CartridgesPanel } from '../cartridges/CartridgesPanel';
@@ -15,6 +16,8 @@ export function SkillCartridge() {
   const [wecloneOpen,  setWecloneOpen]   = useState(false);
   const [haOpen,       setHaOpen]         = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const { resolvedTheme } = useTheme();
+  const isLight = resolvedTheme === 'light';
 
   useEffect(() => {
     if (!dropdownOpen) return;
@@ -26,6 +29,26 @@ export function SkillCartridge() {
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [dropdownOpen]);
+
+  const itemStyle: React.CSSProperties = isLight ? {
+    color: 'hsl(130 55% 18%)',
+    borderBottomColor: 'hsl(35 20% 72%)',
+  } : {};
+
+  const iconStyle: React.CSSProperties = isLight ? {
+    color: 'hsl(130 50% 28%)',
+  } : {};
+
+  const dropdownStyle: React.CSSProperties = isLight ? {
+    background: 'hsl(35 25% 91%)',
+    borderColor: 'hsl(130 45% 40% / 0.45)',
+  } : {};
+
+  const handleItemHover = (e: React.MouseEvent<HTMLButtonElement>, entering: boolean) => {
+    if (!isLight) return;
+    e.currentTarget.style.background = entering ? 'hsl(220 55% 18%)' : 'none';
+    e.currentTarget.style.color      = entering ? 'hsl(130 65% 62%)' : 'hsl(130 55% 18%)';
+  };
 
   return (
     <>
@@ -46,56 +69,28 @@ export function SkillCartridge() {
         </button>
 
         {dropdownOpen && (
-          <div className="skill-cartridge-dropdown">
-            <button
-              className="skill-cartridge-dropdown-item"
-              onClick={() => { setDropdownOpen(false); setSkillsOpen(true); }}
-            >
-              <span className="skill-cartridge-dropdown-icon">◈</span>
-              Instruction Tapes
-            </button>
-            <button
-              className="skill-cartridge-dropdown-item"
-              onClick={() => { setDropdownOpen(false); setAiOpen(true); }}
-            >
-              <span className="skill-cartridge-dropdown-icon">◆</span>
-              Cortex Cartridges
-            </button>
-            <button
-              className="skill-cartridge-dropdown-item"
-              onClick={() => { setDropdownOpen(false); setWecloneOpen(true); }}
-            >
-              <span className="skill-cartridge-dropdown-icon">◉</span>
-              Digital Clone
-            </button>
-            <button
-              className="skill-cartridge-dropdown-item"
-              onClick={() => { setDropdownOpen(false); setArtOpen(true); }}
-            >
-              <span className="skill-cartridge-dropdown-icon">◇</span>
-              Art Plugins
-            </button>
-            <button
-              className="skill-cartridge-dropdown-item"
-              onClick={() => { setDropdownOpen(false); setAiOpen(true); }}
-            >
-              <span className="skill-cartridge-dropdown-icon">◆</span>
-              Audio Patches
-            </button>
-            <button
-              className="skill-cartridge-dropdown-item"
-              onClick={() => { setDropdownOpen(false); setArchiveOpen(true); }}
-            >
-              <span className="skill-cartridge-dropdown-icon">◫</span>
-              Archive Payloads
-            </button>
-            <button
-              className="skill-cartridge-dropdown-item"
-              onClick={() => { setDropdownOpen(false); setHaOpen(true); }}
-            >
-              <span className="skill-cartridge-dropdown-icon">⌂</span>
-              Home Assistant
-            </button>
+          <div className="skill-cartridge-dropdown" style={dropdownStyle}>
+            {[
+              { icon: '◈', label: 'Instruction Tapes', action: () => setSkillsOpen(true) },
+              { icon: '◆', label: 'Cortex Cartridges', action: () => setAiOpen(true) },
+              { icon: '◉', label: 'Digital Clone',     action: () => setWecloneOpen(true) },
+              { icon: '◇', label: 'Art Plugins',       action: () => setArtOpen(true) },
+              { icon: '◆', label: 'Audio Patches',     action: () => setAiOpen(true) },
+              { icon: '◫', label: 'Archive Payloads',  action: () => setArchiveOpen(true) },
+              { icon: '⌂', label: 'Home Assistant',    action: () => setHaOpen(true) },
+            ].map(({ icon, label, action }) => (
+              <button
+                key={label}
+                className="skill-cartridge-dropdown-item"
+                style={itemStyle}
+                onMouseEnter={e => handleItemHover(e, true)}
+                onMouseLeave={e => handleItemHover(e, false)}
+                onClick={() => { setDropdownOpen(false); action(); }}
+              >
+                <span className="skill-cartridge-dropdown-icon" style={iconStyle}>{icon}</span>
+                {label}
+              </button>
+            ))}
           </div>
         )}
       </div>

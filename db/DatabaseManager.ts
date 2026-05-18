@@ -422,7 +422,7 @@ CREATE TABLE IF NOT EXISTS phobos_sync_policies (
   device_id   VARCHAR NOT NULL REFERENCES phobos_sync_devices(device_id),
   library     VARCHAR NOT NULL,
   enabled     BOOLEAN NOT NULL DEFAULT true,
-  retain_days INTEGER NOT NULL DEFAULT 90,
+  retain_days INTEGER          DEFAULT NULL,
   upload_mode VARCHAR NOT NULL DEFAULT 'wifi_only'
               CHECK (upload_mode IN ('wifi_only', 'always', 'manual')),
   updated_at  TIMESTAMP NOT NULL DEFAULT now()
@@ -553,6 +553,7 @@ export class DatabaseManager {
     if (this.kind === 'user') {
       await this.migrateDocuments();
       await this.ensureDistilledColumn();
+      await this.migrateSyncPoliciesRetainDays();
     }
     if (BUNDLED_EXTENSION_DIR && this.kind === 'system') {
       console.log(`[DB] Extension dir: ${BUNDLED_EXTENSION_DIR}`);
@@ -573,6 +574,20 @@ export class DatabaseManager {
           console.warn('[DB] ensureDistilledColumn failed (non-fatal):', err);
         }
       }
+    }
+  }
+
+  /** Drop NOT NULL from phobos_sync_policies.retain_days so NULL means "keep forever".
+   *  Safe to run on any DB version — DuckDB throws if the constraint is already gone,
+   *  and we catch that silently. Non-fatal either way. */
+  private async migrateSyncPoliciesRetainDays(): Promise<void> {
+    try {
+      await this.db!.exec(
+        `ALTER TABLE phobos_sync_policies ALTER COLUMN retain_days DROP NOT NULL`,
+      );
+    } catch {
+      // Either the table doesn't exist yet (fresh install — schema will create it
+      // correctly) or the constraint is already gone. Both are fine.
     }
   }
 

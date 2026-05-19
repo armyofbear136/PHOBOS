@@ -153,11 +153,12 @@ def _materialize_and_save_transformer(transformer, out_dir: str, dtype, t0: floa
         with open(index_path, "w") as f:
             json.dump(index, f, indent=2)
 
-    # Save config.json — fetch directly from the HF repo rather than serializing
-    # from the loaded transformer object. GGUFQuantizationConfig wraps the model's
-    # config in a way that makes to_dict() return {} — the HF repo config is the
-    # correct authoritative source and is unaffected by quantization state.
+    # Save config.json — fetch from HF repo (authoritative source unaffected by
+    # quantization state), then patch any fields whose values differ from the
+    # actual saved weights. The HF config for some GGUF variants (e.g. Chroma1-HD)
+    # contains incorrect shape values that cause from_pretrained to fail.
     config_saved = False
+    config_path_out = os.path.join(transformer_dir, "config.json")
     if config_repo:
         try:
             from huggingface_hub import hf_hub_download
@@ -167,18 +168,79 @@ def _materialize_and_save_transformer(transformer, out_dir: str, dtype, t0: floa
                 subfolder=config_subfolder,
             )
             import shutil as _shutil
-            _shutil.copy(config_file, os.path.join(transformer_dir, "config.json"))
+            _shutil.copy(config_file, config_path_out)
             config_saved = True
             emit("saving", 0.90, f"Config saved from {config_repo}/{config_subfolder}/config.json")
         except Exception as e:
             emit("saving", 0.90, f"Warning: could not fetch config from {config_repo}: {e} — falling back")
     if not config_saved:
-        # Last resort: serialize from the model object (may be empty for GGUF models)
         config = transformer.config.to_dict() if hasattr(transformer.config, "to_dict") else {}
         config.pop("quantization_config", None)
         config.pop("_pre_quantization_dtype", None)
-        with open(os.path.join(transformer_dir, "config.json"), "w") as f:
+        with open(config_path_out, "w") as f:
             json.dump(config, f, indent=2)
+
+    # Patch config fields against actual weight shapes. The HF repo config may
+    # be stale or simply wrong for a specific GGUF variant. Weights are always
+    # authoritative. state_dict is still in memory here so no disk re-read needed.
+    try:
+        with open(config_path_out) as f:
+            cfg = json.load(f)
+        patched = False
+
+        # context_embedder.weight shape: [hidden_size, joint_attention_dim]
+        # HF config for Chroma1-HD says 4096 but the GGUF weights use 8192.
+        if "context_embedder.weight" in state_dict:
+            actual_jad = state_dict["context_embedder.weight"].shape[1]
+            for key in ("joint_attention_dim", "context_in_dim"):
+                if key in cfg and cfg[key] != actual_jad:
+                    cfg[key] = actual_jad
+                    patched = True
+
+        # distilled_guidance_layer.in_proj.weight: [approximator_hidden_dim, in_channels]
+        if "distilled_guidance_layer.in_proj.weight" in state_dict:
+            in_proj = state_dict["distilled_guidance_layer.in_proj.weight"]
+            actual_ahd = in_proj.shape[0]
+            actual_anc = in_proj.shape[1]
+            for key, val in (("approximator_hidden_dim", actual_ahd),
+                              ("approximator_num_channels", actual_anc),
+                              ("in_channels", actual_anc)):
+                if key in cfg and cfg[key] != val:
+                    cfg[key] = val
+                    patched = True
+
+        # Detect fused SwiGLU in approximator layers.
+        # Standard PixArtAlphaTextProjection: linear_1 is [hidden, hidden].
+        # Fused SwiGLU variant: linear_1 is [hidden, 2*hidden] (gate+up combined).
+        # Store as approximator_fused_swiglu so the loader can patch the class.
+        layer0_linear1 = "distilled_guidance_layer.layers.0.linear_1.weight"
+        if layer0_linear1 in state_dict and "distilled_guidance_layer.in_proj.weight" in state_dict:
+            l1 = state_dict[layer0_linear1]
+            ahd = state_dict["distilled_guidance_layer.in_proj.weight"].shape[0]
+            is_fused = (l1.shape[1] == ahd * 2)
+            if cfg.get("approximator_fused_swiglu") != is_fused:
+                cfg["approximator_fused_swiglu"] = is_fused
+                patched = True
+
+        # approximator_layers: count unique layer indices under distilled_guidance_layer.layers
+        layer_indices = {
+            int(k.split(".")[2])
+            for k in state_dict
+            if k.startswith("distilled_guidance_layer.layers.")
+            and len(k.split(".")) > 3
+        }
+        if layer_indices:
+            actual_layers = max(layer_indices) + 1
+            if "approximator_layers" in cfg and cfg["approximator_layers"] != actual_layers:
+                cfg["approximator_layers"] = actual_layers
+                patched = True
+
+        if patched:
+            with open(config_path_out, "w") as f:
+                json.dump(cfg, f, indent=2)
+            emit("saving", 0.92, "Config patched: shape fields corrected from actual weights")
+    except Exception as e:
+        emit("saving", 0.92, f"Warning: config patch step failed (non-fatal): {e}")
 
     del state_dict, shards, transformer
     _free_memory()

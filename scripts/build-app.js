@@ -129,23 +129,35 @@ const electronBuilder = path.join(
 const ebEnv = { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: 'false' };
 
 // In CI on macOS, hardenedRuntime requires a valid Apple signing cert.
-// Write a temp config file — electron-builder's --config flag resolves
-// the value as a file path when it doesn't start with '{' in some versions.
-const isCI      = !!process.env.CI;
-let macCIArgs   = [];
+// Patch the mac section of app/package.json in-place before electron-builder
+// runs, then restore it. This is the only reliable way to override mac signing
+// config without disrupting the rest of the build config.
+const isCI = !!process.env.CI;
+let macCIArgs    = [];
 let macTmpConfig = null;
+let macOrigPkg   = null;
 
 if (isMac && isCI) {
-  macTmpConfig = path.join(APP_DIR, '.eb-ci-config.json');
-  fs.writeFileSync(macTmpConfig, JSON.stringify({
-    mac: {
-      hardenedRuntime:     false,
-      entitlements:        null,
-      entitlementsInherit: null,
-      gatekeeperAssess:    false,
-    },
-  }), 'utf8');
-  macCIArgs = ['--config', macTmpConfig];
+  const pkgPath = path.join(APP_DIR, 'package.json');
+  macOrigPkg    = fs.readFileSync(pkgPath, 'utf8');
+  const pkg     = JSON.parse(macOrigPkg);
+  pkg.build.mac = {
+    ...pkg.build.mac,
+    hardenedRuntime:     false,
+    entitlements:        null,
+    entitlementsInherit: null,
+    gatekeeperAssess:    false,
+    identity:            null,
+  };
+  fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2), 'utf8');
+  log('  ℹ️  macOS CI: patched package.json to disable signing');
+}
+
+function restoreMacPkg() {
+  if (macOrigPkg) {
+    const pkgPath = path.join(APP_DIR, 'package.json');
+    fs.writeFileSync(pkgPath, macOrigPkg, 'utf8');
+  }
 }
 
 const dirResult = spawnSync(electronBuilder, ['--dir', '--publish', 'never', ...macCIArgs], {
@@ -161,6 +173,7 @@ const unpackedOk  = dirResult.status === 0 || fs.existsSync(unpackedExe)
   || fs.existsSync(path.join(APP_DIR, 'electron-dist', 'mac'));
 
 if (!unpackedOk) {
+  restoreMacPkg();
   console.error('❌  electron-builder --dir failed — cannot continue.');
   process.exit(1);
 }
@@ -197,6 +210,7 @@ const artifactMap = {
 const artifact = artifactMap[process.platform];
 
 if (!artifact || !fs.existsSync(artifact)) {
+  restoreMacPkg();
   console.error('❌  electron-builder did not produce the expected artifact.');
   if (fullResult.status !== 0) {
     console.error('   On Windows: enable Developer Mode (Settings → Developer Mode → On).');
@@ -224,5 +238,6 @@ if (!isWin) fs.chmodSync(dst, 0o755);
 
 log(`\n✅ App build complete → dist/${destName}`);
 
-// Clean up CI temp config if it was created
+// Restore app/package.json if it was patched for macOS CI signing
+restoreMacPkg();
 if (macTmpConfig && fs.existsSync(macTmpConfig)) fs.unlinkSync(macTmpConfig);

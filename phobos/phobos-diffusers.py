@@ -709,7 +709,63 @@ def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
     vae_config       = "lodestones/Chroma1-HD"  if is_chroma else "ostris/Flex.1-alpha"
 
     log(f"loading diffusion model from pytorch variant ({transformer_dir})")
+
+    # Chroma1-HD uses a non-standard ChromaApproximator architecture.
+    # Traced forward (GGUF path): input (1,344,64), after in_proj (1,344,5120),
+    # each layer linear_1/linear_2 have weight [5120, 10240] = Linear(in=10240, out=5120).
+    # The 10240 input = cat([x, norm(x)], dim=-1): norm output (5120) concatenated
+    # with current x (5120) before each linear. This is a concat-residual GLU.
+    # diffusers 0.38.0 ChromaApproximator uses PixArtAlphaTextProjection which
+    # builds Linear(5120, 5120) — wrong shape. Replace ChromaApproximator entirely.
+    # phobos-convert.py sets approximator_fused_swiglu=true when it detects this.
+    if is_chroma:
+        import json as _json
+        _cfg_path = os.path.join(transformer_dir, "config.json")
+        _use_fused = False
+        try:
+            with open(_cfg_path) as _f:
+                _use_fused = _json.load(_f).get("approximator_fused_swiglu", False)
+        except Exception:
+            pass
+
+        if _use_fused:
+            import torch.nn as _nn
+            import diffusers.models.transformers.transformer_chroma as _tc
+
+            class _ConcatResidualApproximator(_nn.Module):
+                """Drop-in for ChromaApproximator with concat-residual GLU layers.
+                Each layer: linear_1(cat(x, norm(x))) silu-gated, then
+                linear_2(cat(h, norm(h))) as the residual update. out_proj also
+                takes cat(x, norm(x)) as input. All linears are Linear(2*h, h)."""
+                def __init__(self, in_dim: int, out_dim: int, hidden_dim: int, n_layers: int = 5):
+                    super().__init__()
+                    self.in_proj = _nn.Linear(in_dim, hidden_dim, bias=True)
+                    self.linear_1s = _nn.ModuleList(
+                        [_nn.Linear(hidden_dim * 2, hidden_dim, bias=True) for _ in range(n_layers)]
+                    )
+                    self.linear_2s = _nn.ModuleList(
+                        [_nn.Linear(hidden_dim * 2, hidden_dim, bias=True) for _ in range(n_layers)]
+                    )
+                    self.norms = _nn.ModuleList([_nn.RMSNorm(hidden_dim) for _ in range(n_layers)])
+                    self.out_proj = _nn.Linear(hidden_dim * 2, out_dim)
+
+                def forward(self, x):
+                    x = self.in_proj(x)
+                    for l1, l2, norm in zip(self.linear_1s, self.linear_2s, self.norms):
+                        nx = norm(x)
+                        h = _nn.functional.silu(l1(torch.cat([x, nx], dim=-1)))
+                        nh = norm(h)
+                        x = x + l2(torch.cat([h, nh], dim=-1))
+                    return self.out_proj(torch.cat([x, x], dim=-1))
+
+            _orig_approx = _tc.ChromaApproximator
+            _tc.ChromaApproximator = _ConcatResidualApproximator
+
     transformer = TransformerClass.from_pretrained(transformer_dir, torch_dtype=dtype)
+
+    if is_chroma and _use_fused:
+        _tc.ChromaApproximator = _orig_approx
+
     log("loading diffusion model completed")
 
     vae = None

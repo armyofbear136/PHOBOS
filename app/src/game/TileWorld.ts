@@ -186,8 +186,12 @@ export class TileWorld {
   // ── Seal ───────────────────────────────────────────────────────────────────
 
   seal(): void {
-    const padX = this.halfTileW * 2;  // one full tile of margin on X
-    const padY = this.halfTileH * 2;  // one full tile of margin on Y
+    // padX/padY must be large enough that the camera can centre on any tile
+    // at the world boundary without hitting the clamp. At zoom=2 the viewport
+    // is ~canvas/2 world-pixels tall (~400px). A 320px pad covers all zoom
+    // levels we support (1×–3×) without showing void at hub edges.
+    const padX = 320;
+    const padY = 320;
 
     this._cameraBounds = {
       x:      this._minX - padX,

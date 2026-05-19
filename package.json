@@ -29,8 +29,7 @@
     "db:setup": "node scripts/setup-db.js",
     "build:llamaarm64": "gh workflow run build-llamaarm64.yml",
     "build:app": "node scripts/build-app.js --unpacked",
-    "build:no-app": "node build.js --no-app --no-deps-backup",
-    "build:core": "node build.js --no-app --no-deps-backup",
+    "build:core": "node build.js --no-app",
     "build:app:win": "node scripts/build-app.js",
     "zip": "node scripts/zip-project.js"
   },

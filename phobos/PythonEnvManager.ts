@@ -1,4 +1,4 @@
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import * as os from 'os';
 import * as fs from 'fs';
@@ -109,17 +109,14 @@ interface EnvManifest {
 //   28 — full stack update: transformers==4.56.2, trl==0.24.0, datasets==4.3.0,
 //        tokenizers>=0.22.0,<0.24.0, xformers==0.0.33.post2 (torch==2.9.1 exact pin),
 //        bitsandbytes/xformers skipped on ROCm Windows.
-//  v29 — --no-cache-dir added to CUDA torch install (pip was serving torch 2.9.1+cpu from
-//        local cache instead of fetching 2.11.0+cu128 from the CUDA index).
-//        xformers bumped 0.0.33.post2→0.0.35 (0.0.33.post2 required torch==2.9.1 exactly,
-//        conflicting with CUDA's torch 2.11.0+cu128; 0.0.35 requires torch>=2.10).
-//       DTensor import now properly guarded — no patch needed on ROCm Windows.
-//   5 — CUDA index bumped from cu121 (torch ~2.6) to cu128 (torch 2.7.0 stable).
-//       SageAttention post4 ABI3 wheel now installs automatically on CUDA.
-//       triton-windows added to CUDA install on Windows (was missing, only Linux CUDA
-//       wheels bundle triton).
-//  6+ - incrementing during testing
-const REQUIRED_ENV_VERSION = 29; // v29: --no-cache-dir on CUDA torch install (was serving 2.9.1+cpu from pip cache); xformers 0.0.35 (0.0.33.post2 required torch==2.9.1 exactly, conflicts with CUDA torch 2.11.0)
+//  v29 — --no-cache-dir on CUDA torch install; xformers 0.0.33.post2→0.0.35.
+//  v30 — acestep back to --no-deps with explicit lang dep list (py3langid, hangul_romanize,
+//        jieba, pypinyin, num2words, inflect); re-pin transformers==4.56.2 + tokenizers
+//        after acestep (setup.cfg pins transformers==4.50.0, was breaking unsloth).
+//  v31 — add spacy==3.8.4 + thinc 8.x stack before acestep; thinc 9.x was being pulled
+//        by loose installs and breaking thinc.backends.linalg (Cython extension moved).
+//        All spacy sub-deps pinned to versions compatible with spacy 3.8.4.
+const REQUIRED_ENV_VERSION = 31; // v31: spacy 3.8.4 + thinc 8.x pinned before acestep
 
 // ── Module state ─────────────────────────────────────────────────────────────
 
@@ -949,20 +946,64 @@ async function installDiffusersStack(
   // deps (torchaudio, librosa, audiocraft bits) and must not be constrained
   // by the f5-tts constraint file — they don't conflict but pip would reject.
   // git+https is required because PyPI ace-step 0.1.0 is v1 API only.
-  // Install lightweight acestep deps that --no-deps would skip.
-  // py3langid has no torch/diffusers dependency — safe to install freely.
-  await runPip(pyBin, ['-m', 'pip', 'install', 'py3langid', 'einops', 'omegaconf']);
+  //
+  // Install ACE-Step language-id deps explicitly before the package itself.
+  // ACE-Step's setup.cfg pins transformers==4.50.0 and tokenizers==0.20.x.
+  // Installing with --no-deps avoids those downgrades; we enumerate the
+  // actual runtime language deps here so the import guard passes.
+  //
+  // spacy + thinc must be pinned to the 3.8.4 / 8.x versions that ace-step
+  // expects. thinc 9.x ships a different internal layout and breaks
+  // thinc.backends.linalg (the Cython extension moved). All spacy sub-deps
+  // are installed --no-deps to avoid pulling numpy/pydantic that would
+  // fight the existing stack. confection needs >=1.3.2 for spacy 3.8.x.
+  await runPip(pyBin, [
+    '-m', 'pip', 'install', '--no-deps',
+    'spacy==3.8.4',
+    'thinc>=8.3.12,<8.4.0',
+    'confection>=1.3.2,<2.0.0',
+    'spacy-legacy>=3.0.11,<3.1.0',
+    'spacy-loggers>=1.0.0,<2.0.0',
+    'weasel>=1.0.0,<2.0.0',
+    'langcodes>=3.2.0,<4.0.0',
+    'language_data>=1.2,<2.0',
+    'wasabi>=0.8.1,<1.2.0',
+    'srsly>=2.4.0,<3.0.0',
+    'catalogue>=2.0.4,<2.1.0',
+    'cymem>=2.0.2,<2.1.0',
+    'preshed>=3.0.2,<3.1.0',
+    'murmurhash>=1.0.2,<1.1.0',
+    'blis>=0.7.8,<0.8.0',
+  ]);
+
+  // Remaining lightweight language-id and audio deps — no version conflicts.
+  await runPip(pyBin, [
+    '-m', 'pip', 'install',
+    'py3langid', 'hangul_romanize', 'einops', 'omegaconf',
+    'jieba', 'pypinyin', 'num2words', 'inflect',
+  ]);
 
   const aceResult = await runPip(pyBin, [
     '-m', 'pip', 'install',
+    '--no-deps',
     'git+https://github.com/ace-step/ACE-Step.git',
-    // No --no-deps: acestep has lightweight language-id deps (py3langid,
-    // hangul_romanize, etc.) that must be pulled. torch/diffusers conflicts
-    // are avoided by the constraints file having already been removed above.
+    // --no-deps: ACE-Step setup.cfg pins transformers==4.50.0 which would
+    // downgrade from 4.56.2 and break unsloth (requires transformers>=4.56.1).
+    // All true runtime deps are either already installed or listed above.
   ]);
   if (!aceResult.ok) {
     console.warn(`[PythonEnvManager] acestep install failed (non-fatal): ${aceResult.error}`);
   }
+
+  // Re-pin transformers and tokenizers after acestep in case any transitive
+  // dep downgraded them. ACE-Step's metadata pins transformers==4.50.0 and
+  // tokenizers==0.20.x — even with --no-deps, some pip versions resolve
+  // metadata constraints. Explicit re-pin restores the correct versions.
+  await runPip(pyBin, [
+    '-m', 'pip', 'install',
+    'transformers==4.56.2',
+    'tokenizers>=0.22.0,<0.24.0',
+  ]);
 
   return { ok: true };
 }
@@ -1114,18 +1155,43 @@ function _patchTransformersModelingUtils_UNUSED(pyBin: string): void {
 }
 
 async function runPip(pyBin: string, args: string[]): Promise<{ ok: boolean; error?: string }> {
-  try {
-    await execFileAsync(pyBin, args, {
-      timeout: 30 * 60 * 1000,
-      maxBuffer: 50 * 1024 * 1024,
+  // Log the install step so stalls are visible in the console.
+  const label = args.find(a => !a.startsWith('-') && a !== '-m' && a !== 'pip' && a !== 'install') ?? args.slice(0, 4).join(' ');
+  console.log(`[PythonEnvManager] pip: ${label}`);
+  return new Promise((resolve) => {
+    const child = spawn(pyBin, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
-    return { ok: true };
-  } catch (err) {
-    const error = (err as { stderr?: string; stdout?: string; message?: string });
-    const tail = error.stderr?.trim().split('\n').slice(-20).join('\n') || error.message || 'pip install failed';
-    console.error(`[PythonEnvManager] pip failed (args: ${args.slice(0, 6).join(' ')}...):\n${tail}`);
-    return { ok: false, error: tail };
-  }
+    const stderrLines: string[] = [];
+    child.stdout.on('data', (d: Buffer) => {
+      const line = d.toString().trim();
+      if (line) console.log(`[PythonEnvManager:pip] ${line}`);
+    });
+    child.stderr.on('data', (d: Buffer) => {
+      const line = d.toString().trim();
+      if (line) {
+        stderrLines.push(line);
+        // Only log lines that look like real errors or progress, not spam.
+        if (/error:|warning:|exception|traceback|failed|installing|collecting|downloading/i.test(line)) {
+          console.log(`[PythonEnvManager:pip] ${line}`);
+        }
+      }
+    });
+    const timer = setTimeout(() => {
+      child.kill();
+      resolve({ ok: false, error: `pip timed out after 30 min (${label})` });
+    }, 30 * 60 * 1000);
+    child.on('close', (code: number | null) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve({ ok: true });
+      } else {
+        const tail = stderrLines.slice(-20).join('\n') || `pip exited code ${code}`;
+        console.error(`[PythonEnvManager] pip failed (${label}):\n${tail}`);
+        resolve({ ok: false, error: tail });
+      }
+    });
+  });
 }
 
 // ── Uninstall ────────────────────────────────────────────────────────────────

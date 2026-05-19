@@ -214,6 +214,17 @@ export function CreateDropdown() {
   const dropdownLeft = anchorRect ? anchorRect.right - 180 : 0;
   const dropdownTop  = anchorRect ? anchorRect.bottom + 4  : 0;
 
+  const { resolvedTheme } = useTheme();
+  const isLight = resolvedTheme === 'light' || document.documentElement.classList.contains('light');
+
+  const menuStyle: React.CSSProperties = isLight
+    ? { background: 'hsl(35 25% 91%)', borderColor: 'hsl(130 45% 40% / 0.5)', boxShadow: '0 4px 20px rgba(10,20,50,0.2)' }
+    : {};
+
+  const itemStyle = (active: boolean): React.CSSProperties => isLight
+    ? { color: active ? 'hsl(130 55% 18%)' : 'hsl(130 55% 22%)', fontWeight: 600 }
+    : {};
+
   const subMenuClass = "phobos-panel bg-background border border-phobos-green/30 rounded-sm shadow-[0_0_12px_hsl(120_100%_50%/0.12)] min-w-[160px] overflow-hidden";
   const subBtnClass  = (active: boolean) =>
     `w-full flex items-center justify-between gap-3 px-3 py-2 text-[10px] font-terminal uppercase tracking-[0.12em] transition-all border-l-2 ${
@@ -227,7 +238,7 @@ export function CreateDropdown() {
       {/* ── Main menu ──────────────────────────────────────────────────── */}
       <div
         ref={menuRef}
-        style={{ position: 'fixed', top: dropdownTop, left: Math.max(4, dropdownLeft), zIndex: 9999 }}
+        style={{ position: 'fixed', top: dropdownTop, left: Math.max(4, dropdownLeft), zIndex: 9999, ...menuStyle }}
         className="phobos-panel bg-background border border-phobos-green/30 rounded-sm shadow-[0_0_12px_hsl(120_100%_50%/0.12)] min-w-[180px] overflow-visible"
       >
         {topEntries.map((e) => {
@@ -243,6 +254,7 @@ export function CreateDropdown() {
             >
               <button
                 onClick={e.hasSubmenu ? undefined : (e.onSelect ?? undefined)}
+                style={itemStyle(active)}
                 className={`w-full flex items-center justify-between gap-3 px-3 py-2 text-[10px] font-terminal uppercase tracking-[0.12em] transition-all border-l-2 ${
                   active
                     ? 'text-phobos-green border-phobos-green/70 bg-phobos-green/[0.04]'
@@ -273,13 +285,13 @@ export function CreateDropdown() {
       {textSubmenuOpen && textRowRect && (
         <div
           ref={subRef}
-          style={{ position: 'fixed', top: textRowRect.top, left: textRowRect.right + 1, zIndex: 9999 }}
+          style={{ position: 'fixed', top: textRowRect.top, left: textRowRect.right + 1, zIndex: 9999, ...menuStyle }}
           onMouseEnter={() => setSubHovered(true)}
           onMouseLeave={() => setSubHovered(false)}
           className={subMenuClass}
         >
           {subEntries.map((sub) => (
-            <button key={sub.id} onClick={sub.onSelect} className={subBtnClass(sub.open)}>
+            <button key={sub.id} onClick={sub.onSelect} style={itemStyle(sub.open)} className={subBtnClass(sub.open)}>
               <span className="flex items-center gap-2">
                 <sub.Icon className="w-3 h-3 shrink-0" />
                 {sub.label}
@@ -294,13 +306,13 @@ export function CreateDropdown() {
       {d3SubmenuOpen && d3RowRect && (
         <div
           ref={d3SubRef}
-          style={{ position: 'fixed', top: d3RowRect.top, left: d3RowRect.right + 1, zIndex: 9999 }}
+          style={{ position: 'fixed', top: d3RowRect.top, left: d3RowRect.right + 1, zIndex: 9999, ...menuStyle }}
           onMouseEnter={() => setD3SubHovered(true)}
           onMouseLeave={() => setD3SubHovered(false)}
           className={subMenuClass}
         >
           {d3SubEntries.map((sub) => (
-            <button key={sub.id} onClick={sub.onSelect} className={subBtnClass(sub.open)}>
+            <button key={sub.id} onClick={sub.onSelect} style={itemStyle(sub.open)} className={subBtnClass(sub.open)}>
               <span className="flex items-center gap-2">
                 <sub.Icon className="w-3 h-3 shrink-0" />
                 {sub.label}

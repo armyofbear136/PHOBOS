@@ -107,10 +107,11 @@ jobs:
       - name: Build phobos-core
         run: node build.js ${{ matrix.skip-electron == 'true' && '--no-app' || '--full-app' }} --no-deps-backup
         env:
-          PHOBOS_LICENSE_SEED:         ${{ secrets.PHOBOS_LICENSE_SEED }}
-          CSC_IDENTITY_AUTO_DISCOVERY: false
-          CSC_LINK:                    ''
-          WIN_CSC_LINK:                ''
+          PHOBOS_LICENSE_SEED:             ${{ secrets.PHOBOS_LICENSE_SEED }}
+          CSC_IDENTITY_AUTO_DISCOVERY:     false
+          CSC_LINK:                        ''
+          WIN_CSC_LINK:                    ''
+          ELECTRON_BUILDER_DISABLE_NOTARIZATION: true
 
       - name: Build phobos-lite
         run: node scripts/build-lite.js ${{ matrix.build-full-target }}

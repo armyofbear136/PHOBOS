@@ -29,3 +29,6 @@ localai.duckdb.wal
 
 # Local binary master copies — tracked by bin-manifest.json, not committed directly
 bin-master/
+
+cuda_test.txt
+rocm_test.txt

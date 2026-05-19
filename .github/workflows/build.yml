@@ -49,15 +49,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: 'npm'
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
       - name: Restore distutils (macOS)
         if: runner.os == 'macOS'
@@ -67,9 +63,7 @@ jobs:
         run: npm ci --foreground-scripts
 
       - name: Cache app/node_modules
-        uses: actions/cache@v4
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+        uses: actions/cache@v5
         with:
           path: app/node_modules
           key: app-node-modules-${{ runner.os }}-${{ hashFiles('app/package-lock.json') }}
@@ -109,8 +103,7 @@ jobs:
       # build.js flags:
       #   --full-app        → two-pass electron build, stages PHOBOS-app-*.exe to dist/
       #   --no-app          → skip electron entirely (linux-arm64 has no electron target)
-      #   --no-deps-backup  → never copy dist-deps-backup/ in CI (it doesn't exist anyway,
-      #                       but this makes the intent explicit and future-proof)
+      #   --no-deps-backup  → never copy dist-deps-backup/ in CI
       - name: Build phobos-core
         run: node build.js ${{ matrix.skip-electron == 'true' && '--no-app' || '--full-app' }} --no-deps-backup
         env:
@@ -138,9 +131,7 @@ jobs:
 
       - name: Upload dist artifact (tar)
         if: matrix.pack == 'tar'
-        uses: actions/upload-artifact@v4
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}
           path: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.tar.gz
@@ -148,9 +139,7 @@ jobs:
 
       - name: Upload dist artifact (zip)
         if: matrix.pack == 'zip'
-        uses: actions/upload-artifact@v4
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}
           path: ${{ matrix.artifact }}-${{ steps.version.outputs.CORE_VERSION }}.zip
@@ -158,9 +147,7 @@ jobs:
 
       - name: Upload phobos-lite artifact
         if: hashFiles('dist-lite/*.zip') != ''
-        uses: actions/upload-artifact@v4
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+        uses: actions/upload-artifact@v6
         with:
           name: phobos-lite-${{ matrix.build-full-target }}-${{ steps.version.outputs.CORE_VERSION }}
           path: dist-lite/*.zip
@@ -180,8 +167,6 @@ jobs:
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         with:
           path: release-artifacts
         continue-on-error: true

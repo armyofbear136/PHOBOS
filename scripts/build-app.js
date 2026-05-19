@@ -128,24 +128,25 @@ const electronBuilder = path.join(
 );
 const ebEnv = { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: 'false' };
 
-// In CI on macOS, hardenedRuntime requires a valid Apple signing cert which
-// we don't have. Pass an inline JSON config override that nulls out the
-// entitlements paths and disables hardened runtime entirely.
-// electron-builder's --config flag accepts inline JSON when the value starts with '{'.
+// In CI on macOS, hardenedRuntime requires a valid Apple signing cert.
+// Write a temp config file — electron-builder's --config flag resolves
+// the value as a file path when it doesn't start with '{' in some versions.
 const isCI      = !!process.env.CI;
-const macCIArgs = (isMac && isCI)
-  ? [
-      '--config',
-      JSON.stringify({
-        mac: {
-          hardenedRuntime:      false,
-          entitlements:         null,
-          entitlementsInherit:  null,
-          gatekeeperAssess:     false,
-        },
-      }),
-    ]
-  : [];
+let macCIArgs   = [];
+let macTmpConfig = null;
+
+if (isMac && isCI) {
+  macTmpConfig = path.join(APP_DIR, '.eb-ci-config.json');
+  fs.writeFileSync(macTmpConfig, JSON.stringify({
+    mac: {
+      hardenedRuntime:     false,
+      entitlements:        null,
+      entitlementsInherit: null,
+      gatekeeperAssess:    false,
+    },
+  }), 'utf8');
+  macCIArgs = ['--config', macTmpConfig];
+}
 
 const dirResult = spawnSync(electronBuilder, ['--dir', '--publish', 'never', ...macCIArgs], {
   stdio: 'inherit',
@@ -222,3 +223,6 @@ fs.copyFileSync(artifact, dst);
 if (!isWin) fs.chmodSync(dst, 0o755);
 
 log(`\n✅ App build complete → dist/${destName}`);
+
+// Clean up CI temp config if it was created
+if (macTmpConfig && fs.existsSync(macTmpConfig)) fs.unlinkSync(macTmpConfig);

@@ -46,8 +46,8 @@ def parse_args() -> argparse.Namespace:
                    help="Guidance scale (classifier-free guidance strength)")
     p.add_argument("--seed",     type=int,   default=-1,
                    help="Random seed (-1 = random)")
-    p.add_argument("--device-id", type=int,  default=0,
-                   help="CUDA device index (0-based)")
+    p.add_argument("--device", default="cuda:0",
+                   help="Torch device string: cuda:0, cuda:1, xpu:0, mps, cpu")
     p.add_argument("--output",   required=True,
                    help="Output WAV file path")
     return p.parse_args()
@@ -79,16 +79,36 @@ def main() -> None:
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
 
     # ── Load pipeline ─────────────────────────────────────────────────────────
-    info(f"Loading ACE-Step v1.5 pipeline from {checkpoint_path} (device cuda:{args.device_id})...")
+    # ── Resolve device_id integer for pipelines that require it ──────────────
+    # ACEStepPipeline.__init__ may take device_id (int) or device (str) depending
+    # on version. Extract the integer index from the device string as fallback.
+    device_str = args.device  # e.g. 'cuda:0', 'xpu:0', 'mps', 'cpu'
+    if ':' in device_str:
+        device_id_int = int(device_str.split(':')[1])
+    else:
+        device_id_int = 0
+
+    info(f"Loading ACE-Step v1.5 pipeline from {checkpoint_path} (device {device_str})...")
     t0 = time.time()
 
+    # Inspect ACEStepPipeline.__init__ to determine which device param it accepts.
     try:
-        pipeline = ACEStepPipeline(
-            checkpoint_path=checkpoint_path,
-            dtype="bfloat16",
-            torch_compile=False,
-            device_id=args.device_id,
-        )
+        init_params = set(inspect.signature(ACEStepPipeline.__init__).parameters.keys())
+    except Exception:
+        init_params = set()
+
+    pipeline_kwargs: dict = {
+        "checkpoint_path": checkpoint_path,
+        "dtype":           "bfloat16",
+        "torch_compile":   False,
+    }
+    if "device_id" in init_params:
+        pipeline_kwargs["device_id"] = device_id_int
+    elif "device" in init_params:
+        pipeline_kwargs["device"] = device_str
+
+    try:
+        pipeline = ACEStepPipeline(**pipeline_kwargs)
     except Exception as e:
         error(f"Pipeline load failed: {e}")
         sys.exit(1)

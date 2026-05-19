@@ -4596,10 +4596,38 @@ export class ExplorationZoneManager {
     return ExplorationZoneManager._instance;
   }
 
+  /**
+   * Returns the enemy flavour string for today's zone without touching _tileSet.
+   * Use this instead of getDailyZone() when only the flavour is needed.
+   */
+  getDailyFlavour(): string {
+    const seed = Math.floor(Date.now() / 86400000);
+    // If we have a cached spec from the same day, use it.
+    if (this._cachedSeed === seed && this._cachedSpec) return this._cachedSpec.enemyFlavour;
+    // Derive flavour from seed without clearing _tileSet.
+    const idx = ((seed >>> 0) % ARCHETYPE_GENERATORS.length + ARCHETYPE_GENERATORS.length) % ARCHETYPE_GENERATORS.length;
+    const spec = ARCHETYPE_GENERATORS[idx](seed);
+    return spec.enemyFlavour;
+  }
+
   getDailyZone(): ZoneSpec {
     const seed = Math.floor(Date.now() / 86400000);
     if (this._cachedSeed === seed && this._cachedSpec) return this._cachedSpec;
     return this.generate(seed);
+  }
+
+  /**
+   * Returns the daily ChunkGraph for combat seeding WITHOUT clearing or
+   * modifying _tileSet. Use this when the three-tier room system has already
+   * populated _tileSet and must not be overwritten.
+   */
+  getChunkGraphOnly(): ChunkGraph {
+    const seed = Math.floor(Date.now() / 86400000);
+    if (this._cachedSeed === seed && this._cachedGraph) return this._cachedGraph;
+    const graph = generateChunkGraph(seed);
+    this._cachedGraph = graph;
+    // Do NOT touch _tileSet — caller owns tile registration.
+    return graph;
   }
 
   getDailyChunkGraph(): ChunkGraph {
@@ -4686,9 +4714,9 @@ export class ExplorationZoneManager {
 //
 // Act 2 — Upper Bunkers / Barracks Block — region type: bunker-corridor
 
-const TINT_BUNKER_FLOOR: number     = 0x141414;
-const TINT_BUNKER_WALL: number      = 0x1e1e28;
-const TINT_BUNKER_DETAIL: number    = 0x2a2040;
+const TINT_BUNKER_FLOOR: number     = 0x4a4858;
+const TINT_BUNKER_WALL: number      = 0x6a6880;
+const TINT_BUNKER_DETAIL: number    = 0x7a6898;
 
 export const ROOM_CATALOGUE: RoomDef[] = [
 
@@ -5105,6 +5133,13 @@ function assembleSpineRegion(
   const entryRooms    = ROOM_CATALOGUE.filter(r => r.region_types.includes(def.id) && r.type === 'entry');
   const bossRooms     = ROOM_CATALOGUE.filter(r => r.region_types.includes(def.id) && r.type === 'boss');
   const standardRooms = ROOM_CATALOGUE.filter(r => r.region_types.includes(def.id) && r.type !== 'entry' && r.type !== 'boss');
+  // Through-rooms have a north connection slot — required for non-final middle positions.
+  // Terminal rooms (dead-end, no north slot) are only valid as the last non-boss room.
+  const throughRooms   = standardRooms.filter(r => r.connections.some(c => c.edge === 'N'));
+  const terminalRooms  = standardRooms.filter(r => !r.connections.some(c => c.edge === 'N'));
+  // Fall back to standardRooms if no through-rooms exist yet.
+  const middlePool  = throughRooms.length > 0 ? throughRooms : standardRooms;
+  const finalPool   = standardRooms.length > 0 ? standardRooms : throughRooms;
 
   const roomCount = def.room_count_min + Math.floor(rng() * (def.room_count_max - def.room_count_min + 1));
 
@@ -5113,14 +5148,18 @@ function assembleSpineRegion(
   // First room is always entry
   if (entryRooms.length > 0) {
     selectedRoomDefs.push(entryRooms[Math.floor(rng() * entryRooms.length)]);
-  } else if (standardRooms.length > 0) {
-    selectedRoomDefs.push(standardRooms[Math.floor(rng() * standardRooms.length)]);
+  } else if (middlePool.length > 0) {
+    selectedRoomDefs.push(middlePool[Math.floor(rng() * middlePool.length)]);
   }
 
-  // Middle rooms: standard/connector/dead-end
+  // Middle rooms: must have a north slot so the chain continues.
   const middleCount = bossRooms.length > 0 ? roomCount - 2 : roomCount - 1;
-  for (let i = 0; i < Math.max(1, middleCount); i++) {
-    selectedRoomDefs.push(standardRooms[Math.floor(rng() * standardRooms.length)]);
+  for (let i = 0; i < Math.max(0, middleCount - 1); i++) {
+    selectedRoomDefs.push(middlePool[Math.floor(rng() * middlePool.length)]);
+  }
+  // Last non-boss room: can be terminal (dead-end) or through — picked from full pool.
+  if (middleCount >= 1) {
+    selectedRoomDefs.push(finalPool[Math.floor(rng() * finalPool.length)]);
   }
 
   // Last room is boss if available

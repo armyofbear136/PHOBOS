@@ -383,21 +383,29 @@ export function ensureAudioWorkspace(threadId: string): void {
 interface AudioDevice {
   pythonBin: string;
   deviceArg: string;
+  vendor:    string;
 }
 
-async function resolvePythonDevice(): Promise<AudioDevice> {
+async function resolvePythonDevice(overrideVendor?: string, overrideIndex?: number): Promise<AudioDevice> {
   const hw = await detectHardware();
   for (const gpu of hw.gpus) {
     const vendor = gpuToVendor(gpu);
+    if (overrideVendor && vendor !== overrideVendor) continue;
+    if (overrideIndex !== undefined && gpu.index !== overrideIndex) continue;
     if (!isVendorReady(vendor)) continue;
     const pyBin = getPythonPath(vendor);
     if (!pyBin) continue;
-    const deviceArg = gpu.backend === 'cuda'  ? `cuda:${gpu.index}`
-                    : gpu.backend === 'metal' ? 'mps'
+    // ROCm Windows uses HIP-as-CUDA compat path — device string is 'cuda:N'.
+    // XPU (Intel Arc) uses 'xpu:N'.
+    // Metal uses 'mps' (no index — MPS has one logical device).
+    const deviceArg = vendor === 'cuda'  ? `cuda:${gpu.index}`
+                    : vendor === 'rocm'  ? `cuda:${gpu.index}`
+                    : vendor === 'xpu'   ? `xpu:${gpu.index}`
+                    : vendor === 'apple' ? 'mps'
                     : 'cpu';
-    return { pythonBin: pyBin, deviceArg };
+    return { pythonBin: pyBin, deviceArg, vendor };
   }
-  return { pythonBin: getPythonPath('cpu') ?? 'python3', deviceArg: 'cpu' };
+  return { pythonBin: getPythonPath('cpu') ?? 'python3', deviceArg: 'cpu', vendor: 'cpu' };
 }
 
 // ── Generic subprocess runner ─────────────────────────────────────────────────
@@ -559,14 +567,18 @@ export async function generateKokoro(opts: KokoroOptions): Promise<AudioGenerate
 // ── TTS — F5-TTS (Python subprocess) ─────────────────────────────────────────
 
 export interface F5TtsOptions extends AudioRunOptions {
-  threadId:  string;
-  text:      string;
-  mode?:     'tts' | 'clone';
-  refAudio?: string;
-  refText?:  string;
-  speed?:    number;
-  steps?:    number;
-  label?:    string;
+  threadId:            string;
+  text:                string;
+  mode?:               'tts' | 'clone';
+  refAudio?:           string;
+  refText?:            string;
+  speed?:              number;
+  steps?:              number;
+  label?:              string;
+  /** Force a specific PyTorch vendor venv (for testing). */
+  overrideVendor?:     string;
+  /** Force a specific GPU device index (for testing). */
+  overrideDeviceIndex?: number;
 }
 
 export async function generateF5Tts(opts: F5TtsOptions): Promise<AudioGenerateResult> {
@@ -578,7 +590,7 @@ export async function generateF5Tts(opts: F5TtsOptions): Promise<AudioGenerateRe
     throw new Error(`F5-TTS model not downloaded. Run fetch-audio-deps.js --only f5tts`);
   }
 
-  const { pythonBin, deviceArg } = await resolvePythonDevice();
+  const { pythonBin, deviceArg, vendor } = await resolvePythonDevice(opts.overrideVendor, opts.overrideDeviceIndex);
   const scriptPath = resolveF5Script();
   const outputPath = path.join(os.tmpdir(), `phobos-tts-${crypto.randomUUID()}.wav`);
   const startMs    = Date.now();
@@ -606,9 +618,20 @@ export async function generateF5Tts(opts: F5TtsOptions): Promise<AudioGenerateRe
   // torchcodec (required by f5-tts for audio loading) needs ffmpeg DLLs at runtime.
   const jellyfinDir = path.join(os.homedir(), '.phobos', 'services', 'jellyfin');
   const pathSep     = process.platform === 'win32' ? ';' : ':';
-  const extraEnv    = fs.existsSync(path.join(jellyfinDir, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'))
-    ? { PATH: `${jellyfinDir}${pathSep}${process.env.PATH ?? ''}` }
-    : undefined;
+  const ffmpegPath  = fs.existsSync(path.join(jellyfinDir, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'))
+    ? `${jellyfinDir}${pathSep}${process.env.PATH ?? ''}`
+    : (process.env.PATH ?? '');
+  const extraEnv: Record<string, string> = { PATH: ffmpegPath };
+  // ROCm Windows: HIP device visibility and gfx1150 (890M RDNA3.5) kernel override.
+  if (vendor === 'rocm' && process.platform === 'win32') {
+    extraEnv['HIP_VISIBLE_DEVICES']      = deviceArg.replace('cuda:', '') || '0';
+    extraEnv['HSA_OVERRIDE_GFX_VERSION'] = '11.5.0';
+  }
+  // XPU (Intel Arc): SYCL immediate command lists, disable XMX for gen12 compatibility.
+  if (vendor === 'xpu') {
+    extraEnv['SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS'] = '1';
+    extraEnv['BIGDL_LLM_XMX_DISABLED']                       = '1';
+  }
 
   await runProcess(pythonBin, args, outputPath, opts, extraEnv);
   return { outputPath, elapsedMs: Date.now() - startMs };
@@ -617,16 +640,20 @@ export async function generateF5Tts(opts: F5TtsOptions): Promise<AudioGenerateRe
 // ── Music — ACE-Step (C++: ace-lm pass then ace-synth pass) ──────────────────
 
 export interface AceStepOptions extends AudioRunOptions {
-  threadId:      string;
-  prompt:        string;
-  lyrics?:       string;
-  duration?:     number;
-  steps?:        number;
-  cfgStrength?:  number;
-  seed?:         number;
-  label?:        string;
+  threadId:            string;
+  prompt:              string;
+  lyrics?:             string;
+  duration?:           number;
+  steps?:              number;
+  cfgStrength?:        number;
+  seed?:               number;
+  label?:              string;
   /** 'gpu' = Python ACEStepPipeline, 'cpu' = C++ binaries, 'auto' = GPU if available */
-  audioBackend?: 'auto' | 'gpu' | 'cpu';
+  audioBackend?:       'auto' | 'gpu' | 'cpu';
+  /** Force a specific PyTorch vendor venv (for testing). */
+  overrideVendor?:     string;
+  /** Force a specific GPU device index (for testing). */
+  overrideDeviceIndex?: number;
 }
 
 export async function generateAceStep(opts: AceStepOptions): Promise<AudioGenerateResult> {
@@ -665,11 +692,10 @@ export async function generateAceStep(opts: AceStepOptions): Promise<AudioGenera
 
   if (useGpu) {
     opts.onProgress?.('[INFO ] ACE-Step: GPU route (Python ACEStepPipeline)');
-    const { pythonBin, deviceArg } = await resolvePythonDevice();
+    const { pythonBin, deviceArg, vendor } = await resolvePythonDevice(opts.overrideVendor, opts.overrideDeviceIndex);
     const scriptPath    = resolveAceStepScript();
     const outputPath    = path.join(os.tmpdir(), `phobos-music-${crypto.randomUUID()}.wav`);
     const startMs       = Date.now();
-    const deviceId      = deviceArg.startsWith('cuda:') ? deviceArg.slice(5) : '0';
     const args: string[] = [
       scriptPath,
       '--checkpoint-path', audioModelDir(spec!),
@@ -679,11 +705,22 @@ export async function generateAceStep(opts: AceStepOptions): Promise<AudioGenera
       '--steps',           String(opts.steps      ?? 60),
       '--cfg',             String(opts.cfgStrength ?? 15),
       '--seed',            String(opts.seed        ?? -1),
-      '--device-id',       deviceId,
+      '--device',          deviceArg,
       '--output',          outputPath,
     ];
+    const aceEnv: Record<string, string> = {};
+    // ROCm Windows: HIP device visibility and gfx1150 (890M RDNA3.5) kernel override.
+    if (vendor === 'rocm' && process.platform === 'win32') {
+      aceEnv['HIP_VISIBLE_DEVICES']      = deviceArg.replace('cuda:', '') || '0';
+      aceEnv['HSA_OVERRIDE_GFX_VERSION'] = '11.5.0';
+    }
+    // XPU (Intel Arc): SYCL immediate command lists, disable XMX for gen12 compatibility.
+    if (vendor === 'xpu') {
+      aceEnv['SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS'] = '1';
+      aceEnv['BIGDL_LLM_XMX_DISABLED']                       = '1';
+    }
     console.log(`[AudioServerManager] acestep (gpu): ${pythonBin} ${args.join(' ')}`);
-    await runProcess(pythonBin, args, outputPath, opts);
+    await runProcess(pythonBin, args, outputPath, opts, Object.keys(aceEnv).length ? aceEnv : undefined);
     return { outputPath, elapsedMs: Date.now() - startMs };
   }
 

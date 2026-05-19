@@ -7,13 +7,20 @@
 //
 //   PHOBOS_BIN_DIR=dist tsx test-audio-generative.ts
 //
-// Or with individual runner flags:
+// Or with individual runner and hardware flags:
 //
 //   PHOBOS_BIN_DIR=dist tsx test-audio-generative.ts --only kokoro
 //   PHOBOS_BIN_DIR=dist tsx test-audio-generative.ts --only whisper
 //   PHOBOS_BIN_DIR=dist tsx test-audio-generative.ts --only acestep
 //   PHOBOS_BIN_DIR=dist tsx test-audio-generative.ts --only f5tts
-//   PHOBOS_BIN_DIR=dist tsx test-audio-generative.ts --skip acestep  (skip slow GPU test)
+//   PHOBOS_BIN_DIR=dist tsx test-audio-generative.ts --skip acestep
+//
+//   # Force a specific PyTorch backend venv (cuda | rocm | xpu | apple | cpu):
+//   PHOBOS_BIN_DIR=dist tsx test-audio-generative.ts --backend rocm
+//   PHOBOS_BIN_DIR=dist tsx test-audio-generative.ts --backend xpu --only f5tts
+//
+//   # Force a specific GPU device index (default: auto-selects first ready GPU):
+//   PHOBOS_BIN_DIR=dist tsx test-audio-generative.ts --backend cuda --device-index 1
 //
 // Prerequisites — everything must be in place before running:
 //
@@ -52,8 +59,14 @@ import {
 const args   = process.argv.slice(2);
 const onlyIdx = args.indexOf('--only');
 const skipIdx = args.indexOf('--skip');
-const onlyRunner = onlyIdx !== -1 ? args[onlyIdx + 1] : null;
-const skipRunner = skipIdx !== -1 ? args[skipIdx + 1] : null;
+const backendIdx = args.indexOf('--backend');
+const deviceIdxFlag = args.indexOf('--device-index');
+const onlyRunner    = onlyIdx    !== -1 ? args[onlyIdx    + 1] : null;
+const skipRunner    = skipIdx    !== -1 ? args[skipIdx    + 1] : null;
+/** Force a specific PyTorch vendor venv: cuda | rocm | xpu | apple | cpu */
+const overrideVendor      = backendIdx    !== -1 ? args[backendIdx    + 1] : undefined;
+/** Force a specific GPU device index */
+const overrideDeviceIndex = deviceIdxFlag !== -1 ? parseInt(args[deviceIdxFlag + 1], 10) : undefined;
 
 function shouldRun(name: string): boolean {
   if (skipRunner && skipRunner === name) return false;
@@ -138,6 +151,8 @@ async function main(): Promise<void> {
   console.log(`PHOBOS_BIN_DIR: ${process.env.PHOBOS_BIN_DIR ?? '(not set — using process.execPath dir)'}`);
   if (onlyRunner) console.log(`Running only: ${onlyRunner}`);
   if (skipRunner) console.log(`Skipping: ${skipRunner}`);
+  if (overrideVendor)      console.log(`Backend override: ${overrideVendor}`);
+  if (overrideDeviceIndex !== undefined) console.log(`Device index override: ${overrideDeviceIndex}`);
   console.log('');
 
   // ── Phase 1: workspace setup ───────────────────────────────────────────────
@@ -232,14 +247,16 @@ async function main(): Promise<void> {
   if (shouldRun('acestep')) {
     await runPhase('ACE-Step — music generation (10s clip)', async () => {
       const result = await generateAceStep({
-        threadId:    TEST_THREAD_ID,
-        prompt:      'ambient electronic, soft synthesizer pads, 80bpm, calm',
-        duration:    10,
-        steps:       30,
-        cfgStrength: 7.0,
-        seed:        42,
-        label:       'test-acestep',
-        onProgress:  makeProgress('ace-step'),
+        threadId:            TEST_THREAD_ID,
+        prompt:              'ambient electronic, soft synthesizer pads, 80bpm, calm',
+        duration:            10,
+        steps:               30,
+        cfgStrength:         7.0,
+        seed:                42,
+        label:               'test-acestep',
+        onProgress:          makeProgress('ace-step'),
+        overrideVendor,
+        overrideDeviceIndex,
       });
       validateWav(result.outputPath, 100_000); // 10s @ 44100 Hz stereo 16-bit ≈ 1.7 MB
       console.log(`       Output: ${result.outputPath} (${result.elapsedMs} ms)`);
@@ -254,13 +271,15 @@ async function main(): Promise<void> {
   if (shouldRun('f5tts')) {
     await runPhase('F5-TTS — standard synthesis', async () => {
       const result = await generateF5Tts({
-        threadId: TEST_THREAD_ID,
-        text:     'F5 text to speech engine is operational.',
-        mode:     'tts',
-        speed:    1.0,
-        steps:    16,
-        label:    'test-f5tts',
-        onProgress: makeProgress('f5-tts'),
+        threadId:            TEST_THREAD_ID,
+        text:                'F5 text to speech engine is operational.',
+        mode:                'tts',
+        speed:               1.0,
+        steps:               16,
+        label:               'test-f5tts',
+        onProgress:          makeProgress('f5-tts'),
+        overrideVendor,
+        overrideDeviceIndex,
       });
       validateWav(result.outputPath, 20_000);
       console.log(`       Output: ${result.outputPath} (${result.elapsedMs} ms)`);

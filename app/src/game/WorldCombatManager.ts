@@ -252,9 +252,9 @@ export class WorldCombatManager {
       maxY: Math.max(sw.y, se.y),
     };
 
-    // Select flavour from daily zone spec (chunks share the zone's flavour)
-    const spec = ExplorationZoneManager.getInstance().getDailyZone();
-    const pool = FLAVOUR_POOLS[spec.enemyFlavour] ?? FLAVOUR_POOLS['default'];
+    // Select flavour from daily zone — getDailyFlavour() does NOT touch _tileSet.
+    const flavour = ExplorationZoneManager.getInstance().getDailyFlavour();
+    const pool = FLAVOUR_POOLS[flavour] ?? FLAVOUR_POOLS['default'];
 
     // LCG seed: mix daily seed with chunk index so each chunk has unique but stable spawns
     let s = (dailySeed ^ (chunkIdx * 0x9e3779b9)) >>> 0;
@@ -263,7 +263,7 @@ export class WorldCombatManager {
       return s / 2147483647;
     };
 
-    const overrides = toSpawnOverrides(difficulty, spec.enemyFlavour);
+    const overrides = toSpawnOverrides(difficulty, flavour);
 
     if (chunk.isBossChunk) {
       this._spawnBossForChunk(chunk, bounds, rng, overrides);

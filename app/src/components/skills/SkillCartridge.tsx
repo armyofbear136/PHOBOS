@@ -17,7 +17,7 @@ export function SkillCartridge() {
   const [haOpen,       setHaOpen]         = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const { resolvedTheme } = useTheme();
-  const isLight = resolvedTheme === 'light';
+  const isLight = resolvedTheme === 'light' || document.documentElement.classList.contains('light');
 
   useEffect(() => {
     if (!dropdownOpen) return;
@@ -31,12 +31,13 @@ export function SkillCartridge() {
   }, [dropdownOpen]);
 
   const itemStyle: React.CSSProperties = isLight ? {
-    color: 'hsl(130 55% 18%)',
+    color: '#1a3a1a',
     borderBottomColor: 'hsl(35 20% 72%)',
+    fontWeight: 600,
   } : {};
 
   const iconStyle: React.CSSProperties = isLight ? {
-    color: 'hsl(130 50% 28%)',
+    color: '#1a3a1a',
   } : {};
 
   const dropdownStyle: React.CSSProperties = isLight ? {

@@ -32,6 +32,7 @@ import {
   FileCode2, FilePlus, FileType, Boxes,
 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
+import { useTheme } from '@/lib/useTheme';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

@@ -1826,12 +1826,14 @@ export class WorldScene extends Phaser.Scene {
 
     // Legacy chunk graph — retained for WorldCombatManager.seedChunk() until
     // enemy seeding is migrated to SpawnMarker-based placement in Phase B.
+    // getChunkGraphOnly() does NOT clear _tileSet — the zone graph tiles
+    // registered above must survive for _tickZoneGuard.isTileInZone() checks.
     const ezm = ExplorationZoneManager.getInstance();
-    this._chunkGraph = ezm.getDailyChunkGraph();
+    this._chunkGraph = ezm.getChunkGraphOnly();
 
     // Hub entry bridge — 3-wide tile strip from hub edge (ty=-1) to zone entry
     const BRIDGE_CX   = EXZONE_ENTRY_TX;
-    const BRIDGE_TINT = 0x1a1a2e;
+    const BRIDGE_TINT = 0x3a3a5a;
     for (let by = -1; by >= EXZONE_ENTRY_TY; by--) {
       for (let bx = BRIDGE_CX - 1; bx <= BRIDGE_CX + 1; bx++) {
         const { x, y } = this.tileToScreen(bx, by);
@@ -1971,7 +1973,7 @@ export class WorldScene extends Phaser.Scene {
   private _spawnRoom(room: RoomInstance): void {
     const tw   = TileWorld.getInstance();
     const ezm  = ExplorationZoneManager.getInstance();
-    const tint = room.def.zone_act === 2 ? 0x141414 : 0x111122;
+    const tint = room.def.zone_act === 2 ? 0x4a4858 : 0x3a4060;
 
     // Ground tiles
     const worldTiles: Array<{ tx: number; ty: number }> = [];

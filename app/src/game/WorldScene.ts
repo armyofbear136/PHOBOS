@@ -516,6 +516,18 @@ export class WorldScene extends Phaser.Scene {
     this._keybinds = KeybindManager.getInstance();
     this._keybinds.init(this);
 
+    // ── Debug: F9 toggles godmode (no damage taken) ────────────────────────
+    this.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.F9)
+      .on('down', () => {
+        if (!this._combatController) return;
+        this._combatController.godMode = !this._combatController.godMode;
+        this.spawnFloatText(
+          this.player.x, this.player.y - 20,
+          this._combatController.godMode ? '✦ GODMODE ON' : '✦ GODMODE OFF',
+          this._combatController.godMode ? 0xffd700 : 0xaaaaaa,
+        );
+      });
+
     // ── Persona AI schedulers ──────────────────────────────────────────────
     // ── Persona hub-wander AI ─────────────────────────────────────────────
     const personaNames: PersonaName[] = ['sayon', 'seren', 'sybil'];
@@ -642,10 +654,15 @@ export class WorldScene extends Phaser.Scene {
       const MOVE_SPEED = 120; // px/sec — must match PlayerSprite.MOVE_SPEED
       const speedMult  = this._combatController!.getSpeedMultiplier();
       const dt = delta / 1000;
-      this.player.setPosition(
-        this.player.x + rollDir.x * MOVE_SPEED * speedMult * dt,
-        this.player.y + rollDir.y * MOVE_SPEED * speedMult * dt,
-      );
+      const tw = TileWorld.getInstance();
+      const nextX = this.player.x + rollDir.x * MOVE_SPEED * speedMult * dt;
+      const nextY = this.player.y + rollDir.y * MOVE_SPEED * speedMult * dt;
+      // Only apply roll movement if destination is walkable — prevents rolling off world edge
+      if (tw.isWalkable(nextX, nextY)) {
+        this.player.setPosition(nextX, nextY);
+        this._lastValidX = nextX;
+        this._lastValidY = nextY;
+      }
       this.player.update(delta, false); // false = suppress input during roll
     } else {
       this.player.update(delta, this._inputEnabled);
@@ -1659,6 +1676,7 @@ export class WorldScene extends Phaser.Scene {
     this.time.delayedCall(900, () => {
       this.player.setPosition(respawn.x, respawn.y);
       this.player.resetFromDeath();
+      this.player.resetActionState();
       if (this._combatController) {
         this._combatController.hpCurrent = this._combatController.hpMax;
         this._combatController.moveState = 'free';

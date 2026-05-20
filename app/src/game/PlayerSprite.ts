@@ -312,6 +312,14 @@ export class PlayerSprite {
     }
   }
 
+  /** Hard-clear all action state — use on respawn to guarantee movement is unlocked. */
+  resetActionState(): void {
+    this._actionType         = null;
+    this._actionHolding      = false;
+    this._actionReleaseTimer = 0;
+    this._blockGfx?.setVisible(false);
+  }
+
   /** Call when RMB is released to clear the block state and hide the shield. */
   stopBlock(): void {
     if (this._actionType !== 'block') return;

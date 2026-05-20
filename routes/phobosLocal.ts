@@ -964,7 +964,12 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         const modelPath = fluxModelPath(spec);
         console.log(`[phobosLocal] Converting ${modelId} (${convertType}) to PyTorch variant — vendor: ${vendor}, path: ${modelPath}`);
 
-        for await (const progress of convertModelToPyTorch(modelId, modelPath, convertType, vendor)) {
+        // Pass T5 path so the converter caches BF16 T5 alongside the transformer.
+        const auxFilesForConvert = spec ? getAuxFilesForModel(spec) : [];
+        const t5AuxForConvert = auxFilesForConvert.find(a => a.cliFlag === '--t5xxl');
+        const t5PathForConvert = t5AuxForConvert ? fluxAuxPath(t5AuxForConvert) : undefined;
+
+        for await (const progress of convertModelToPyTorch(modelId, modelPath, convertType, vendor, t5PathForConvert)) {
           send(progress);
           if (progress.phase === 'error') return;
         }

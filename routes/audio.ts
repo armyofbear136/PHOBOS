@@ -1269,6 +1269,43 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
   }
 
+  // ── POST /api/audio/upload-ref ────────────────────────────────────────────
+  //
+  // Accepts a raw binary audio file from the browser and writes it to
+  // audioUploadsDir. Returns { serverPath } — the absolute path WorkflowPanel
+  // stores in node.params.refAudio, which executeVoiceClone then opens directly.
+  //
+  // The caller sets Content-Type: application/octet-stream and passes the
+  // original filename in the X-Filename header so we can preserve the extension.
+  //
+  // Files are prefixed 'ref-' and NOT auto-deleted here — WorkflowEngine's
+  // generateF5Tts removes them after synthesis. Stale files (aborted upload)
+  // accumulate only in audioUploadsDir which can be swept periodically.
+  //
+  // Response: { serverPath: string }
+
+  fastify.post<{
+    Headers: { 'x-filename'?: string };
+  }>('/api/audio/upload-ref', async (req, reply) => {
+    try {
+      const filename = (req.headers as Record<string, string>)['x-filename'] ?? 'ref.wav';
+      const ext      = path.extname(filename).toLowerCase() || '.wav';
+      const allowed  = new Set(['.wav', '.mp3', '.flac', '.ogg', '.m4a']);
+      if (!allowed.has(ext)) {
+        return reply.status(400).send({ error: `unsupported audio format: ${ext}` });
+      }
+      const serverPath = path.join(audioUploadsDir, `ref-${crypto.randomUUID()}${ext}`);
+      const buf        = await req.body as Buffer;
+      if (!Buffer.isBuffer(buf) || buf.length === 0) {
+        return reply.status(400).send({ error: 'empty request body' });
+      }
+      fs.writeFileSync(serverPath, buf);
+      return reply.send({ serverPath });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
   // ── GET /api/audio/voices ──────────────────────────────────────────────────
   //
   // Lists installed Kokoro voice profiles by scanning dist/kokoro/voices/*.bin.

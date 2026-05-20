@@ -1,5 +1,5 @@
 /**
- * JoditPanel.tsx — Fullscreen document editor: wasm-pandoc + TipTap.
+ * JoditPanel.tsx — Fullscreen document editor: server-side pandoc + TipTap.
  *
  * Layout (identical to previous Jodit version):
  *   Row 1 — PHOBOS toolbar: filename, page size, margins, web layout, open, new, export, save, close
@@ -1422,8 +1422,8 @@ export function JoditPanel() {
         {converting && (
           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-background">
             <Loader2 className="w-8 h-8 text-phobos-green/40 animate-spin" />
-            <span className="text-xs font-mono text-muted-foreground/40">Converting with pandoc WASM…</span>
-            <span className="text-[10px] font-mono text-muted-foreground/20">first load downloads pandoc.wasm (~30 MB, then cached)</span>
+            <span className="text-xs font-mono text-muted-foreground/40">Converting with pandoc…</span>
+            <span className="text-[10px] font-mono text-muted-foreground/20">converting via server-side pandoc binary</span>
           </div>
         )}
         {convertErr && !converting && (

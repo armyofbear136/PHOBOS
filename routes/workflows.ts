@@ -44,6 +44,8 @@ import {
 
 import { isVendorReady } from '../phobos/PythonEnvManager.js';
 
+import { resolveAudioDeviceIndex } from '../phobos/AudioServerManager.js';
+
 import { gsm } from '../game/GameStateManager.js';
 
 // ── Default node for a brand-new workflow ────────────────────────────────────
@@ -496,9 +498,11 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
       const entries = readIndex(threadId);
       const entry   = entries.find((e) => e.workflowId === workflowId);
       // Video workflows have no thumbnail — 204 so img onError suppresses cleanly
-      if (entry?.workflowType === 'video') return reply.status(204).send();
+      if (entry?.workflowType === 'video') {
+        return reply.header('Cross-Origin-Resource-Policy', 'cross-origin').status(204).send();
+      }
       if (!entry?.thumbPath || !fs.existsSync(entry.thumbPath)) {
-        return reply.status(404).send({ error: 'No thumbnail yet' });
+        return reply.header('Cross-Origin-Resource-Policy', 'cross-origin').status(404).send({ error: 'No thumbnail yet' });
       }
       const stream = fs.createReadStream(entry.thumbPath);
       return reply.type('image/png').send(stream);
@@ -756,9 +760,10 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
         session.nodes[forceNodeIndex].paramSnapshot = null;
       }
 
-      // Audio sessions handle their own GPU access — never stop LLM servers
       // Check if any non-Source nodes need rendering before stopping LLM servers.
-      const needsRender = !isAudioSession && (() => {
+      // Audio sessions participate in the same dirty check — they need to stop
+      // LLM servers on the target GPU before dispatching to the Python runner.
+      const needsRender = (() => {
         for (let i = 0; i <= resolvedTarget; i++) {
           const n = session.nodes[i];
           if (n.type === 'Source') continue;
@@ -800,62 +805,109 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
 
         try {
           if (needsRender) {
-            const targetDevice = sdCfg!.deviceIndex;
-            snaps = snapshotAllServersOnDevice(targetDevice);
+            if (isAudioSession) {
+              // ── Audio pre-flight: stop LLM servers on the target GPU ──────────────
+              // Mirrors the image-gen sequencing exactly. Resolve which system GPU
+              // audio will use, snapshot + stop any LLM servers on it, poll until
+              // VRAM is reclaimed, then let WorkflowEngine dispatch to the Python runner.
+              const audioDeviceIndex = await resolveAudioDeviceIndex(
+                (session as any).audioBackend ?? 'auto',
+                (session as any).targetGpuIndex,
+              );
+              snaps = snapshotAllServersOnDevice(audioDeviceIndex);
 
-            if (snaps.length > 0) {
-              pushPhase('stopping_llm', `Pausing ${snaps.map(s => s.role.toUpperCase()).join(' + ')}…`);
-              for (const snap of snaps) {
-                try { await stopServer(snap.role); } catch { /* warn */ }
-              }
-            }
-
-            if (status.aborted) return;
-
-            // Re-query VRAM after stop settles using LIVE hardware query.
-            // Poll until free VRAM stops rising (stable = driver finished reclaiming).
-            // Uses queryGpuFreeVram() — never the cached hardware profile.
-            // Skipped for CPU-only paths (no discrete VRAM to settle).
-            const isDiscreteTarget = sdCfg!.gpuBackend === 'cuda' || sdCfg!.gpuBackend === 'vulkan';
-            if (isDiscreteTarget && sdCfg!.sdBinary !== 'cpu') {
-              const hw = await detectHardware();
-              const targetGpu = hw.gpus.find(g => g.index === (sdCfg!.deviceIndex ?? 0));
-
-              if (targetGpu) {
-                const SETTLE_POLL_MS = 500;
-                const SETTLE_MAX_MS  = 5000;
-                const SETTLE_START   = Date.now();
-                let lastFreeMb = 0;
-
-                while (true) {
-                  await new Promise(r => setTimeout(r, SETTLE_POLL_MS));
-                  if (status.aborted) break;
-                  const freeMb  = await queryGpuFreeVram(targetGpu) ?? 0;
-                  const elapsed = Date.now() - SETTLE_START;
-                  // Only call stable if VRAM has actually been released (freeMb > 0).
-                  // When freeMb is still 0, the driver hasn't reclaimed yet — keep polling.
-                  const stable  = freeMb > 0 && freeMb <= lastFreeMb;
-                  lastFreeMb    = freeMb;
-                  if (stable || elapsed >= SETTLE_MAX_MS) break;
-                }
-
-                // Update sdCfg with final accurate free VRAM reading
-                if (!status.aborted) {
-                  const refreshed = await buildSdConfig({
-                    modelId: session.modelId,
-                    targetGpuIndex: (session as any).targetGpuIndex,
-                    imageBackend: (session as any).imageBackend,
-                  });
-                  if (refreshed) sdCfg = refreshed;
+              if (snaps.length > 0) {
+                pushPhase('stopping_llm', `Pausing ${snaps.map(s => s.role.toUpperCase()).join(' + ')}…`);
+                for (const snap of snaps) {
+                  try { await stopServer(snap.role); } catch { /* warn */ }
                 }
               }
-            }
 
-            if (!sdCfg) {
-              status.error = 'Hardware config lost after server stop.';
-              status.generating = false;
-              status.completedAt = Date.now();
-              return;
+              if (status.aborted) return;
+
+              // Poll until VRAM is reclaimed — same settle logic as image gen.
+              // Skipped if audio resolved to CPU (audioDeviceIndex === undefined).
+              if (audioDeviceIndex !== undefined) {
+                const hw = await detectHardware();
+                const targetGpu = hw.gpus.find(g => g.index === audioDeviceIndex);
+
+                if (targetGpu) {
+                  const SETTLE_POLL_MS = 500;
+                  const SETTLE_MAX_MS  = 5000;
+                  const SETTLE_START   = Date.now();
+                  let lastFreeMb = 0;
+
+                  while (true) {
+                    await new Promise(r => setTimeout(r, SETTLE_POLL_MS));
+                    if (status.aborted) break;
+                    const freeMb  = await queryGpuFreeVram(targetGpu) ?? 0;
+                    const elapsed = Date.now() - SETTLE_START;
+                    const stable  = freeMb > 0 && freeMb <= lastFreeMb;
+                    lastFreeMb    = freeMb;
+                    if (stable || elapsed >= SETTLE_MAX_MS) break;
+                  }
+                }
+              }
+
+            } else {
+              // ── Image pre-flight: stop LLM servers on the sd-cli target GPU ──────
+              const targetDevice = sdCfg!.deviceIndex;
+              snaps = snapshotAllServersOnDevice(targetDevice);
+
+              if (snaps.length > 0) {
+                pushPhase('stopping_llm', `Pausing ${snaps.map(s => s.role.toUpperCase()).join(' + ')}…`);
+                for (const snap of snaps) {
+                  try { await stopServer(snap.role); } catch { /* warn */ }
+                }
+              }
+
+              if (status.aborted) return;
+
+              // Re-query VRAM after stop settles using LIVE hardware query.
+              // Poll until free VRAM stops rising (stable = driver finished reclaiming).
+              // Uses queryGpuFreeVram() — never the cached hardware profile.
+              // Skipped for CPU-only paths (no discrete VRAM to settle).
+              const isDiscreteTarget = sdCfg!.gpuBackend === 'cuda' || sdCfg!.gpuBackend === 'vulkan';
+              if (isDiscreteTarget && sdCfg!.sdBinary !== 'cpu') {
+                const hw = await detectHardware();
+                const targetGpu = hw.gpus.find(g => g.index === (sdCfg!.deviceIndex ?? 0));
+
+                if (targetGpu) {
+                  const SETTLE_POLL_MS = 500;
+                  const SETTLE_MAX_MS  = 5000;
+                  const SETTLE_START   = Date.now();
+                  let lastFreeMb = 0;
+
+                  while (true) {
+                    await new Promise(r => setTimeout(r, SETTLE_POLL_MS));
+                    if (status.aborted) break;
+                    const freeMb  = await queryGpuFreeVram(targetGpu) ?? 0;
+                    const elapsed = Date.now() - SETTLE_START;
+                    // Only call stable if VRAM has actually been released (freeMb > 0).
+                    // When freeMb is still 0, the driver hasn't reclaimed yet — keep polling.
+                    const stable  = freeMb > 0 && freeMb <= lastFreeMb;
+                    lastFreeMb    = freeMb;
+                    if (stable || elapsed >= SETTLE_MAX_MS) break;
+                  }
+
+                  // Update sdCfg with final accurate free VRAM reading
+                  if (!status.aborted) {
+                    const refreshed = await buildSdConfig({
+                      modelId: session.modelId,
+                      targetGpuIndex: (session as any).targetGpuIndex,
+                      imageBackend: (session as any).imageBackend,
+                    });
+                    if (refreshed) sdCfg = refreshed;
+                  }
+                }
+              }
+
+              if (!sdCfg) {
+                status.error = 'Hardware config lost after server stop.';
+                status.generating = false;
+                status.completedAt = Date.now();
+                return;
+              }
             }
           }
 
@@ -907,16 +959,24 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
           if (snaps.length > 0) {
             pushPhase('restarting_llm', `Reloading ${snaps.map(s => s.role.toUpperCase()).join(' + ')}…`);
 
-            // PyTorch (especially XPU/Arc) holds VRAM for several seconds after the
-            // process exits — the driver defers actual page reclaim. Give it time
-            // before restarting the LLM server or it will OOM immediately on startup.
-            const usedPyTorch = sdCfg?.imageBackend !== 'sdcli';
+            // PyTorch holds VRAM for several seconds after the process exits —
+            // the driver defers actual page reclaim. Give it time before restarting
+            // the LLM server or it will OOM immediately on startup.
+            //
+            // Audio generation always uses PyTorch (no sd-cli path).
+            // Image gen only needs a wait when imageBackend is not sdcli.
             const isXpu = snaps.some(s => s.gpuBackend === 'vulkan' && s.deviceIndex !== undefined && s.deviceIndex >= 100);
-            if (usedPyTorch) {
-              // XPU (Arc) needs longer — driver reclaim observed at 10-15s
-              // CUDA/ROCm settle faster but still benefit from a brief wait
+            if (isAudioSession) {
+              // ACE-Step / F5-TTS are PyTorch — always wait for VRAM reclaim.
+              // XPU (Arc) needs longer; CUDA/ROCm settle faster.
               const postGenSettleMs = isXpu ? 12_000 : 3_000;
               await new Promise(r => setTimeout(r, postGenSettleMs));
+            } else {
+              const usedPyTorch = sdCfg?.imageBackend !== 'sdcli';
+              if (usedPyTorch) {
+                const postGenSettleMs = isXpu ? 12_000 : 3_000;
+                await new Promise(r => setTimeout(r, postGenSettleMs));
+              }
             }
 
             for (const snap of snaps) {

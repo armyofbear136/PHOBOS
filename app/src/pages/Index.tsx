@@ -15,13 +15,12 @@ import { ConnectionSplash } from '@/components/splash/ConnectionSplash';
 import { VersionSplash } from '@/components/splash/VersionSplash';
 import { SetupGuide } from '@/components/splash/SetupGuide';
 import { PhobosLLMPanel } from '@/components/phobos/PhobosLLMPanel';
-import { TrialPopup } from '@/components/phobos/TrialPopup';
 import { UpdateBanner } from '@/components/phobos/UpdateBanner';
 import { ConnectionStatus } from '@/components/phobos/ConnectionStatus';
 import { useStream } from '@/hooks/useStream';
 import { useAppStore } from '@/store/useAppStore';
 import { useWorkflowStore, type WorkflowSession } from '@/store/useWorkflowStore';
-// AudioGenPanel and useAudioGenStore removed — audio gen is now a workflow
+// AudioGenPanel not mounted here — audio gen opens via WorkflowPanel (handleNewAudioGen)
 import { useThreads, useThreadMessages, useStatus } from '@/hooks/useThread';
 import { PhobosGame } from '@/game/PhobosGame';
 import { EffluxPanel } from '@/components/editors/EffluxPanel';
@@ -323,7 +322,6 @@ const Index = () => {
 
   // Trial popup logic — initialize from localStorage, then verify against phobos-core once connected
   // Trial popup bypassed — always dismissed.
-  const [trialDismissed, setTrialDismissed] = useState(true);
 
 
   const formatModelLabel = (raw: string) => {
@@ -380,19 +378,6 @@ const Index = () => {
     ? projectDocs.find((p) => p.projectId === activeThread.projectName)
     : null;
 
-  // Check phobos-core for a valid license once connected — bypasses trial popup
-  useEffect(() => {
-    if (!backendAlive || trialDismissed) return;
-    fetch(`${ENGINE_URL}/api/license`)
-      .then(r => r.json())
-      .then((data: { valid?: boolean }) => {
-        if (data.valid) {
-          localStorage.setItem('phobos_licensed', 'true');
-          setTrialDismissed(true);
-        }
-      })
-      .catch(() => { /* offline or not configured — leave trial as-is */ });
-  }, [backendAlive]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -462,13 +447,6 @@ const Index = () => {
       <SculptGLPanel />
       <GodotPanel />
       <div className="h-screen flex flex-col overflow-hidden phobos-ui-root" style={{ position: 'relative', zIndex: 10, backgroundColor: 'transparent' }}>
-      {/* Trial popup */}
-      {!trialDismissed && (
-        <TrialPopup onDismiss={() => {
-          setTrialDismissed(true);
-          localStorage.setItem('phobos_trial_dismissed', 'true');
-        }} />
-      )}
 
       {splashVisible && (!backendAlive || coreBooting) && <ConnectionSplash />}
       {splashVisible && backendAlive && !coreBooting && <SetupGuide />}

@@ -184,6 +184,8 @@ async function main(): Promise<void> {
       });
       kokoroOutputPath = result.outputPath;
       validateWav(result.outputPath, 20_000);
+      const destKokoro = path.join(TEST_DIR, 'audio', 'tts', path.basename(result.outputPath));
+      fs.copyFileSync(result.outputPath, destKokoro);
       console.log(`       Output: ${result.outputPath} (${result.elapsedMs} ms)`);
     });
   } else {
@@ -259,6 +261,8 @@ async function main(): Promise<void> {
         overrideDeviceIndex,
       });
       validateWav(result.outputPath, 100_000); // 10s @ 44100 Hz stereo 16-bit ≈ 1.7 MB
+      const destMusic = path.join(TEST_DIR, 'audio', 'music', path.basename(result.outputPath));
+      fs.copyFileSync(result.outputPath, destMusic);
       console.log(`       Output: ${result.outputPath} (${result.elapsedMs} ms)`);
       console.log(`       RTF: ${(result.elapsedMs / 10_000).toFixed(2)} (${result.elapsedMs}ms / 10000ms)`);
     });
@@ -282,6 +286,8 @@ async function main(): Promise<void> {
         overrideDeviceIndex,
       });
       validateWav(result.outputPath, 20_000);
+      const destTts = path.join(TEST_DIR, 'audio', 'tts', path.basename(result.outputPath));
+      fs.copyFileSync(result.outputPath, destTts);
       console.log(`       Output: ${result.outputPath} (${result.elapsedMs} ms)`);
     });
   } else {

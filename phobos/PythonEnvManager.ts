@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as os from 'os';
 import * as fs from 'fs';
@@ -116,7 +116,16 @@ interface EnvManifest {
 //  v31 — add spacy==3.8.4 + thinc 8.x stack before acestep; thinc 9.x was being pulled
 //        by loose installs and breaking thinc.backends.linalg (Cython extension moved).
 //        All spacy sub-deps pinned to versions compatible with spacy 3.8.4.
-const REQUIRED_ENV_VERSION = 31; // v31: spacy 3.8.4 + thinc 8.x pinned before acestep
+//  v32 — blis pin corrected from 0.7.x to >=1.0.0; blis 0.7.x was compiled
+//        against numpy 1.x ABI (dtype size 96) and fails with numpy 2.x (88).
+//  v33 — ROCm verify timeout extended 30s→180s; HIP runtime init on Windows
+//        takes 60-120s on a cold venv, was silently timing out and reporting
+//        install failure with no console output. console.error added to both
+//        verify failure paths so failures are visible in the system log.
+//  v34 — patch encodec/distrib.py on ROCm after f5-tts install: injects a
+//        ReduceOp stub into torch.distributed before the module-level attr
+//        read in distrib.py line 32 that crashes on Windows ROCm torch stubs.
+const REQUIRED_ENV_VERSION = 34; // v34: encodec ReduceOp stub for ROCm f5-tts
 
 // ── Module state ─────────────────────────────────────────────────────────────
 
@@ -651,13 +660,15 @@ export async function* install(vendor: GpuVendor): AsyncGenerator<InstallProgres
     // ── Phase: verify ──────────────────────────────────────────────────────
     yield { phase: 'verify', vendor, label: 'Verifying…', progress: 0, done: false };
 
-    // XPU first-run import initialises Intel OneAPI/SYCL device stack which can
-    // take 60-120s on a freshly-installed driver. Use a longer timeout.
-    const verifyTimeoutMs = vendor === 'xpu' ? 180_000 : 30_000;
+    // XPU and ROCm both require extra time on first import: XPU initialises
+    // Intel OneAPI/SYCL (60-120s), ROCm initialises the HIP runtime on Windows
+    // which also takes 60-120s on a fresh or cold venv. Both get 180s.
+    const verifyTimeoutMs = (vendor === 'xpu' || vendor === 'rocm') ? 180_000 : 30_000;
 
     const torchVer = await checkTorchVersion(vendor, verifyTimeoutMs);
     if (!torchVer) {
       const msg = 'torch installed but fails to import — check driver installation';
+      console.error(`[PythonEnvManager] Verify failed (${vendor}): ${msg}`);
       yield { phase: 'error', vendor, label: msg, progress: -1, done: true, error: msg };
       return;
     }
@@ -665,6 +676,7 @@ export async function* install(vendor: GpuVendor): AsyncGenerator<InstallProgres
     const packagesOk = await checkPackagesReady(vendor, verifyTimeoutMs);
     if (!packagesOk) {
       const msg = 'Some required packages fail to import — check driver installation';
+      console.error(`[PythonEnvManager] Verify failed (${vendor}): ${msg}`);
       yield { phase: 'error', vendor, label: msg, progress: -1, done: true, error: msg };
       return;
     }
@@ -936,6 +948,41 @@ async function installDiffusersStack(
     console.warn(`[PythonEnvManager] f5-tts install failed (non-fatal): ${f5Result.error}`);
   }
 
+  // ── ROCm: patch encodec/distrib.py ────────────────────────────────────────
+  // encodec/distrib.py line 32 reads torch.distributed.ReduceOp at module
+  // load time. The Windows ROCm torch build ships a partial distributed stub
+  // that lacks ReduceOp, crashing any import chain that touches encodec
+  // (f5-tts → vocos → encodec). Prepend a ReduceOp stub class so the attr
+  // read succeeds without touching real distributed functionality.
+  if (vendor === 'rocm') {
+    try {
+      const pyDir       = path.dirname(pyBin);
+      const sitePackages = path.join(pyDir, '..', 'Lib', 'site-packages');
+      const distribPath  = path.resolve(path.join(sitePackages, 'encodec', 'distrib.py'));
+      if (fs.existsSync(distribPath)) {
+        const src = fs.readFileSync(distribPath, 'utf8');
+        if (!src.includes('PHOBOS ROCm patch')) {
+          const stub = [
+            '# PHOBOS ROCm patch: stub ReduceOp for partial torch.distributed on Windows',
+            'import torch as _torch_patch',
+            'if not hasattr(_torch_patch.distributed, "ReduceOp"):',
+            '    class _ReduceOpStub:',
+            '        SUM = 0; PRODUCT = 1; MIN = 2; MAX = 3; BAND = 4; BOR = 5; BXOR = 6',
+            '    _torch_patch.distributed.ReduceOp = _ReduceOpStub',
+            'del _torch_patch',
+            '',
+          ].join('\n');
+          fs.writeFileSync(distribPath, stub + src, 'utf8');
+          console.log('[PythonEnvManager] Patched encodec/distrib.py — ReduceOp stub for ROCm');
+        }
+      } else {
+        console.warn('[PythonEnvManager] encodec/distrib.py not found — f5-tts may not be installed yet');
+      }
+    } catch (patchErr) {
+      console.warn(`[PythonEnvManager] encodec distrib.py patch failed (non-fatal): ${patchErr}`);
+    }
+  }
+
   // Clean up constraints file — it's env-specific and must not persist across rebuilds.
   if (constraintsWritten) {
     try { fs.unlinkSync(constraintsPath); } catch { /* non-fatal */ }
@@ -973,7 +1020,7 @@ async function installDiffusersStack(
     'cymem>=2.0.2,<2.1.0',
     'preshed>=3.0.2,<3.1.0',
     'murmurhash>=1.0.2,<1.1.0',
-    'blis>=0.7.8,<0.8.0',
+    'blis>=1.0.0',
   ]);
 
   // Remaining lightweight language-id and audio deps — no version conflicts.
@@ -1155,43 +1202,18 @@ function _patchTransformersModelingUtils_UNUSED(pyBin: string): void {
 }
 
 async function runPip(pyBin: string, args: string[]): Promise<{ ok: boolean; error?: string }> {
-  // Log the install step so stalls are visible in the console.
-  const label = args.find(a => !a.startsWith('-') && a !== '-m' && a !== 'pip' && a !== 'install') ?? args.slice(0, 4).join(' ');
-  console.log(`[PythonEnvManager] pip: ${label}`);
-  return new Promise((resolve) => {
-    const child = spawn(pyBin, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
+  try {
+    await execFileAsync(pyBin, args, {
+      timeout: 30 * 60 * 1000,
+      maxBuffer: 50 * 1024 * 1024,
     });
-    const stderrLines: string[] = [];
-    child.stdout.on('data', (d: Buffer) => {
-      const line = d.toString().trim();
-      if (line) console.log(`[PythonEnvManager:pip] ${line}`);
-    });
-    child.stderr.on('data', (d: Buffer) => {
-      const line = d.toString().trim();
-      if (line) {
-        stderrLines.push(line);
-        // Only log lines that look like real errors or progress, not spam.
-        if (/error:|warning:|exception|traceback|failed|installing|collecting|downloading/i.test(line)) {
-          console.log(`[PythonEnvManager:pip] ${line}`);
-        }
-      }
-    });
-    const timer = setTimeout(() => {
-      child.kill();
-      resolve({ ok: false, error: `pip timed out after 30 min (${label})` });
-    }, 30 * 60 * 1000);
-    child.on('close', (code: number | null) => {
-      clearTimeout(timer);
-      if (code === 0) {
-        resolve({ ok: true });
-      } else {
-        const tail = stderrLines.slice(-20).join('\n') || `pip exited code ${code}`;
-        console.error(`[PythonEnvManager] pip failed (${label}):\n${tail}`);
-        resolve({ ok: false, error: tail });
-      }
-    });
-  });
+    return { ok: true };
+  } catch (err) {
+    const error = (err as { stderr?: string; stdout?: string; message?: string });
+    const tail = error.stderr?.trim().split('\n').slice(-20).join('\n') || error.message || 'pip install failed';
+    console.error(`[PythonEnvManager] pip failed (args: ${args.slice(0, 6).join(' ')}...):\n${tail}`);
+    return { ok: false, error: tail };
+  }
 }
 
 // ── Uninstall ────────────────────────────────────────────────────────────────

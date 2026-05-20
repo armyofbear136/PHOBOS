@@ -11,7 +11,7 @@
  */
 
 import { createRequire } from 'node:module';
-import type { PeerConnection, DataChannel, IceServer } from 'node-datachannel';
+import type { PeerConnection, DataChannel, IceServer, RelayType } from 'node-datachannel';
 import type { SignalingClient } from './SignalingClient.js';
 import type { SignalOffer, SignalIce } from './RemoteProtocol.js';
 import { DataChannelHandler } from './DataChannelHandler.js';
@@ -84,19 +84,44 @@ export class WebRTCServer {
     // Tear down any existing session first
     this._teardown();
 
+    // node-datachannel accepts ICE servers as plain URL strings (for STUN) or
+    // IceServer objects (for TURN). Passing STUN as an object with hostname/port
+    // is silently ignored by libdatachannel — it must be a string.
+    function parseIceUrl(url: string): { hostname: string; port: number } {
+      const withoutScheme = url.replace(/^(stun|stuns|turn|turns):\/?\/?/, '');
+      const withoutParams = withoutScheme.split('?')[0];
+      const lastColon     = withoutParams.lastIndexOf(':');
+      if (lastColon !== -1 && !withoutParams.startsWith('[')) {
+        return {
+          hostname: withoutParams.slice(0, lastColon),
+          port:     parseInt(withoutParams.slice(lastColon + 1), 10) || 3478,
+        };
+      }
+      return { hostname: withoutParams, port: url.startsWith('stuns:') ? 5349 : 3478 };
+    }
+
     const iceServers = this.opts.signalingClient.getIceServers()
       .flatMap(s => (Array.isArray(s.urls) ? s.urls : [s.urls])
-        .map(url => ({
-          hostname: new URL(url).hostname,
-          port:     parseInt(new URL(url).port || '3478', 10),
-          username: s.username ?? '',
-          password: (s as { credential?: string }).credential ?? '',
-          relayType: url.startsWith('turn') ? 'TurnTls' : undefined,
-        }))) as IceServer[];
+        .map((url): string | IceServer => {
+          if (url.startsWith('stun:') || url.startsWith('stuns:')) {
+            return url; // STUN must be passed as a plain string
+          }
+          const { hostname, port } = parseIceUrl(url);
+          return {
+            hostname,
+            port,
+            username: s.username ?? '',
+            password: (s as { credential?: string }).credential ?? '',
+            relayType: (url.startsWith('turns:') ? 'TurnTls'
+                     : url.includes('transport=tcp') ? 'TurnTcp'
+                     : 'TurnUdp') as RelayType,
+          };
+        }));
 
     const ndc = getNdc();
     const pc = new ndc.PeerConnection(`phobos-host-${offer.code}`, {
       iceServers,
+      enableIceTcp: true,
     });
 
     const handler = new DataChannelHandler({

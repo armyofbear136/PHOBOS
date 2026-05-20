@@ -130,6 +130,7 @@ function ParamField({ name, value, onChange }: ParamFieldProps) {
   }
 
   if (name === 'refAudio' || name === 'refAudioPath') {
+    const displayName = value ? String(value).split(/[\/]/).pop() ?? String(value) : '';
     return (
       <div className="flex flex-col gap-0.5 py-1">
         <span className="text-[10px] font-mono text-muted-foreground/50 uppercase tracking-wide">Reference Audio</span>
@@ -137,7 +138,7 @@ function ParamField({ name, value, onChange }: ParamFieldProps) {
           <input
             type="text"
             readOnly
-            value={String(value ?? '')}
+            value={displayName}
             placeholder="No file selected"
             className="flex-1 min-w-0 bg-black/50 border border-border/30 rounded-l px-2 py-1 text-[11px] font-mono text-muted-foreground/60 focus:outline-none truncate"
           />
@@ -146,9 +147,32 @@ function ParamField({ name, value, onChange }: ParamFieldProps) {
               const input = document.createElement('input');
               input.type = 'file';
               input.accept = '.wav,.mp3,.flac,.ogg,.m4a';
-              input.onchange = () => {
+              input.onchange = async () => {
                 const file = input.files?.[0];
-                if (file) onChange(name, (file as any).path ?? file.name);
+                if (!file) return;
+                // Electron exposes file.path (absolute); use it directly.
+                // In browser mode file.path is undefined — upload to the server
+                // and store the returned server path instead.
+                const electronPath = (file as any).path as string | undefined;
+                if (electronPath && electronPath.length > 0 && electronPath !== file.name) {
+                  onChange(name, electronPath);
+                  return;
+                }
+                try {
+                  const res = await fetch(`${ENGINE_URL}/api/audio/upload-ref`, {
+                    method:  'POST',
+                    headers: {
+                      'Content-Type': 'application/octet-stream',
+                      'X-Filename':   file.name,
+                    },
+                    body: file,
+                  });
+                  if (!res.ok) throw new Error(await res.text());
+                  const { serverPath } = await res.json() as { serverPath: string };
+                  onChange(name, serverPath);
+                } catch (err) {
+                  console.error('[WorkflowPanel] ref audio upload failed:', (err as Error).message);
+                }
               };
               input.click();
             }}
@@ -1414,8 +1438,11 @@ export function WorkflowPanel() {
           </select>
         )}
 
-        {/* GPU target dropdown — hidden for audio (resolvePythonDevice picks GPU internally) */}
-        {gpus.length > 0 && session.workflowType !== 'audio' && (
+        {/* GPU target dropdown — shown for image gen and audio GPU mode.
+            Hidden only when audio backend is CPU (no GPU to select).
+            For audio, targetGpuIndex is passed to resolveAudioDeviceIndex
+            which routes to the correct vendor venv and device. */}
+        {gpus.length > 0 && (session.workflowType !== 'audio' || (session.audioBackend ?? 'auto') !== 'cpu') && (
           <>
             <Monitor className="w-2.5 h-2.5 text-muted-foreground/50 ml-1 shrink-0" />
             <select

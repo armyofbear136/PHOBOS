@@ -33,7 +33,7 @@ export interface SyncPolicy {
   library:     SyncLibrary;
   enabled:     boolean;
   retain_days: number | null;
-  upload_mode: 'auto' | 'manual';
+  upload_mode: 'wifi_only' | 'always' | 'manual';
 }
 
 export interface SyncExclusion {
@@ -46,7 +46,7 @@ export interface SyncExclusion {
 
 // Default policies written on first device registration.
 const DEFAULT_POLICIES: Array<Pick<SyncPolicy, 'library' | 'enabled' | 'upload_mode' | 'retain_days'>> = [
-  { library: 'photos',    enabled: true, upload_mode: 'auto',   retain_days: null },
+  { library: 'photos',    enabled: true, upload_mode: 'wifi_only', retain_days: null },
   { library: 'music',     enabled: true, upload_mode: 'manual', retain_days: null },
   { library: 'documents', enabled: true, upload_mode: 'manual', retain_days: null },
   { library: 'movies',    enabled: true, upload_mode: 'manual', retain_days: null },
@@ -70,8 +70,9 @@ function mapPolicy(r: Row): SyncPolicy {
     device_id:   r.device_id as string,
     library:     r.library as SyncLibrary,
     enabled:     Boolean(r.enabled),
-    retain_days: r.retain_days != null ? Number(r.retain_days) : null,
-    upload_mode: r.upload_mode as 'auto' | 'manual',
+    // 0 is stored as 'keep forever' sentinel (schema requires NOT NULL).
+    retain_days: (r.retain_days == null || Number(r.retain_days) === 0) ? null : Number(r.retain_days),
+    upload_mode: r.upload_mode as 'wifi_only' | 'always' | 'manual',
   };
 }
 
@@ -158,7 +159,7 @@ export async function syncRoutes(
           `INSERT INTO phobos_sync_policies (id, device_id, library, enabled, retain_days, upload_mode)
            VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT (id) DO NOTHING`,
-          [id, deviceId, def.library, def.enabled ? 1 : 0, def.retain_days ?? null, def.upload_mode],
+          [id, deviceId, def.library, def.enabled ? 1 : 0, def.retain_days ?? 0, def.upload_mode],
         );
       }
     }
@@ -302,7 +303,7 @@ export async function syncRoutes(
 
   fastify.post<{
     Body: {
-      policies:   Array<{ library: SyncLibrary; enabled: boolean; retain_days: number | null; upload_mode: 'auto' | 'manual' }>;
+      policies:   Array<{ library: SyncLibrary; enabled: boolean; retain_days: number | null; upload_mode: 'wifi_only' | 'always' | 'manual' }>;
       exclusions: Array<{ policy_id: string; path: string; scope: 'folder' | 'file' }>;
     }
   }>('/api/sync/policies', async (req, reply) => {
@@ -322,7 +323,7 @@ export async function syncRoutes(
            retain_days = excluded.retain_days,
            upload_mode = excluded.upload_mode,
            updated_at  = now()`,
-        [id, deviceId, p.library, p.enabled ? 1 : 0, p.retain_days ?? null, p.upload_mode],
+        [id, deviceId, p.library, p.enabled ? 1 : 0, p.retain_days ?? 0, p.upload_mode],
       );
     }
 

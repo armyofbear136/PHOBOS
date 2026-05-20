@@ -3,7 +3,6 @@ import { Cpu, PanelLeft, PanelRight, ChevronDown, Download, Puzzle, CalendarCloc
 import PolarisPlayer from '@/components/media/PolarisPlayer';
 import { MediaHubPanel } from '@/components/media/MediaHubPanel';
 import { lazy, Suspense } from 'react';
-import { useNavigate } from 'react-router-dom';
 const KavitaBrowser   = lazy(() => import('@/components/media/KavitaBrowser'));
 const JellyfinBrowser = lazy(() => import('@/components/media/JellyfinBrowser'));
 const IPTVPlayer      = lazy(() => import('@/components/media/IPTVPlayer'));
@@ -187,7 +186,6 @@ function ModelPicker({ role, roleLabel, config, currentModel, connected, onSelec
 /* ─── Halcyon Popover ─── */
 
 function HalcyonButton() {
-  const navigate = useNavigate();
   const halcyonOptIn = useAppStore((s) => s.halcyonOptIn);
   const setHalcyonOptIn = useAppStore((s) => s.setHalcyonOptIn);
   const [popoverOpen, setPopoverOpen] = useState(false);
@@ -228,7 +226,7 @@ function HalcyonButton() {
           </p>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => { navigate('/halcyon'); setPopoverOpen(false); }}
+              onClick={() => { window.open('https://autarch.net/halcyon', '_blank'); setPopoverOpen(false); }}
               className="px-3 py-1 text-[10px] font-terminal uppercase tracking-[0.1em] rounded-sm border border-border/20 text-muted-foreground/40 hover:text-muted-foreground transition-all"
             >
               LEARN MORE
@@ -256,7 +254,6 @@ function HalcyonButton() {
 }
 
 export function HeaderBar() {
-  const navigate = useNavigate();
   const { connectionStatus, toggleSidebar, cycleCopilot } = useAppStore();
   const copilotMode = useAppStore((s) => s.copilotMode);
   const modelConfig  = useAppStore((s) => s.modelConfig);
@@ -321,9 +318,9 @@ export function HeaderBar() {
           <button onClick={toggleSidebar} className="p-1.5 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors">
             <PanelLeft className="w-4 h-4" />
           </button>
-          {/* Autarch icon — navigates back to marketing site */}
+          {/* Autarch icon — opens autarch.net in browser */}
           <button
-            onClick={() => navigate('/')}
+            onClick={() => window.open('https://autarch.net', '_blank')}
             className="p-1 rounded hover:bg-accent transition-colors"
             title="Back to Autarch Industries"
           >
@@ -360,7 +357,7 @@ export function HeaderBar() {
           className="relative flex items-center gap-1.5 px-4 py-1 text-[10px] font-terminal uppercase tracking-[0.15em] rounded-sm border border-phobos-green/30 text-phobos-green/70 hover:text-phobos-green hover:border-phobos-green/50 hover:shadow-[0_0_10px_hsl(120_100%_50%/0.12)] transition-all"
         >
           <Download className="w-3 h-3" />
-          PHOBOS LLMs
+          CONFIGURE
           {configOptimal === false && (
             <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-amber-500/80 animate-pulse" title="Better config available" />
           )}

@@ -91,6 +91,10 @@ function toSpawnOverrides(p: DifficultyParams, flavour?: string): EnemySpawnOver
   };
 }
 
+// Re-export for external consumers (e.g. debug tooling, future UI).
+export type { BehaviourProfile } from './BehaviourProfiles';
+export { BEHAVIOUR_PROFILES } from './BehaviourProfiles';
+
 // ── Enemy flavour → template key mapping ─────────────────────────────────────
 // Each zone archetype has an enemyFlavour string from ExplorationZoneManager.
 // We map that to a weighted pool of template keys from CombatState.
@@ -202,7 +206,7 @@ export class WorldCombatManager {
       const template = ENEMY_TEMPLATES[key];
       if (!template) continue;
 
-      const spawnPos = this._randomZonePos(bounds, rng);
+      const spawnPos = this._randomZoneTilePos(rng, TileWorld.getInstance());
       this._spawnEnemy(key, template, spawnPos.x, spawnPos.y, bounds, overrides);
     }
   }
@@ -272,7 +276,7 @@ export class WorldCombatManager {
         const key      = weightedSample(pool, rng);
         const template = ENEMY_TEMPLATES[key];
         if (!template) continue;
-        const spawnPos = this._randomZonePos(bounds, rng);
+        const spawnPos = this._randomZoneTilePos(rng, TileWorld.getInstance());
         this._spawnEnemy(key, template, spawnPos.x, spawnPos.y, bounds, overrides);
       }
       this._spawnExtraEnemies(pool, bounds, rng, difficulty, overrides);
@@ -284,7 +288,7 @@ export class WorldCombatManager {
       const key      = weightedSample(pool, rng);
       const template = ENEMY_TEMPLATES[key];
       if (!template) continue;
-      const spawnPos = this._randomZonePos(bounds, rng);
+      const spawnPos = this._randomZoneTilePos(rng, TileWorld.getInstance());
       this._spawnEnemy(key, template, spawnPos.x, spawnPos.y, bounds, overrides);
     }
     this._spawnExtraEnemies(pool, bounds, rng, difficulty, overrides);
@@ -334,6 +338,10 @@ export class WorldCombatManager {
     this._nearestEnemyDist   = Infinity;
     this._enemyHitPlayerThisFrame = false;
 
+    // Compute player tile once — passed to every enemy to avoid 32 redundant worldToTile calls.
+    const tw = TileWorld.getInstance();
+    const { tx: playerTx, ty: playerTy } = tw.worldToTile(playerX, playerY);
+
     let justDied = false;
 
     for (let i = 0; i < MAX_ENEMIES; i++) {
@@ -341,7 +349,7 @@ export class WorldCombatManager {
       if (!e) continue;
 
       const prevDead = e.isDead;
-      const dmg = e.update(delta, playerX, playerY);
+      const dmg = e.update(delta, playerX, playerY, playerTx, playerTy);
 
       // Track nearest live enemy for ally AI
       if (!e.isDead) {
@@ -381,8 +389,11 @@ export class WorldCombatManager {
         const dx   = b.x - a.x;
         const dy   = b.y - a.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < SEPARATION_RADIUS && dist > 0) {
-          const overlap = (SEPARATION_RADIUS - dist) * SEPARATION_FORCE;
+        // Separation radius scaled by the average of both enemies' profile multipliers.
+        // aggressive/berserk enemies swarm tighter; wary enemies spread wider.
+        const radius = SEPARATION_RADIUS * (a.separationMult + b.separationMult) * 0.5;
+        if (dist < radius && dist > 0) {
+          const overlap = (radius - dist) * SEPARATION_FORCE;
           const nx = dx / dist;
           const ny = dy / dist;
           a.nudge(-nx * overlap * 0.5, -ny * overlap * 0.5);
@@ -921,21 +932,22 @@ export class WorldCombatManager {
       const key      = weightedSample(biasPool, rng);
       const template = ENEMY_TEMPLATES[key];
       if (!template) continue;
-      const pos = this._randomZonePos(bounds, rng);
+      const pos = this._randomZoneTilePos(rng, TileWorld.getInstance());
       this._spawnEnemy(key, template, pos.x, pos.y, bounds, overrides);
     }
   }
 
-  private _randomZonePos(
-    bounds: { minX: number; minY: number; maxX: number; maxY: number },
-    rng:    () => number,
+  private _randomZoneTilePos(
+    rng: () => number,
+    tw:  TileWorld,
   ): { x: number; y: number } {
-    // Keep enemies away from zone edges (12px inset) so they don't spawn in walls
-    const inset = 12;
-    return {
-      x: bounds.minX + inset + rng() * (bounds.maxX - bounds.minX - inset * 2),
-      y: bounds.minY + inset + rng() * (bounds.maxY - bounds.minY - inset * 2),
-    };
+    const tiles = ExplorationZoneManager.getInstance().getZoneTiles();
+    if (tiles.length === 0) {
+      // Fallback: return hub centre if zone has no tiles yet
+      return tw.tileToWorld(22, 11);
+    }
+    const t = tiles[Math.floor(rng() * tiles.length)];
+    return tw.tileToWorld(t.tx, t.ty);
   }
 
   /**

@@ -16,6 +16,8 @@ import { spawn }          from 'child_process';
 import { fileURLToPath }  from 'url';
 import {
   getImageModelSpec,
+  getAuxFilesForModel,
+  fluxAuxPath,
   fluxModelPath,
   IMAGE_FLUX_DIR,
   IMAGE_WAN_DIR,
@@ -201,6 +203,12 @@ if (alreadyDone && force) {
 
 // ── Spawn phobos-convert.py ───────────────────────────────────────────────────
 
+const T5_CONVERTER_TYPES = new Set(['flux', 'chroma', 'kontext']);
+const t5AuxForConvert = T5_CONVERTER_TYPES.has(convertType)
+  ? getAuxFilesForModel(spec as any).find(a => a.cliFlag === '--t5xxl')
+  : undefined;
+const t5PathForConvert = t5AuxForConvert ? fluxAuxPath(t5AuxForConvert as any) : undefined;
+
 const args = [
   convertScript,
   '--model-path', modelPath,
@@ -208,6 +216,7 @@ const args = [
   '--model-id',   modelId,
   '--output-dir', outDir,
   '--dtype',      dtype,
+  ...(t5PathForConvert ? ['--t5-path', t5PathForConvert] : []),
 ];
 
 console.log(`Running: ${pyBin} ${args.join(' ')}\n`);

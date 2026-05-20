@@ -454,7 +454,6 @@ html::-webkit-scrollbar-thumb:hover {
   padding: 7px 12px;
   background: none;
   border: none;
-  color: hsl(120 100% 50% / 0.6);
   font-family: var(--font-terminal, monospace);
   font-size: 10px;
   letter-spacing: 0.12em;
@@ -463,6 +462,10 @@ html::-webkit-scrollbar-thumb:hover {
   text-align: left;
   transition: background 0.1s, color 0.1s;
   border-bottom: 1px solid hsl(120 100% 50% / 0.06);
+}
+.dark .skill-cartridge-dropdown-item,
+:root:not(.light) .skill-cartridge-dropdown-item {
+  color: hsl(120 100% 50% / 0.6);
 }
 .light .skill-cartridge-dropdown-item {
   color: hsl(130 55% 18%) !important;
@@ -477,8 +480,11 @@ html::-webkit-scrollbar-thumb:hover {
 }
 .skill-cartridge-dropdown-icon {
   font-size: 10px;
-  color: hsl(120 100% 50% / 0.4);
   flex-shrink: 0;
+}
+.dark .skill-cartridge-dropdown-icon,
+:root:not(.light) .skill-cartridge-dropdown-icon {
+  color: hsl(120 100% 50% / 0.4);
 }
 
 /* ─── Skill Slots (rack) ─── */
@@ -853,6 +859,16 @@ html::-webkit-scrollbar-thumb:hover {
   background-color: #ffffff !important;
   color: hsl(30 15% 8%) !important;
 }
+/* Header strips inside the panel get navy treatment — override the white body rules */
+.light .phobos-thinking-panel [data-navy-header] {
+  background-color: hsl(220 55% 18%) !important;
+}
+.light .phobos-thinking-panel [data-navy-header] * {
+  color: hsl(220 25% 82%) !important;
+}
+.light .phobos-thinking-panel [data-navy-header] [data-green] {
+  color: hsl(130 60% 58%) !important;
+}
 .light .phobos-thinking-panel .text-muted-foreground,
 .light .phobos-thinking-panel [class*="text-muted-foreground"] {
   color: hsl(30 20% 22%) !important;
@@ -1082,6 +1098,167 @@ html::-webkit-scrollbar-thumb:hover {
   color: hsl(30 22% 14%) !important;
 }
 
+/* ── Hardware cards: all text dark ── */
+.light .phobos-llm-panel [class*="bg-accent"] [class*="text-foreground"] {
+  color: hsl(30 20% 12%) !important;
+}
+.light .phobos-llm-panel [class*="bg-accent"] [class*="text-muted-foreground"] {
+  color: hsl(30 20% 22%) !important;
+}
+.light .phobos-llm-panel [class*="bg-accent"] svg {
+  color: hsl(30 18% 32%) !important;
+}
+
+/* ── PyTorch model pills: parchment background, dark green text ── */
+/* bg-phobos-green/[0.04] pills should NOT become navy — override specifically */
+.light .phobos-llm-panel [class*="bg-phobos-green/[0.04]"],
+.light .phobos-llm-panel [class*="bg-phobos-green\/\[0\.04\]"] {
+  background-color: hsl(130 20% 87%) !important;
+  border-color: hsl(130 40% 52%) !important;
+  color: hsl(130 55% 20%) !important;
+}
+.light .phobos-llm-panel [class*="bg-phobos-green/[0.04]"] [class*="text-phobos-green"],
+.light .phobos-llm-panel [class*="bg-phobos-green/[0.04]"] [class*="text-muted-foreground"] {
+  color: hsl(130 55% 20%) !important;
+}
+
+/* ── "PyTorch Models" section label ── */
+.light .phobos-llm-panel [class*="text-muted-foreground"][class*="tracking-"] {
+  color: hsl(30 20% 20%) !important;
+}
+
+/* ── Optional Add-ons label, Sandbox Executor, Close button ── */
+.light .phobos-llm-panel [class*="bg-black/30"] [class*="text-muted-foreground"],
+.light .phobos-llm-panel [class*="bg-black/85"] [class*="text-muted-foreground"] {
+  color: hsl(220 20% 75%) !important;
+}
+.light .phobos-llm-panel [class*="bg-black/30"] [class*="text-foreground"],
+.light .phobos-llm-panel [class*="bg-black/85"] [class*="text-foreground"] {
+  color: hsl(220 20% 82%) !important;
+}
+.light .phobos-llm-panel [class*="bg-black/30"] svg {
+  color: hsl(220 20% 72%) !important;
+}
+.light .phobos-llm-panel [class*="bg-black/30"] button[class*="border-border"] {
+  border-color: hsl(220 35% 45%) !important;
+  color: hsl(220 20% 78%) !important;
+}
+/* ── Reset: hardware cards inside bg-black/30 — let inline styles win ── */
+/* Higher specificity than the rules above, resets !important back to unset */
+.light .phobos-llm-panel [class*="bg-black/30"] [class*="bg-accent/20"] [class*="text-muted-foreground"],
+.light .phobos-llm-panel [class*="bg-black/30"] [class*="bg-accent/20"] [class*="text-foreground"],
+.light .phobos-llm-panel [class*="bg-black/30"] [class*="bg-accent/20"] span,
+.light .phobos-llm-panel [class*="bg-black/30"] [class*="bg-accent/20"] div,
+.light .phobos-llm-panel [class*="bg-black/30"] [class*="bg-accent/20"] svg {
+  color: unset !important;
+}
+
+/* ── Hardware cards inside bg-black/30: parchment with dark text ── */
+.light .phobos-llm-panel [class*="bg-black"] [class*="bg-accent/20"],
+.light .phobos-llm-panel [class*="bg-black"] [class*="bg-accent\/20"] {
+  background-color: hsl(35 20% 88%) !important;
+  color: hsl(30 20% 12%) !important;
+}
+/* CPU / GPU N label */
+.light .phobos-llm-panel [class*="bg-black"] [class*="bg-accent/20"] [class*="text-muted-foreground"] {
+  color: hsl(30 20% 22%) !important;
+}
+/* GPU name, VRAM */
+.light .phobos-llm-panel [class*="bg-black"] [class*="bg-accent/20"] [class*="text-foreground"] {
+  color: hsl(30 20% 10%) !important;
+}
+.light .phobos-llm-panel [class*="bg-black"] [class*="bg-accent/20"] svg {
+  color: hsl(30 20% 28%) !important;
+}
+/* PyTorch ready */
+.light .phobos-llm-panel [class*="bg-black"] [class*="bg-accent/20"] [class*="text-emerald"] {
+  color: hsl(130 55% 28%) !important;
+}
+/* CUDA badge → dark green on pale green tint */
+.light .phobos-llm-panel [class*="bg-black"] [class*="bg-accent/20"] [class*="text-phobos-green"] {
+  color: hsl(130 60% 22%) !important;
+  background-color: hsl(130 35% 82%) !important;
+  border-color: hsl(130 40% 50%) !important;
+}
+/* Vulkan badge → dark amber on pale amber tint */
+.light .phobos-llm-panel [class*="bg-black"] [class*="bg-accent/20"] [class*="text-amber-500"] {
+  color: hsl(36 65% 22%) !important;
+  background-color: hsl(36 50% 84%) !important;
+  border-color: hsl(36 50% 46%) !important;
+}
+/* Metal badge → dark purple on pale purple tint */
+.light .phobos-llm-panel [class*="bg-black"] [class*="bg-accent/20"] [class*="text-blue-400"] {
+  color: hsl(270 50% 26%) !important;
+  background-color: hsl(270 35% 86%) !important;
+  border-color: hsl(270 40% 54%) !important;
+}
+.light .phobos-llm-panel [class*="bg-black"] [class*="bg-accent/20"] [class*="text-phobos-amber"] {
+  color: hsl(36 60% 28%) !important;
+}
+.light .phobos-llm-panel [class*="bg-black"] [class*="bg-accent/20"] [class*="text-red"] {
+  color: hsl(0 60% 38%) !important;
+}
+
+/* ── PYTORCH MODELS label (inside bg-black navy wrapper) ── */
+.light .phobos-llm-panel [class*="bg-black"] > [class*="text-muted-foreground"],
+.light .phobos-llm-panel [class*="bg-black"] [class*="uppercase"][class*="tracking-"] {
+  color: hsl(220 20% 78%) !important;
+}
+
+/* ── PyTorch model pills inside bg-black/30: dark navy tint ── */
+.light .phobos-llm-panel [class*="bg-black"] [class*="border-phobos-green"][class*="rounded"] {
+  background-color: hsl(220 40% 26%) !important;
+  border-color: hsl(130 50% 45%) !important;
+}
+.light .phobos-llm-panel [class*="bg-black"] [class*="border-phobos-green"][class*="rounded"] * {
+  color: hsl(130 60% 75%) !important;
+}
+
+/* ── System capability grid: offline cards bg-black/20 → parchment ── */
+.light .phobos-llm-panel [class*="bg-black/20"] {
+  background-color: hsl(35 18% 84%) !important;
+  color: hsl(30 18% 25%) !important;
+}
+.light .phobos-llm-panel [class*="bg-black/20"] [class*="text-foreground"],
+.light .phobos-llm-panel [class*="bg-black/20"] [class*="text-muted-foreground"] {
+  color: hsl(30 18% 25%) !important;
+}
+/* SEREN amber label inside bg-black/20 row — force solid dark amber, no opacity wash */
+.light .phobos-llm-panel [class*="bg-black/20"] [class*="text-phobos-amber"] {
+  color: hsl(36 65% 28%) !important;
+}
+/* SAYON blue-300 inside bg-black/20 row → purple */
+.light .phobos-llm-panel [class*="bg-black/20"] [class*="text-blue-300"] {
+  color: hsl(270 45% 35%) !important;
+}
+/* Online capability cards: bg-phobos-green/[0.03] → parchment, dark text */
+.light .phobos-llm-panel [class*="bg-phobos-green/[0.03]"] [class*="text-foreground"] {
+  color: hsl(30 20% 14%) !important;
+}
+.light .phobos-llm-panel [class*="bg-phobos-green/[0.03]"] [class*="text-phobos-green"] {
+  color: hsl(130 55% 26%) !important;
+}
+
+/* ── ⚡ PyTorch / CONVERTED badge: indigo → dark indigo ── */
+.light .phobos-llm-panel [class*="text-indigo-400"] {
+  color: hsl(240 50% 30%) !important;
+}
+.light .phobos-llm-panel [class*="text-phobos-amber"] {
+  color: hsl(36 65% 28%) !important;
+}
+
+/* ── SAYON: blue-300 → midnight purple ── */
+.light .phobos-llm-panel [class*="text-blue-300"] {
+  color: hsl(270 45% 35%) !important;
+}
+/* ── blue-400 (Metal badge, other) → purple ── */
+.light .phobos-llm-panel [class*="text-blue-400"] {
+  color: hsl(270 45% 38%) !important;
+}
+.light .phobos-llm-panel [class*="border-blue-400"] {
+  border-color: hsl(270 40% 55%) !important;
+}
+
 /* bg-accent / bg-secondary inside Zone B panels — subtle warm tint */
 .light .phobos-llm-panel [class*="bg-accent"],
 .light .phobos-panel [class*="bg-accent"] {
@@ -1158,7 +1335,7 @@ html::-webkit-scrollbar-thumb:hover {
 
 /* ── ISSUE 2: Title bar reinforcement ── */
 .light .phobos-world-panel > div:first-child,
-.light .phobos-world-panel > div:first-child * {
+.light .phobos-world-panel > div:first-child *:not(.skill-cartridge-dropdown):not(.skill-cartridge-dropdown *) {
   color: hsl(220 25% 88%) !important;
 }
 /* text-ui-glow is used for "No project" and model name labels — must be light */
@@ -1169,6 +1346,21 @@ html::-webkit-scrollbar-thumb:hover {
 }
 .light .phobos-world-panel > div:first-child [class*="text-foreground"] {
   color: hsl(220 25% 88%) !important;
+}
+/* Now explicitly set dropdown item colours — beats the :not() exclusion cleanly */
+.light .skill-cartridge-dropdown-item {
+  color: #1a3a1a !important;
+  font-weight: 600 !important;
+}
+.light .skill-cartridge-dropdown-item:hover {
+  background: hsl(220 55% 18%) !important;
+  color: hsl(130 65% 62%) !important;
+}
+.light .skill-cartridge-dropdown-icon {
+  color: #1a3a1a !important;
+}
+.light .skill-cartridge-dropdown-item:hover .skill-cartridge-dropdown-icon {
+  color: hsl(130 65% 62%) !important;
 }
 .light .phobos-world-panel > div:first-child [class*="text-muted-foreground"] {
   color: hsl(220 20% 68%) !important;

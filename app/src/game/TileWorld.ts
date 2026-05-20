@@ -168,6 +168,18 @@ export class TileWorld {
   }
 
   /**
+   * Tile-coordinate walkability check. Equivalent to isWalkable() but takes
+   * tile coords directly — avoids the worldToTile round-trip in A* inner loops.
+   */
+  isWalkableTile(tx: number, ty: number): boolean {
+    if (this._blocked.has(ty * this.mapW + tx)) return false;
+    if (tx >= 0 && tx < this.mapW && ty >= 0 && ty < this.mapH) {
+      if (this._walkable[ty * this.mapW + tx] === 1) return true;
+    }
+    return this._explorationTiles.has(this._exTileKey(tx, ty));
+  }
+
+  /**
    * Returns true if the world position falls within a walkable tile.
    * Uses centre-point tile lookup — rounds to nearest tile.
    */

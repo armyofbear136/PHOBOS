@@ -4,7 +4,7 @@
  * Top-level entries:
  *   Images  → GIMP       (toggles imageEditorOpen)
  *   Text  ▶ → submenu:
- *               Document → Jodit + pandoc-wasm  (toggles joditPanelOpen)
+ *               Document → Jodit + pandoc  (toggles joditPanelOpen)
  *               PDF      → Stirling PDF (toggles stirlingPanelOpen)
  *               Code     → Monaco      (toggles monacoPanelOpen)
  *   Audio   → Efflux DAW (toggles dawPanelOpen)

@@ -167,7 +167,7 @@ interface AppState {
   dawPanelOpen: boolean;
   /** Monaco code editor — Text → Code */
   monacoPanelOpen: boolean;
-  /** Jodit document editor (pandoc-wasm + Jodit) — Text → Document */
+  /** Jodit document editor (pandoc + Jodit) — Text → Document */
   joditPanelOpen: boolean;
   /** Stirling PDF — Text → PDF */
   stirlingPanelOpen: boolean;

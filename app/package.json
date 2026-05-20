@@ -108,7 +108,6 @@
     "vite-plugin-wasm": "^3.6.0",
     "vitest": "^3.2.4",
     "wa-overdrive": "^0.0.3",
-    "wasm-pandoc": "^1.0.1",
     "zod": "^3.25.76",
     "zustand": "^5.0.11"
   },

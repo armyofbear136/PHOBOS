@@ -20,7 +20,7 @@ jobs:
       matrix:
         include:
           - label:             win32-x64
-            runner:            windows-latest
+            runner:            windows-2025
             artifact:          phobos-win32-x64
             pack:              zip
             build-full-target: win32-x64

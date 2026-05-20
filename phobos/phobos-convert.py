@@ -53,6 +53,8 @@ def parse_args():
                    help="Root output directory")
     p.add_argument("--config-path", default=None,
                    help="Local config directory or HF repo override")
+    p.add_argument("--t5-path",     default=None,
+                   help="Path to T5 GGUF to convert alongside the transformer (FLUX/Chroma/Kontext)")
     p.add_argument("--dtype",       default="bfloat16",
                    choices=["bfloat16", "float16", "float32"])
     return p.parse_args()
@@ -65,9 +67,15 @@ def dtype_torch(dtype_str: str):
     return {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[dtype_str]
 
 
-def _already_converted(out_dir: str, transformer_only: bool) -> bool:
+def _already_converted(out_dir: str, transformer_only: bool, t5_path: str | None = None) -> bool:
     if transformer_only:
-        return os.path.exists(os.path.join(out_dir, "transformer", "config.json"))
+        transformer_done = os.path.exists(os.path.join(out_dir, "transformer", "config.json"))
+        if not transformer_done:
+            return False
+        # If a T5 path was supplied, also require the converted T5 to exist.
+        if t5_path and not os.path.exists(os.path.join(out_dir, "text_encoder_2", "config.json")):
+            return False
+        return True
     return os.path.exists(os.path.join(out_dir, "model_index.json"))
 
 
@@ -235,6 +243,27 @@ def _materialize_and_save_transformer(transformer, out_dir: str, dtype, t0: floa
                 cfg["approximator_layers"] = actual_layers
                 patched = True
 
+        # block_hidden_dim: the residual stream dimension passed as dim to each
+        # transformer block. Standard diffusers assumes this equals
+        # num_attention_heads * attention_head_dim (inner_dim), but Chroma1-HD
+        # was trained with a decoupled block dim (1728) vs attention output dim (3072).
+        # Derived from to_q.weight shape[1] — the query_dim / block input dim.
+        # Stored as a custom field; ignored by diffusers unless the loader reads it.
+        to_q_key = "transformer_blocks.0.attn.to_q.weight"
+        if to_q_key in state_dict:
+            actual_block_dim = state_dict[to_q_key].shape[1]
+            attn_out_dim = state_dict[to_q_key].shape[0]
+            # Only write when block_dim != attn_out_dim (i.e. the dims are decoupled).
+            # When they match, the standard inner_dim path is correct and we leave the
+            # field absent so the loader takes the normal code path.
+            if actual_block_dim != attn_out_dim:
+                if cfg.get("block_hidden_dim") != actual_block_dim:
+                    cfg["block_hidden_dim"] = actual_block_dim
+                    patched = True
+            elif "block_hidden_dim" in cfg:
+                del cfg["block_hidden_dim"]
+                patched = True
+
         if patched:
             with open(config_path_out, "w") as f:
                 json.dump(cfg, f, indent=2)
@@ -248,6 +277,49 @@ def _materialize_and_save_transformer(transformer, out_dir: str, dtype, t0: floa
 
 
 # ── SDXL — full pipeline ──────────────────────────────────────────────────────
+
+def _materialize_and_save_t5(t5_path: str, out_dir: str, dtype, t0: float):
+    """
+    Dequantizes a T5 GGUF once and saves as BF16 safetensors under
+    <out_dir>/text_encoder_2/ so subsequent loads skip dequantization.
+    Uses the same from_pretrained(dir, gguf_file=...) pattern as the
+    hot-path loader — writes config.json + model.safetensors.
+    """
+    import os
+    from transformers import T5EncoderModel
+    import safetensors.torch as st
+
+    t5_dir  = os.path.dirname(t5_path)
+    t5_file = os.path.basename(t5_path)
+    out_t5  = os.path.join(out_dir, "text_encoder_2")
+
+    if os.path.exists(os.path.join(out_t5, "config.json")):
+        emit("saving", 0.92, "T5 already converted — skipping")
+        return
+
+    emit("loading", 0.80, f"Loading {t5_file} (T5, GGUF dequant — one time only) ...")
+    model = T5EncoderModel.from_pretrained(
+        t5_dir,
+        gguf_file=t5_file,
+        dtype=dtype,
+    )
+    model = model.to(dtype)
+    elapsed = time.time() - t0
+
+    emit("saving", 0.88, f"Saving T5 BF16 safetensors to {out_t5} ...")
+    os.makedirs(out_t5, exist_ok=True)
+
+    # Save weights as a single safetensors shard
+    state_dict = {k: v.contiguous() for k, v in model.state_dict().items()}
+    st.save_file(state_dict, os.path.join(out_t5, "model.safetensors"))
+
+    # Save config so from_pretrained(out_t5) works
+    model.config.save_pretrained(out_t5)
+
+    del model, state_dict
+    _free_memory()
+    emit("saving", 0.92, f"T5 conversion done ({time.time() - t0 - elapsed:.0f}s)")
+
 
 def convert_sdxl(model_path: str, out_dir: str, dtype_str: str):
     from diffusers import StableDiffusionXLPipeline
@@ -267,7 +339,7 @@ def convert_sdxl(model_path: str, out_dir: str, dtype_str: str):
 
 # ── FLUX / Chroma / Kontext ───────────────────────────────────────────────────
 
-def convert_flux(model_path: str, out_dir: str, dtype_str: str, config_path):
+def convert_flux(model_path: str, out_dir: str, dtype_str: str, config_path, t5_path=None):
     from diffusers import FluxTransformer2DModel, GGUFQuantizationConfig
     dtype = dtype_torch(dtype_str)
     config_repo = config_path or "ostris/Flex.1-alpha"
@@ -281,9 +353,11 @@ def convert_flux(model_path: str, out_dir: str, dtype_str: str, config_path):
         torch_dtype=dtype,
     )
     _materialize_and_save_transformer(transformer, out_dir, dtype, t0, config_repo=config_repo)
+    if t5_path and os.path.exists(t5_path):
+        _materialize_and_save_t5(t5_path, out_dir, dtype, t0)
 
 
-def convert_chroma(model_path: str, out_dir: str, dtype_str: str, config_path):
+def convert_chroma(model_path: str, out_dir: str, dtype_str: str, config_path, t5_path=None):
     from diffusers import ChromaTransformer2DModel, GGUFQuantizationConfig
     dtype = dtype_torch(dtype_str)
     config_repo = config_path or "lodestones/Chroma1-HD"
@@ -297,9 +371,11 @@ def convert_chroma(model_path: str, out_dir: str, dtype_str: str, config_path):
         torch_dtype=dtype,
     )
     _materialize_and_save_transformer(transformer, out_dir, dtype, t0, config_repo=config_repo)
+    if t5_path and os.path.exists(t5_path):
+        _materialize_and_save_t5(t5_path, out_dir, dtype, t0)
 
 
-def convert_kontext(model_path: str, out_dir: str, dtype_str: str, config_path):
+def convert_kontext(model_path: str, out_dir: str, dtype_str: str, config_path, t5_path=None):
     # Kontext uses FluxTransformer2DModel — same class, different weights
     from diffusers import FluxTransformer2DModel, GGUFQuantizationConfig
     dtype = dtype_torch(dtype_str)
@@ -314,6 +390,8 @@ def convert_kontext(model_path: str, out_dir: str, dtype_str: str, config_path):
         torch_dtype=dtype,
     )
     _materialize_and_save_transformer(transformer, out_dir, dtype, t0, config_repo=config_repo)
+    if t5_path and os.path.exists(t5_path):
+        _materialize_and_save_t5(t5_path, out_dir, dtype, t0)
 
 
 # ── Wan ───────────────────────────────────────────────────────────────────────
@@ -408,7 +486,7 @@ def main():
     out_dir          = os.path.join(args.output_dir, args.model_id)
     transformer_only = args.model_type in TRANSFORMER_ONLY
 
-    if _already_converted(out_dir, transformer_only):
+    if _already_converted(out_dir, transformer_only, args.t5_path):
         emit("done", 1.0, f"Already converted — {out_dir}")
         return
 
@@ -419,9 +497,9 @@ def main():
     try:
         dispatch = {
             "sdxl":        lambda: convert_sdxl(args.model_path, out_dir, args.dtype),
-            "flux":        lambda: convert_flux(args.model_path, out_dir, args.dtype, args.config_path),
-            "chroma":      lambda: convert_chroma(args.model_path, out_dir, args.dtype, args.config_path),
-            "kontext":     lambda: convert_kontext(args.model_path, out_dir, args.dtype, args.config_path),
+            "flux":        lambda: convert_flux(args.model_path, out_dir, args.dtype, args.config_path, args.t5_path),
+            "chroma":      lambda: convert_chroma(args.model_path, out_dir, args.dtype, args.config_path, args.t5_path),
+            "kontext":     lambda: convert_kontext(args.model_path, out_dir, args.dtype, args.config_path, args.t5_path),
             "wan":         lambda: convert_wan(args.model_path, out_dir, args.dtype, args.config_path),
             "qwen-image":  lambda: convert_qwen_image(args.model_path, out_dir, args.dtype, args.config_path),
             "z-image":     lambda: convert_zimage(args.model_path, out_dir, args.dtype, args.config_path),

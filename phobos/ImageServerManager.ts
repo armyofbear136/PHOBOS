@@ -726,6 +726,7 @@ export async function* convertModelToPyTorch(
   modelPath: string,
   modelType: ConvertModelType,
   vendor:    'cuda' | 'rocm' | 'xpu' | 'apple' | 'cpu',
+  t5Path?:   string,
 ): AsyncGenerator<ConvertProgress> {
   const pyBin = (await import('./PythonEnvManager.js')).getPythonPath(vendor);
   if (!pyBin) {
@@ -742,6 +743,7 @@ export async function* convertModelToPyTorch(
   }
 
   const outRoot = pytorchVariantRoot();
+  const t5Converters = new Set<ConvertModelType>(['flux', 'chroma', 'kontext']);
   const args = [
     convertScript,
     '--model-path', modelPath,
@@ -749,6 +751,7 @@ export async function* convertModelToPyTorch(
     '--model-id',   modelId,
     '--output-dir', outRoot,
     '--dtype',      'bfloat16',
+    ...(t5Path && t5Converters.has(modelType) ? ['--t5-path', t5Path] : []),
   ];
 
   console.log(`[ImageServerManager] Converting ${modelId} → ${outRoot}/${modelId}`);

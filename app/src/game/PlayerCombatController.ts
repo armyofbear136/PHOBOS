@@ -99,7 +99,7 @@ const CHARGE_MAX_MS        = 1500;  // full charge at this duration
 const ATTACK_LOCK_MS       = 350;   // movement locked during melee swing
 const RANGED_BASE_MS       = 1000 / 6;  // 166.667 ms — 6 shots/sec base fire rate
 const ABILITY_LOCK_MS      = 600;   // movement locked during ability
-const ROLL_DURATION_MS     = 350;
+const ROLL_DURATION_MS     = 200;
 const HIT_STAGGER_MS       = 200;
 const PARRY_WINDOW_MS      = 200;   // first 200ms of RMB hold is the parry window
 const BLOCK_DMG_REDUCTION  = 0.70;  // 70% damage absorbed while blocking
@@ -107,7 +107,7 @@ const PARRY_LOCK_MS        = 400;   // counter-attack lock duration after a parr
 
 const READY_SPEED_MULT     = 0.40;  // move speed during Alt hold
 const CHARGE_SPEED_MULT    = 0.10;  // move speed while charging
-const ROLL_SPEED_MULT      = 2.20;  // move speed during roll
+const ROLL_SPEED_MULT      = 1.60;  // move speed during roll
 const BLOCK_SPEED_MULT     = 0.25;  // move speed while blocking
 
 const BASE_CRIT_CHANCE     = 0.08;
@@ -138,6 +138,8 @@ export class PlayerCombatController {
   private _jumpTimer          = 0;
   private _abilityTimer       = 0;
   private _hitTimer           = 0;
+  /** Debug: when true, receiveHit() is a no-op. Toggled by WorldScene on F9. */
+  godMode                     = false;
   private _parryTimer         = 0;   // counts up from RMB press; parry window while < PARRY_WINDOW_MS
   private _parryLockTimer     = 0;   // ms remaining in post-parry counter lock
   private _lmbHeld            = false;
@@ -325,6 +327,7 @@ export class PlayerCombatController {
 
   /** Called by WorldScene when player takes damage from a world hit. */
   receiveHit(damage: number): void {
+    if (this.godMode) return;
     if (this.moveState === 'rolling') return; // invincibility window
 
     // Parry window — counter-attack instead of taking damage

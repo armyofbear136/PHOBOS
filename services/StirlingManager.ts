@@ -5,7 +5,7 @@
  * iframe — no postMessage protocol required. Every PDF operation happens
  * inside Stirling's own UI; exports land in the browser's download folder.
  *
- * Binary: Stirling-PDF.jar (all platforms — requires Java 21+)
+ * Binary: Stirling-PDF.jar (all platforms — Java 21 bundled via DepPrep)
  *   ~/.phobos/services/stirling/Stirling-PDF.jar
  *
  * The server jar is the correct choice for PHOBOS's headless iframe use case.
@@ -14,7 +14,8 @@
  *
  * Port:    16346 (permanent wire contract)
  *
- * Java 21+ must be on PATH. Checked on first start with a clear error if missing.
+ * Java: Uses the bundled JRE at ~/.phobos/services/jre/ (installed by DepPrep).
+ * Falls back to system java if the bundled JRE is not yet present.
  *
  * Stirling has no auth in its default config (SECURITY_ENABLELOGIN=false).
  * PHOBOS is local-only — this is correct.
@@ -50,11 +51,26 @@ export function isBinaryPresent(): boolean {
   return fs.statSync(jar).size > 10_000_000;
 }
 
+// ── Java binary resolution ─────────────────────────────────────────────────────
+//
+// Prefer the bundled JRE installed by DepPrep. Falls back to system java so
+// that dev machines and users who installed Java manually still work without
+// a DepPrep run.
+
+function resolveJavaBinary(): string {
+  const bundled = path.join(
+    os.homedir(), '.phobos', 'services', 'jre', 'bin',
+    process.platform === 'win32' ? 'java.exe' : 'java',
+  );
+  return fs.existsSync(bundled) ? bundled : 'java';
+}
+
 // ── Java version check ────────────────────────────────────────────────────────
 
 async function checkJava(): Promise<{ ok: boolean; version: string; error?: string }> {
+  const javaBin = resolveJavaBinary();
   try {
-    const { stderr } = await execFileAsync('java', ['-version'], { timeout: 5_000 });
+    const { stderr } = await execFileAsync(javaBin, ['-version'], { timeout: 5_000 });
     const line  = stderr.split('\n')[0] ?? '';
     const match = line.match(/version "(\d+)/);
     const major = match ? parseInt(match[1], 10) : 0;
@@ -63,7 +79,10 @@ async function checkJava(): Promise<{ ok: boolean; version: string; error?: stri
     }
     return { ok: true, version: line.trim() };
   } catch {
-    return { ok: false, version: '', error: 'Java not found on PATH. Install Java 21+: https://adoptium.net' };
+    return {
+      ok: false, version: '',
+      error: `Java not found (tried: ${javaBin}). Bundled JRE may still be downloading.`,
+    };
   }
 }
 
@@ -121,8 +140,9 @@ export async function startStirling(): Promise<void> {
   service.state = 'starting';
   service.error = null;
 
-  const jar = resolveJarPath();
-  const dir = resolveServiceDir();
+  const javaBin = resolveJavaBinary();
+  const jar     = resolveJarPath();
+  const dir     = resolveServiceDir();
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -133,7 +153,7 @@ export async function startStirling(): Promise<void> {
   };
 
   try {
-    const proc = spawn('java', [
+    const proc = spawn(javaBin, [
       // JVM system property — must come BEFORE -jar
       `-Dserver.port=${STIRLING_PORT}`,
       '-Djava.awt.headless=true',

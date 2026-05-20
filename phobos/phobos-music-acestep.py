@@ -138,6 +138,14 @@ def main() -> None:
         "format":         "wav",
     }
 
+    # checkpoint_path / checkpoint_dir — v0.2 moved checkpoint loading into
+    # __call__ rather than __init__. Pass it here if accepted so the pipeline
+    # uses our local snapshot instead of re-downloading from HuggingFace.
+    if "checkpoint_path" in sig_params:
+        call_kwargs["checkpoint_path"] = checkpoint_path
+    elif "checkpoint_dir" in sig_params:
+        call_kwargs["checkpoint_dir"] = checkpoint_path
+
     # Seed — v0.1 used actual_seeds=[int], v0.2 uses seed=int
     if "actual_seeds" in sig_params:
         call_kwargs["actual_seeds"] = [seed]

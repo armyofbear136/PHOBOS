@@ -710,61 +710,248 @@ def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
 
     log(f"loading diffusion model from pytorch variant ({transformer_dir})")
 
-    # Chroma1-HD uses a non-standard ChromaApproximator architecture.
-    # Traced forward (GGUF path): input (1,344,64), after in_proj (1,344,5120),
-    # each layer linear_1/linear_2 have weight [5120, 10240] = Linear(in=10240, out=5120).
-    # The 10240 input = cat([x, norm(x)], dim=-1): norm output (5120) concatenated
-    # with current x (5120) before each linear. This is a concat-residual GLU.
-    # diffusers 0.38.0 ChromaApproximator uses PixArtAlphaTextProjection which
-    # builds Linear(5120, 5120) — wrong shape. Replace ChromaApproximator entirely.
-    # phobos-convert.py sets approximator_fused_swiglu=true when it detects this.
-    if is_chroma:
-        import json as _json
-        _cfg_path = os.path.join(transformer_dir, "config.json")
-        _use_fused = False
-        try:
-            with open(_cfg_path) as _f:
-                _use_fused = _json.load(_f).get("approximator_fused_swiglu", False)
-        except Exception:
-            pass
+    # Load the converted transformer using construct-then-load_state_dict(strict=False),
+    # mirroring how diffusers from_single_file loads GGUF weights internally.
+    #
+    # from_pretrained uses load_model_dict_into_meta which is strict and fails on any
+    # shape mismatch. Chroma1-HD has several architectural deviations from the HF
+    # config (concat-residual GLU approximator, non-standard attention query_dim) that
+    # make strict loading impossible without extensive config patching.
+    #
+    # from_single_file internally does: build model from config, then
+    # model.load_state_dict(checkpoint, strict=False). We replicate that here:
+    #   1. Load the config.json from the converted dir and instantiate the model.
+    #   2. Load all safetensors shards into a flat state_dict.
+    #   3. Call load_state_dict(strict=False) — loads every key that matches by name
+    #      and shape, silently skips mismatches. For Chroma1-HD the GGUF weights
+    #      already have the correct shapes for the model diffusers builds from the
+    #      patched config, so all keys load correctly.
+    import json as _json
+    import glob as _glob
+    import safetensors.torch as _st
 
-        if _use_fused:
-            import torch.nn as _nn
+    # ── Read the patched config.json once so patch logic can inspect it ────────
+    with open(os.path.join(transformer_dir, "config.json")) as _f:
+        _cfg = _json.load(_f)
+
+    _orig_chroma_block_init   = None
+    _orig_paatp_init          = None
+
+    if is_chroma:
+        # ── Patch 1: ChromaTransformerBlock / ChromaSingleTransformerBlock ────
+        # Chroma1-HD has a decoupled residual stream dim (1728) vs attention
+        # output dim (3072 = num_heads * head_dim). diffusers builds all blocks
+        # with dim=self.inner_dim=3072, making to_q/k/v = Linear(3072, 3072).
+        # The saved weights have to_q = Linear(1728, 3072) — query_dim=1728,
+        # inner_dim=3072. FluxAttention supports this via separate query_dim and
+        # out_dim, but ChromaTransformerBlock only exposes a single dim param.
+        #
+        # Fix: replace both block __init__ methods before from_config runs so
+        # diffusers builds Linear(bdim, inner) projections from the start.
+        # Restoring originals immediately after from_config keeps the process clean.
+        _block_hidden_dim = _cfg.get("block_hidden_dim")
+        _orig_chroma_block_init  = None
+        _orig_chroma_single_init = None
+        if _block_hidden_dim is not None:
             import diffusers.models.transformers.transformer_chroma as _tc
+            import diffusers.models.transformers.transformer_flux as _tf
+            import torch.nn as _nn
+
+            _orig_chroma_block_init  = _tc.ChromaTransformerBlock.__init__
+            _orig_chroma_single_init = _tc.ChromaSingleTransformerBlock.__init__
+
+            _bdim = _block_hidden_dim  # 1728 — residual stream / query_dim
+
+            # Confirmed weight shapes from inspect_ff_structure on live GGUF model:
+            #   attn.to_q/k/v/out/add_*:  [3072, 1728]  Linear(bdim=1728, inner=3072)
+            #   attn.to_add_out:           [3072, 1728]  Linear(bdim, inner) — same
+            #   ff.net.0.proj:             [12288, 1728] GELU proj Linear(bdim, ff_up=12288)
+            #   ff.net.2:                  [3072, 6912]  Linear(ff_down=6912, inner)
+            #   single.proj_mlp:           [12288, 1728] Linear(bdim, 12288)
+            #   single.proj_out:           [3072, 8640]  Linear(bdim+6912=8640, inner)
+            # ff_up=12288, ff_down=6912 are independent (from_single_file loaded
+            # these via strict=False with a shape mismatch on net.2; we build exactly).
+            _ff_up   = 12288  # net.0.proj output dim
+            _ff_down = 6912   # net.2 input dim
+
+            def _make_ff(inner_dim: int):
+                """Build ff/ff_context matching the exact saved weight layout."""
+                from diffusers.models.activations import GELU as _GELU
+                ff = _nn.Module()
+                ff.net = _nn.ModuleList([
+                    _GELU(_bdim, _ff_up, approximate="none"),
+                    _nn.Dropout(0.0),
+                    _nn.Linear(_ff_down, inner_dim, bias=True),
+                ])
+                return ff
+
+            def _patched_chroma_block_init(self, dim, num_attention_heads,
+                                           attention_head_dim, qk_norm="rms_norm",
+                                           eps=1e-6):
+                _nn.Module.__init__(self)
+                inner = num_attention_heads * attention_head_dim  # 3072
+
+                self.norm1         = _tc.ChromaAdaLayerNormZeroPruned(inner)
+                self.norm1_context = _tc.ChromaAdaLayerNormZeroPruned(inner)
+
+                # All attn projections: Linear(bdim, inner) = Linear(1728, 3072)
+                self.attn = _tf.FluxAttention(
+                    query_dim=_bdim,
+                    added_kv_proj_dim=_bdim,
+                    dim_head=attention_head_dim,
+                    heads=num_attention_heads,
+                    out_dim=inner,
+                    context_pre_only=False,
+                    bias=True,
+                    processor=_tf.FluxAttnProcessor(),
+                    eps=eps,
+                )
+                # to_out and to_add_out: both [3072, 1728] = Linear(bdim, inner)
+                self.attn.to_out[0]  = _nn.Linear(_bdim, inner, bias=True)
+                self.attn.to_add_out = _nn.Linear(_bdim, inner, bias=True)
+
+                self.norm2         = _nn.LayerNorm(inner, elementwise_affine=False, eps=1e-6)
+                self.ff            = _make_ff(inner)
+                self.norm2_context = _nn.LayerNorm(inner, elementwise_affine=False, eps=1e-6)
+                self.ff_context    = _make_ff(inner)
+
+            def _patched_chroma_single_init(self, dim, num_attention_heads,
+                                            attention_head_dim, mlp_ratio=4.0):
+                _nn.Module.__init__(self)
+                inner = num_attention_heads * attention_head_dim  # 3072
+
+                self.mlp_hidden_dim = _ff_up
+                self.norm     = _tc.ChromaAdaLayerNormZeroSinglePruned(inner)
+                self.proj_mlp = _nn.Linear(_bdim, _ff_up)          # [12288, 1728]
+                self.act_mlp  = _nn.GELU(approximate="tanh")
+                # proj_out: [3072, 8640] = Linear(bdim + ff_down, inner)
+                self.proj_out = _nn.Linear(_bdim + _ff_down, inner) # [3072, 8640]
+
+                self.attn = _tf.FluxAttention(
+                    query_dim=_bdim,
+                    dim_head=attention_head_dim,
+                    heads=num_attention_heads,
+                    out_dim=inner,
+                    bias=True,
+                    processor=_tf.FluxAttnProcessor(),
+                    eps=1e-6,
+                    pre_only=True,
+                )
+
+            _tc.ChromaTransformerBlock.__init__      = _patched_chroma_block_init
+            _tc.ChromaSingleTransformerBlock.__init__ = _patched_chroma_single_init
+            _inner = _cfg.get("num_attention_heads", 24) * _cfg.get("attention_head_dim", 128)
+            log(f"ChromaTransformerBlock patched: bdim={_bdim} inner={_inner}")
+
+        # ── Patch 2: ChromaApproximator concat-residual GLU ───────────────────
+        # Chroma1-HD approximator uses cat([x, norm(x)]) as input to each linear
+        # instead of PixArtAlphaTextProjection(hidden, hidden). Weights confirm:
+        # linear_1/linear_2 are [hidden, 2*hidden]. Replace the class before
+        # from_config so diffusers constructs the correct weight shapes.
+        if _cfg.get("approximator_fused_swiglu"):
+            import torch.nn as _nn
+            import diffusers.models.embeddings as _emb
+            import diffusers.models.transformers.transformer_chroma as _tc2
+
+            _orig_paatp_init = _emb.PixArtAlphaTextProjection.__init__
+
+            class _ConcatGLUBlock(_nn.Module):
+                """Single layer matching distilled_guidance_layer.layers.N key layout."""
+                def __init__(self, hidden_dim: int):
+                    super().__init__()
+                    self.linear_1 = _nn.Linear(hidden_dim * 2, hidden_dim, bias=True)
+                    self.linear_2 = _nn.Linear(hidden_dim * 2, hidden_dim, bias=True)
+
+                def forward(self, x, norm_x):
+                    h = _nn.functional.silu(self.linear_1(torch.cat([x, norm_x], dim=-1)))
+                    norm_h = _nn.functional.layer_norm(h, h.shape[-1:])
+                    return self.linear_2(torch.cat([h, norm_h], dim=-1))
 
             class _ConcatResidualApproximator(_nn.Module):
-                """Drop-in for ChromaApproximator with concat-residual GLU layers.
-                Each layer: linear_1(cat(x, norm(x))) silu-gated, then
-                linear_2(cat(h, norm(h))) as the residual update. out_proj also
-                takes cat(x, norm(x)) as input. All linears are Linear(2*h, h)."""
-                def __init__(self, in_dim: int, out_dim: int, hidden_dim: int, n_layers: int = 5):
+                """Replaces ChromaApproximator; matches the saved state_dict key layout."""
+                def __init__(self, in_dim: int, hidden_dim: int, out_dim: int,
+                             num_layers: int):
                     super().__init__()
-                    self.in_proj = _nn.Linear(in_dim, hidden_dim, bias=True)
-                    self.linear_1s = _nn.ModuleList(
-                        [_nn.Linear(hidden_dim * 2, hidden_dim, bias=True) for _ in range(n_layers)]
-                    )
-                    self.linear_2s = _nn.ModuleList(
-                        [_nn.Linear(hidden_dim * 2, hidden_dim, bias=True) for _ in range(n_layers)]
-                    )
-                    self.norms = _nn.ModuleList([_nn.RMSNorm(hidden_dim) for _ in range(n_layers)])
-                    self.out_proj = _nn.Linear(hidden_dim * 2, out_dim)
+                    self.in_proj  = _nn.Linear(in_dim,    hidden_dim, bias=True)
+                    self.layers   = _nn.ModuleList([_ConcatGLUBlock(hidden_dim)
+                                                    for _ in range(num_layers)])
+                    self.norms    = _nn.ModuleList([_nn.LayerNorm(hidden_dim)
+                                                    for _ in range(num_layers)])
+                    self.out_proj = _nn.Linear(hidden_dim * 2, out_dim, bias=True)
 
                 def forward(self, x):
                     x = self.in_proj(x)
-                    for l1, l2, norm in zip(self.linear_1s, self.linear_2s, self.norms):
+                    for layer, norm in zip(self.layers, self.norms):
                         nx = norm(x)
-                        h = _nn.functional.silu(l1(torch.cat([x, nx], dim=-1)))
-                        nh = norm(h)
-                        x = x + l2(torch.cat([h, nh], dim=-1))
+                        x  = x + layer(x, nx)
                     return self.out_proj(torch.cat([x, x], dim=-1))
 
-            _orig_approx = _tc.ChromaApproximator
-            _tc.ChromaApproximator = _ConcatResidualApproximator
+            # Monkey-patch PixArtAlphaTextProjection so ChromaApproximator.__init__
+            # builds _ConcatResidualApproximator-compatible layers. We intercept the
+            # call ChromaApproximator makes and substitute our class entirely.
+            _approx_hidden = _cfg.get("approximator_hidden_dim", 5120)
+            _approx_in     = _cfg.get("approximator_num_channels", 128)
+            _approx_layers = _cfg.get("approximator_layers", 5)
+            _approx_out    = _cfg.get("num_attention_heads", 24) * _cfg.get("attention_head_dim", 128)  # inner_dim = 3072
 
-    transformer = TransformerClass.from_pretrained(transformer_dir, torch_dtype=dtype)
+            # ChromaApproximator is the class diffusers builds; replace it wholesale.
+            _OrigChromaApproximator = getattr(_tc2, "ChromaApproximator", None)
+            if _OrigChromaApproximator is not None:
+                _tc2.ChromaApproximator = lambda *a, **kw: _ConcatResidualApproximator(
+                    in_dim=_approx_in,
+                    hidden_dim=_approx_hidden,
+                    out_dim=_approx_out,
+                    num_layers=_approx_layers,
+                )
+                log(f"ChromaApproximator patched: concat-residual GLU "
+                    f"in={_approx_in} hidden={_approx_hidden} out={_approx_out} "
+                    f"layers={_approx_layers}")
 
-    if is_chroma and _use_fused:
-        _tc.ChromaApproximator = _orig_approx
+    # Build model from config — uses the patched config.json written by phobos-convert.py.
+    transformer = TransformerClass.from_config(
+        TransformerClass.load_config(transformer_dir),
+        torch_dtype=dtype,
+    )
+
+    # Restore monkey-patched classes immediately after construction.
+    if _orig_chroma_block_init is not None:
+        import diffusers.models.transformers.transformer_chroma as _tc_restore
+        _tc_restore.ChromaTransformerBlock.__init__      = _orig_chroma_block_init
+        _tc_restore.ChromaSingleTransformerBlock.__init__ = _orig_chroma_single_init
+    if _orig_paatp_init is not None:
+        import diffusers.models.transformers.transformer_chroma as _tc_restore2
+        if _OrigChromaApproximator is not None:
+            _tc_restore2.ChromaApproximator = _OrigChromaApproximator
+
+    # Load all safetensors shards into a single flat state dict.
+    shard_files = sorted(_glob.glob(os.path.join(transformer_dir, "*.safetensors")))
+    if not shard_files:
+        raise FileNotFoundError(f"No safetensors shards found in {transformer_dir}")
+    state_dict: dict = {}
+    for shard in shard_files:
+        state_dict.update(_st.load_file(shard, device="cpu"))
+
+    # Patch proj_out to match saved weight shape before load_state_dict.
+    # Saved: [64, 6144] = Linear(in=2*inner_dim, out=patch²*out_channels=64).
+    # ChromaTransformer2DModel builds Linear(inner_dim, patch²*in_channels) — wrong on both dims.
+    # Derive correct shapes directly from the checkpoint.
+    if is_chroma and "proj_out.weight" in state_dict:
+        import torch.nn as _nn2
+        _po_w = state_dict["proj_out.weight"]
+        _po_out, _po_in = _po_w.shape  # 64, 6144
+        if list(transformer.proj_out.weight.shape) != [_po_out, _po_in]:
+            transformer.proj_out = _nn2.Linear(_po_in, _po_out, bias="proj_out.bias" in state_dict)
+            log(f"proj_out patched: Linear({_po_in}, {_po_out})")
+
+    # Cast to target dtype and load. strict=False matches from_single_file behaviour:
+    # keys present in both model and checkpoint load normally; extras are ignored.
+    state_dict = {k: v.to(dtype) for k, v in state_dict.items()}
+    missing, unexpected = transformer.load_state_dict(state_dict, strict=False)
+    if missing:
+        log(f"WARNING: {len(missing)} missing keys in transformer state_dict (architecture mismatch)")
+    if unexpected:
+        log(f"WARNING: {len(unexpected)} unexpected keys in transformer state_dict")
+    del state_dict
 
     log("loading diffusion model completed")
 
@@ -778,16 +965,21 @@ def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
     text_encoder_2 = None
     tokenizer_2    = None
     if args.t5_path and os.path.exists(args.t5_path):
-        log(f"loading t5xxl from {Path(args.t5_path).name} ({('GGUF' if is_gguf(args.t5_path) else 'safetensors')})")
-        if is_gguf(args.t5_path):
-            from transformers import GGUFQuantizationConfig as TGGUFConfig
+        # Prefer pre-converted BF16 safetensors alongside the transformer —
+        # avoids dequantizing 219 tensors on every load.
+        converted_t5_dir = os.path.join(variant_dir, "text_encoder_2")
+        if os.path.exists(os.path.join(converted_t5_dir, "config.json")):
+            log(f"loading t5xxl from converted BF16 ({converted_t5_dir})")
+            text_encoder_2 = T5EncoderModel.from_pretrained(converted_t5_dir, torch_dtype=dtype)
+        elif is_gguf(args.t5_path):
+            log(f"loading t5xxl from {Path(args.t5_path).name} (GGUF — run convert to cache as BF16)")
             text_encoder_2 = T5EncoderModel.from_pretrained(
-                "city96/t5-v1_1-xxl-encoder-gguf",
-                gguf_file=Path(args.t5_path).name,
-                quantization_config=TGGUFConfig(compute_dtype=dtype),
+                os.path.dirname(args.t5_path),
+                gguf_file=os.path.basename(args.t5_path),
                 torch_dtype=dtype,
             )
         else:
+            log(f"loading t5xxl from {Path(args.t5_path).name}")
             text_encoder_2 = T5EncoderModel.from_pretrained(args.t5_path, torch_dtype=dtype)
         tokenizer_2 = T5TokenizerFast.from_pretrained("google/t5-v1_1-xxl", legacy=False)
 

@@ -388,24 +388,60 @@ interface AudioDevice {
 
 async function resolvePythonDevice(overrideVendor?: string, overrideIndex?: number): Promise<AudioDevice> {
   const hw = await detectHardware();
+
+  // When overrideVendor is set, use that venv but match GPUs by hardware type:
+  // 'cuda'  → only NVIDIA GPUs (backend === 'cuda')
+  // 'rocm'  → only AMD GPUs (gpuToVendor === 'rocm')
+  // 'xpu'   → only Intel Arc GPUs (gpuToVendor === 'xpu')
+  // unset   → first ready GPU wins
+  // HIP (ROCm) and SYCL (XPU) enumerate devices from 0 in their own space,
+  // independent of the system GPU index. Track rank per vendor so we pass
+  // the correct device ordinal (not the raw system index which can be 100+
+  // on positional fallback paths).
+  const vendorRank: Record<string, number> = {};
+
   for (const gpu of hw.gpus) {
     const vendor = gpuToVendor(gpu);
-    if (overrideVendor && vendor !== overrideVendor) continue;
+
+    if (overrideVendor) {
+      if (overrideVendor === 'cuda'  && gpu.backend !== 'cuda')  continue;
+      if (overrideVendor === 'rocm'  && vendor      !== 'rocm')  continue;
+      if (overrideVendor === 'xpu'   && vendor      !== 'xpu')   continue;
+      if (overrideVendor === 'apple' && vendor      !== 'apple') continue;
+    }
+
+    // Increment rank for this vendor before the overrideIndex filter so ranks
+    // stay consistent whether or not a specific index was requested.
+    vendorRank[vendor] = (vendorRank[vendor] ?? 0);
+    const rank = vendorRank[vendor]++;
+
     if (overrideIndex !== undefined && gpu.index !== overrideIndex) continue;
-    if (!isVendorReady(vendor)) continue;
-    const pyBin = getPythonPath(vendor);
+
+    // Use the requested venv if overridden; otherwise use the GPU's native venv.
+    const resolvedVendor = (overrideVendor ?? vendor) as typeof vendor;
+    if (!isVendorReady(resolvedVendor)) continue;
+    const pyBin = getPythonPath(resolvedVendor);
     if (!pyBin) continue;
-    // ROCm Windows uses HIP-as-CUDA compat path — device string is 'cuda:N'.
-    // XPU (Intel Arc) uses 'xpu:N'.
+
+    // ROCm Windows uses HIP-as-CUDA compat path — device string is 'cuda:N'
+    // where N is the HIP rank (0-based), not the system GPU index.
+    // XPU (Intel Arc) uses 'xpu:N' with SYCL rank.
     // Metal uses 'mps' (no index — MPS has one logical device).
-    const deviceArg = vendor === 'cuda'  ? `cuda:${gpu.index}`
-                    : vendor === 'rocm'  ? `cuda:${gpu.index}`
-                    : vendor === 'xpu'   ? `xpu:${gpu.index}`
-                    : vendor === 'apple' ? 'mps'
+    const hipRank  = resolvedVendor === 'rocm' ? rank : gpu.index;
+    const xpuRank  = resolvedVendor === 'xpu'  ? rank : gpu.index;
+    const deviceArg = resolvedVendor === 'cuda'  ? `cuda:${gpu.index}`
+                    : resolvedVendor === 'rocm'  ? `cuda:${hipRank}`
+                    : resolvedVendor === 'xpu'   ? `xpu:${xpuRank}`
+                    : resolvedVendor === 'apple' ? 'mps'
                     : 'cpu';
-    return { pythonBin: pyBin, deviceArg, vendor };
+    return { pythonBin: pyBin, deviceArg, vendor: resolvedVendor };
   }
   return { pythonBin: getPythonPath('cpu') ?? 'python3', deviceArg: 'cpu', vendor: 'cpu' };
+  // NOTE: if overrideVendor was set and no matching GPU was found/ready above,
+  // we intentionally fall to the cpu device string here. getPythonPath('cpu')
+  // walks cuda→rocm→xpu→apple, but we force deviceArg='cpu' so the Python
+  // script runs on CPU regardless of which venv binary is used. This prevents
+  // silently running on a different GPU vendor than requested.
 }
 
 // ── Generic subprocess runner ─────────────────────────────────────────────────
@@ -487,6 +523,46 @@ function runProcess(
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
+
+// ── resolveAudioDeviceIndex ───────────────────────────────────────────────────
+//
+// Returns the system GPU index that audio generation will target given the
+// session's audioBackend and targetGpuIndex overrides — the same device that
+// resolvePythonDevice() would pick when generateAceStep / generateF5Tts run.
+//
+// Returns undefined when the resolved device is CPU (no discrete VRAM to gate).
+//
+// Used by workflows.ts to call snapshotAllServersOnDevice() with the correct
+// index before dispatching audio generation, mirroring the image-gen pre-flight.
+
+export async function resolveAudioDeviceIndex(
+  audioBackend:    'auto' | 'gpu' | 'cpu' | undefined,
+  targetGpuIndex?: number,
+): Promise<number | undefined> {
+  if (audioBackend === 'cpu') return undefined;
+
+  const vendor = audioBackend === 'gpu' ? undefined : undefined; // auto → no vendor filter
+  const device = await resolvePythonDevice(vendor, targetGpuIndex);
+
+  // CPU fallback → no device index to gate
+  if (device.deviceArg === 'cpu') return undefined;
+
+  // Find the system GPU that corresponds to the resolved device.
+  // resolvePythonDevice returns the first matching GPU — re-detect hardware to
+  // find its system index. For ROCm/XPU the device ordinal differs from the
+  // system index; we need the system index for snapshotAllServersOnDevice().
+  const hw = await detectHardware();
+  for (const gpu of hw.gpus) {
+    const v = gpuToVendor(gpu);
+    if (device.vendor === 'cuda'  && gpu.backend !== 'cuda')  continue;
+    if (device.vendor === 'rocm'  && v           !== 'rocm')  continue;
+    if (device.vendor === 'xpu'   && v           !== 'xpu')   continue;
+    if (device.vendor === 'apple' && v           !== 'apple') continue;
+    if (targetGpuIndex !== undefined && gpu.index !== targetGpuIndex) continue;
+    return gpu.index;
+  }
+  return undefined;
+}
 
 export interface AudioGenerateResult {
   outputPath: string;
@@ -624,8 +700,13 @@ export async function generateF5Tts(opts: F5TtsOptions): Promise<AudioGenerateRe
   const extraEnv: Record<string, string> = { PATH: ffmpegPath };
   // ROCm Windows: HIP device visibility and gfx1150 (890M RDNA3.5) kernel override.
   if (vendor === 'rocm' && process.platform === 'win32') {
-    extraEnv['HIP_VISIBLE_DEVICES']      = deviceArg.replace('cuda:', '') || '0';
-    extraEnv['HSA_OVERRIDE_GFX_VERSION'] = '11.5.0';
+    extraEnv['HIP_VISIBLE_DEVICES']          = deviceArg.replace('cuda:', '') || '0';
+    extraEnv['HSA_OVERRIDE_GFX_VERSION']     = '11.5.0';
+    extraEnv['MIOPEN_LOG_LEVEL']             = '4';
+    extraEnv['AMD_LOG_LEVEL']                = '0';
+    // encodec imports torch.distributed.ReduceOp at module load; this attr is
+    // absent in the ROCm torch stub on Windows. Patched via PythonEnvManager
+    // during venv setup — no env var workaround exists for this import crash.
   }
   // XPU (Intel Arc): SYCL immediate command lists, disable XMX for gen12 compatibility.
   if (vendor === 'xpu') {
@@ -713,6 +794,9 @@ export async function generateAceStep(opts: AceStepOptions): Promise<AudioGenera
     if (vendor === 'rocm' && process.platform === 'win32') {
       aceEnv['HIP_VISIBLE_DEVICES']      = deviceArg.replace('cuda:', '') || '0';
       aceEnv['HSA_OVERRIDE_GFX_VERSION'] = '11.5.0';
+      // Suppress MIOpen GemmFwdRest workspace warnings (level 4 = errors only).
+      aceEnv['MIOPEN_LOG_LEVEL']         = '4';
+      aceEnv['AMD_LOG_LEVEL']            = '0';
     }
     // XPU (Intel Arc): SYCL immediate command lists, disable XMX for gen12 compatibility.
     if (vendor === 'xpu') {

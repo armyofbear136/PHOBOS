@@ -125,7 +125,7 @@
     "sd": "n/a",
     "files": {}
   },
-  "_updated": "2026-04-30T21:35:45.076Z",
+  "_updated": "2026-05-20T00:00:00.000Z",
   "deps": {
     "vss": {
       "version": "1.4.4"
@@ -183,6 +183,9 @@
     },
     "ace-step": {
       "version": "acestep.cpp-e0c8d75"
+    },
+    "jre-21": {
+      "version": "21.0.7+6"
     }
   }
 }

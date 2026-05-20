@@ -225,10 +225,10 @@ function ProgressBar({ received, total, label }: { received?: number; total?: nu
   );
 }
 
-const BACKEND_BADGE: Record<string, { border: string; text: string; label: string }> = {
-  cuda:   { border: 'border-phobos-green/20', text: 'text-phobos-green/40', label: 'CUDA' },
-  vulkan: { border: 'border-amber-500/20',    text: 'text-amber-500/40',    label: 'Vulkan' },
-  metal:  { border: 'border-blue-400/20',     text: 'text-blue-400/40',     label: 'Metal' },
+const BACKEND_BADGE: Record<string, { border: string; text: string; label: string; lightStyle: React.CSSProperties }> = {
+  cuda:   { border: 'border-phobos-green/20', text: 'text-phobos-green/40', label: 'CUDA',   lightStyle: { color: 'hsl(130 60% 22%)', background: 'hsl(130 35% 82%)', borderColor: 'hsl(130 40% 50%)' } },
+  vulkan: { border: 'border-amber-500/20',    text: 'text-amber-500/40',    label: 'Vulkan', lightStyle: { color: 'hsl(36 65% 22%)',  background: 'hsl(36 50% 84%)',  borderColor: 'hsl(36 50% 46%)' } },
+  metal:  { border: 'border-blue-400/20',     text: 'text-blue-400/40',     label: 'Metal',  lightStyle: { color: 'hsl(270 50% 26%)', background: 'hsl(270 35% 86%)', borderColor: 'hsl(270 40% 54%)' } },
 };
 
 // ── SystemCapabilityCard ──────────────────────────────────────────────────────
@@ -1001,11 +1001,11 @@ export function PhobosLLMPanel({ onClose }: Props) {
                 {/* CPU card */}
                 <div className="flex-1 min-w-[200px] bg-accent/20 rounded border border-border/20 px-3 py-2.5">
                   <div className="flex items-center gap-2 mb-1">
-                    <Cpu className="w-4 h-4 text-muted-foreground/50" />
-                    <span className="text-xs font-terminal text-muted-foreground/50 uppercase tracking-wider">CPU</span>
+                    <Cpu className="w-4 h-4 text-muted-foreground/50" style={resolvedTheme === 'light' ? { color: 'hsl(30 20% 28%)' } : undefined} />
+                    <span style={resolvedTheme === 'light' ? { color: 'hsl(30 20% 22%)' } : undefined} className="text-xs font-terminal text-muted-foreground/50 uppercase tracking-wider">CPU</span>
                   </div>
-                  <div className="text-sm text-foreground/80 font-mono">{hw.cpuName}</div>
-                  <div className="text-xs text-foreground/45 font-mono">{hw.cpuCores} cores · {hw.ramGb} GB RAM</div>
+                  <div style={resolvedTheme === 'light' ? { color: 'hsl(30 20% 10%)' } : undefined} className="text-sm text-foreground/80 font-mono">{hw.cpuName}</div>
+                  <div style={resolvedTheme === 'light' ? { color: 'hsl(30 20% 22%)' } : undefined} className="text-xs text-foreground/45 font-mono">{hw.cpuCores} cores · {hw.ramGb} GB RAM</div>
                 </div>
                 {/* GPU cards */}
                 {hw.gpus.map((gpu) => {
@@ -1030,15 +1030,21 @@ export function PhobosLLMPanel({ onClose }: Props) {
                   return (
                     <div key={gpu.index} className="flex-1 min-w-[200px] bg-accent/20 rounded border border-border/20 px-3 py-2.5">
                       <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs font-terminal text-muted-foreground/50 uppercase tracking-wider">GPU {gpu.index}</span>
+                        <span
+                          style={resolvedTheme === 'light' ? { color: 'hsl(30 20% 22%)' } : undefined}
+                          className="text-xs font-terminal text-muted-foreground/50 uppercase tracking-wider"
+                        >GPU {gpu.index}</span>
                         {badge && (
-                          <span className={`text-[11px] font-terminal border rounded px-1.5 py-0.5 ${badge.border} ${badge.text}`}>
+                          <span
+                            className={`text-[11px] font-terminal border rounded px-1.5 py-0.5 ${badge.border} ${badge.text}`}
+                            style={resolvedTheme === 'light' ? badge.lightStyle : undefined}
+                          >
                             {badge.label}
                           </span>
                         )}
                       </div>
-                      <div className="text-sm text-foreground/80 font-mono">{gpu.name}</div>
-                      <div className="text-xs text-foreground/45 font-mono">{gpu.vramGb} GB VRAM</div>
+                      <div style={resolvedTheme === 'light' ? { color: 'hsl(30 20% 10%)' } : undefined} className="text-sm text-foreground/80 font-mono">{gpu.name}</div>
+                      <div style={resolvedTheme === 'light' ? { color: 'hsl(30 20% 22%)' } : undefined} className="text-xs text-foreground/45 font-mono">{gpu.vramGb} GB VRAM</div>
                       {/* PyTorch status badge */}
                       {pyVendor && (
                         <div className="mt-1.5">

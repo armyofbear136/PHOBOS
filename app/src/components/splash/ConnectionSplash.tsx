@@ -338,7 +338,7 @@ export function ConnectionSplash() {
 
         {anyFailed && (
           <p style={{ ...mono, fontSize: 9, color: 'rgba(255,160,80,0.6)', margin: '14px 0 0', letterSpacing: '0.08em', lineHeight: 1.7 }}>
-            Some services failed to start. You can still use PHOBOS — affected features may be unavailable.
+            Some services are still starting or may have failed to start. You can still use PHOBOS — affected features may be unavailable.
           </p>
         )}
       </div>

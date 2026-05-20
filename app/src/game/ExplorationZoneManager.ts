@@ -4691,6 +4691,22 @@ export class ExplorationZoneManager {
     return this._tileSet.has(this._key(tx, ty));
   }
 
+  /**
+   * Returns all registered zone tiles as {tx, ty} pairs.
+   * Used by WorldCombatManager to sample valid spawn positions instead of
+   * picking random points in a bounding rectangle (which includes void areas).
+   * Decodes using the same encoding as _key: key = (ty+700)*2048 + (tx+200).
+   */
+  getZoneTiles(): Array<{ tx: number; ty: number }> {
+    const tiles: Array<{ tx: number; ty: number }> = [];
+    for (const key of this._tileSet) {
+      const ty = Math.floor(key / 2048) - 700;
+      const tx = (key % 2048) - 200;
+      tiles.push({ tx, ty });
+    }
+    return tiles;
+  }
+
   // Uses same encoding as TileWorld._exTileKey: (ty+700)*2048 + (tx+200)
   private _key(tx: number, ty: number): number {
     return (ty + 700) * 2048 + (tx + 200);
@@ -5074,6 +5090,400 @@ export const ROOM_CATALOGUE: RoomDef[] = [
     min_room_tier: 1,
   },
 
+  // ── bunker-barracks-hall ──────────────────────────────────────────────────
+  // 16×12. Large throughRoom. Open bunk hall with wall pillars on both sides,
+  // debris scatter in the centre, and a wide north opening.
+  // region_types: all three bunker types.
+  {
+    id:           'bunker-barracks-hall',
+    zone_act:     2,
+    region_types: ['bunker-corridor', 'bunker-depot', 'bunker-command'],
+    type:         'standard',
+    size:         { w: 16, h: 12 },
+    connections: [
+      { id: 'south-0', edge: 'S', tx: 8,  ty: 11 },
+      { id: 'north-0', edge: 'N', tx: 8,  ty: 0  },
+    ],
+    tiles: ((): Array<{ tx: number; ty: number; frame: number }> => {
+      const t: Array<{ tx: number; ty: number; frame: number }> = [];
+      for (let ty = 0; ty < 12; ty++)
+        for (let tx = 0; tx < 16; tx++)
+          t.push({ tx, ty, frame: 0 });
+      return t;
+    })(),
+    structures: [
+      // North wall
+      ...Array.from({ length: 16 }, (_, i) =>
+        ({ tx: i, ty: 0, frame: i < 8 ? 21 : 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true })
+      ),
+      // West wall pillars
+      { tx: 0, ty: 3,  frame: 21, tint: TINT_BUNKER_WALL,   depth: 4, blocked: true },
+      { tx: 0, ty: 7,  frame: 21, tint: TINT_BUNKER_WALL,   depth: 4, blocked: true },
+      { tx: 0, ty: 11, frame: 21, tint: TINT_BUNKER_WALL,   depth: 4, blocked: true },
+      // East wall pillars
+      { tx: 15, ty: 3,  frame: 22, tint: TINT_BUNKER_WALL,  depth: 4, blocked: true },
+      { tx: 15, ty: 7,  frame: 22, tint: TINT_BUNKER_WALL,  depth: 4, blocked: true },
+      { tx: 15, ty: 11, frame: 22, tint: TINT_BUNKER_WALL,  depth: 4, blocked: true },
+      // Bunk frames — two rows of 3 each side
+      { tx: 1, ty: 2,  frame: 28, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 1, ty: 5,  frame: 28, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 1, ty: 8,  frame: 28, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 14, ty: 2, frame: 29, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 14, ty: 5, frame: 29, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 14, ty: 8, frame: 29, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      // Central debris scatter
+      { tx: 6,  ty: 5, frame: 14, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 9,  ty: 5, frame: 14, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 7,  ty: 7, frame: 14, tint: TINT_BUNKER_DETAIL, depth: 3 },
+    ],
+    variants: [],
+    spawn_markers: [
+      { id: 'e0', tx: 3,  ty: 4,  type: 'enemy' },
+      { id: 'e1', tx: 12, ty: 4,  type: 'enemy' },
+      { id: 'e2', tx: 3,  ty: 8,  type: 'enemy' },
+      { id: 'e3', tx: 12, ty: 8,  type: 'enemy' },
+      { id: 'e4', tx: 7,  ty: 6,  type: 'enemy' },
+      { id: 'l0', tx: 8,  ty: 10, type: 'loot'  },
+    ],
+    min_room_tier: 0,
+  },
+
+  // ── bunker-storage-bay ────────────────────────────────────────────────────
+  // 12×16. Large throughRoom. Tall storage bay with crate stacks on east/west
+  // walls and a narrow cleared path down the centre.
+  // region_types: all three bunker types.
+  {
+    id:           'bunker-storage-bay',
+    zone_act:     2,
+    region_types: ['bunker-corridor', 'bunker-depot', 'bunker-command'],
+    type:         'standard',
+    size:         { w: 12, h: 16 },
+    connections: [
+      { id: 'south-0', edge: 'S', tx: 6,  ty: 15 },
+      { id: 'north-0', edge: 'N', tx: 6,  ty: 0  },
+    ],
+    tiles: ((): Array<{ tx: number; ty: number; frame: number }> => {
+      const t: Array<{ tx: number; ty: number; frame: number }> = [];
+      for (let ty = 0; ty < 16; ty++)
+        for (let tx = 0; tx < 12; tx++)
+          t.push({ tx, ty, frame: 0 });
+      return t;
+    })(),
+    structures: [
+      // North wall
+      ...Array.from({ length: 12 }, (_, i) =>
+        ({ tx: i, ty: 0, frame: i < 6 ? 21 : 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true })
+      ),
+      // West crate stacks — blocked
+      { tx: 0, ty: 2,  frame: 28, tint: TINT_BUNKER_DETAIL, depth: 4, blocked: true },
+      { tx: 1, ty: 2,  frame: 28, tint: TINT_BUNKER_DETAIL, depth: 4, blocked: true },
+      { tx: 0, ty: 5,  frame: 28, tint: TINT_BUNKER_DETAIL, depth: 4, blocked: true },
+      { tx: 1, ty: 5,  frame: 28, tint: TINT_BUNKER_DETAIL, depth: 4, blocked: true },
+      { tx: 0, ty: 9,  frame: 28, tint: TINT_BUNKER_DETAIL, depth: 4, blocked: true },
+      { tx: 1, ty: 9,  frame: 28, tint: TINT_BUNKER_DETAIL, depth: 4, blocked: true },
+      { tx: 0, ty: 12, frame: 28, tint: TINT_BUNKER_DETAIL, depth: 4, blocked: true },
+      { tx: 1, ty: 12, frame: 28, tint: TINT_BUNKER_DETAIL, depth: 4, blocked: true },
+      // East crate stacks — blocked
+      { tx: 10, ty: 2,  frame: 29, tint: TINT_BUNKER_DETAIL, depth: 4, blocked: true },
+      { tx: 11, ty: 2,  frame: 29, tint: TINT_BUNKER_DETAIL, depth: 4, blocked: true },
+      { tx: 10, ty: 5,  frame: 29, tint: TINT_BUNKER_DETAIL, depth: 4, blocked: true },
+      { tx: 11, ty: 5,  frame: 29, tint: TINT_BUNKER_DETAIL, depth: 4, blocked: true },
+      { tx: 10, ty: 9,  frame: 29, tint: TINT_BUNKER_DETAIL, depth: 4, blocked: true },
+      { tx: 11, ty: 9,  frame: 29, tint: TINT_BUNKER_DETAIL, depth: 4, blocked: true },
+      { tx: 10, ty: 12, frame: 29, tint: TINT_BUNKER_DETAIL, depth: 4, blocked: true },
+      { tx: 11, ty: 12, frame: 29, tint: TINT_BUNKER_DETAIL, depth: 4, blocked: true },
+      // Lone crate in the aisle
+      { tx: 5, ty: 7,  frame: 14, tint: TINT_BUNKER_DETAIL, depth: 3 },
+    ],
+    variants: [],
+    spawn_markers: [
+      { id: 'e0', tx: 3,  ty: 3,  type: 'enemy' },
+      { id: 'e1', tx: 8,  ty: 3,  type: 'enemy' },
+      { id: 'e2', tx: 3,  ty: 10, type: 'enemy' },
+      { id: 'e3', tx: 8,  ty: 10, type: 'enemy' },
+      { id: 'e4', tx: 5,  ty: 13, type: 'enemy' },
+      { id: 'l0', tx: 5,  ty: 7,  type: 'loot'  },
+      { id: 'm0', tx: 2,  ty: 14, type: 'mineral' },
+    ],
+    min_room_tier: 0,
+  },
+
+  // ── bunker-crossroads ─────────────────────────────────────────────────────
+  // 8×8 throughRoom. Open crossroads with a central support column and N/S/E
+  // connections — good for visual variety mid-spine.
+  {
+    id:           'bunker-crossroads',
+    zone_act:     2,
+    region_types: ['bunker-corridor', 'bunker-depot', 'bunker-command'],
+    type:         'standard',
+    size:         { w: 8, h: 8 },
+    connections: [
+      { id: 'south-0', edge: 'S', tx: 4, ty: 7 },
+      { id: 'north-0', edge: 'N', tx: 4, ty: 0 },
+      { id: 'east-0',  edge: 'E', tx: 7, ty: 4 },
+    ],
+    tiles: ((): Array<{ tx: number; ty: number; frame: number }> => {
+      const t: Array<{ tx: number; ty: number; frame: number }> = [];
+      for (let ty = 0; ty < 8; ty++)
+        for (let tx = 0; tx < 8; tx++)
+          t.push({ tx, ty, frame: 0 });
+      return t;
+    })(),
+    structures: [
+      // North wall with gap at connection
+      { tx: 0, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 1, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 2, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // gap at tx 3-5
+      { tx: 6, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // Central support pillar
+      { tx: 3, ty: 3, frame: 35, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 4, ty: 3, frame: 36, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 3, ty: 4, frame: 28, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 4, ty: 4, frame: 29, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+    ],
+    variants: [],
+    spawn_markers: [
+      { id: 'e0', tx: 1, ty: 5, type: 'enemy' },
+      { id: 'e1', tx: 6, ty: 2, type: 'enemy' },
+    ],
+    min_room_tier: 0,
+  },
+
+  // ── bunker-tight-corridor ─────────────────────────────────────────────────
+  // 4×20 throughRoom connector. A long tight corridor with a single console
+  // alcove. Used by command region for its longer corridors.
+  {
+    id:           'bunker-tight-corridor',
+    zone_act:     2,
+    region_types: ['bunker-command'],
+    type:         'connector',
+    size:         { w: 4, h: 20 },
+    connections: [
+      { id: 'south-0', edge: 'S', tx: 2, ty: 19 },
+      { id: 'north-0', edge: 'N', tx: 2, ty: 0  },
+    ],
+    tiles: ((): Array<{ tx: number; ty: number; frame: number }> => {
+      const t: Array<{ tx: number; ty: number; frame: number }> = [];
+      for (let ty = 0; ty < 20; ty++)
+        for (let tx = 0; tx < 4; tx++)
+          t.push({ tx, ty, frame: 7 });
+      return t;
+    })(),
+    structures: [
+      // Wall rails entire length on both sides
+      ...Array.from({ length: 20 }, (_, i) =>
+        ({ tx: 0, ty: i, frame: 13, tint: TINT_BUNKER_DETAIL, depth: 3 })
+      ),
+      ...Array.from({ length: 20 }, (_, i) =>
+        ({ tx: 3, ty: i, frame: 13, tint: TINT_BUNKER_DETAIL, depth: 3 })
+      ),
+      // Mid-point console alcove
+      { tx: 0, ty: 9, frame: 28, tint: TINT_BUNKER_DETAIL, depth: 3 },
+    ],
+    variants: [],
+    spawn_markers: [
+      { id: 'e0', tx: 2, ty: 10, type: 'enemy' },
+    ],
+    min_room_tier: 0,
+  },
+
+  // ── bunker-armoury ────────────────────────────────────────────────────────
+  // 12×8 dead-end. Armoury room with weapon racks on north wall, good loot.
+  {
+    id:           'bunker-armoury',
+    zone_act:     2,
+    region_types: ['bunker-corridor', 'bunker-depot', 'bunker-command'],
+    type:         'dead-end',
+    size:         { w: 12, h: 8 },
+    connections: [
+      { id: 'south-0', edge: 'S', tx: 6, ty: 7 },
+    ],
+    tiles: ((): Array<{ tx: number; ty: number; frame: number }> => {
+      const t: Array<{ tx: number; ty: number; frame: number }> = [];
+      for (let ty = 0; ty < 8; ty++)
+        for (let tx = 0; tx < 12; tx++)
+          t.push({ tx, ty, frame: 0 });
+      return t;
+    })(),
+    structures: [
+      // North wall — full blocked
+      ...Array.from({ length: 12 }, (_, i) =>
+        ({ tx: i, ty: 0, frame: i < 6 ? 21 : 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true })
+      ),
+      // Weapon rack row along north wall
+      { tx: 1, ty: 1, frame: 28, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 3, ty: 1, frame: 28, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 5, ty: 1, frame: 29, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 7, ty: 1, frame: 29, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 9, ty: 1, frame: 29, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      // Corner lockers — blocked
+      { tx: 0,  ty: 3, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 11, ty: 3, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+    ],
+    variants: [],
+    spawn_markers: [
+      { id: 'e0', tx: 3,  ty: 4, type: 'enemy' },
+      { id: 'e1', tx: 8,  ty: 4, type: 'enemy' },
+      { id: 'l0', tx: 2,  ty: 5, type: 'loot'  },
+      { id: 'l1', tx: 10, ty: 5, type: 'loot'  },
+      { id: 'l2', tx: 6,  ty: 3, type: 'loot'  },
+    ],
+    min_room_tier: 0,
+  },
+
+  // ── bunker-collapsed-section ──────────────────────────────────────────────
+  // 8×8 dead-end. Partially collapsed room, rubble blocking east half,
+  // mineral deposits in debris. High enemy density.
+  {
+    id:           'bunker-collapsed-section',
+    zone_act:     2,
+    region_types: ['bunker-corridor', 'bunker-depot', 'bunker-command'],
+    type:         'dead-end',
+    size:         { w: 8, h: 8 },
+    connections: [
+      { id: 'south-0', edge: 'S', tx: 4, ty: 7 },
+    ],
+    tiles: ((): Array<{ tx: number; ty: number; frame: number }> => {
+      const t: Array<{ tx: number; ty: number; frame: number }> = [];
+      for (let ty = 0; ty < 8; ty++)
+        for (let tx = 0; tx < 8; tx++)
+          t.push({ tx, ty, frame: 0 });
+      return t;
+    })(),
+    structures: [
+      // North wall
+      ...Array.from({ length: 8 }, (_, i) =>
+        ({ tx: i, ty: 0, frame: i < 4 ? 21 : 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true })
+      ),
+      // Rubble fill — east half irregular
+      { tx: 5, ty: 2, frame: 14, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 6, ty: 2, frame: 14, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 2, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 6, ty: 3, frame: 14, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 3, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 5, ty: 4, frame: 14, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 5, frame: 14, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // Scattered floor debris — walkable
+      { tx: 2, ty: 3, frame: 14, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 3, ty: 5, frame: 14, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 1, ty: 6, frame: 14, tint: TINT_BUNKER_DETAIL, depth: 3 },
+    ],
+    variants: [],
+    spawn_markers: [
+      { id: 'e0', tx: 1, ty: 4, type: 'enemy'   },
+      { id: 'e1', tx: 3, ty: 2, type: 'enemy'   },
+      { id: 'e2', tx: 2, ty: 6, type: 'enemy'   },
+      { id: 'm0', tx: 4, ty: 3, type: 'mineral' },
+      { id: 'm1', tx: 3, ty: 6, type: 'mineral' },
+    ],
+    min_room_tier: 0,
+  },
+
+  // ── bunker-entry-b ────────────────────────────────────────────────────────
+  // 8×8 entry variant. Wider open entry chamber, guard post details,
+  // two enemies at the flanks immediately past entry.
+  {
+    id:           'bunker-entry-b',
+    zone_act:     2,
+    region_types: ['bunker-depot', 'bunker-command'],
+    type:         'entry',
+    size:         { w: 8, h: 8 },
+    connections: [
+      { id: 'south-0', edge: 'S', tx: 4, ty: 7 },
+      { id: 'north-0', edge: 'N', tx: 4, ty: 0 },
+    ],
+    tiles: ((): Array<{ tx: number; ty: number; frame: number }> => {
+      const t: Array<{ tx: number; ty: number; frame: number }> = [];
+      for (let ty = 0; ty < 8; ty++)
+        for (let tx = 0; tx < 8; tx++)
+          t.push({ tx, ty, frame: 0 });
+      return t;
+    })(),
+    structures: [
+      // North wall
+      ...Array.from({ length: 8 }, (_, i) =>
+        ({ tx: i, ty: 0, frame: i < 4 ? 21 : 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true })
+      ),
+      // Guard post consoles
+      { tx: 1, ty: 2, frame: 28, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 6, ty: 2, frame: 29, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      // Side lockers — blocked
+      { tx: 0, ty: 5, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 5, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+    ],
+    variants: [],
+    spawn_markers: [
+      { id: 'e0', tx: 2, ty: 4, type: 'enemy' },
+      { id: 'e1', tx: 5, ty: 4, type: 'enemy' },
+    ],
+    min_room_tier: 0,
+  },
+
+  // ── bunker-command-room ───────────────────────────────────────────────────
+  // 16×16 boss room. Command centre with a raised map table, console banks
+  // on all walls, heavy enemy presence, two loot drops.
+  // min_room_tier: 1 — only appears deep in the zone.
+  {
+    id:           'bunker-command-room',
+    zone_act:     2,
+    region_types: ['bunker-command'],
+    type:         'boss',
+    size:         { w: 16, h: 16 },
+    connections: [
+      { id: 'south-0', edge: 'S', tx: 8, ty: 15 },
+    ],
+    tiles: ((): Array<{ tx: number; ty: number; frame: number }> => {
+      const t: Array<{ tx: number; ty: number; frame: number }> = [];
+      for (let ty = 0; ty < 16; ty++)
+        for (let tx = 0; tx < 16; tx++)
+          t.push({ tx, ty, frame: 0 });
+      return t;
+    })(),
+    structures: [
+      // Full north wall
+      ...Array.from({ length: 16 }, (_, i) =>
+        ({ tx: i, ty: 0, frame: i < 8 ? 21 : 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true })
+      ),
+      // East and west wall banks
+      { tx: 0,  ty: 3,  frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0,  ty: 7,  frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0,  ty: 11, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 15, ty: 3,  frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 15, ty: 7,  frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 15, ty: 11, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // Console banks
+      { tx: 1,  ty: 2,  frame: 28, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 2,  ty: 2,  frame: 28, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 13, ty: 2,  frame: 29, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 14, ty: 2,  frame: 29, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 1,  ty: 12, frame: 28, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 2,  ty: 12, frame: 28, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 13, ty: 12, frame: 29, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      { tx: 14, ty: 12, frame: 29, tint: TINT_BUNKER_DETAIL, depth: 3 },
+      // Central map table — blocked 2×2
+      { tx: 7,  ty: 6,  frame: 28, tint: TINT_BUNKER_DETAIL, depth: 5, blocked: true },
+      { tx: 8,  ty: 6,  frame: 29, tint: TINT_BUNKER_DETAIL, depth: 5, blocked: true },
+      { tx: 7,  ty: 7,  frame: 35, tint: TINT_BUNKER_DETAIL, depth: 5, blocked: true },
+      { tx: 8,  ty: 7,  frame: 36, tint: TINT_BUNKER_DETAIL, depth: 5, blocked: true },
+    ],
+    variants: [],
+    spawn_markers: [
+      { id: 'e0', tx: 3,  ty: 4,  type: 'enemy' },
+      { id: 'e1', tx: 12, ty: 4,  type: 'enemy' },
+      { id: 'e2', tx: 3,  ty: 10, type: 'enemy' },
+      { id: 'e3', tx: 12, ty: 10, type: 'enemy' },
+      { id: 'e4', tx: 5,  ty: 13, type: 'enemy' },
+      { id: 'e5', tx: 10, ty: 13, type: 'enemy' },
+      { id: 'e6', tx: 7,  ty: 3,  type: 'enemy' },
+      { id: 'e7', tx: 8,  ty: 3,  type: 'enemy' },
+      { id: 'l0', tx: 4,  ty: 13, type: 'loot'  },
+      { id: 'l1', tx: 11, ty: 13, type: 'loot'  },
+    ],
+    min_room_tier: 1,
+  },
+
 ];  // end ROOM_CATALOGUE
 
 // ── REGION_REGISTRY ───────────────────────────────────────────────────────
@@ -5084,10 +5494,32 @@ export const REGION_REGISTRY: RegionDef[] = [
     label:          'Bunker Corridor',
     zone_acts:      [2],
     layout:         'spine',
-    room_count_min: 3,
-    room_count_max: 5,
-    corridor_min:   2,
-    corridor_max:   6,
+    room_count_min: 5,
+    room_count_max: 8,
+    corridor_min:   4,
+    corridor_max:   10,
+    tint:           TINT_BUNKER_FLOOR,
+  },
+  {
+    id:             'bunker-depot',
+    label:          'Bunker Depot',
+    zone_acts:      [2],
+    layout:         'spine',
+    room_count_min: 4,
+    room_count_max: 7,
+    corridor_min:   3,
+    corridor_max:   8,
+    tint:           TINT_BUNKER_FLOOR,
+  },
+  {
+    id:             'bunker-command',
+    label:          'Bunker Command',
+    zone_acts:      [2],
+    layout:         'spine',
+    room_count_min: 4,
+    room_count_max: 6,
+    corridor_min:   5,
+    corridor_max:   12,
     tint:           TINT_BUNKER_FLOOR,
   },
 ];
@@ -5099,7 +5531,11 @@ export const ZONE_LIBRARY: ZoneDef[] = [
     id:            'barracks-block',
     label:         'Barracks Block',
     zone_act:      2,
-    region_defs:   [REGION_REGISTRY.find(r => r.id === 'bunker-corridor')!],
+    region_defs:   [
+      REGION_REGISTRY.find(r => r.id === 'bunker-corridor')!,
+      REGION_REGISTRY.find(r => r.id === 'bunker-depot')!,
+      REGION_REGISTRY.find(r => r.id === 'bunker-command')!,
+    ],
     enemy_flavour: 'sentinels',
     tint:          TINT_BUNKER_FLOOR,
   },

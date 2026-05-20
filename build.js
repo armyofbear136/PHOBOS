@@ -699,9 +699,6 @@ export async function buildForPlatform({
     ['phobos_rocm_patch.py', 'phobos_rocm_patch.py', 'ROCm Windows unsloth device_type startup patch'],
     ['nf4tensor.py', 'nf4tensor.py', 'torchao NF4 distributed op stub for ROCm Windows'],
     ['unsloth_zoo_temporary_patches_utils.py', 'unsloth_zoo_temporary_patches_utils.py', 'unsloth_zoo temporary_patches/utils.py ROCm Windows _distributed_c10d patch'],
-    ['torchao_float8_distributed_utils.py', 'torchao_float8_distributed_utils.py', 'torchao float8/distributed_utils.py ROCm Windows distributed import guard'],
-    ['torch_distributed_c10d.py', 'torch_distributed_c10d.py', 'torch distributed/distributed_c10d.py ROCm Windows _distributed_c10d stub'],
-    ['torch_distributed_constants.py', 'torch_distributed_constants.py', 'torch distributed/constants.py ROCm Windows _distributed_c10d stub'],
   ];
   for (const [src, dst, label] of pyScripts) {
     const pyScript = path.join(__dirname, 'phobos', src);

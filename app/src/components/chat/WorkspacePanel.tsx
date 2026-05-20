@@ -231,7 +231,7 @@ export function WorkspacePanel() {
     // Code and plain-text files → Monaco
     if (['ts', 'tsx', 'js', 'jsx', 'py', 'rs', 'go', 'md', 'json', 'css',
          'sh', 'gd', 'cs', 'lua', 'yaml', 'yml', 'toml', 'txt'].includes(ext)) return 'monaco';
-    // Document formats → Jodit + pandoc-wasm
+    // Document formats → Jodit + pandoc
     // .html is included here — it's used as the workspace sidecar format for Jodit saves
     if (['docx', 'doc', 'odt', 'rtf', 'html', 'htm',
          'pptx', 'ppt', 'odp', 'xlsx', 'xls', 'ods', 'csv'].includes(ext)) return 'jodit';

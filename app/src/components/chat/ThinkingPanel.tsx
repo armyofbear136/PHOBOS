@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useAppStore, type AgentState } from '@/store/useAppStore';
 import { AgentStateIcon } from './AgentStateIcon';
 import { Copy, Check } from 'lucide-react';
-
+import { useTheme } from '@/lib/useTheme';
 /* ─── Data types ─── */
 
 export interface ThinkingSegment {
@@ -162,10 +162,11 @@ interface SectionProps {
   onToggle: () => void;
   taskProgress?: { taskIndex: number; taskTotal: number } | null;
   agentState?: { state: AgentState; detail: string } | null;
+  isLight?: boolean;
 }
 
 function SectionPanel({
-  label, tintClass, modelLabel, hasThinking, segments, isStreaming, collapsed, onToggle, taskProgress, agentState,
+  label, tintClass, modelLabel, hasThinking, segments, isStreaming, collapsed, onToggle, taskProgress, agentState, isLight,
 }: SectionProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const committedRef = useRef<Map<string, number>>(new Map());
@@ -192,10 +193,21 @@ function SectionPanel({
 
   const hasContent = segments.some((s) => s.content.length > 0);
 
+  const navyHdr: React.CSSProperties = isLight ? { backgroundColor: 'hsl(220 55% 18%)', borderColor: 'hsl(220 45% 30%)' } : {};
+  const navyTxt: React.CSSProperties = isLight ? { color: 'hsl(220 25% 82%)' } : {};
+  const navyGrn: React.CSSProperties = isLight ? { color: 'hsl(130 60% 58%)' } : {};
+  const sayonCol = 'hsl(270 55% 78%)';
+  const serenCol = 'hsl(10 65% 72%)';
+  const tintStyle: React.CSSProperties = isLight
+    ? { color: tintClass === 'text-sayon' ? sayonCol : serenCol }
+    : {};
+
   return (
     <div className={`group flex flex-col min-h-0 overflow-hidden ${collapsed ? 'shrink-0' : 'flex-1'}`}>
       {/* Section header — two rows */}
       <div
+        data-navy-header
+        style={navyHdr}
         className="flex items-start justify-between px-3 py-1.5 border-b border-border/30 shrink-0 cursor-pointer hover:bg-accent/10 transition-colors select-none"
         onClick={onToggle}
       >
@@ -209,24 +221,24 @@ function SectionPanel({
           )}
           <div className="flex flex-col gap-0.5">
             <div className="flex items-center gap-2">
-              <span className={`text-[10px] font-terminal font-semibold tracking-[0.2em] ${tintClass}`}>
+              <span data-green style={tintStyle} className={`text-[10px] font-terminal font-semibold tracking-[0.2em] ${tintClass}`}>
                 {label}
               </span>
               {taskProgress ? (
-                <span className={`text-[9px] font-mono ${tintClass} opacity-60`}>
+                <span style={tintStyle} className={`text-[9px] font-mono ${tintClass} opacity-60`}>
                   {taskProgress.taskIndex}/{taskProgress.taskTotal}
                 </span>
               ) : (
-                <span className="text-[9px] font-mono text-muted-foreground/25">…</span>
+                <span style={navyTxt} className="text-[9px] font-mono text-muted-foreground/25">…</span>
               )}
               {!hasThinking && (
-                <span className="text-[9px] font-mono text-muted-foreground/30 border border-muted-foreground/20 rounded px-1 tracking-wider">
+                <span style={navyTxt} className="text-[9px] font-mono text-muted-foreground/30 border border-muted-foreground/20 rounded px-1 tracking-wider">
                   NO-RSNG
                 </span>
               )}
             </div>
             {agentState && agentState.state !== 'idle' && agentState.detail && (
-              <span className="text-[8px] font-mono text-muted-foreground/35 truncate max-w-[180px]">
+              <span style={navyTxt} className="text-[8px] font-mono text-muted-foreground/35 truncate max-w-[180px]">
                 {agentState.detail}
               </span>
             )}
@@ -242,6 +254,7 @@ function SectionPanel({
                 setCopied(true);
                 setTimeout(() => setCopied(false), 1500);
               }}
+              style={navyTxt}
               className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 text-muted-foreground/30 hover:text-muted-foreground"
               title="Copy reasoning"
             >
@@ -249,11 +262,11 @@ function SectionPanel({
             </button>
           )}
           {totalTokens > 0 && (
-            <span className="text-[10px] font-mono text-muted-foreground/50">
+            <span style={navyGrn} className="text-[10px] font-mono text-muted-foreground/50">
               {totalTokens.toLocaleString()} tk
             </span>
           )}
-          <span className="text-[10px] text-muted-foreground/30">
+          <span style={navyTxt} className="text-[10px] text-muted-foreground/30">
             {collapsed ? '▸' : '▾'}
           </span>
         </div>
@@ -326,6 +339,15 @@ export function ThinkingPanel({
   const thinkingOpen = useAppStore((s) => s.thinkingOpen);
   const toggleThinking = useAppStore((s) => s.toggleThinking);
   const agentStates = useAppStore((s) => s.agentStates);
+  const { resolvedTheme } = useTheme();
+  const isLight = resolvedTheme === 'light' || document.documentElement.classList.contains('light');
+
+  const navyHeader: React.CSSProperties = isLight ? {
+    backgroundColor: 'hsl(220 55% 18%)',
+    borderColor: 'hsl(220 45% 30%)',
+  } : {};
+  const navyText: React.CSSProperties = isLight ? { color: 'hsl(220 25% 82%)' } : {};
+  const navyGreen: React.CSSProperties = isLight ? { color: 'hsl(130 60% 58%)' } : {};
 
   const coordSegments = useMemo(() => segments.filter((s) => s.phase === 'coordinator'), [segments]);
   const engineSegments = useMemo(() => segments.filter((s) => s.phase === 'engine'), [segments]);
@@ -367,15 +389,15 @@ export function ThinkingPanel({
   return (
     <div className="phobos-thinking-panel w-[280px] shrink-0 border-l border-border/50 bg-background/90 flex flex-col overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border/30 shrink-0">
+      <div data-navy-header style={navyHeader} className="flex items-center justify-between px-3 py-2 border-b border-border/30 shrink-0">
         <div className="flex items-center gap-2">
-          <span className="text-[10px] font-terminal font-semibold text-muted-foreground/60 tracking-[0.15em]">
+          <span data-green style={navyGreen} className="text-[10px] font-terminal font-semibold text-muted-foreground/60 tracking-[0.15em]">
             REASONING
           </span>
           {(() => {
             const totalTk = segments.reduce((sum, seg) => sum + seg.tokenCount, 0);
             return totalTk > 0 ? (
-              <span className="text-[10px] font-mono text-phobos-green/60">
+              <span style={navyGreen} className="text-[10px] font-mono text-phobos-green/60">
                 {totalTk.toLocaleString()} tk
               </span>
             ) : null;
@@ -383,6 +405,7 @@ export function ThinkingPanel({
         </div>
         <button
           onClick={() => { onClose(); toggleThinking(); }}
+          style={navyText}
           className="text-[10px] font-mono text-muted-foreground/30 hover:text-muted-foreground transition-colors"
         >
           ×
@@ -399,6 +422,7 @@ export function ThinkingPanel({
         collapsed={sayonCollapsed}
         onToggle={() => setSayonOverride((v) => v === null ? !sayonCollapsed : !v)}
         agentState={agentStates?.sayon}
+        isLight={isLight}
       />
       <div className="h-px bg-border/30 shrink-0" />
       <SectionPanel
@@ -412,6 +436,7 @@ export function ThinkingPanel({
         onToggle={() => setSerenOverride((v) => v === null ? !serenCollapsed : !v)}
         taskProgress={taskProgress}
         agentState={agentStates?.seren}
+        isLight={isLight}
       />
     </div>
   );

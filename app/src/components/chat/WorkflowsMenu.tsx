@@ -115,7 +115,7 @@ export function WorkflowsMenu({ threadId }: WorkflowsMenuProps) {
           //   URL is stable and the browser serves from cache without flicker.
           const isGenerating = !!generating[entry.workflowId];
           const cacheBust = isGenerating ? pollTs : (entry.thumbPath ? encodeURIComponent(entry.thumbPath) : 'none');
-          const thumbUrl = `${ENGINE_URL}/api/threads/${threadId}/workflows/${entry.workflowId}/thumbnail?r=${cacheBust}`;
+          const thumbUrl = `/api/threads/${threadId}/workflows/${entry.workflowId}/thumbnail?r=${cacheBust}`;
           return (
             <div
               key={entry.workflowId}

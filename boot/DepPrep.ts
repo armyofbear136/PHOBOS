@@ -425,6 +425,15 @@ function buildDeps(arch: PhobosArch): Dep[] {
         ], { timeout: 120_000 });
         // msiexec /a puts binaries at <polarisDir>\Permafrost\Polaris\ — flatten up.
         flattenToDir(polarisDir, 'polaris-cli.exe');
+        // Strip Mark-of-the-Web from the main binary
+        const polarisCli = path.join(polarisDir, 'polaris-cli.exe');
+        if (fs.existsSync(polarisCli)) {
+          try {
+            await execFileAsync('powershell', [
+              '-NoProfile', '-Command', `Unblock-File -LiteralPath '${polarisCli}'`,
+            ], { timeout: 10_000 });
+          } catch {}
+        }
       },
     };
     // Linux / macOS: pre-built binary uploaded by you
@@ -442,6 +451,89 @@ function buildDeps(arch: PhobosArch): Dep[] {
         fs.mkdirSync(polarisDir, { recursive: true });
         fs.copyFileSync(arc, binDest);
         fs.chmodSync(binDest, 0o755);
+        if (isMac) {
+          try { await execFileAsync('xattr', ['-d', 'com.apple.quarantine', binDest]); } catch {}
+        }
+      },
+    };
+  }
+
+
+  // ── Portable JRE 21 — required by Stirling PDF ───────────────────────────
+  //
+  // Adoptium Temurin 21 JRE — headless, no installer, no system writes.
+  // Installs to ~/.phobos/services/jre/. StirlingManager resolves
+  // resolveJavaBinary() to jre/bin/java[.exe] and falls back to system java.
+  //
+  // Source archives (upload these to PHOBOS-DEPS):
+  //   win32-x64:    https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.7%2B6/OpenJDK21U-jre_x64_windows_hotspot_21.0.7_6.zip
+  //   darwin-arm64: https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.7%2B6/OpenJDK21U-jre_aarch64_mac_hotspot_21.0.7_6.tar.gz
+  //   darwin-x64:   https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.7%2B6/OpenJDK21U-jre_x64_mac_hotspot_21.0.7_6.tar.gz
+  //   linux-x64:    https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.7%2B6/OpenJDK21U-jre_x64_linux_hotspot_21.0.7_6.tar.gz
+  //   linux-arm64:  https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.7%2B6/OpenJDK21U-jre_aarch64_linux_hotspot_21.0.7_6.tar.gz
+  //
+  // Adoptium JRE zips/tarballs extract to a versioned root (jdk-21.0.7+6-jre/).
+  // We rename that root to a stable 'jre/' so StirlingManager's path never changes.
+  function jreDep(): Dep {
+    const jreDir  = path.join(SERVICES_DIR, 'jre');
+    const javaBin = path.join(jreDir, 'bin', isWin ? 'java.exe' : 'java');
+
+    const fileMap: Record<PhobosArch, string> = {
+      'win32-x64':    'OpenJDK21U-jre_x64_windows_hotspot_21.0.7_6.zip',
+      'darwin-arm64': 'OpenJDK21U-jre_aarch64_mac_hotspot_21.0.7_6.tar.gz',
+      'darwin-x64':   'OpenJDK21U-jre_x64_mac_hotspot_21.0.7_6.tar.gz',
+      'linux-x64':    'OpenJDK21U-jre_x64_linux_hotspot_21.0.7_6.tar.gz',
+      'linux-arm64':  'OpenJDK21U-jre_aarch64_linux_hotspot_21.0.7_6.tar.gz',
+    };
+
+    return {
+      id: 'jre-21', label: 'Java 21 Runtime (for Stirling PDF)',
+      file: fileMap[arch], minBytes: 40_000_000,
+      isPresent: () => { try { return fs.statSync(javaBin).size >= 100_000; } catch { return false; } },
+      install: async (arc) => {
+        // Extract to a staging dir, then rename the versioned root to stable 'jre/'
+        const staging = jreDir + '-staging';
+        if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true });
+        if (fs.existsSync(jreDir))  fs.rmSync(jreDir,  { recursive: true, force: true });
+        fs.mkdirSync(staging, { recursive: true });
+
+        if (isWin) {
+          await extractZip(arc, staging);
+        } else {
+          await extractTarGz(arc, staging);
+        }
+
+        // Adoptium always extracts to a single versioned subdirectory (jdk-21.0.7+6-jre/).
+        // Find it by locating the java binary anywhere in the tree, then use its
+        // grandparent (bin/ parent) as the real JRE root.
+        const foundBin = findFile(staging, isWin ? 'java.exe' : 'java');
+        if (!foundBin) throw new Error(`java binary not found in JRE archive ${arc}`);
+
+        const jreRoot = path.dirname(path.dirname(foundBin)); // strip /bin/java
+        fs.renameSync(jreRoot, jreDir);
+        if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true });
+
+        if (!isWin) {
+          fs.chmodSync(javaBin, 0o755);
+          // macOS: strip Gatekeeper quarantine from the entire JRE tree
+          if (isMac) {
+            try { await execFileAsync('xattr', ['-rd', 'com.apple.quarantine', jreDir]); } catch {}
+          }
+        }
+
+        if (isWin) {
+          // Windows: strip Mark-of-the-Web from java.exe and javaw.exe
+          for (const exe of ['java.exe', 'javaw.exe']) {
+            const exePath = path.join(jreDir, 'bin', exe);
+            if (fs.existsSync(exePath)) {
+              try {
+                await execFileAsync('powershell', [
+                  '-NoProfile', '-Command', `Unblock-File -LiteralPath '${exePath}'`,
+                ], { timeout: 10_000 });
+              } catch {}
+            }
+          }
+        }
       },
     };
   }
@@ -1035,6 +1127,7 @@ function buildDeps(arch: PhobosArch): Dep[] {
           if (!fs.existsSync(bundledBin)) throw new Error('mpv binary not found in macOS app bundle');
           fs.copyFileSync(bundledBin, exePath);
           fs.chmodSync(exePath, 0o755);
+          try { await execFileAsync('xattr', ['-d', 'com.apple.quarantine', exePath]); } catch {}
           fs.rmSync(tmp, { recursive: true, force: true });
         } else {
           // Linux static tar.gz — single binary
@@ -1272,6 +1365,7 @@ function buildDeps(arch: PhobosArch): Dep[] {
     jellyfinDep(),
     kavitaDep(),
     polarisDep(),
+    jreDep(),
     stirlingDep,
     helmDep(),
     phobosHostDep(),

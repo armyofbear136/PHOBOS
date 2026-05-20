@@ -14,10 +14,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Users, X, Plus, Trash2, RefreshCw, Loader2, CheckCircle2,
-  Lock, AlertTriangle, Copy, Key,
+  Lock, AlertTriangle, Copy, Key, QrCode,
 } from 'lucide-react';
 import { useAppStore }   from '@/store/useAppStore';
 import { UserAuthGate }  from './UserAuthGate';
+import { QRCode }        from './QRCode';
 
 const ENGINE_URL = (import.meta.env.VITE_ENGINE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
 
@@ -148,6 +149,7 @@ export function UserManagementPanel() {
   const [codeGenExpiry,  setCodeGenExpiry]  = useState(72);
   const [codeGenBusy,    setCodeGenBusy]    = useState(false);
   const [copiedCode,     setCopiedCode]     = useState<string | null>(null);
+  const [qrCode,         setQrCode]         = useState<string | null>(null);
 
   // ── Change-password form ───────────────────────────────────────────────────
   const [curPw,      setCurPw]      = useState('');
@@ -804,7 +806,7 @@ export function UserManagementPanel() {
                                 <tr key={c.code} className={`border-t border-border/30 ${i % 2 === 0 ? '' : 'bg-black/10'}`}>
                                   <td className="px-3 py-2.5">
                                     <div className="flex items-center gap-2">
-                                      <span className="font-terminal text-phobos-green tracking-[0.05em] text-[10px] break-all max-w-[220px]">
+                                      <span className="font-terminal text-phobos-green tracking-[0.05em] text-[10px] break-all max-w-[180px]">
                                         {c.encoded_code ?? c.code}
                                       </span>
                                       <button
@@ -815,6 +817,13 @@ export function UserManagementPanel() {
                                         {copiedCode === (c.encoded_code ?? c.code)
                                           ? <CheckCircle2 className="w-3 h-3 text-phobos-green" />
                                           : <Copy className="w-3 h-3" />}
+                                      </button>
+                                      <button
+                                        onClick={() => setQrCode(q => q === (c.encoded_code ?? c.code) ? null : (c.encoded_code ?? c.code))}
+                                        className="text-muted-foreground/50 hover:text-phobos-green transition-colors flex-shrink-0"
+                                        title="Show QR code"
+                                      >
+                                        <QrCode className="w-3 h-3" />
                                       </button>
                                     </div>
                                   </td>
@@ -848,6 +857,36 @@ export function UserManagementPanel() {
                       </p>
                     )}
                   </>
+                )}
+
+                {/* QR code panel — inline below the table */}
+                {qrCode && (
+                  <div className="rounded border border-phobos-green/30 bg-black/60 p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="text-[10px] font-terminal tracking-widest text-phobos-green/80 uppercase">
+                        Scan to connect · PHOBOS Mobile
+                      </p>
+                      <button
+                        onClick={() => setQrCode(null)}
+                        className="text-muted-foreground/50 hover:text-foreground transition-colors"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="p-3 bg-white rounded">
+                        <QRCode
+                          value={qrCode}
+                          size={220}
+                          fgColor="#000000"
+                          bgColor="#ffffff"
+                        />
+                      </div>
+                      <p className="text-[10px] text-muted-foreground/50 text-center max-w-[260px] leading-relaxed">
+                        Open PHOBOS Mobile → Add Server → point the camera here, or paste the code manually.
+                      </p>
+                    </div>
+                  </div>
                 )}
               </div>
             );

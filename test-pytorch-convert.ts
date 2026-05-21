@@ -16,10 +16,9 @@ import { spawn }          from 'child_process';
 import { fileURLToPath }  from 'url';
 import {
   getImageModelSpec,
-  getAuxFilesForModel,
-  fluxAuxPath,
   fluxModelPath,
   IMAGE_FLUX_DIR,
+  IMAGE_SHARED_DIR,
   IMAGE_WAN_DIR,
 } from './phobos/PhobosLocalManager.js';
 import { getPythonPath }        from './phobos/PythonEnvManager.js';
@@ -203,11 +202,17 @@ if (alreadyDone && force) {
 
 // ── Spawn phobos-convert.py ───────────────────────────────────────────────────
 
+// T5 is selected lazily by the user (Q3/Q4/Q8) so it's not in FLUX_AUX_REQUIRED.
+// Scan IMAGE_SHARED_DIR for whichever t5-v1_1-xxl GGUF is present on disk.
 const T5_CONVERTER_TYPES = new Set(['flux', 'chroma', 'kontext']);
-const t5AuxForConvert = T5_CONVERTER_TYPES.has(convertType)
-  ? getAuxFilesForModel(spec as any).find(a => a.cliFlag === '--t5xxl')
-  : undefined;
-const t5PathForConvert = t5AuxForConvert ? fluxAuxPath(t5AuxForConvert as any) : undefined;
+let t5PathForConvert: string | undefined;
+if (T5_CONVERTER_TYPES.has(convertType)) {
+  const sharedDir = IMAGE_SHARED_DIR();
+  if (fs.existsSync(sharedDir)) {
+    const t5File = fs.readdirSync(sharedDir).find(f => /^t5-v1_1-xxl-encoder.*\.gguf$/i.test(f));
+    if (t5File) t5PathForConvert = path.join(sharedDir, t5File);
+  }
+}
 
 const args = [
   convertScript,

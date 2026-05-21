@@ -134,6 +134,12 @@ import {
   generateF5Tts,
   transcribe,
   ensureAudioWorkspace,
+  generateKokoroWithProfile,
+  createVoiceProfile,
+  listVoiceProfiles,
+  getVoiceProfile,
+  deleteVoiceProfile,
+  shutdownVcDaemon,
 } from '../phobos/AudioServerManager.js';
 import {
   isAudioModelDownloaded,
@@ -1314,16 +1320,18 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
 
   fastify.get('/api/audio/voices', async (_req, reply) => {
     const voicesDir = path.join(resolveBinDir(), 'kokoro', 'voices');
+    let kokoro: string[] = ['af_heart'];
     try {
-      if (!fs.existsSync(voicesDir)) return reply.send({ voices: ['af_heart'] });
-      const files = fs.readdirSync(voicesDir)
-        .filter(f => f.endsWith('.bin'))
-        .map(f => f.replace(/\.bin$/, ''))
-        .sort();
-      return reply.send({ voices: files.length > 0 ? files : ['af_heart'] });
-    } catch {
-      return reply.send({ voices: ['af_heart'] });
-    }
+      if (fs.existsSync(voicesDir)) {
+        const files = fs.readdirSync(voicesDir)
+          .filter(f => f.endsWith('.bin'))
+          .map(f => f.replace(/\.bin$/, ''))
+          .sort();
+        if (files.length > 0) kokoro = files;
+      }
+    } catch { /* use default */ }
+    const profiles = listVoiceProfiles();
+    return reply.send({ kokoro, profiles });
   });
 
   // ── GET /api/audio/dep-status ──────────────────────────────────────────────
@@ -1457,17 +1465,33 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     req.raw.socket?.on('close', () => abort.abort());
 
     try {
-      const result = await generateKokoro({
-        threadId,
-        text: text.trim(),
-        voice:  voice  ?? 'af_heart',
-        speed:  typeof speed === 'number' ? speed : 1.0,
-        label:  'copilot-tts',
-        signal: abort.signal,
-        onProgress: (line) => {
-          if (!abort.signal.aborted) sseWrite(reply, { type: 'progress', message: line });
-        },
-      });
+      // Route to voice-profile pipeline when voice starts with 'profile:'
+      const isProfile = typeof voice === 'string' && voice.startsWith('profile:');
+      const profileId = isProfile ? voice.slice('profile:'.length) : undefined;
+
+      const result = isProfile
+        ? await generateKokoroWithProfile({
+            threadId,
+            text:      text.trim(),
+            speed:     typeof speed === 'number' ? speed : 1.0,
+            label:     'copilot-tts',
+            signal:    abort.signal,
+            profileId: profileId!,
+            onProgress: (line) => {
+              if (!abort.signal.aborted) sseWrite(reply, { type: 'progress', message: line });
+            },
+          })
+        : await generateKokoro({
+            threadId,
+            text:  text.trim(),
+            voice: voice ?? 'af_heart',
+            speed: typeof speed === 'number' ? speed : 1.0,
+            label: 'copilot-tts',
+            signal: abort.signal,
+            onProgress: (line) => {
+              if (!abort.signal.aborted) sseWrite(reply, { type: 'progress', message: line });
+            },
+          });
 
       // Optional host playback — route through PhobosHost player so Crystal FX applies
       let audioId: number | undefined;
@@ -1866,5 +1890,78 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
 
     return reply.send({ ok: true, destPath, filename });
   });
+
+  // ── POST /api/audio/voice-profile ─────────────────────────────────────────
+  //
+  // Creates a voice profile from a reference audio file (already on disk via
+  // /api/audio/upload-ref). Streams progress as SSE then emits done/error.
+  //
+  // Body: { refAudioPath: string, name: string, refText?: string }
+  // SSE:  { type: 'progress', message } during extraction
+  //       { type: 'done', profile: VoiceProfile }
+  //       { type: 'error', message }
+
+  fastify.post<{
+    Body: { refAudioPath: string; name: string; refText?: string };
+  }>('/api/audio/voice-profile', async (req, reply) => {
+    const { refAudioPath, name, refText } = req.body ?? {};
+
+    if (typeof refAudioPath !== 'string' || refAudioPath.length === 0) {
+      return reply.status(400).send({ error: '"refAudioPath" is required' });
+    }
+    if (typeof name !== 'string' || name.trim().length === 0) {
+      return reply.status(400).send({ error: '"name" is required' });
+    }
+    if (!fs.existsSync(refAudioPath)) {
+      return reply.status(404).send({ error: 'refAudioPath not found on server' });
+    }
+
+    sseHeaders(req, reply);
+    const abort = new AbortController();
+    req.raw.socket?.on('close', () => abort.abort());
+
+    try {
+      const profile = await createVoiceProfile({
+        refAudioPath,
+        name:     name.trim(),
+        refText:  typeof refText === 'string' ? refText.trim() : undefined,
+        signal:   abort.signal,
+        onProgress: (line) => {
+          if (!abort.signal.aborted) sseWrite(reply, { type: 'progress', message: line });
+        },
+      });
+      sseWrite(reply, { type: 'done', profile });
+    } catch (err) {
+      const message = (err as Error).message;
+      if (!message.includes('cancelled')) sseWrite(reply, { type: 'error', message });
+    } finally {
+      // Clean up uploaded reference audio after extraction
+      try { fs.unlinkSync(refAudioPath); } catch { /* best-effort */ }
+      reply.raw.end();
+    }
+  });
+
+  // ── GET /api/audio/voice-profiles ─────────────────────────────────────────
+  //
+  // Lists all voice profiles in ~/.phobos/voice-profiles/.
+  // Returns: { profiles: VoiceProfileMeta[] }
+
+  fastify.get('/api/audio/voice-profiles', async (_req, reply) => {
+    return reply.send({ profiles: listVoiceProfiles() });
+  });
+
+  // ── DELETE /api/audio/voice-profiles/:id ──────────────────────────────────
+  //
+  // Deletes a voice profile directory and shuts down its daemon if running.
+
+  fastify.delete<{ Params: { id: string } }>(
+    '/api/audio/voice-profiles/:id',
+    async (req, reply) => {
+      const { id } = req.params;
+      if (!getVoiceProfile(id)) return reply.status(404).send({ error: 'Profile not found' });
+      deleteVoiceProfile(id);
+      return reply.send({ ok: true });
+    },
+  );
 
 }

@@ -49,7 +49,7 @@ import { initVaultManager }     from './vault/VaultManager.js';
 import { registerVaultRoutes }  from './routes/vaultRoutes.js';
 import { registerUserManagementRoutes, setUserManagementContext } from './routes/userManagement.js';
 import { registerAudioRoutes } from './routes/audio.js';
-import { shutdownKokoroDaemon } from './phobos/AudioServerManager.js';
+import { shutdownKokoroDaemon, shutdownAllVcDaemons } from './phobos/AudioServerManager.js';
 import { ServiceStore } from './db/ServiceStore.js';
 import { stopMeridian, startMeridian, getMeridianStatus } from './services/MeridianManager.js';
 import { stopPolaris, startPolaris, isBinaryPresent as isPolarisBinaryPresent } from './services/PolarisManager.js';
@@ -1053,6 +1053,7 @@ async function continueBootSequence(
     await stopAllServers().catch(() => {});
     await coordinatorWorker.terminate().catch(() => {});
     shutdownKokoroDaemon();
+    shutdownAllVcDaemons();
     await fastify.close().catch(() => {});
 
     process.exit(0);

@@ -1012,7 +1012,7 @@ export default function PolarisPlayer() {
   return (
     <>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
+
         .polaris-scrollbar::-webkit-scrollbar { width: 4px; }
         .polaris-scrollbar::-webkit-scrollbar-track { background: #0d0f12; }
         .polaris-scrollbar::-webkit-scrollbar-thumb { background: #2a3040; border-radius: 0; }

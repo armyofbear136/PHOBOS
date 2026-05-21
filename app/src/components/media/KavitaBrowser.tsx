@@ -841,7 +841,7 @@ export default function KavitaBrowser() {
   return (
     <>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
+
         .kavita-scrollbar::-webkit-scrollbar { width: 4px; }
         .kavita-scrollbar::-webkit-scrollbar-track { background: #0a0c10; }
         .kavita-scrollbar::-webkit-scrollbar-thumb { background: #1a2030; border-radius: 0; }

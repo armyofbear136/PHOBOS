@@ -208,7 +208,7 @@ function SectionPanel({
       <div
         data-navy-header
         style={navyHdr}
-        className="flex items-start justify-between px-3 py-1.5 border-b border-border/30 shrink-0 cursor-pointer hover:bg-accent/10 transition-colors select-none"
+        className="phobos-chrome-zone flex items-start justify-between px-3 py-1.5 border-b border-border/30 bg-background shrink-0 cursor-pointer hover:bg-accent/10 transition-colors select-none"
         onClick={onToggle}
       >
         <div className="flex items-start gap-2">
@@ -376,7 +376,7 @@ export function ThinkingPanel({
   if (!thinkingOpen) {
     return (
       <div
-        className="phobos-thinking-collapsed w-8 shrink-0 border-l border-border/50 bg-background flex items-center justify-center cursor-pointer hover:bg-accent/20 transition-colors"
+        className="phobos-chrome-zone phobos-thinking-collapsed w-8 shrink-0 border-l border-border/50 bg-background flex items-center justify-center cursor-pointer hover:bg-accent/20 transition-colors"
         onClick={toggleThinking}
       >
         <span className="text-[10px] font-terminal text-muted-foreground/50 tracking-widest [writing-mode:vertical-rl]">
@@ -389,7 +389,7 @@ export function ThinkingPanel({
   return (
     <div className="phobos-thinking-panel w-[280px] shrink-0 border-l border-border/50 bg-background/90 flex flex-col overflow-hidden">
       {/* Header */}
-      <div data-navy-header style={navyHeader} className="flex items-center justify-between px-3 py-2 border-b border-border/30 shrink-0">
+      <div data-navy-header style={navyHeader} className="phobos-chrome-zone flex items-center justify-between px-3 py-2 border-b border-border/30 bg-background shrink-0">
         <div className="flex items-center gap-2">
           <span data-green style={navyGreen} className="text-[10px] font-terminal font-semibold text-muted-foreground/60 tracking-[0.15em]">
             REASONING

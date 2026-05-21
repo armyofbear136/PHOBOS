@@ -1006,3 +1006,330 @@ export async function transcribe(opts: TranscribeOptions): Promise<string> {
     });
   });
 }
+
+// ── Voice Profile System ──────────────────────────────────────────────────────
+//
+// Two-stage WeClone voice pipeline:
+//
+//   1. createVoiceProfile() — one-shot extraction. Spawns phobos-voice-extract.py
+//      with the user's reference clip. Writes profile.json + index.faiss + ref.wav
+//      to ~/.phobos/voice-profiles/<id>/. CPU, ~3s warm.//
+//   2. generateKokoroWithProfile() — per-sentence synthesis. Runs Kokoro for
+//      prosody, then convertVoice() through the resident VoiceConvertDaemon to
+//      apply speaker identity. Total latency ~1.4–2.3s warm, no GPU needed.
+//
+// The VoiceConvertDaemon mirrors the Kokoro daemon exactly: one per profile ID,
+// started on first use, held resident, restarted on unexpected exit,
+// shut down cleanly via shutdownVcDaemon() / shutdownAllVcDaemons().
+
+const VOICE_PROFILES_DIR = path.join(os.homedir(), '.phobos', 'voice-profiles');
+
+export interface VoiceProfile {
+  id:             string;
+  name:           string;
+  createdAt:      string;
+  durationSec:    number;
+  sampleRate:     number;
+  snrDb:          number;
+  embedding:      number[];
+  refText:        string;
+  extractVersion: string;
+}
+
+export interface VoiceProfileMeta {
+  id:        string;
+  name:      string;
+  createdAt: string;
+  snrDb:     number;
+}
+
+export function listVoiceProfiles(): VoiceProfileMeta[] {
+  try {
+    if (!fs.existsSync(VOICE_PROFILES_DIR)) return [];
+    return fs.readdirSync(VOICE_PROFILES_DIR, { withFileTypes: true })
+      .filter(d => d.isDirectory())
+      .flatMap(d => {
+        const jsonPath = path.join(VOICE_PROFILES_DIR, d.name, 'profile.json');
+        if (!fs.existsSync(jsonPath)) return [];
+        try {
+          const p = JSON.parse(fs.readFileSync(jsonPath, 'utf8')) as VoiceProfile;
+          return [{ id: p.id, name: p.name, createdAt: p.createdAt, snrDb: p.snrDb }];
+        } catch { return []; }
+      });
+  } catch { return []; }
+}
+
+export function getVoiceProfile(id: string): VoiceProfile | null {
+  const jsonPath = path.join(VOICE_PROFILES_DIR, id, 'profile.json');
+  if (!fs.existsSync(jsonPath)) return null;
+  try { return JSON.parse(fs.readFileSync(jsonPath, 'utf8')) as VoiceProfile; }
+  catch { return null; }
+}
+
+export function deleteVoiceProfile(id: string): void {
+  shutdownVcDaemon(id);
+  const dir = path.join(VOICE_PROFILES_DIR, id);
+  if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+}
+
+// ── phobos-voice-extract.py script resolution ─────────────────────────────────
+
+function resolveVoiceExtractScript(): string {
+  const file    = 'phobos-voice-extract.py';
+  const seaDir  = path.dirname(process.execPath);
+  const candidates = [
+    path.join(seaDir, file),
+    path.join(_thisDir, file),
+    path.join(_thisDir, '..', 'phobos', file),
+    path.join(process.cwd(), 'phobos', file),
+    path.join(process.cwd(), 'dist', file),
+  ];
+  for (const c of candidates) { if (fs.existsSync(c)) return c; }
+  throw new Error(
+    `${file} not found.\nSearched:\n  ${candidates.join('\n  ')}`,
+  );
+}
+
+function resolveVoiceConvertScript(): string {
+  const file    = 'phobos-voice-convert.py';
+  const seaDir  = path.dirname(process.execPath);
+  const candidates = [
+    path.join(seaDir, file),
+    path.join(_thisDir, file),
+    path.join(_thisDir, '..', 'phobos', file),
+    path.join(process.cwd(), 'phobos', file),
+    path.join(process.cwd(), 'dist', file),
+  ];
+  for (const c of candidates) { if (fs.existsSync(c)) return c; }
+  throw new Error(
+    `${file} not found.\nSearched:\n  ${candidates.join('\n  ')}`,
+  );
+}
+
+// ── createVoiceProfile ────────────────────────────────────────────────────────
+
+export interface CreateVoiceProfileOptions {
+  refAudioPath:    string;
+  refText?:        string;
+  name:            string;
+  overrideVendor?: string;
+  onProgress?:     (line: string) => void;
+  signal?:         AbortSignal;
+}
+
+export async function createVoiceProfile(
+  opts: CreateVoiceProfileOptions,
+): Promise<VoiceProfile> {
+  const id       = crypto.randomUUID();
+  const outDir   = path.join(VOICE_PROFILES_DIR, id);
+  fs.mkdirSync(outDir, { recursive: true });
+
+  const device   = await resolvePythonDevice();
+  const pyBin    = device.pythonBin;
+  const script   = resolveVoiceExtractScript();
+
+  const args = [
+    script,
+    '--ref-audio',   opts.refAudioPath,
+    '--name',        opts.name,
+    '--output-dir',  outDir,
+    '--device',      device.deviceArg,
+  ];
+  if (opts.refText) args.push('--ref-text', opts.refText);
+
+  const errors: string[] = [];
+  let   resolved = false;
+
+  return new Promise<VoiceProfile>((resolve, reject) => {
+    const proc = spawn(pyBin, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+
+    if (opts.signal) {
+      const abort = () => { try { proc.kill('SIGTERM'); } catch { /**/ } };
+      opts.signal.addEventListener('abort', abort, { once: true });
+      proc.on('exit', () => opts.signal!.removeEventListener('abort', abort));
+    }
+
+    const onLine = (line: string) => {
+      if (line.startsWith('[ERROR]')) { errors.push(line); return; }
+      opts.onProgress?.(line);
+    };
+
+    let stdoutBuf = '';
+    let stderrBuf = '';
+    proc.stdout?.on('data', (c: Buffer) => {
+      stdoutBuf += c.toString();
+      const lines = stdoutBuf.split('\n');
+      stdoutBuf = lines.pop() ?? '';
+      lines.forEach(l => { if (l.trim()) onLine(l.trim()); });
+    });
+    proc.stderr?.on('data', (c: Buffer) => { stderrBuf += c.toString(); });
+
+    proc.on('exit', (code: number | null) => {
+      if (resolved) return;
+      resolved = true;
+      if (code !== 0) {
+        const msg = errors.join('\n') || stderrBuf.trim().slice(0, 400) || `exit ${code}`;
+        reject(new Error(`phobos-voice-extract.py failed: ${msg}`));
+        return;
+      }
+      const profile = getVoiceProfile(id);
+      if (!profile) {
+        reject(new Error('profile.json not found after extraction completed'));
+        return;
+      }
+      resolve(profile);
+    });
+
+    proc.on('error', (err: Error) => {
+      if (resolved) return;
+      resolved = true;
+      reject(new Error(`phobos-voice-extract.py spawn failed: ${err.message}`));
+    });
+  });
+}
+
+// ── VoiceConvertDaemon ────────────────────────────────────────────────────────
+
+interface VoiceConvertDaemon {
+  profileId: string;
+  proc:      ReturnType<typeof spawn>;
+  pending:   Map<string, { resolve: (output: string) => void; reject: (e: Error) => void }>;
+  stdoutBuf: string;
+}
+
+const _vcDaemons = new Map<string, VoiceConvertDaemon>();
+
+function _startVcDaemon(profileId: string): VoiceConvertDaemon {
+  const profileDir = path.join(VOICE_PROFILES_DIR, profileId);
+  const script     = resolveVoiceConvertScript();
+
+  // Use the already-imported getPythonPath — same resolution order as the
+  // rest of AudioServerManager. VC conversion runs on CPU regardless of
+  // which venv binary is used (fast enough; no GPU needed for WORLD vocoder).
+  const pythonBin: string = (
+    getPythonPath('cuda') ??
+    getPythonPath('rocm') ??
+    getPythonPath('xpu')  ??
+    getPythonPath('apple') ??
+    'python'
+  );
+  const deviceArg = 'cpu';
+
+  const proc = spawn(pythonBin, [script, '--profile-dir', profileDir, '--device', deviceArg], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env:   process.env,
+  });
+
+  const daemon: VoiceConvertDaemon = { profileId, proc, pending: new Map(), stdoutBuf: '' };
+
+  proc.stdout?.on('data', (c: Buffer) => {
+    daemon.stdoutBuf += c.toString();
+    const lines = daemon.stdoutBuf.split('\n');
+    daemon.stdoutBuf = lines.pop() ?? '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const msg = JSON.parse(trimmed) as { id: string; status: string; output?: string; message?: string };
+        const pending = daemon.pending.get(msg.id);
+        if (!pending) continue;
+        daemon.pending.delete(msg.id);
+        if (msg.status === 'done' && msg.output) {
+          pending.resolve(msg.output);
+        } else {
+          pending.reject(new Error(msg.message ?? 'voice conversion failed'));
+        }
+      } catch { /* non-JSON line, ignore */ }
+    }
+  });
+
+  proc.on('exit', () => {
+    // Reject all in-flight jobs then remove from map so next call restarts.
+    for (const [, p] of daemon.pending) {
+      p.reject(new Error('VoiceConvertDaemon exited unexpectedly'));
+    }
+    daemon.pending.clear();
+    _vcDaemons.delete(profileId);
+  });
+
+  proc.on('error', (err: Error) => {
+    console.error(`[AudioServerManager] VoiceConvertDaemon spawn error (${profileId}): ${err.message}`);
+    for (const [, p] of daemon.pending) {
+      p.reject(new Error(`VoiceConvertDaemon spawn error: ${err.message}`));
+    }
+    daemon.pending.clear();
+    _vcDaemons.delete(profileId);
+  });
+
+  _vcDaemons.set(profileId, daemon);
+  console.log(`[AudioServerManager] VoiceConvertDaemon started for profile ${profileId}`);
+  return daemon;
+}
+
+function _getOrStartVcDaemon(profileId: string): VoiceConvertDaemon {
+  return _vcDaemons.get(profileId) ?? _startVcDaemon(profileId);
+}
+
+export function shutdownVcDaemon(profileId: string): void {
+  const d = _vcDaemons.get(profileId);
+  if (!d) return;
+  try { d.proc.stdin?.end(); d.proc.kill('SIGTERM'); } catch { /**/ }
+  _vcDaemons.delete(profileId);
+}
+
+export function shutdownAllVcDaemons(): void {
+  for (const [id] of _vcDaemons) shutdownVcDaemon(id);
+}
+
+async function convertVoice(opts: {
+  profileId:  string;
+  inputPath:  string;
+  outputPath: string;
+}): Promise<string> {
+  const daemon = _getOrStartVcDaemon(opts.profileId);
+  const jobId  = crypto.randomUUID();
+
+  return new Promise<string>((resolve, reject) => {
+    daemon.pending.set(jobId, { resolve, reject });
+    const job = JSON.stringify({ id: jobId, input: opts.inputPath, output: opts.outputPath });
+    try {
+      daemon.proc.stdin?.write(job + '\n');
+    } catch (err) {
+      daemon.pending.delete(jobId);
+      reject(new Error(`Failed to write to VoiceConvertDaemon: ${(err as Error).message}`));
+    }
+  });
+}
+
+// ── generateKokoroWithProfile ─────────────────────────────────────────────────
+//
+// Synthesizes text with Kokoro (neutral base voice) then applies voice identity
+// conversion through the resident VoiceConvertDaemon for the given profile.
+//
+// Called by /api/audio/tts when voice starts with 'profile:'.
+
+export async function generateKokoroWithProfile(opts: KokoroOptions & {
+  profileId: string;
+}): Promise<AudioGenerateResult> {
+  const startMs = Date.now();
+
+  // Step 1: Kokoro synthesis with neutral base voice
+  const kokoroResult = await generateKokoro({ ...opts, voice: 'af_heart' });
+
+  // Step 2: Voice identity conversion
+  const vcOutputPath = path.join(
+    os.tmpdir(),
+    `phobos-vc-${crypto.randomUUID()}.wav`,
+  );
+
+  await convertVoice({
+    profileId:  opts.profileId,
+    inputPath:  kokoroResult.outputPath,
+    outputPath: vcOutputPath,
+  });
+
+  // Clean up intermediate Kokoro file
+  try { fs.unlinkSync(kokoroResult.outputPath); } catch { /* best-effort */ }
+
+  return { outputPath: vcOutputPath, elapsedMs: Date.now() - startMs };
+}

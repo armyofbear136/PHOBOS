@@ -77,9 +77,9 @@ export function FilePanel({ filename, language, code, compact = false }: Props) 
   const applyButton = (() => {
     if (applied) {
       return {
-        icon: <CheckIcon className="w-3 h-3 text-green-400" />,
+        icon: <CheckIcon className="w-3 h-3 text-phobos-green" />,
         label: wasNewFile ? 'File saved' : 'File overwritten',
-        cls: 'flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-medium rounded text-green-400/80 transition-colors disabled:opacity-40',
+        cls: 'flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-medium rounded text-phobos-green/80 transition-colors disabled:opacity-40',
         title: 'Done',
       };
     }
@@ -102,7 +102,7 @@ export function FilePanel({ filename, language, code, compact = false }: Props) 
     return {
       icon: <FolderInput className="w-3 h-3" />,
       label: 'Overwrite file',
-      cls: 'flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-medium rounded hover:bg-amber-500/10 text-amber-400/80 hover:text-amber-400 transition-colors disabled:opacity-40',
+      cls: 'flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-medium rounded hover:bg-phobos-amber/10 text-phobos-amber/80 hover:text-phobos-amber transition-colors disabled:opacity-40',
       title: `Overwrite ${filename} in workspace`,
     };
   })();
@@ -132,7 +132,7 @@ export function FilePanel({ filename, language, code, compact = false }: Props) 
               className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
               title="Copy"
             >
-              {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+              {copied ? <Check className="w-3 h-3 text-phobos-green" /> : <Copy className="w-3 h-3" />}
             </button>
             <button
               onClick={handleApply}
@@ -183,7 +183,7 @@ export function FilePanel({ filename, language, code, compact = false }: Props) 
               className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
               title="Copy"
             >
-              {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+              {copied ? <Check className="w-3 h-3 text-phobos-green" /> : <Copy className="w-3 h-3" />}
             </button>
             <button
               onClick={handleApply}

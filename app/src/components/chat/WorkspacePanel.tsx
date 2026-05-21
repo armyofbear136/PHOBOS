@@ -21,16 +21,16 @@ const PAD = 6;            // px — top+bottom padding inside zone
 const ZONE_INNER_H = CELL_H * 2 + LABEL_H * 2 + GAP + PAD * 2; // ~146px
 
 const LANG_BADGE: Record<string, { label: string; bg: string; text: string }> = {
-  typescript:  { label: 'TS',   bg: 'bg-blue-500/20',    text: 'text-blue-400' },
-  javascript:  { label: 'JS',   bg: 'bg-yellow-500/20',  text: 'text-yellow-400' },
-  python:      { label: 'PY',   bg: 'bg-green-500/20',   text: 'text-green-400' },
-  gdscript:    { label: 'GD',   bg: 'bg-teal-500/20',    text: 'text-teal-400' },
-  rust:        { label: 'RS',   bg: 'bg-orange-500/20',  text: 'text-orange-400' },
-  go:          { label: 'GO',   bg: 'bg-cyan-500/20',    text: 'text-cyan-400' },
-  markdown:    { label: 'MD',   bg: 'bg-purple-500/20',  text: 'text-purple-400' },
-  json:        { label: 'JSON', bg: 'bg-amber-500/20',   text: 'text-amber-400' },
+  typescript:  { label: 'TS',   bg: 'bg-phobos-blue/20', text: 'text-phobos-blue' },
+  javascript:  { label: 'JS',   bg: 'bg-phobos-amber/20', text: 'text-phobos-amber' },
+  python:      { label: 'PY',   bg: 'bg-phobos-green/20', text: 'text-phobos-green' },
+  gdscript:    { label: 'GD',   bg: 'bg-sayon/20', text: 'text-sayon' },
+  rust:        { label: 'RS',   bg: 'bg-phobos-amber/20', text: 'text-phobos-amber' },
+  go:          { label: 'GO',   bg: 'bg-sayon/20', text: 'text-sayon' },
+  markdown:    { label: 'MD',   bg: 'bg-phobos-blue/20', text: 'text-phobos-blue' },
+  json:        { label: 'JSON', bg: 'bg-phobos-amber/20', text: 'text-phobos-amber' },
   shell:       { label: 'SH',   bg: 'bg-lime-500/20',    text: 'text-lime-400' },
-  csharp:      { label: 'C#',   bg: 'bg-violet-500/20',  text: 'text-violet-400' },
+  csharp:      { label: 'C#',   bg: 'bg-seren/20', text: 'text-seren' },
   text:        { label: 'TXT',  bg: 'bg-muted',          text: 'text-muted-foreground' },
 };
 
@@ -503,7 +503,7 @@ function MediaCell({ file, threadId, isDeleting, onDelete, onDeleteConfirm, onDe
       <div
         className={`rounded border overflow-hidden flex items-center justify-center hover:border-phobos-green/30 transition-colors cursor-pointer ${
           isVid ? 'border-phobos-amber/20 bg-phobos-amber/5'
-          : isAud ? 'border-cyan-400/20 bg-cyan-400/5'
+          : isAud ? 'border-sayon/20 bg-sayon/5'
           : 'border-border/20 bg-muted/20'
         }`}
         style={{ width: CELL_W, height: CELL_H }}
@@ -515,7 +515,7 @@ function MediaCell({ file, threadId, isDeleting, onDelete, onDeleteConfirm, onDe
         ) : isVid ? (
           <Film className="w-5 h-5 text-phobos-amber/50" />
         ) : isAud ? (
-          <Music className="w-5 h-5 text-cyan-400/50" />
+          <Music className="w-5 h-5 text-sayon/50" />
         ) : (
           <FileIcon className="w-5 h-5 text-muted-foreground/40" />
         )}

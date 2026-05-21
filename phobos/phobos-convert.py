@@ -117,10 +117,23 @@ def _materialize_and_save_transformer(transformer, out_dir: str, dtype, t0: floa
     transformer_dir = os.path.join(out_dir, "transformer")
     os.makedirs(transformer_dir, exist_ok=True)
 
-    emit("saving", 0.45, "Extracting state dict (triggers GGUF dequant — uses peak RAM) ...")
+    emit("saving", 0.45, "Extracting state dict (triggers GGUF dequant -- uses peak RAM) ...")
 
-    # state_dict() calls each module's forward-dequant path, returning real tensors.
-    # Cast everything to the target dtype; skip integer/bool metadata tensors.
+    # Use diffusers' own dequantization utility to replace every GGUFLinear with
+    # a standard nn.Linear holding real [out, in] BF16 weights. Applied recursively
+    # since the built-in only walks direct children.
+    from diffusers.quantizers.gguf.utils import (
+        _dequantize_gguf_and_restore_linear,
+        GGUFLinear,
+    )
+
+    def _dequant_recursive(mod):
+        _dequantize_gguf_and_restore_linear(mod)
+        for child in mod.children():
+            _dequant_recursive(child)
+
+    _dequant_recursive(transformer)
+
     INT_DTYPES = {torch.bool, torch.int8, torch.int16, torch.int32, torch.int64}
     state_dict = {}
     for k, v in transformer.state_dict().items():
@@ -303,20 +316,19 @@ def _materialize_and_save_t5(t5_path: str, out_dir: str, dtype, t0: float):
         gguf_file=t5_file,
         dtype=dtype,
     )
-    model = model.to(dtype)
+    model = model.to(dtype).to('cpu')
     elapsed = time.time() - t0
 
     emit("saving", 0.88, f"Saving T5 BF16 safetensors to {out_t5} ...")
     os.makedirs(out_t5, exist_ok=True)
 
-    # Save weights as a single safetensors shard
-    state_dict = {k: v.contiguous() for k, v in model.state_dict().items()}
-    st.save_file(state_dict, os.path.join(out_t5, "model.safetensors"))
+    # Use save_pretrained with safe_serialization=True — handles sharding
+    # automatically for models too large for a single safetensors file (>10GB).
+    # max_shard_size="4GB" keeps shards manageable and matches the transformer
+    # conversion shard size.
+    model.save_pretrained(out_t5, safe_serialization=True, max_shard_size="4GB")
 
-    # Save config so from_pretrained(out_t5) works
-    model.config.save_pretrained(out_t5)
-
-    del model, state_dict
+    del model
     _free_memory()
     emit("saving", 0.92, f"T5 conversion done ({time.time() - t0 - elapsed:.0f}s)")
 

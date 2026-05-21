@@ -455,11 +455,28 @@ export async function buildForPlatform({
     // Running npm install inside the staged package installs the full dep tree
     // locally, self-contained, with no manual enumeration required.
     // --ignore-scripts skips playwright-core's browser download hooks.
-    execSync(
-      'npm install --omit=dev --ignore-scripts --no-audit --no-fund --loglevel=error',
-      { cwd: camofoxDest, stdio: 'inherit' }
-    );
-    log('  ✅ camofox-browser/node_modules/ (deps installed)');
+    //
+    // Resolve camofox deps without a network call:
+    //   1. If dist/node_modules/camofox-browser/node_modules/ already exists — use it.
+    //   2. If dist-cache/camofox-browser/node_modules/ exists — copy from cache (offline).
+    //   3. Otherwise run npm install (requires internet — result is cached for next time).
+    const camofoxModules = path.join(camofoxDest, 'node_modules');
+    const camofoxCache   = path.join(__dirname, 'dist-cache', 'camofox-browser', 'node_modules');
+    if (fs.existsSync(camofoxModules)) {
+      log('  ✅ camofox-browser/node_modules/ (already present, skipping install)');
+    } else if (fs.existsSync(camofoxCache)) {
+      log('  📦 camofox-browser/node_modules/ — copying from dist-cache/ (offline)...');
+      fs.cpSync(camofoxCache, camofoxModules, { recursive: true });
+      log('  ✅ camofox-browser/node_modules/ (restored from dist-cache)');
+    } else {
+      log('  🌐 camofox-browser/node_modules/ — running npm install (internet required)...');
+      log('     Tip: copy dist/node_modules/camofox-browser/node_modules/ to dist-cache/camofox-browser/node_modules/ to avoid this in future offline builds.');
+      execSync(
+        'npm install --omit=dev --ignore-scripts --no-audit --no-fund --loglevel=error',
+        { cwd: camofoxDest, stdio: 'inherit' }
+      );
+      log('  ✅ camofox-browser/node_modules/ (deps installed)');
+    }
   } else {
     log('  ⚠️  camofox-browser not installed — run npm install');
   }
@@ -699,6 +716,8 @@ export async function buildForPlatform({
     ['phobos_rocm_patch.py', 'phobos_rocm_patch.py', 'ROCm Windows unsloth device_type startup patch'],
     ['nf4tensor.py', 'nf4tensor.py', 'torchao NF4 distributed op stub for ROCm Windows'],
     ['unsloth_zoo_temporary_patches_utils.py', 'unsloth_zoo_temporary_patches_utils.py', 'unsloth_zoo temporary_patches/utils.py ROCm Windows _distributed_c10d patch'],
+    ['phobos-voice-extract.py', 'phobos-voice-extract.py', 'WeClone voice profile extraction'],
+    ['phobos-voice-convert.py', 'phobos-voice-convert.py', 'WeClone voice conversion daemon'],
   ];
   for (const [src, dst, label] of pyScripts) {
     const pyScript = path.join(__dirname, 'phobos', src);

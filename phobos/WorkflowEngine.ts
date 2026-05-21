@@ -452,6 +452,11 @@ function classifySdLine(line: string, nodeIndex: number): WorkflowEvent | null {
   if (line.startsWith('__PREVIEW__')) {
     return { phase: 'render_preview', nodeIndex, base64: line.slice(11) };
   }
+  // PyTorch CPU offload warning — emitted before generation starts when model
+  // exceeds free VRAM. Surfaces as sampling detail so it persists throughout.
+  if (line.startsWith('__OFFLOAD_WARN__')) {
+    return { phase: 'render_phase', nodeIndex, renderPhase: 'sampling', detail: line.slice(16) };
+  }
   if (line.includes('loading diffusion model') || line.includes('loading t5xxl') ||
       line.includes('loading vae') || line.includes('loading clip')) {
     const model = line.includes('diffusion') ? 'diffusion' : line.includes('t5xxl') ? 't5xxl' : line.includes('vae') ? 'vae' : 'clip';

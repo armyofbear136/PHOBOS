@@ -47,6 +47,7 @@ import {
   downloadFluxModel,
   fluxModelPath,
   fluxAuxPath,
+  IMAGE_SHARED_DIR,
   cancelImageDownload,
   cancelLlmDownload,
   ESRGAN_MODELS,
@@ -964,10 +965,17 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         const modelPath = fluxModelPath(spec);
         console.log(`[phobosLocal] Converting ${modelId} (${convertType}) to PyTorch variant — vendor: ${vendor}, path: ${modelPath}`);
 
-        // Pass T5 path so the converter caches BF16 T5 alongside the transformer.
-        const auxFilesForConvert = spec ? getAuxFilesForModel(spec) : [];
-        const t5AuxForConvert = auxFilesForConvert.find(a => a.cliFlag === '--t5xxl');
-        const t5PathForConvert = t5AuxForConvert ? fluxAuxPath(t5AuxForConvert) : undefined;
+        // T5 is selected lazily (Q3/Q4/Q8) so it's not in the static aux list.
+        // Scan IMAGE_SHARED_DIR for whichever variant is on disk.
+        const T5_CONVERT_TYPES = new Set(['flux', 'chroma', 'kontext']);
+        let t5PathForConvert: string | undefined;
+        if (T5_CONVERT_TYPES.has(convertType)) {
+          const sharedDir = IMAGE_SHARED_DIR();
+          const t5File = fs.existsSync(sharedDir)
+            ? fs.readdirSync(sharedDir).find(f => /^t5-v1_1-xxl-encoder.*\.gguf$/i.test(f))
+            : undefined;
+          if (t5File) t5PathForConvert = path.join(sharedDir, t5File);
+        }
 
         for await (const progress of convertModelToPyTorch(modelId, modelPath, convertType, vendor, t5PathForConvert)) {
           send(progress);

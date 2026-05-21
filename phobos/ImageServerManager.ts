@@ -1023,7 +1023,7 @@ function buildPyTorchArgs(
 function buildPyTorchEnv(
   cfg: SdServerConfig,
   gpu: GpuDevice,
-): { env: NodeJS.ProcessEnv; device: string; offload: boolean } {
+): { env: NodeJS.ProcessEnv; device: string; offload: boolean; vramShortfallGb: number } {
   const env: NodeJS.ProcessEnv = { ...process.env };
   const vendor = gpuToVendor(gpu);
 
@@ -1089,7 +1089,23 @@ function buildPyTorchEnv(
   // after confirming it's installed at the right version. For now, leave unset
   // (Diffusers defaults to native SDPA which works on all backends).
 
-  return { env, device, offload };
+  // Compute VRAM shortfall: how many GB the total model exceeds free VRAM.
+  // Only meaningful when offloading on a discrete GPU; UMA/Apple/CPU offload
+  // is zero-copy so there is no real performance penalty to report.
+  let vramShortfallGb = 0;
+  if (offload && !gpu.unifiedMemory && gpu.vramGb > 0) {
+    const spec  = cfg.fluxSpec;
+    const freeGb = cfg.freeVramGb ?? Math.max(0, gpu.vramGb - 1.5);
+    // T5 aux files are selected dynamically; use the largest aux file as a proxy.
+    const t5Mb  = cfg.auxFiles?.reduce((max, a) => {
+      return a.cliFlag === '--t5xxl' ? Math.max(max, Math.ceil(a.sizeBytes / (1024 * 1024))) : max;
+    }, 0) ?? 0;
+    const clipMb = spec.variant === 'chroma' ? 0 : 230;
+    const totalGb = (spec.diffusionMb + t5Mb + clipMb + spec.vaeMb + 512) / 1024;
+    vramShortfallGb = Math.max(0, totalGb - freeGb);
+  }
+
+  return { env, device, offload, vramShortfallGb };
 }
 
 /**
@@ -1147,9 +1163,18 @@ async function generateImagePyTorch(
   const previewPath = path.join(previewDir, 'preview.png');
   try { if (fs.existsSync(previewPath)) fs.unlinkSync(previewPath); } catch { /* ignore */ }
 
-  const { env, device, offload } = buildPyTorchEnv(cfg, gpu);
+  const { env, device, offload, vramShortfallGb } = buildPyTorchEnv(cfg, gpu);
   const seed = opts.seed ?? 42;
   const args = buildPyTorchArgs(cfg, { ...opts, seed, previewPath }, outputPath, device, offload);
+
+  // Surface offload warning immediately so the frontend shows it before the
+  // first step lands. __OFFLOAD_WARN__ is picked up by classifySdLine and
+  // persists as the sampling detail throughout generation.
+  if (offload && vramShortfallGb > 0) {
+    const shortStr = vramShortfallGb.toFixed(1);
+    onProgress?.(`__OFFLOAD_WARN__GPU offload active — generation will be slow (${shortStr} GB short of VRAM)`);
+    console.log(`[ImageServerManager] VRAM shortfall ${shortStr} GB — CPU offload will slow generation`);
+  }
 
   console.log(`[ImageServerManager] Spawning PyTorch — ${spec.label} (${cfg.modelType})`);
   console.log(`[ImageServerManager] ${pyPath} ${args.join(' ')}`);

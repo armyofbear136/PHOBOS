@@ -438,7 +438,7 @@ export function UserManagementPanel() {
         <div
           onMouseDown={onMouseDown}
           style={{ cursor: 'grab' }}
-          className="h-10 flex items-center justify-between px-3 border-b border-border/50 bg-background shrink-0"
+          className="phobos-chrome-zone h-10 flex items-center justify-between px-3 border-b border-border/50 bg-background shrink-0"
         >
           <div className="flex items-center gap-2" data-nodrag>
             <Users className="w-4 h-4 text-phobos-green/70" />

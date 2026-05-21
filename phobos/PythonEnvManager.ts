@@ -125,7 +125,15 @@ interface EnvManifest {
 //  v34 — patch encodec/distrib.py on ROCm after f5-tts install: injects a
 //        ReduceOp stub into torch.distributed before the module-level attr
 //        read in distrib.py line 32 that crashes on Windows ROCm torch stubs.
-const REQUIRED_ENV_VERSION = 34; // v34: encodec ReduceOp stub for ROCm f5-tts
+//  v35 — Pass 4: voice profile deps (speechbrain, faiss-cpu, pyworld,
+//        webrtcvad). Required for WeClone voice identity pipeline.
+//        torchaudio already present in both envs at correct versions
+//        (2.11.0+cu128, 2.9.1+rocmsdk) — not reinstalled.
+//        NOTE: pinned version dropped — torchaudio must match the torch
+//        version in the current venv (2.9.1 on ROCm, 2.11.0 on CUDA).
+//        The vendor index ships matching pairs; letting pip resolve avoids
+//        ABI mismatches across venvs.
+const REQUIRED_ENV_VERSION = 35; // v35: voice profile deps
 
 // ── Module state ─────────────────────────────────────────────────────────────
 
@@ -1051,6 +1059,63 @@ async function installDiffusersStack(
     'transformers==4.56.2',
     'tokenizers>=0.22.0,<0.24.0',
   ]);
+
+  // ── Pass 4: Voice profile deps (WeClone TTS pipeline) ────────────────────
+  //
+  // All packages installed with --no-deps. speechbrain's transitive dep tree
+  // overlaps heavily with packages already pinned in Passes 1–3 (numpy, scipy,
+  // sentencepiece, soundfile, tqdm, requests, packaging, pyyaml, joblib,
+  // huggingface_hub). --no-deps prevents pip's resolver from touching those.
+  //
+  // Net-new packages introduced here:
+  //   speechbrain 1.1.0  — ECAPA-TDNN speaker encoder (192-dim embeddings).
+  //   hyperpyyaml 1.2.3  — speechbrain config loader. Requires ruamel.yaml.
+  //   ruamel.yaml 0.18.6 — required by hyperpyyaml (<0.19.0,>=0.17.28).
+  //   ruamel.yaml.clib 0.2.12 — C extension for ruamel.yaml on CPython <3.13.
+  //     cp312 win_amd64 wheel confirmed on PyPI. Installed before ruamel.yaml
+  //     so the pure-Python fallback path is never hit.
+  //   faiss-cpu 1.13.2   — FAISS flat L2 index for HuBERT frame retrieval.
+  //   webrtcvad 2.0.10   — VAD for reference clip silence trimming.
+  //
+  // torchaudio: already installed in both venvs at the correct paired version
+  //   (2.11.0+cu128 on CUDA, 2.9.1+rocmsdk on ROCm). NOT reinstalled.
+  // fairseq: intentionally excluded — transformers.HubertModel used instead.
+
+  const vpResult = await runPip(pyBin, [
+    '-m', 'pip', 'install', '--no-deps',
+    // ruamel.yaml.clib must land before ruamel.yaml so its C loader is found
+    // immediately on first import. Pure-Python fallback path is slower and
+    // has been observed to produce incorrect round-trip YAML on some configs.
+    'ruamel.yaml.clib==0.2.12',
+    'ruamel.yaml==0.18.6',
+    // hyperpyyaml requires ruamel.yaml>=0.17.28,<0.19.0 — satisfied above.
+    'hyperpyyaml==1.2.3',
+    // speechbrain itself — all transitive deps either already present in the
+    // venv or explicitly installed in this pass.
+    'speechbrain==1.1.0',
+    // faiss-cpu: requires numpy>=1.25.0 — already present (2.4.x). --no-deps
+    // prevents any attempt to resolve numpy again.
+    'faiss-cpu==1.13.2',
+    // webrtcvad: pure C extension, no Python deps declared.
+    'webrtcvad==2.0.10',
+  ]);
+  if (!vpResult.ok) {
+    console.warn(`[PythonEnvManager] voice-profile deps install failed (non-fatal): ${vpResult.error}`);
+  }
+
+  // pyworld: WORLD vocoder for final synthesis in phobos-voice-convert.py.
+  // Installed separately and non-fatal — phobos-voice-convert.py falls back
+  // to pysptk if pyworld is not importable, so an install failure here has
+  // no hard runtime consequence beyond reduced vocoder quality.
+  // Ships pre-built cp312 win_amd64 wheels on PyPI. --no-deps: pyworld's
+  // only declared dep is numpy, already present.
+  const worldResult = await runPip(pyBin, [
+    '-m', 'pip', 'install', '--no-deps',
+    'pyworld==0.3.4',
+  ]);
+  if (!worldResult.ok) {
+    console.warn(`[PythonEnvManager] pyworld install failed (non-fatal, pysptk fallback active): ${worldResult.error}`);
+  }
 
   return { ok: true };
 }

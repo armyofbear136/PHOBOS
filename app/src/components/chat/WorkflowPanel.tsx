@@ -11,20 +11,20 @@ const PANEL_H = 280; // px — fixed height
 // ── Node type display metadata ────────────────────────────────────────────────
 
 const NODE_META: Record<WorkflowNodeType, { label: string; color: string }> = {
-  Source:          { label: 'Source',          color: 'text-amber-400' },
+  Source:          { label: 'Source',          color: 'text-phobos-amber' },
   Generate:        { label: 'Generate',         color: 'text-phobos-green' },
-  VarySeed:        { label: 'Vary Seed',        color: 'text-blue-400' },
-  Img2imgRefine:   { label: 'Img2Img',          color: 'text-cyan-400' },
-  KontextEdit:     { label: 'Kontext Edit',     color: 'text-indigo-400' },
-  FaceFix:         { label: 'Face Fix',         color: 'text-yellow-400' },
-  HandFix:         { label: 'Hand Fix',         color: 'text-orange-400' },
-  DepthControlNet: { label: 'Depth CN',         color: 'text-violet-400' },
-  RemoveBg:        { label: 'Remove BG',        color: 'text-pink-400' },
-  Upscale:         { label: 'Upscale',          color: 'text-emerald-400' },
+  VarySeed:        { label: 'Vary Seed',        color: 'text-phobos-blue' },
+  Img2imgRefine:   { label: 'Img2Img',          color: 'text-sayon' },
+  KontextEdit:     { label: 'Kontext Edit',     color: 'text-phobos-blue' },
+  FaceFix:         { label: 'Face Fix',         color: 'text-phobos-amber' },
+  HandFix:         { label: 'Hand Fix',         color: 'text-phobos-amber' },
+  DepthControlNet: { label: 'Depth CN',         color: 'text-seren' },
+  RemoveBg:        { label: 'Remove BG',        color: 'text-phobos-amber' },
+  Upscale:         { label: 'Upscale',          color: 'text-phobos-green' },
   VideoGenerate:   { label: 'Video Generate',   color: 'text-phobos-amber' },
-  VideoFromImage:  { label: 'Video From Image', color: 'text-orange-300' },
+  VideoFromImage:  { label: 'Video From Image', color: 'text-phobos-amber' },
   MusicGenerate:   { label: 'Generate Music',   color: 'text-phobos-green' },
-  VoiceClone:      { label: 'Voice Clone',      color: 'text-cyan-400' },
+  VoiceClone:      { label: 'Voice Clone',      color: 'text-sayon' },
 };
 
 // ── Node status indicator ─────────────────────────────────────────────────────
@@ -1394,7 +1394,7 @@ export function WorkflowPanel() {
               disabled={isGenerating}
               className={`px-2 h-full text-[9px] font-terminal tracking-[0.08em] transition-colors disabled:opacity-30 ${
                 activeNode?.type === 'VoiceClone'
-                  ? 'bg-cyan-400/15 text-cyan-400/90'
+                  ? 'bg-sayon/15 text-sayon/90'
                   : 'text-muted-foreground/50 hover:text-muted-foreground'
               }`}
               title="Voice clone"

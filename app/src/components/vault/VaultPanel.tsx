@@ -308,7 +308,7 @@ function EntryEditor({ entry, groups, onSave, onClose }: EntryEditorProps) {
           <select
             value={groupUuid}
             onChange={e => setGroupUuid(e.target.value)}
-            className="w-full px-2 py-1.5 bg-background border border-border/40 rounded-sm text-xs font-mono text-foreground/80 focus:outline-none focus:border-phobos-green/40"
+            className="w-full px-2 py-1.5 bg-input border border-border/40 rounded-sm text-xs font-mono text-foreground/80 focus:outline-none focus:border-phobos-green/40"
           >
             <option value="">Default</option>
             {groups.map(g => (
@@ -323,7 +323,7 @@ function EntryEditor({ entry, groups, onSave, onClose }: EntryEditorProps) {
           <input
             value={title}
             onChange={e => setTitle(e.target.value)}
-            className="w-full px-2 py-1.5 bg-background border border-border/40 rounded-sm text-xs font-mono text-foreground/80 focus:outline-none focus:border-phobos-green/40"
+            className="w-full px-2 py-1.5 bg-input border border-border/40 rounded-sm text-xs font-mono text-foreground/80 focus:outline-none focus:border-phobos-green/40"
             placeholder="e.g. GitHub"
             autoFocus
           />
@@ -335,7 +335,7 @@ function EntryEditor({ entry, groups, onSave, onClose }: EntryEditorProps) {
           <input
             value={username}
             onChange={e => setUsername(e.target.value)}
-            className="w-full px-2 py-1.5 bg-background border border-border/40 rounded-sm text-xs font-mono text-foreground/80 focus:outline-none focus:border-phobos-green/40"
+            className="w-full px-2 py-1.5 bg-input border border-border/40 rounded-sm text-xs font-mono text-foreground/80 focus:outline-none focus:border-phobos-green/40"
             placeholder="user@example.com"
           />
         </div>
@@ -368,7 +368,7 @@ function EntryEditor({ entry, groups, onSave, onClose }: EntryEditorProps) {
           <input
             value={url}
             onChange={e => setUrl(e.target.value)}
-            className="w-full px-2 py-1.5 bg-background border border-border/40 rounded-sm text-xs font-mono text-foreground/80 focus:outline-none focus:border-phobos-green/40"
+            className="w-full px-2 py-1.5 bg-input border border-border/40 rounded-sm text-xs font-mono text-foreground/80 focus:outline-none focus:border-phobos-green/40"
             placeholder="https://example.com"
           />
         </div>
@@ -380,7 +380,7 @@ function EntryEditor({ entry, groups, onSave, onClose }: EntryEditorProps) {
             value={notes}
             onChange={e => setNotes(e.target.value)}
             rows={2}
-            className="w-full px-2 py-1.5 bg-background border border-border/40 rounded-sm text-xs font-mono text-foreground/80 focus:outline-none focus:border-phobos-green/40 resize-none"
+            className="w-full px-2 py-1.5 bg-input border border-border/40 rounded-sm text-xs font-mono text-foreground/80 focus:outline-none focus:border-phobos-green/40 resize-none"
           />
         </div>
 
@@ -390,7 +390,7 @@ function EntryEditor({ entry, groups, onSave, onClose }: EntryEditorProps) {
           <input
             value={tagStr}
             onChange={e => setTagStr(e.target.value)}
-            className="w-full px-2 py-1.5 bg-background border border-border/40 rounded-sm text-xs font-mono text-foreground/80 focus:outline-none focus:border-phobos-green/40"
+            className="w-full px-2 py-1.5 bg-input border border-border/40 rounded-sm text-xs font-mono text-foreground/80 focus:outline-none focus:border-phobos-green/40"
             placeholder="work, personal"
           />
         </div>
@@ -661,12 +661,12 @@ export function VaultPanel() {
   return (
     <>
       <div
-        className="phobos-panel fixed z-[100] w-[860px] bg-background border border-border/50 rounded-sm shadow-2xl flex flex-col overflow-hidden"
+        className="phobos-panel fixed z-[100] w-[860px] bg-card border border-border/50 rounded-sm shadow-2xl flex flex-col overflow-hidden"
         style={{ left: pos.x, top: pos.y, height: 700 }}
       >
         {/* Title bar */}
         <div
-          className="flex items-center justify-between px-3 py-2 border-b border-border/30 bg-black/60 cursor-move shrink-0"
+          className="phobos-chrome-zone flex items-center justify-between px-3 py-2 border-b border-border/30 bg-background cursor-move shrink-0"
           onMouseDown={onMouseDown}
         >
           <div className="flex items-center gap-2">
@@ -973,7 +973,7 @@ export function VaultPanel() {
                     <select
                       value={lockTimeout}
                       onChange={e => setLockTimeout(Number(e.target.value))}
-                      className="px-2 py-1.5 bg-background border border-border/40 rounded-sm text-xs font-mono text-foreground/70 focus:outline-none focus:border-phobos-green/40"
+                      className="px-2 py-1.5 bg-input border border-border/40 rounded-sm text-xs font-mono text-foreground/70 focus:outline-none focus:border-phobos-green/40"
                     >
                       <option value={0}>Never</option>
                       <option value={300}>5 minutes</option>

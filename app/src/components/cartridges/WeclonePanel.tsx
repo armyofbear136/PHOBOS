@@ -118,7 +118,7 @@ Communication style: ${p.communicationStyle || 'natural and authentic'}.${humorC
 
 function PanelHeader({ title, sub, onClose }: { title: string; sub?: string; onClose: () => void }) {
   return (
-    <div className="flex items-center justify-between px-5 py-3 border-b border-border/40 shrink-0">
+    <div className="phobos-chrome-zone flex items-center justify-between px-5 py-3 border-b border-border/40 bg-background shrink-0">
       <div className="flex items-center gap-2.5">
         <div className="w-6 h-6 rounded-sm bg-seren/10 border border-seren/30 flex items-center justify-center">
           <span className="text-seren text-[11px]">◉</span>
@@ -1100,7 +1100,7 @@ export function WeclonePanel({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="phobos-weclone-panel w-[680px] max-h-[88vh] bg-background border border-seren/20 shadow-[0_0_60px_rgba(99,102,241,0.08)] rounded-sm flex flex-col overflow-hidden">
+      <div className="phobos-weclone-panel w-[680px] max-h-[88vh] bg-card border border-seren/20 shadow-[0_0_60px_rgba(99,102,241,0.08)] rounded-sm flex flex-col overflow-hidden">
 
         <PanelHeader title={panelTitle} onClose={onClose} />
 

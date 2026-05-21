@@ -18,8 +18,8 @@ export default {
         sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
         mono: ['JetBrains Mono', 'Fira Code', 'Cascadia Code', 'monospace'],
         terminal: ['Share Tech Mono', 'JetBrains Mono', 'monospace'],
-        display: ['Archivo Black', 'Impact', 'sans-serif'],
-        body: ['DM Sans', 'Inter', 'system-ui', 'sans-serif'],
+        display: ['Inter', 'system-ui', 'sans-serif'],
+        body: ['Inter', 'system-ui', 'sans-serif'],
       },
       colors: {
         border: "hsl(var(--border))",
@@ -56,6 +56,7 @@ export default {
           foreground: "hsl(var(--card-foreground))",
         },
         coordinator: "hsl(var(--coordinator))",
+        "coordinator-bg": "hsl(var(--coordinator-bg))",
         success: "hsl(var(--success))",
         warning: "hsl(var(--warning))",
         sayon: "hsl(var(--sayon-tint))",

@@ -232,7 +232,7 @@ export function ChatInput({
   const showLengthWarning = value.length > 8000;
   const tokenCount = Math.ceil(value.length / 4);
   const tokenColorClass = tokenCount > 3000
-    ? 'text-amber-400/60'
+    ? 'text-phobos-amber/60'
     : tokenCount >= 1000
       ? 'text-phobos-green/40'
       : 'text-muted-foreground/25';
@@ -251,7 +251,7 @@ export function ChatInput({
                   key={`${file.name}-${i}`}
                   className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-mono rounded border ${
                     isImg
-                      ? 'bg-blue-400/10 border-blue-400/30 text-blue-300'
+                      ? 'bg-phobos-blue/10 border-phobos-blue/30 text-phobos-blue'
                       : 'bg-accent border-border text-accent-foreground'
                   }`}
                   title={isImg ? 'Image — filename will be injected into query' : 'Text file — contents will be inlined into query'}
@@ -383,9 +383,9 @@ export function ChatInput({
                     sttError
                       ? 'bg-destructive/20 text-destructive'
                       : sttListening
-                        ? 'bg-red-500/20 text-red-400 animate-pulse'
+                        ? 'bg-destructive/20 text-destructive animate-pulse'
                         : sttTranscribing
-                          ? 'bg-yellow-500/10 text-yellow-400/70'
+                          ? 'bg-phobos-amber/10 text-phobos-amber/70'
                           : 'bg-muted/50 text-muted-foreground/60 hover:text-foreground hover:bg-muted'
                   }`}
                 >
@@ -410,10 +410,10 @@ export function ChatInput({
 
         {/* ── Hints and warnings ── */}
         {pasteHint && (
-          <p className="text-[11px] text-amber-400 mt-1.5 px-1">{pasteHint}</p>
+          <p className="text-[11px] text-phobos-amber mt-1.5 px-1">{pasteHint}</p>
         )}
         {!hideStatus && isPartialOffline && !isOffline && (
-          <p className="text-[10px] font-mono text-amber-400/70 mt-1 px-1">
+          <p className="text-[10px] font-mono text-phobos-amber/70 mt-1 px-1">
             Partial backend offline — some features may be unavailable
           </p>
         )}
@@ -423,7 +423,7 @@ export function ChatInput({
           </p>
         )}
         {showLengthWarning && !pasteHint && (
-          <p className="text-[11px] text-amber-400 mt-1.5 px-1">
+          <p className="text-[11px] text-phobos-amber mt-1.5 px-1">
             Message is very long ({value.length.toLocaleString()} chars) — consider attaching as a file instead
           </p>
         )}

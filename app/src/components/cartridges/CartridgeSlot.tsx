@@ -11,12 +11,12 @@ import { CATEGORY_LABELS } from './CartridgeTypes';
 const ENGINE_URL = (import.meta.env.VITE_ENGINE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
 
 const CATEGORY_COLORS: Record<CartridgeCategory, string> = {
-  expertise: 'text-blue-400   border-blue-400/30   bg-blue-400/5',
-  persona:   'text-purple-400 border-purple-400/30 bg-purple-400/5',
-  style:     'text-teal-400   border-teal-400/30   bg-teal-400/5',
-  domain:    'text-orange-400 border-orange-400/30 bg-orange-400/5',
-  task:      'text-pink-400   border-pink-400/30   bg-pink-400/5',
-  weclone:   'text-indigo-400 border-indigo-400/30 bg-indigo-400/5',
+  expertise: 'text-phobos-blue   border-phobos-blue/30   bg-phobos-blue/5',
+  persona:   'text-phobos-blue border-phobos-blue/30 bg-phobos-blue/5',
+  style:     'text-sayon   border-sayon/30   bg-sayon/5',
+  domain:    'text-phobos-amber border-phobos-amber/30 bg-phobos-amber/5',
+  task:      'text-phobos-amber border-phobos-amber/30 bg-phobos-amber/5',
+  weclone:   'text-seren border-seren/30 bg-seren/5',
 };
 
 interface CartridgeSlotProps {

@@ -747,31 +747,31 @@ function OverviewTab({ apiKey }: { apiKey: string }) {
         {/* Top-left overlay: symbol + price */}
         <div className="absolute top-3 left-3 z-20 pointer-events-none select-none">
           <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-[10px] font-terminal text-white/30 uppercase tracking-[0.22em]">{focusDef.label}</span>
-            <span className="text-[9px] font-mono text-white/18">{focus}</span>
+            <span className="text-[10px] font-terminal text-foreground/30 uppercase tracking-[0.22em]">{focusDef.label}</span>
+            <span className="text-[9px] font-mono text-foreground/18">{focus}</span>
           </div>
           <div className="flex items-baseline gap-3">
             <span className="text-[32px] font-mono font-light tracking-tight leading-none" style={{ color: 'rgba(255,255,255,0.92)' }}>
               {focusQuote?.c ? fmtPrice(focusQuote.c) : '—'}
             </span>
-            <span className={`text-[16px] font-mono font-light leading-none ${focusPos ? 'text-emerald-400/85' : 'text-red-400/75'}`}>
+            <span className={`text-[16px] font-mono font-light leading-none ${focusPos ? 'text-phobos-green/85' : 'text-destructive/75'}`}>
               {focusDp >= 0 ? '+' : ''}{focusDp.toFixed(2)}%
             </span>
           </div>
-          <div className="text-[9px] font-mono text-white/22 mt-1 tracking-wide">{focusDef.sublabel}</div>
+          <div className="text-[9px] font-mono text-foreground/22 mt-1 tracking-wide">{focusDef.sublabel}</div>
         </div>
 
         {/* Top-right overlay: WS status */}
         <div className="absolute top-3 right-3 z-20 flex items-center gap-2 pointer-events-none select-none">
-          <span className="text-[7px] font-mono text-white/18 tabular-nums">{tickCount.toLocaleString()} ticks</span>
+          <span className="text-[7px] font-mono text-foreground/18 tabular-nums">{tickCount.toLocaleString()} ticks</span>
           {wsOn
-            ? <Wifi    className="w-3 h-3 text-emerald-400/50" />
-            : <WifiOff className="w-3 h-3 text-red-400/40 animate-pulse" />}
+            ? <Wifi    className="w-3 h-3 text-phobos-green/50" />
+            : <WifiOff className="w-3 h-3 text-destructive/40 animate-pulse" />}
         </div>
 
         {/* Bottom-left: data note */}
         <div className="absolute bottom-2 left-3 z-20 pointer-events-none">
-          <span className="text-[7px] font-mono text-white/12 tracking-wide">session data · live ws</span>
+          <span className="text-[7px] font-mono text-foreground/12 tracking-wide">session data · live ws</span>
         </div>
 
         {/* Bottom-right: refresh */}
@@ -779,7 +779,7 @@ function OverviewTab({ apiKey }: { apiKey: string }) {
           <button
             onClick={() => loadQuotes(true)}
             disabled={loadingQ}
-            className="flex items-center gap-1 text-[8px] font-mono text-white/20 hover:text-white/50 transition-colors disabled:opacity-30"
+            className="flex items-center gap-1 text-[8px] font-mono text-foreground/20 hover:text-foreground/50 transition-colors disabled:opacity-30"
           >
             <RefreshCw className={`w-2.5 h-2.5 ${loadingQ ? 'animate-spin' : ''}`} />
             {cacheAge('ov_quotes')}
@@ -844,8 +844,8 @@ function OverviewTab({ apiKey }: { apiKey: string }) {
 
                         {/* Label */}
                         <div className="mb-2.5">
-                          <div className="text-[13px] font-terminal text-white/75 uppercase tracking-widest leading-none">{s.label}</div>
-                          <div className="text-[9px] font-mono text-white/22 leading-none mt-1">{s.sublabel}</div>
+                          <div className="text-[13px] font-terminal text-foreground/75 uppercase tracking-widest leading-none">{s.label}</div>
+                          <div className="text-[9px] font-mono text-foreground/22 leading-none mt-1">{s.sublabel}</div>
                         </div>
 
                         {/* Sparkline */}
@@ -868,10 +868,10 @@ function OverviewTab({ apiKey }: { apiKey: string }) {
 
                         {/* Change */}
                         <div className="flex items-center gap-1.5 mt-1.5">
-                          {dp > 0 && <TrendingUp   className="w-3.5 h-3.5 text-emerald-400/60 shrink-0" />}
-                          {dp < 0 && <TrendingDown  className="w-3.5 h-3.5 text-red-400/55 shrink-0" />}
-                          {dp === 0 && <Minus       className="w-3.5 h-3.5 text-white/15 shrink-0" />}
-                          <span className={`text-[12px] font-mono ${dp > 0 ? 'text-emerald-400/80' : dp < 0 ? 'text-red-400/70' : 'text-white/22'}`}>
+                          {dp > 0 && <TrendingUp   className="w-3.5 h-3.5 text-phobos-green/60 shrink-0" />}
+                          {dp < 0 && <TrendingDown  className="w-3.5 h-3.5 text-destructive/55 shrink-0" />}
+                          {dp === 0 && <Minus       className="w-3.5 h-3.5 text-foreground/15 shrink-0" />}
+                          <span className={`text-[12px] font-mono ${dp > 0 ? 'text-phobos-green/80' : dp < 0 ? 'text-destructive/70' : 'text-foreground/22'}`}>
                             {dp !== 0 ? `${dp > 0 ? '+' : ''}${dp.toFixed(2)}%` : '—'}
                           </span>
                         </div>
@@ -980,7 +980,7 @@ function ScreenerTab({ apiKey }: { apiKey: string }) {
       {/* ── Heatmap panel ─────────────────────────────────────────────────── */}
       <div className="shrink-0 border-b" style={{ borderColor: 'rgba(255,255,255,0.06)', background: 'hsl(var(--background))' }}>
         {loading ? (
-          <div className="flex items-center justify-center gap-3 text-sm font-mono text-white/22"
+          <div className="flex items-center justify-center gap-3 text-sm font-mono text-foreground/22"
             style={{ height: 228 }}>
             <Loader2 className="w-5 h-5 animate-spin" />
             loading {SCREENER_SYMBOLS.length} symbols…
@@ -1013,7 +1013,7 @@ function ScreenerTab({ apiKey }: { apiKey: string }) {
                     style={{ background: `radial-gradient(ellipse at 50% 50%, ${pos ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)'} 0%, transparent 70%)` }} />
 
                   {/* Symbol */}
-                  <span className="text-[11px] font-terminal font-medium tracking-widest text-white/50 leading-none mb-1">
+                  <span className="text-[11px] font-terminal font-medium tracking-widest text-foreground/50 leading-none mb-1">
                     {symbol}
                   </span>
 
@@ -1027,7 +1027,7 @@ function ScreenerTab({ apiKey }: { apiKey: string }) {
 
                   {/* Price */}
                   {q?.c ? (
-                    <span className="text-[10px] font-mono text-white/35 leading-none mt-1">
+                    <span className="text-[10px] font-mono text-foreground/35 leading-none mt-1">
                       ${q.c.toFixed(2)}
                     </span>
                   ) : null}
@@ -1040,23 +1040,23 @@ function ScreenerTab({ apiKey }: { apiKey: string }) {
         {/* Heatmap legend */}
         <div className="flex items-center justify-between px-4 pb-2">
           <div className="flex items-center gap-3">
-            <span className="text-[8px] font-mono text-white/18 uppercase tracking-widest">intensity</span>
+            <span className="text-[8px] font-mono text-foreground/18 uppercase tracking-widest">intensity</span>
             <div className="flex items-center gap-px">
               {[0.05, 0.2, 0.45, 0.7, 1].map((s, i) => (
                 <div key={i} className="w-5 h-1.5 rounded-sm"
                   style={{ background: `rgba(34,197,94,${0.06 + s * 0.32})` }} />
               ))}
-              <span className="ml-1 text-[8px] font-mono text-white/18">+{maxAbs.toFixed(1)}%</span>
+              <span className="ml-1 text-[8px] font-mono text-foreground/18">+{maxAbs.toFixed(1)}%</span>
             </div>
             <div className="flex items-center gap-px">
               {[1, 0.7, 0.45, 0.2, 0.05].map((s, i) => (
                 <div key={i} className="w-5 h-1.5 rounded-sm"
                   style={{ background: `rgba(239,68,68,${0.06 + s * 0.28})` }} />
               ))}
-              <span className="ml-1 text-[8px] font-mono text-white/18">−{maxAbs.toFixed(1)}%</span>
+              <span className="ml-1 text-[8px] font-mono text-foreground/18">−{maxAbs.toFixed(1)}%</span>
             </div>
           </div>
-          <span className="text-[8px] font-mono text-white/18">{SCREENER_SYMBOLS.length} symbols · click to highlight</span>
+          <span className="text-[8px] font-mono text-foreground/18">{SCREENER_SYMBOLS.length} symbols · click to highlight</span>
         </div>
       </div>
 
@@ -1069,7 +1069,7 @@ function ScreenerTab({ apiKey }: { apiKey: string }) {
           <div className="sticky top-0 z-10 grid"
             style={{ gridTemplateColumns: TABLE_COLS, background: 'hsl(var(--background))', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
             {TABLE_HEADERS.map(h => (
-              <div key={h} className="px-4 py-2.5 text-[9px] font-terminal text-white/25 uppercase tracking-[0.18em]">{h}</div>
+              <div key={h} className="px-4 py-2.5 text-[9px] font-terminal text-foreground/25 uppercase tracking-[0.18em]">{h}</div>
             ))}
           </div>
 
@@ -1108,22 +1108,22 @@ function ScreenerTab({ apiKey }: { apiKey: string }) {
                     {symbol}
                   </span>
                 </div>
-                <div className="px-4 flex items-center text-[13px] font-mono text-white/62">
+                <div className="px-4 flex items-center text-[13px] font-mono text-foreground/62">
                   {q ? `$${q.c.toFixed(2)}` : '—'}
                 </div>
-                <div className={`px-4 flex items-center text-[13px] font-mono ${pos ? 'text-emerald-400/72' : 'text-red-400/65'}`}>
+                <div className={`px-4 flex items-center text-[13px] font-mono ${pos ? 'text-phobos-green/72' : 'text-destructive/65'}`}>
                   {q ? `${dp >= 0 ? '+' : ''}${q.d.toFixed(2)}` : '—'}
                 </div>
-                <div className={`px-4 flex items-center text-[14px] font-mono font-semibold ${pos ? 'text-emerald-400/88' : 'text-red-400/80'}`}>
+                <div className={`px-4 flex items-center text-[14px] font-mono font-semibold ${pos ? 'text-phobos-green/88' : 'text-destructive/80'}`}>
                   {q ? `${dp >= 0 ? '+' : ''}${dp.toFixed(2)}%` : '—'}
                 </div>
-                <div className="px-4 flex items-center text-[12px] font-mono text-white/32">
+                <div className="px-4 flex items-center text-[12px] font-mono text-foreground/32">
                   {q ? `$${q.o.toFixed(2)}` : '—'}
                 </div>
-                <div className="px-4 flex items-center text-[12px] font-mono text-white/32">
+                <div className="px-4 flex items-center text-[12px] font-mono text-foreground/32">
                   {q ? `$${q.h.toFixed(2)}` : '—'}
                 </div>
-                <div className="px-4 flex items-center text-[12px] font-mono text-white/32">
+                <div className="px-4 flex items-center text-[12px] font-mono text-foreground/32">
                   {q ? `$${q.l.toFixed(2)}` : '—'}
                 </div>
               </div>
@@ -1135,9 +1135,9 @@ function ScreenerTab({ apiKey }: { apiKey: string }) {
       {/* Footer */}
       <div className="shrink-0 flex items-center justify-between px-4 py-1.5"
         style={{ borderTop: '1px solid rgba(255,255,255,0.05)', background: 'hsl(var(--background))' }}>
-        <span className="text-[8px] font-mono text-white/15">sorted by absolute move · {cacheAge('sc_quotes')}</span>
+        <span className="text-[8px] font-mono text-foreground/15">sorted by absolute move · {cacheAge('sc_quotes')}</span>
         <button onClick={() => load(true)} disabled={loading}
-          className="flex items-center gap-1.5 text-[9px] font-mono text-white/20 hover:text-white/50 transition-colors disabled:opacity-30">
+          className="flex items-center gap-1.5 text-[9px] font-mono text-foreground/20 hover:text-foreground/50 transition-colors disabled:opacity-30">
           <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />refresh
         </button>
       </div>
@@ -1228,11 +1228,11 @@ function CalendarTab({ apiKey }: { apiKey: string }) {
           style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.07) transparent' }}
         >
           {loading ? (
-            <div className="flex items-center justify-center h-48 gap-3 text-sm font-mono text-white/22">
+            <div className="flex items-center justify-center h-48 gap-3 text-sm font-mono text-foreground/22">
               <Loader2 className="w-5 h-5 animate-spin" />loading 14-day calendar…
             </div>
           ) : grouped.length === 0 ? (
-            <div className="flex items-center justify-center h-48 text-sm font-mono text-white/18">
+            <div className="flex items-center justify-center h-48 text-sm font-mono text-foreground/18">
               no earnings in the next 14 days
             </div>
           ) : grouped.map(([dateStr, group]) => {
@@ -1286,7 +1286,7 @@ function CalendarTab({ apiKey }: { apiKey: string }) {
                           : 'linear-gradient(90deg, rgba(255,255,255,0.08), transparent)',
                       }}
                     />
-                    <span className="text-[9px] font-mono text-white/20 shrink-0">
+                    <span className="text-[9px] font-mono text-foreground/20 shrink-0">
                       {group.length} reporting
                       {hasData ? ` · ${group.filter(i => i.epsEstimate != null).length} with estimates` : ''}
                     </span>
@@ -1365,10 +1365,10 @@ function CalendarTab({ apiKey }: { apiKey: string }) {
 
                         {/* EPS row */}
                         <div className="flex items-center justify-between mb-1">
-                          <span className="text-[9px] font-mono text-white/25 uppercase tracking-widest">EPS</span>
+                          <span className="text-[9px] font-mono text-foreground/25 uppercase tracking-widest">EPS</span>
                           <div className="flex items-center gap-2">
                             {item.epsEstimate != null && (
-                              <span className="text-[11px] font-mono text-white/40">
+                              <span className="text-[11px] font-mono text-foreground/40">
                                 est {item.epsEstimate >= 0 ? '' : ''}{item.epsEstimate.toFixed(2)}
                               </span>
                             )}
@@ -1380,17 +1380,17 @@ function CalendarTab({ apiKey }: { apiKey: string }) {
                                 {item.epsActual >= 0 ? '+' : ''}{item.epsActual.toFixed(2)}
                               </span>
                             ) : item.epsEstimate == null ? (
-                              <span className="text-[11px] font-mono text-white/18">—</span>
+                              <span className="text-[11px] font-mono text-foreground/18">—</span>
                             ) : null}
                           </div>
                         </div>
 
                         {/* Revenue row */}
                         <div className="flex items-center justify-between">
-                          <span className="text-[9px] font-mono text-white/25 uppercase tracking-widest">REV</span>
+                          <span className="text-[9px] font-mono text-foreground/25 uppercase tracking-widest">REV</span>
                           <div className="flex items-center gap-2">
                             {item.revenueEstimate != null && (
-                              <span className="text-[11px] font-mono text-white/40">
+                              <span className="text-[11px] font-mono text-foreground/40">
                                 est {fmtRev(item.revenueEstimate)}
                               </span>
                             )}
@@ -1406,7 +1406,7 @@ function CalendarTab({ apiKey }: { apiKey: string }) {
                                 {fmtRev(item.revenueActual)}
                               </span>
                             ) : item.revenueEstimate == null ? (
-                              <span className="text-[11px] font-mono text-white/18">—</span>
+                              <span className="text-[11px] font-mono text-foreground/18">—</span>
                             ) : null}
                           </div>
                         </div>
@@ -1435,11 +1435,11 @@ function CalendarTab({ apiKey }: { apiKey: string }) {
       {/* Footer */}
       <div className="shrink-0 flex items-center justify-between px-5 py-2"
         style={{ borderTop: '1px solid rgba(255,255,255,0.05)', background: 'hsl(var(--background))' }}>
-        <span className="text-[8px] font-mono text-white/18">
+        <span className="text-[8px] font-mono text-foreground/18">
           next 14 days · {totalWithData} with estimates · {cacheAge('cal_data')}
         </span>
         <button onClick={() => load(true)} disabled={loading}
-          className="flex items-center gap-1.5 text-[9px] font-mono text-white/20 hover:text-white/50 transition-colors disabled:opacity-30">
+          className="flex items-center gap-1.5 text-[9px] font-mono text-foreground/20 hover:text-foreground/50 transition-colors disabled:opacity-30">
           <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />refresh
         </button>
       </div>
@@ -1582,7 +1582,7 @@ function NewsTab({ apiKey }: { apiKey: string }) {
           </button>
         ))}
         <div className="flex-1" />
-        <span className="text-[8px] font-mono text-white/18">{cacheAge(cacheKey)}</span>
+        <span className="text-[8px] font-mono text-foreground/18">{cacheAge(cacheKey)}</span>
       </div>
 
       {/* ── Scrollable content ───────────────────────────────────────────── */}
@@ -1592,11 +1592,11 @@ function NewsTab({ apiKey }: { apiKey: string }) {
           style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255,255,255,0.07) transparent' }}>
 
           {loading ? (
-            <div className="flex items-center justify-center h-48 gap-3 text-sm font-mono text-white/22">
+            <div className="flex items-center justify-center h-48 gap-3 text-sm font-mono text-foreground/22">
               <Loader2 className="w-5 h-5 animate-spin" />loading {category} news…
             </div>
           ) : items.length === 0 ? (
-            <div className="flex items-center justify-center h-48 text-sm font-mono text-white/18">
+            <div className="flex items-center justify-center h-48 text-sm font-mono text-foreground/18">
               no {category} news available
             </div>
           ) : (<>
@@ -1630,10 +1630,10 @@ function NewsTab({ apiKey }: { apiKey: string }) {
                       {srcInit}
                     </div>
                     <div className="flex flex-col">
-                      <span className="text-[10px] font-terminal text-white/35 uppercase tracking-[0.18em] leading-none">
+                      <span className="text-[10px] font-terminal text-foreground/35 uppercase tracking-[0.18em] leading-none">
                         {fmtSource(featured.source)}
                       </span>
-                      <span className="text-[9px] font-mono text-white/20 leading-none mt-0.5">
+                      <span className="text-[9px] font-mono text-foreground/20 leading-none mt-0.5">
                         {newsAge(featured.datetime)}
                       </span>
                     </div>
@@ -1652,18 +1652,18 @@ function NewsTab({ apiKey }: { apiKey: string }) {
                   </div>
 
                   {/* Headline */}
-                  <p className="text-[18px] font-mono text-white/82 group-hover:text-white/95 transition-colors leading-snug mb-3">
+                  <p className="text-[18px] font-mono text-foreground/82 group-hover:text-foreground/95 transition-colors leading-snug mb-3">
                     {featured.headline}
                   </p>
 
                   {/* Summary */}
                   {featured.summary && featured.summary !== featured.headline && (
-                    <p className="text-[13px] font-mono text-white/38 leading-relaxed line-clamp-3">
+                    <p className="text-[13px] font-mono text-foreground/38 leading-relaxed line-clamp-3">
                       {featured.summary}
                     </p>
                   )}
 
-                  <div className="flex items-center gap-1.5 mt-3 text-[9px] font-mono text-white/25 group-hover:text-white/50 transition-colors">
+                  <div className="flex items-center gap-1.5 mt-3 text-[9px] font-mono text-foreground/25 group-hover:text-foreground/50 transition-colors">
                     <span>Read full story</span>
                     <ArrowRight className="w-3 h-3" />
                   </div>
@@ -1703,10 +1703,10 @@ function NewsTab({ apiKey }: { apiKey: string }) {
                   <div className="flex-1 min-w-0">
                     {/* Source + age */}
                     <div className="flex items-center gap-2 mb-1.5">
-                      <span className="text-[9px] font-terminal text-white/30 uppercase tracking-[0.15em]">
+                      <span className="text-[9px] font-terminal text-foreground/30 uppercase tracking-[0.15em]">
                         {fmtSource(item.source)}
                       </span>
-                      <span className="text-[9px] font-mono text-white/18">{newsAge(item.datetime)}</span>
+                      <span className="text-[9px] font-mono text-foreground/18">{newsAge(item.datetime)}</span>
                       {sent !== 'neutral' && (
                         <span
                           className="text-[7px] font-terminal tracking-widest px-1.5 py-px rounded-sm ml-auto"
@@ -1721,19 +1721,19 @@ function NewsTab({ apiKey }: { apiKey: string }) {
                     </div>
 
                     {/* Headline */}
-                    <p className="text-[14px] font-mono text-white/68 group-hover:text-white/88 transition-colors leading-snug">
+                    <p className="text-[14px] font-mono text-foreground/68 group-hover:text-foreground/88 transition-colors leading-snug">
                       {item.headline}
                     </p>
 
                     {/* Summary — only if meaningfully different */}
                     {item.summary && item.summary !== item.headline && item.summary.length > 20 && (
-                      <p className="text-[11px] font-mono text-white/28 leading-relaxed mt-1.5 line-clamp-2">
+                      <p className="text-[11px] font-mono text-foreground/28 leading-relaxed mt-1.5 line-clamp-2">
                         {item.summary}
                       </p>
                     )}
                   </div>
 
-                  <ArrowRight className="w-4 h-4 text-white/18 shrink-0 self-center opacity-0 group-hover:opacity-60 transition-opacity" />
+                  <ArrowRight className="w-4 h-4 text-foreground/18 shrink-0 self-center opacity-0 group-hover:opacity-60 transition-opacity" />
                 </a>
               );
             })}
@@ -1746,12 +1746,12 @@ function NewsTab({ apiKey }: { apiKey: string }) {
       {/* ── Footer ──────────────────────────────────────────────────────── */}
       <div className="shrink-0 flex items-center justify-between px-5 py-2"
         style={{ borderTop: '1px solid rgba(255,255,255,0.05)', background: 'hsl(var(--background))' }}>
-        <span className="text-[8px] font-mono text-white/18">
+        <span className="text-[8px] font-mono text-foreground/18">
           {items.length} stories · deduplicated · sentiment scored
         </span>
         <button
           onClick={() => load(true)} disabled={loading}
-          className="flex items-center gap-1.5 text-[9px] font-mono text-white/20 hover:text-white/50 transition-colors disabled:opacity-30"
+          className="flex items-center gap-1.5 text-[9px] font-mono text-foreground/20 hover:text-foreground/50 transition-colors disabled:opacity-30"
         >
           <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />refresh
         </button>
@@ -1797,7 +1797,7 @@ function KeyWizard({ onKey }: { onKey: (k: string) => void }) {
         {/* Header */}
         <div className="text-center mb-8">
           <div className="text-[7px] font-terminal text-phobos-green/35 uppercase tracking-[0.4em] mb-2">PHOBOS MARKETS TERMINAL</div>
-          <div className="text-[11px] font-terminal text-white/28 uppercase tracking-[0.22em]">Connect Market Data</div>
+          <div className="text-[11px] font-terminal text-foreground/28 uppercase tracking-[0.22em]">Connect Market Data</div>
         </div>
 
         {/* Step row */}
@@ -1814,7 +1814,7 @@ function KeyWizard({ onKey }: { onKey: (k: string) => void }) {
                   }}>
                   {step > s ? '✓' : s}
                 </div>
-                <span className="text-[6px] font-mono text-white/18 uppercase tracking-widest whitespace-nowrap">{STEP_LABELS[i]}</span>
+                <span className="text-[6px] font-mono text-foreground/18 uppercase tracking-widest whitespace-nowrap">{STEP_LABELS[i]}</span>
               </div>
               {i < 2 && <div className="w-14 h-px mx-2 mb-4" style={{ background: step > s ? 'rgba(34,197,94,0.28)' : 'rgba(255,255,255,0.06)' }} />}
             </div>
@@ -1825,7 +1825,7 @@ function KeyWizard({ onKey }: { onKey: (k: string) => void }) {
         <div className="space-y-4">
           {step === 1 && (<>
             <div className="p-4 rounded-sm" style={{ border: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.018)' }}>
-              <p className="text-[10px] font-mono text-white/42 leading-relaxed">
+              <p className="text-[10px] font-mono text-foreground/42 leading-relaxed">
                 Finnhub provides real-time market data — stocks, forex, crypto, earnings, and news.
                 Free tier: <span className="text-phobos-green/55">60 req/min</span> + <span className="text-phobos-green/55">live WebSocket</span>. No credit card.
               </p>
@@ -1836,14 +1836,14 @@ function KeyWizard({ onKey }: { onKey: (k: string) => void }) {
               <span>finnhub.io/register</span>
               <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
             </a>
-            <button onClick={() => setStep(2)} className="w-full text-center text-[9px] font-mono text-white/22 hover:text-white/45 transition-colors">
+            <button onClick={() => setStep(2)} className="w-full text-center text-[9px] font-mono text-foreground/22 hover:text-foreground/45 transition-colors">
               already have an account →
             </button>
           </>)}
 
           {step === 2 && (<>
             <div className="p-4 rounded-sm" style={{ border: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.018)' }}>
-              <p className="text-[10px] font-mono text-white/42 leading-relaxed">
+              <p className="text-[10px] font-mono text-foreground/42 leading-relaxed">
                 After logging in, copy your API key from the dashboard — a long string like{' '}
                 <code className="text-phobos-green/38 text-[9px]">cn7abc123xyz…</code>
               </p>
@@ -1855,23 +1855,23 @@ function KeyWizard({ onKey }: { onKey: (k: string) => void }) {
               <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
             </a>
             <div className="flex gap-4">
-              <button onClick={() => setStep(1)} className="text-[9px] font-mono text-white/18 hover:text-white/40 transition-colors">← back</button>
-              <button onClick={() => setStep(3)} className="text-[9px] font-mono text-white/22 hover:text-white/48 transition-colors">got the key →</button>
+              <button onClick={() => setStep(1)} className="text-[9px] font-mono text-foreground/18 hover:text-foreground/40 transition-colors">← back</button>
+              <button onClick={() => setStep(3)} className="text-[9px] font-mono text-foreground/22 hover:text-foreground/48 transition-colors">got the key →</button>
             </div>
           </>)}
 
           {step === 3 && (<>
             <div className="flex items-center gap-3 px-3 py-2.5 rounded-sm"
               style={{ border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.28)' }}>
-              <Key className="w-3.5 h-3.5 text-white/18 shrink-0" />
+              <Key className="w-3.5 h-3.5 text-foreground/18 shrink-0" />
               <input type="text" placeholder="cn7abc123xyz…" value={input}
                 onChange={e => { setInput(e.target.value); setError(''); }}
                 onKeyDown={e => e.key === 'Enter' && validate()}
-                className="flex-1 bg-transparent text-xs font-mono text-white/68 placeholder:text-white/14 outline-none"
+                className="flex-1 bg-transparent text-xs font-mono text-foreground/68 placeholder:text-foreground/14 outline-none"
                 autoFocus spellCheck={false} />
             </div>
             {error && (
-              <div className="flex items-center gap-2 text-[9px] font-mono text-red-400/55">
+              <div className="flex items-center gap-2 text-[9px] font-mono text-destructive/55">
                 <AlertCircle className="w-3 h-3 shrink-0" />{error}
               </div>
             )}
@@ -1880,11 +1880,11 @@ function KeyWizard({ onKey }: { onKey: (k: string) => void }) {
               style={{ border: '1px solid rgba(34,197,94,0.22)', background: 'rgba(34,197,94,0.07)', color: 'rgba(34,197,94,0.72)' }}>
               {loading ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Validating…</> : <><CheckCircle className="w-3.5 h-3.5" />Connect</>}
             </button>
-            <button onClick={() => setStep(2)} className="text-[9px] font-mono text-white/18 hover:text-white/40 transition-colors">← back</button>
+            <button onClick={() => setStep(2)} className="text-[9px] font-mono text-foreground/18 hover:text-foreground/40 transition-colors">← back</button>
           </>)}
         </div>
 
-        <p className="text-[6px] font-mono text-white/12 text-center mt-6 leading-relaxed">
+        <p className="text-[6px] font-mono text-foreground/12 text-center mt-6 leading-relaxed">
           Key stored locally on this device only. Sent directly to Finnhub — nowhere else.
         </p>
       </div>
@@ -1916,7 +1916,7 @@ export function FinancePanel({ onClose }: FinancePanelProps) {
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col overflow-hidden" style={{ background: 'hsl(var(--background))' }}>
+    <div className="phobos-finance-panel fixed inset-0 z-50 flex flex-col overflow-hidden" style={{ background: 'hsl(var(--card))' }}>
 
       {/* Global CRT scan-line overlay */}
       <div className="absolute inset-0 pointer-events-none z-50"
@@ -1930,7 +1930,7 @@ export function FinancePanel({ onClose }: FinancePanelProps) {
         }}>
 
         {/* Brand */}
-        <div className="flex items-center gap-2 pr-4 mr-2 border-r border-white/[0.07]">
+        <div className="flex items-center gap-2 pr-4 mr-2 border-r border-foreground/[07]">
           <div className="w-1.5 h-1.5 rounded-full" style={{ background: '#22c55e', boxShadow: '0 0 7px #22c55e, 0 0 14px rgba(34,197,94,0.3)' }} />
           <span className="text-[9px] font-terminal text-phobos-green/55 uppercase tracking-[0.22em]">MARKETS</span>
         </div>
@@ -1956,12 +1956,12 @@ export function FinancePanel({ onClose }: FinancePanelProps) {
 
         {apiKey && (
           <button onClick={disconnect}
-            className="text-[7px] font-mono text-white/15 hover:text-white/38 uppercase tracking-widest transition-colors mr-3">
+            className="text-[7px] font-mono text-foreground/15 hover:text-foreground/38 uppercase tracking-widest transition-colors mr-3">
             disconnect
           </button>
         )}
 
-        <button onClick={onClose} className="p-1.5 rounded-sm text-white/22 hover:text-white/60 hover:bg-white/[0.04] transition-all">
+        <button onClick={onClose} className="p-1.5 rounded-sm text-foreground/22 hover:text-foreground/60 hover:bg-foreground/[04] transition-all">
           <XIcon className="w-4 h-4" />
         </button>
       </header>

@@ -63,7 +63,7 @@ function StatRow({ label, value, accent }: { label: string; value: string; accen
 
 function BondBar({ score, persona }: { score: number; persona: CopilotPersona }) {
   const pct = Math.round(score * 100);
-  const color = persona === 'sayon' ? 'bg-phobos-amber' : 'bg-blue-400';
+  const color = persona === 'sayon' ? 'bg-phobos-amber' : 'bg-phobos-blue';
   return (
     <div className="mt-1">
       <div className="flex justify-between mb-0.5">
@@ -105,9 +105,9 @@ function PersonaHero({
 }) {
   const [imgError, setImgError] = useState(false);
   const isSayon = persona === 'sayon';
-  const accent = isSayon ? 'text-phobos-amber' : 'text-blue-400';
-  const accentBorder = isSayon ? 'border-phobos-amber/20' : 'border-blue-400/20';
-  const accentBg = isSayon ? 'bg-phobos-amber/5' : 'bg-blue-400/5';
+  const accent = isSayon ? 'text-phobos-amber' : 'text-phobos-blue';
+  const accentBorder = isSayon ? 'border-phobos-amber/20' : 'border-phobos-blue/20';
+  const accentBg = isSayon ? 'bg-phobos-amber/5' : 'bg-phobos-blue/5';
   const accentGlow = isSayon
     ? 'shadow-[0_0_40px_hsl(38_100%_50%/0.08)]'
     : 'shadow-[0_0_40px_hsl(213_94%_68%/0.08)]';
@@ -192,12 +192,12 @@ function PersonaHero({
               : voiceModePlaying
                 ? isSayon
                   ? 'border-phobos-amber/70 bg-phobos-amber/10 shadow-[0_0_24px_hsl(38_100%_50%/0.25)] w-16 h-16'
-                  : 'border-blue-400/70 bg-blue-400/10 shadow-[0_0_24px_hsl(213_94%_68%/0.25)] w-16 h-16'
+                  : 'border-phobos-blue/70 bg-phobos-blue/10 shadow-[0_0_24px_hsl(213_94%_68%/0.25)] w-16 h-16'
                 : voiceModeTranscribing
-                  ? 'border-yellow-400/40 bg-yellow-400/5 w-16 h-16'
+                  ? 'border-phobos-amber/40 bg-phobos-amber/5 w-16 h-16'
                   : isSayon
                     ? 'border-phobos-amber/30 bg-phobos-amber/5 hover:border-phobos-amber/60 hover:bg-phobos-amber/10 hover:shadow-[0_0_20px_hsl(38_100%_50%/0.2)] w-14 h-14 hover:w-16 hover:h-16'
-                    : 'border-blue-400/30 bg-blue-400/5 hover:border-blue-400/60 hover:bg-blue-400/10 hover:shadow-[0_0_20px_hsl(213_94%_68%/0.2)] w-14 h-14 hover:w-16 hover:h-16'
+                    : 'border-phobos-blue/30 bg-phobos-blue/5 hover:border-phobos-blue/60 hover:bg-phobos-blue/10 hover:shadow-[0_0_20px_hsl(213_94%_68%/0.2)] w-14 h-14 hover:w-16 hover:h-16'
           } disabled:opacity-40`}
         >
           {/* Ripple ring — shown while listening */}
@@ -206,23 +206,23 @@ function PersonaHero({
           )}
           {voiceModePlaying && (
             <span className={`absolute inset-0 rounded-full border-2 animate-ping ${
-              isSayon ? 'border-phobos-amber/20' : 'border-blue-400/20'
+              isSayon ? 'border-phobos-amber/20' : 'border-phobos-blue/20'
             }`} />
           )}
           {/* Icon */}
           {voiceModeTranscribing
-            ? <Loader2 className="w-6 h-6 text-yellow-400/60 animate-spin" />
+            ? <Loader2 className="w-6 h-6 text-phobos-amber/60 animate-spin" />
             : voiceModeListening
               ? <MicOff className="w-6 h-6 text-red-400/90" />
               : voiceModePlaying
-                ? <Volume2 className={`w-6 h-6 ${isSayon ? 'text-phobos-amber/90' : 'text-blue-400/90'}`} />
-                : <Mic className={`w-6 h-6 ${isSayon ? 'text-phobos-amber/60' : 'text-blue-400/60'}`} />
+                ? <Volume2 className={`w-6 h-6 ${isSayon ? 'text-phobos-amber/90' : 'text-phobos-blue/90'}`} />
+                : <Mic className={`w-6 h-6 ${isSayon ? 'text-phobos-amber/60' : 'text-phobos-blue/60'}`} />
           }
         </button>
         <span className={`text-[9px] font-terminal tracking-[0.15em] uppercase ${
           voiceModeListening   ? 'text-red-400/70'
-          : voiceModeTranscribing ? 'text-yellow-400/50'
-          : voiceModePlaying   ? (isSayon ? 'text-phobos-amber/60' : 'text-blue-400/60')
+          : voiceModeTranscribing ? 'text-phobos-amber/50'
+          : voiceModePlaying   ? (isSayon ? 'text-phobos-amber/60' : 'text-phobos-blue/60')
           : 'text-muted-foreground/30'
         }`}>
           {voiceModeListening   ? 'Tap to send'
@@ -239,7 +239,7 @@ function PersonaHero({
 
 function StatsPanel({ stats, persona }: { stats: CopilotStats; persona: CopilotPersona }) {
   const isSayon = persona === 'sayon';
-  const accentBorder = isSayon ? 'border-phobos-amber/10' : 'border-blue-400/10';
+  const accentBorder = isSayon ? 'border-phobos-amber/10' : 'border-phobos-blue/10';
 
   const emotionLabel = stats.emotional_state
     ? stats.emotional_state.charAt(0).toUpperCase() + stats.emotional_state.slice(1)
@@ -702,9 +702,9 @@ function CopilotPanelInner() {
   if (!isVisible) return null;
 
   const isSayon = activeCopilot === 'sayon';
-  const accentText = isSayon ? 'text-phobos-amber' : 'text-blue-400';
-  const accentBg = isSayon ? 'bg-phobos-amber/10' : 'bg-blue-400/10';
-  const accentBorder = isSayon ? 'border-phobos-amber/30' : 'border-blue-400/30';
+  const accentText = isSayon ? 'text-phobos-amber' : 'text-phobos-blue';
+  const accentBg = isSayon ? 'bg-phobos-amber/10' : 'bg-phobos-blue/10';
+  const accentBorder = isSayon ? 'border-phobos-amber/30' : 'border-phobos-blue/30';
   const activeModelName = isSayon ? modelNames.coordinator : modelNames.engine;
 
   async function confirmHaAction() {
@@ -752,7 +752,7 @@ function CopilotPanelInner() {
   }
 
   return (
-    <aside className={`border-l border-border/50 bg-background flex shrink-0 h-full transition-all duration-300 overflow-hidden ${
+    <aside className={`phobos-chrome-zone border-l border-border/50 bg-background flex shrink-0 h-full transition-all duration-300 overflow-hidden ${
       isExpanded ? 'flex-1' : 'w-[280px] flex-col'
     }`}>
 
@@ -792,7 +792,7 @@ function CopilotPanelInner() {
                   isActive
                     ? pIsSayon
                       ? 'text-phobos-amber bg-phobos-amber/10 border border-phobos-amber/30'
-                      : 'text-blue-400 bg-blue-400/10 border border-blue-400/30'
+                      : 'text-phobos-blue bg-phobos-blue/10 border border-phobos-blue/30'
                     : 'text-muted-foreground/40 hover:text-muted-foreground/70'
                 }`}
               >
@@ -816,7 +816,7 @@ function CopilotPanelInner() {
               activeAudio.sttListening
                 ? 'text-red-400 bg-red-400/15 animate-pulse'
                 : activeAudio.transcribing
-                  ? 'text-yellow-400/70'
+                  ? 'text-phobos-amber/70'
                   : 'text-muted-foreground/40 hover:text-muted-foreground/70'
             }`}
           >
@@ -833,7 +833,7 @@ function CopilotPanelInner() {
             title={activeAudio.ttsEnabled ? 'Disable voice responses' : 'Enable voice responses'}
             className={`p-1 rounded transition-colors ${
               activeAudio.ttsEnabled
-                ? isSayon ? 'text-phobos-amber/80' : 'text-blue-400/80'
+                ? isSayon ? 'text-phobos-amber/80' : 'text-phobos-blue/80'
                 : 'text-muted-foreground/30 hover:text-muted-foreground/60'
             }`}
           >
@@ -888,15 +888,15 @@ function CopilotPanelInner() {
 
       {/* ── Thinking indicator ── */}
       {isStreaming && thinkingBuf && (
-        <div className="px-3 py-1.5 border-b border-blue-400/20 bg-blue-400/5 flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse shrink-0" />
-          <span className="text-[11px] text-blue-400/80 font-mono font-semibold tracking-wide">
+        <div className="px-3 py-1.5 border-b border-phobos-blue/20 bg-phobos-blue/5 flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-phobos-blue animate-pulse shrink-0" />
+          <span className="text-[11px] text-phobos-blue/80 font-mono font-semibold tracking-wide">
             {isSayon ? 'SAYON reasoning…' : 'SEREN reasoning…'}
           </span>
           <div className="flex-1" />
           <button
             onClick={() => setShowThinking(prev => !prev)}
-            className="text-[10px] text-blue-400/50 hover:text-blue-400/80 font-mono transition-colors"
+            className="text-[10px] text-phobos-blue/50 hover:text-phobos-blue/80 font-mono transition-colors"
           >
             {showThinking ? 'hide' : 'show'}
           </button>
@@ -905,8 +905,8 @@ function CopilotPanelInner() {
 
       {/* ── Expanded thinking trace (local state only — never touches useAppStore.segments) ── */}
       {showThinking && thinkingBuf && (
-        <div className="px-3 py-2 border-b border-blue-400/10 bg-blue-950/20 max-h-40 overflow-y-auto scrollbar-thin">
-          <pre className="text-[10px] text-blue-300/40 font-mono whitespace-pre-wrap leading-relaxed">
+        <div className="px-3 py-2 border-b border-phobos-blue/10 bg-phobos-blue/5 max-h-40 overflow-y-auto scrollbar-thin">
+          <pre className="text-[10px] text-phobos-blue/40 font-mono whitespace-pre-wrap leading-relaxed">
             {thinkingBuf}
           </pre>
         </div>
@@ -935,7 +935,7 @@ function CopilotPanelInner() {
               </>
             ) : (
               <>
-                <span className="text-blue-400/50 font-semibold">SEREN</span> thinks deeply.
+                <span className="text-phobos-blue/50 font-semibold">SEREN</span> thinks deeply.
                 <br />Bring your hardest problems, architecture decisions, and trade-offs.
               </>
             )}
@@ -953,11 +953,11 @@ function CopilotPanelInner() {
 
       {/* ── HA Action Confirmation Card ── */}
       {pendingAction && (
-        <div className="mx-3 mb-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
+        <div className="mx-3 mb-2 rounded-lg border border-phobos-amber/40 bg-phobos-amber/5 p-3">
           <div className="flex items-start gap-2 mb-3">
-            <AlertTriangle size={15} className="text-amber-400 mt-0.5 shrink-0" />
+            <AlertTriangle size={15} className="text-phobos-amber mt-0.5 shrink-0" />
             <div className="min-w-0">
-              <p className="text-xs font-medium text-amber-300 leading-tight">Action pending approval</p>
+              <p className="text-xs font-medium text-phobos-amber/80 leading-tight">Action pending approval</p>
               <p className="text-xs text-foreground/80 mt-0.5 leading-snug">{pendingAction.label}</p>
               <p className="text-[10px] text-muted-foreground mt-1 font-mono">
                 {pendingAction.domain}.{pendingAction.service} → {pendingAction.entity_id}

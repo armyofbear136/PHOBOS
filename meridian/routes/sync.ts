@@ -46,10 +46,10 @@ export interface SyncExclusion {
 
 // Default policies written on first device registration.
 const DEFAULT_POLICIES: Array<Pick<SyncPolicy, 'library' | 'enabled' | 'upload_mode' | 'retain_days'>> = [
-  { library: 'photos',    enabled: true, upload_mode: 'wifi_only', retain_days: null },
-  { library: 'music',     enabled: true, upload_mode: 'manual', retain_days: null },
-  { library: 'documents', enabled: true, upload_mode: 'manual', retain_days: null },
-  { library: 'movies',    enabled: true, upload_mode: 'manual', retain_days: null },
+  { library: 'photos',    enabled: true,  upload_mode: 'wifi_only', retain_days: null },
+  { library: 'music',     enabled: false, upload_mode: 'manual',    retain_days: null },
+  { library: 'documents', enabled: false, upload_mode: 'manual',    retain_days: null },
+  { library: 'movies',    enabled: false, upload_mode: 'manual',    retain_days: null },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -76,12 +76,20 @@ function mapPolicy(r: Row): SyncPolicy {
   };
 }
 
+// DB stores 'subtree'/'exact'; mobile uses 'folder'/'file'.
+function dbScopeToMobile(s: unknown): 'folder' | 'file' {
+  return (s === 'exact') ? 'file' : 'folder';
+}
+function mobileScopeToDb(s: unknown): 'subtree' | 'exact' {
+  return (s === 'file') ? 'exact' : 'subtree';
+}
+
 function mapExclusion(r: Row): SyncExclusion {
   return {
     id:         r.id as string,
     policy_id:  r.policy_id as string,
     path:       r.path as string,
-    scope:      r.scope as 'folder' | 'file',
+    scope:      dbScopeToMobile(r.scope),
     created_at: r.created_at as string,
   };
 }
@@ -341,7 +349,7 @@ export async function syncRoutes(
       await db.execQuery(
         `INSERT INTO phobos_sync_exclusions (id, policy_id, path, scope) VALUES (?, ?, ?, ?)
          ON CONFLICT (id) DO NOTHING`,
-        [id, ex.policy_id, ex.path, ex.scope],
+        [id, ex.policy_id, ex.path, mobileScopeToDb(ex.scope)],
       );
     }
 

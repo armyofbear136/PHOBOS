@@ -489,7 +489,7 @@ function buildDeps(arch: PhobosArch): Dep[] {
     return {
       id: 'jre-21', label: 'Java 21 Runtime (for Stirling PDF)',
       file: fileMap[arch], minBytes: 40_000_000,
-      isPresent: () => { try { return fs.statSync(javaBin).size >= 100_000; } catch { return false; } },
+      isPresent: () => { try { return fs.statSync(javaBin).size >= 30_000; } catch { return false; } },
       install: async (arc) => {
         // Extract to a staging dir, then rename the versioned root to stable 'jre/'
         const staging = jreDir + '-staging';

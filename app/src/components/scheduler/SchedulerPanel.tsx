@@ -147,7 +147,7 @@ export function SchedulerPanel({ onClose }: Props) {
         <div className="phobos-panel w-[760px] max-w-[96vw] h-[600px] max-h-[88vh] bg-card border border-border rounded-sm flex flex-col overflow-hidden shadow-2xl">
 
           {/* Header */}
-          <div className="h-10 flex items-center justify-between px-3 border-b border-border/50 bg-background shrink-0">
+          <div className="phobos-chrome-zone h-10 flex items-center justify-between px-3 border-b border-border/50 bg-background shrink-0">
             <div className="flex items-center gap-2">
               <Clock className="w-3.5 h-3.5 text-phobos-green/50" />
               <span className="text-[10px] font-terminal uppercase tracking-[0.15em] text-phobos-green/70">

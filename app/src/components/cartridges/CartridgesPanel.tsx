@@ -34,12 +34,12 @@ type CartridgeListItem = Omit<CartridgeRecord, 'compatible_models' | 'tags'> & {
 };
 
 const CATEGORY_COLORS: Record<CartridgeCategory, string> = {
-  expertise: 'text-blue-400   border-blue-400/30   bg-blue-400/5',
-  persona:   'text-purple-400 border-purple-400/30 bg-purple-400/5',
-  style:     'text-teal-400   border-teal-400/30   bg-teal-400/5',
-  domain:    'text-orange-400 border-orange-400/30 bg-orange-400/5',
-  task:      'text-pink-400   border-pink-400/30   bg-pink-400/5',
-  weclone:   'text-indigo-400 border-indigo-400/30 bg-indigo-400/5',
+  expertise: 'text-phobos-blue   border-phobos-blue/30   bg-phobos-blue/5',
+  persona:   'text-phobos-blue border-phobos-blue/30 bg-phobos-blue/5',
+  style:     'text-sayon   border-sayon/30   bg-sayon/5',
+  domain:    'text-phobos-amber border-phobos-amber/30 bg-phobos-amber/5',
+  task:      'text-phobos-amber border-phobos-amber/30 bg-phobos-amber/5',
+  weclone:   'text-seren border-seren/30 bg-seren/5',
 };
 
 function CategoryBadge({ category }: { category: CartridgeCategory }) {
@@ -322,10 +322,10 @@ export function CartridgesPanel({ onClose }: CartridgesPanelProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="phobos-cartridges-panel w-[800px] max-h-[88vh] flex flex-col bg-background border border-phobos-green/20 rounded-sm shadow-[0_0_40px_hsl(120_100%_50%/0.04)]">
+      <div className="phobos-cartridges-panel w-[800px] max-h-[88vh] flex flex-col bg-card border border-phobos-green/20 rounded-sm shadow-[0_0_40px_hsl(120_100%_50%/0.04)]">
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-phobos-green/10">
+        <div className="phobos-chrome-zone flex items-center justify-between px-5 py-3 border-b border-phobos-green/10 bg-background">
           <div className="flex items-center gap-2">
             <Cpu className="w-4 h-4 text-phobos-green/60" />
             <span className="text-[11px] font-terminal uppercase tracking-[0.2em] text-phobos-green/80">AI Cartridges</span>
@@ -468,7 +468,7 @@ export function CartridgesPanel({ onClose }: CartridgesPanelProps) {
         )}
         {modalView === 'training' && trainSessionId && (
           <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm">
-            <div className="w-[560px] h-[640px] flex flex-col bg-background border border-phobos-green/20 rounded-sm shadow-[0_0_60px_hsl(120_100%_50%/0.05)]">
+            <div className="w-[560px] h-[640px] flex flex-col bg-card border border-phobos-green/20 rounded-sm shadow-[0_0_60px_hsl(120_100%_50%/0.05)]">
     <LmTrainingPanel
                 sessionId={trainSessionId}
                 onCancel={handleTrainCancel}

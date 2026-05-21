@@ -22,11 +22,11 @@ interface PluginsMenuProps { onClose: () => void; }
 // ── Badges ────────────────────────────────────────────────────────────────────
 
 const CATEGORY_COLORS: Record<PluginCategory, string> = {
-  style:   'text-blue-400 border-blue-400/30 bg-blue-400/5',
-  subject: 'text-purple-400 border-purple-400/30 bg-purple-400/5',
-  lighting:'text-amber-400 border-amber-400/30 bg-amber-400/5',
-  texture: 'text-orange-400 border-orange-400/30 bg-orange-400/5',
-  concept: 'text-teal-400 border-teal-400/30 bg-teal-400/5',
+  style:   'text-phobos-blue border-phobos-blue/30 bg-phobos-blue/5',
+  subject: 'text-phobos-blue border-phobos-blue/30 bg-phobos-blue/5',
+  lighting:'text-phobos-amber border-phobos-amber/30 bg-phobos-amber/5',
+  texture: 'text-phobos-amber border-phobos-amber/30 bg-phobos-amber/5',
+  concept: 'text-sayon border-sayon/30 bg-sayon/5',
   generic: 'text-muted-foreground border-border bg-transparent',
 };
 
@@ -112,7 +112,7 @@ function AuthGate({ plugin, licenseAvail, onAuth, onCancel }: AuthGateProps) {
           <button
             disabled={busy}
             onClick={() => submit({ useLicense: true })}
-            className="w-full flex items-center justify-center gap-1.5 py-1.5 text-[9px] font-terminal uppercase tracking-widest text-blue-400/70 border border-blue-400/20 rounded-sm hover:border-blue-400/40 transition-all disabled:opacity-40"
+            className="w-full flex items-center justify-center gap-1.5 py-1.5 text-[9px] font-terminal uppercase tracking-widest text-phobos-blue/70 border border-phobos-blue/20 rounded-sm hover:border-phobos-blue/40 transition-all disabled:opacity-40"
           >
             {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />}
             Unlock with License
@@ -149,12 +149,12 @@ function PluginCard({ plugin, selected, onSelect }: {
         <div className="flex items-center gap-1 shrink-0 mt-0.5">
           {plugin.has_license_unlock && (
             <span title="License unlock enabled">
-              <ShieldCheck className="w-2.5 h-2.5 text-blue-400/50" />
+              <ShieldCheck className="w-2.5 h-2.5 text-phobos-blue/50" />
             </span>
           )}
           {plugin.kind === 'raw_lora' && (
             <span title="Raw LoRA — unverified compatibility">
-              <AlertTriangle className="w-2.5 h-2.5 text-amber-400/60" />
+              <AlertTriangle className="w-2.5 h-2.5 text-phobos-amber/60" />
             </span>
           )}
         </div>
@@ -277,7 +277,7 @@ function DetailPanel({
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs font-terminal text-foreground/80">{plugin.name}</span>
           {plugin.kind === 'raw_lora' && (
-            <span className="text-[8px] font-terminal text-amber-400/70 border border-amber-400/20 px-1.5 py-0.5 rounded-sm">
+            <span className="text-[8px] font-terminal text-phobos-amber/70 border border-phobos-amber/20 px-1.5 py-0.5 rounded-sm">
               Raw LoRA
             </span>
           )}
@@ -287,7 +287,7 @@ function DetailPanel({
             </span>
           )}
           {plugin.has_license_unlock && (
-            <span className="flex items-center gap-1 text-[8px] font-terminal text-blue-400/60 border border-blue-400/20 px-1.5 py-0.5 rounded-sm">
+            <span className="flex items-center gap-1 text-[8px] font-terminal text-phobos-blue/60 border border-phobos-blue/20 px-1.5 py-0.5 rounded-sm">
               <ShieldCheck className="w-2 h-2" /> LICENSE KEY
             </span>
           )}
@@ -392,9 +392,9 @@ function DetailPanel({
 
         {/* Add license unlock — shown in edit mode when not already set */}
         {isEditing && !plugin.has_license_unlock && (
-          <div className="px-3 py-2.5 bg-blue-400/[0.03] border border-blue-400/15 rounded-sm flex items-center justify-between gap-3">
+          <div className="px-3 py-2.5 bg-phobos-blue/[0.03] border border-phobos-blue/15 rounded-sm flex items-center justify-between gap-3">
             <div className="flex items-start gap-2">
-              <ShieldCheck className="w-3.5 h-3.5 text-blue-400/50 shrink-0 mt-0.5" />
+              <ShieldCheck className="w-3.5 h-3.5 text-phobos-blue/50 shrink-0 mt-0.5" />
               <p className="text-[10px] font-mono text-muted-foreground/50 leading-relaxed">
                 Add your license as a second unlock key. Anyone with your license can edit this plugin without the password.
               </p>
@@ -402,7 +402,7 @@ function DetailPanel({
             <button
               disabled={addingLicense}
               onClick={handleAddLicense}
-              className="shrink-0 flex items-center gap-1 px-2 py-1 text-[9px] font-terminal uppercase tracking-widest text-blue-400/60 border border-blue-400/20 rounded-sm hover:border-blue-400/40 transition-all disabled:opacity-40"
+              className="shrink-0 flex items-center gap-1 px-2 py-1 text-[9px] font-terminal uppercase tracking-widest text-phobos-blue/60 border border-phobos-blue/20 rounded-sm hover:border-phobos-blue/40 transition-all disabled:opacity-40"
             >
               {addingLicense ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Plus className="w-2.5 h-2.5" />}
               Add
@@ -411,9 +411,9 @@ function DetailPanel({
         )}
 
         {plugin.kind === 'raw_lora' && (
-          <div className="flex items-start gap-2 px-3 py-2.5 bg-amber-400/5 border border-amber-400/20 rounded-sm">
-            <AlertTriangle className="w-3.5 h-3.5 text-amber-400/70 shrink-0 mt-0.5" />
-            <p className="text-[10px] font-mono text-amber-400/70 leading-relaxed">
+          <div className="flex items-start gap-2 px-3 py-2.5 bg-phobos-amber/5 border border-phobos-amber/20 rounded-sm">
+            <AlertTriangle className="w-3.5 h-3.5 text-phobos-amber/70 shrink-0 mt-0.5" />
+            <p className="text-[10px] font-mono text-phobos-amber/70 leading-relaxed">
               Raw LoRA — compatibility unverified. Works with any image model but may produce unexpected results. No trigger words required.
             </p>
           </div>
@@ -488,7 +488,7 @@ function imageCountTier(count: number): {
   if (count < 75)        return { color: 'text-red-400/80',          dotColor: 'bg-red-400/80',          label: `${count} images`,  sublabel: 'More images = better results. Aim for 100+' };
   if (count < 100)       return { color: 'text-phobos-amber',        dotColor: 'bg-phobos-amber',        label: `${count} images`,  sublabel: 'Getting there — 100 is the sweet spot' };
   if (count < 136)       return { color: 'text-phobos-green',        dotColor: 'bg-phobos-green',        label: `${count} images`,  sublabel: 'Great set — ready to train a high-quality plugin' };
-  return                        { color: 'text-blue-400',            dotColor: 'bg-blue-400',            label: `${count} images`,  sublabel: 'Going the extra mile — this will be exceptional' };
+  return                        { color: 'text-phobos-blue',            dotColor: 'bg-phobos-blue',            label: `${count} images`,  sublabel: 'Going the extra mile — this will be exceptional' };
 }
 
 // ── VRAM check result ─────────────────────────────────────────────────────────
@@ -671,7 +671,7 @@ function CreateWizard({ onCancel, licenseAvail, onTrainingStarted }: {
                 {/* Track: red at 15, amber at 75, green at 100, blue at 136 */}
                 <div
                   className={`h-full rounded-full transition-all duration-500 ${
-                    draft.stagedCount >= 136 ? 'bg-blue-400' :
+                    draft.stagedCount >= 136 ? 'bg-phobos-blue' :
                     draft.stagedCount >= 100 ? 'bg-phobos-green' :
                     draft.stagedCount >= 75  ? 'bg-phobos-amber' :
                     draft.stagedCount >= 15  ? 'bg-red-400/80' :
@@ -831,11 +831,11 @@ function CreateWizard({ onCancel, licenseAvail, onTrainingStarted }: {
                 <label className="flex items-center gap-3 cursor-pointer group">
                   <input type="checkbox" checked={draft.addLicense}
                     onChange={e => setDraft(d => ({ ...d, addLicense: e.target.checked }))}
-                    className="accent-blue-400 w-4 h-4"
+                    className="accent-phobos-blue w-4 h-4"
                   />
                   <div>
                     <div className="flex items-center gap-1.5 text-[11px] font-mono text-muted-foreground/70 group-hover:text-muted-foreground/90 transition-colors">
-                      <ShieldCheck className="w-3.5 h-3.5 text-blue-400/60" />
+                      <ShieldCheck className="w-3.5 h-3.5 text-phobos-blue/60" />
                       Also unlock with my Auvera license key <span className="text-muted-foreground/30">(recommended)</span>
                     </div>
                     <p className="text-[10px] font-mono text-muted-foreground/30 mt-0.5">Lets you unlock this plugin on any machine where your license is active — no need to remember the password.</p>

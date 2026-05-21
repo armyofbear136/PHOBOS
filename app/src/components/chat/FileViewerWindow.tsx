@@ -111,10 +111,10 @@ export function FileViewerWindow({
             onClick={onApply}
             disabled={applying}
             className={
-              applied   ? 'flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono rounded text-green-400/80 disabled:opacity-40 transition-colors' :
+              applied   ? 'flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono rounded text-phobos-green/80 disabled:opacity-40 transition-colors' :
               applying  ? 'flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono rounded text-muted-foreground disabled:opacity-40 transition-colors' :
               isNewFile ? 'flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono rounded bg-primary/20 text-primary hover:bg-primary/30 disabled:opacity-40 transition-colors'
-                        : 'flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono rounded bg-amber-500/10 text-amber-400/80 hover:bg-amber-500/20 hover:text-amber-400 disabled:opacity-40 transition-colors'
+                        : 'flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono rounded bg-phobos-amber/10 text-phobos-amber/80 hover:bg-phobos-amber/20 hover:text-phobos-amber disabled:opacity-40 transition-colors'
             }
           >
             {applied

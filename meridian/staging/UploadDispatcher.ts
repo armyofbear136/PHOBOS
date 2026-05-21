@@ -63,28 +63,32 @@ export class UploadDispatcher {
     const destPath = this._resolveDestPath(payload);
     const destDir  = path.dirname(destPath);
 
-    fs.mkdirSync(destDir, { recursive: true });
-    fs.writeFileSync(destPath, payload.buffer);
+    try {
+      fs.mkdirSync(destDir, { recursive: true });
+      fs.writeFileSync(destPath, payload.buffer);
 
-    await this._db.execQuery(
-      `INSERT INTO phobos_sync_manifest
-         (content_hash, library, original_name, dest_path, size_bytes, taken_at, device_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (content_hash) DO NOTHING`,
-      [
-        payload.contentHash,
-        payload.library,
-        payload.filename,
-        destPath,
-        payload.sizeBytes,
-        payload.takenAt ?? null,
-        payload.deviceId,
-      ],
-    );
+      // Schema columns: content_hash, device_id, dest_path, file_size, taken_at, synced_at
+      // PRIMARY KEY is (content_hash, device_id) — dedup is per-device.
+      await this._db.execQuery(
+        `INSERT INTO phobos_sync_manifest
+           (content_hash, device_id, dest_path, file_size, taken_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (content_hash, device_id) DO NOTHING`,
+        [
+          payload.contentHash,
+          payload.deviceId,
+          destPath,
+          payload.sizeBytes,
+          payload.takenAt ?? null,
+        ],
+      );
 
-    this._triggerRescan(payload.library, destPath);
-
-    return destPath;
+      this._triggerRescan(payload.library, destPath);
+      return destPath;
+    } catch (err: unknown) {
+      console.error('[UploadDispatcher] dispatch error:', err);
+      throw err;
+    }
   }
 
   // ── Private ─────────────────────────────────────────────────────────────────

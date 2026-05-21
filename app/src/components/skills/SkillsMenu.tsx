@@ -319,7 +319,7 @@ export function SkillsMenu({ onClose }: SkillsMenuProps) {
       <div className="phobos-skills-panel w-[960px] max-w-[95vw] h-[640px] max-h-[88vh] bg-card border border-border rounded-sm flex flex-col overflow-hidden shadow-2xl">
 
         {/* Top bar */}
-        <div className="h-10 flex items-center justify-between px-3 border-b border-border/50 bg-background shrink-0">
+        <div className="phobos-chrome-zone h-10 flex items-center justify-between px-3 border-b border-border/50 bg-background shrink-0">
           <div className="flex items-center gap-2">
             <span className="text-[10px] font-terminal uppercase tracking-[0.15em] text-phobos-green/70">
               Skill Rack
@@ -341,7 +341,7 @@ export function SkillsMenu({ onClose }: SkillsMenuProps) {
         <div className="flex flex-1 min-h-0">
 
           {/* ── Left column: rack ─────────────────────────────────── */}
-          <div className="w-56 border-r border-border flex flex-col bg-background shrink-0">
+          <div className="phobos-chrome-zone w-56 border-r border-border flex flex-col bg-background shrink-0">
 
             {/* Import drop zone */}
             <div className="p-2 border-b border-border/30 shrink-0">
@@ -437,7 +437,7 @@ function EmptyState({ hasSkills, onNew }: { hasSkills: boolean; onNew: () => voi
           <div className="space-y-1.5 text-[10px] font-mono text-muted-foreground/25 max-w-[220px] mx-auto leading-relaxed">
             <p>Create a skill manually, or drop a .zip or SKILL.md to import.</p>
             <div className="flex items-start gap-1.5 text-left">
-              <AlertTriangle className="w-3 h-3 text-amber-400/30 shrink-0 mt-0.5" />
+              <AlertTriangle className="w-3 h-3 text-phobos-amber/30 shrink-0 mt-0.5" />
               <p>Skills are stored in ~/.phobos/user/skills/ and travel with you between machines.</p>
             </div>
           </div>

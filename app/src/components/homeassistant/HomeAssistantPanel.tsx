@@ -46,7 +46,7 @@ function stateDotClass(state: ConnectionState): string {
   switch (state) {
     case 'connected':      return 'bg-phobos-green animate-pulse-dot';
     case 'connecting':
-    case 'authenticating': return 'bg-amber-400 animate-pulse';
+    case 'authenticating': return 'bg-phobos-amber animate-pulse';
     case 'error':          return 'bg-destructive';
     default:               return 'bg-muted-foreground/30';
   }
@@ -209,7 +209,7 @@ export function HomeAssistantPanel({ onClose }: Props) {
 
   return (
     <div
-      className="phobos-ha-panel fixed z-50 w-[780px] bg-background border border-phobos-green/20 rounded-sm shadow-[0_0_40px_rgba(0,255,65,0.06)] flex flex-col select-none"
+      className="phobos-ha-panel fixed z-50 w-[780px] bg-card border border-phobos-green/20 rounded-sm shadow-[0_0_40px_rgba(0,255,65,0.06)] flex flex-col select-none"
       style={{ left: pos.x, top: pos.y }}
     >
       {/* Title bar */}
@@ -426,7 +426,7 @@ export function HomeAssistantPanel({ onClose }: Props) {
                       }
                       <span className={`w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 ${
                         run.status === 'success' ? 'bg-phobos-green/60' :
-                        run.status === 'running' ? 'bg-amber-400 animate-pulse' :
+                        run.status === 'running' ? 'bg-phobos-amber animate-pulse' :
                         'bg-destructive/60'
                       }`} />
                       <div className="flex-1 min-w-0">
@@ -451,7 +451,7 @@ export function HomeAssistantPanel({ onClose }: Props) {
                     {expandedRun === run.id && (
                       <div className="ml-6 mb-2 px-3 py-2 bg-white/[0.02] border border-border/20 rounded-sm">
                         {run.status === 'running' && (
-                          <div className="flex items-center gap-2 text-xs font-mono text-amber-400/70">
+                          <div className="flex items-center gap-2 text-xs font-mono text-phobos-amber/70">
                             <Loader2 className="w-3 h-3 animate-spin" />
                             Running…
                           </div>

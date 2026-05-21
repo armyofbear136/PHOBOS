@@ -262,6 +262,7 @@ export class WorldScene extends Phaser.Scene {
 
   // ── Multi-chunk zone ───────────────────────────────────────────────────
   private _chunkGraph:         ChunkGraph | null                   = null;
+  private _zoneGraph:          ZoneGraph | null                    = null;
   private _bossBarrierImage:   Phaser.GameObjects.Image | null     = null;
   private _bossBarrierGlow:    Phaser.GameObjects.Arc | null       = null;
   private _bossBarrierTile:    { tx: number; ty: number } | null   = null;
@@ -1075,10 +1076,29 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private async fetchPlayerConfig(): Promise<void> {
+    // Default build used when the API is unreachable or returns no character.
+    // Guarantees _setupCombatController is always called so HUD, abilities,
+    // dodge, and combat input are never missing.
+    const defaultBuild: import('./PlayerClasses').PlayerBuild = {
+      name:          'Player',
+      class:         'fighter',
+      body:          'a',
+      element:       'plasma',
+      level:         1,
+      xp:            0,
+      bonusPoints:   { str: 0, dex: 0, int: 0, agi: 0, vit: 0 },
+      unspentPoints: 5,
+      skillPoints:   1,
+      unlockedNodes: [],
+    };
+
     try {
       const url = (import.meta.env.VITE_ENGINE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
       const resp = await fetch(`${url}/api/game/player`);
-      if (!resp.ok) return;
+      if (!resp.ok) {
+        this._setupCombatController(defaultBuild);
+        return;
+      }
       const data = await resp.json();
       if (data.name) {
         const cls     = data.player_class ?? 'fighter';
@@ -1115,8 +1135,15 @@ export class WorldScene extends Phaser.Scene {
           })(),
         };
         this._setupCombatController(build);
+      } else {
+        // Logged in but no character created yet — use default build so
+        // HUD and input are functional until character creation completes.
+        this._setupCombatController(defaultBuild);
       }
-    } catch { /* silent — player uses defaults */ }
+    } catch {
+      // Network error or malformed response — always fall back to defaults.
+      this._setupCombatController(defaultBuild);
+    }
   }
 
   /** Fetch placed buildings from API, render sprites, register collision, wire interacts. */
@@ -1317,15 +1344,22 @@ export class WorldScene extends Phaser.Scene {
         this._showZoneClearBanner();
       };
 
+      this._worldCombat.onMineralMarker = (def) => {
+        const node = new MineralNode(this, def);
+        this._mineralNodes.push(node);
+      };
+
       WorldScene.onZoneEnter(() => {
-        // Seed enemies for every chunk in the graph
-        if (this._chunkGraph) {
-          const difficulty = buildDifficultyParams(this._partyMembers.size);
+        // Seed enemies and minerals from authored spawn_markers via ZoneGraph
+        const difficulty = buildDifficultyParams(this._partyMembers.size);
+        if (this._zoneGraph) {
+          this._worldCombat!.seedZoneGraph(this._zoneGraph, this._dailySeed, difficulty);
+        } else if (this._chunkGraph) {
+          // Legacy fallback — should not occur once _zoneGraph is always set
           for (let c = 0; c < this._chunkGraph.chunks.length; c++) {
             this._worldCombat!.seedChunk(this._chunkGraph.chunks[c], c, this._dailySeed, difficulty);
           }
         } else {
-          // Fallback: single-chunk mode (should not occur with ChunkGraph active)
           this._worldCombat!.seedZone();
         }
         this._updateZoneEnemyHud();
@@ -1839,13 +1873,12 @@ export class WorldScene extends Phaser.Scene {
 
     // ── Three-tier zone graph ─────────────────────────────────────────────
     const zoneGraph = generateZoneGraph(this._dailySeed);
+    this._zoneGraph = zoneGraph;
     this._spawnZoneGraph(zoneGraph);
     // Note: _spawnZoneGraph calls tw.reseal() + _applyTileWorldBounds() internally.
 
-    // Legacy chunk graph — retained for WorldCombatManager.seedChunk() until
-    // enemy seeding is migrated to SpawnMarker-based placement in Phase B.
-    // getChunkGraphOnly() does NOT clear _tileSet — the zone graph tiles
-    // registered above must survive for _tickZoneGuard.isTileInZone() checks.
+    // Legacy chunk graph — retained as a fallback for any code still reading
+    // _chunkGraph until full migration to seedZoneGraph is verified in production.
     const ezm = ExplorationZoneManager.getInstance();
     this._chunkGraph = ezm.getChunkGraphOnly();
 
@@ -2035,24 +2068,38 @@ export class WorldScene extends Phaser.Scene {
     }
     ezm.registerChunkTiles(worldTiles);
 
-    // Glow rails: edge columns of the corridor strip
-    // Find the unique edge tx values for a vertical corridor (min and max tx in tile set)
-    let minTx = Infinity, maxTx = -Infinity;
-    for (const t of corridor.tiles) {
-      if (t.tx < minTx) minTx = t.tx;
-      if (t.tx > maxTx) maxTx = t.tx;
-    }
-    const edgeTxSet = new Set([minTx, maxTx]);
-    for (const t of corridor.tiles) {
-      if (!edgeTxSet.has(t.tx)) continue;
-      const { x, y } = this.tileToScreen(t.tx, t.ty);
-      const rail = this.add.rectangle(x, y - 2, 6, 2, 0x22c5c5, 0.4).setDepth(4);
-      this.tweens.add({
-        targets: rail,
-        alpha: { from: 0.15, to: 0.6 },
-        duration: 1600, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
-        delay: t.ty * -150,
-      });
+    // Glow rails: use pre-computed edge tiles when available (L-shaped corridors),
+    // otherwise fall back to min/max tx heuristic (straight N-S corridors).
+    if (corridor.glowEdgeTiles && corridor.glowEdgeTiles.length > 0) {
+      for (const t of corridor.glowEdgeTiles) {
+        const { x, y } = this.tileToScreen(t.tx, t.ty);
+        const rail = this.add.rectangle(x, y - 2, 6, 2, 0x22c5c5, 0.4).setDepth(4);
+        this.tweens.add({
+          targets: rail,
+          alpha: { from: 0.15, to: 0.6 },
+          duration: 1600, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+          delay: (t.tx + t.ty) * -75,
+        });
+      }
+    } else {
+      // Straight corridor heuristic: edge columns are min and max tx in tile set
+      let minTx = Infinity, maxTx = -Infinity;
+      for (const t of corridor.tiles) {
+        if (t.tx < minTx) minTx = t.tx;
+        if (t.tx > maxTx) maxTx = t.tx;
+      }
+      const edgeTxSet = new Set([minTx, maxTx]);
+      for (const t of corridor.tiles) {
+        if (!edgeTxSet.has(t.tx)) continue;
+        const { x, y } = this.tileToScreen(t.tx, t.ty);
+        const rail = this.add.rectangle(x, y - 2, 6, 2, 0x22c5c5, 0.4).setDepth(4);
+        this.tweens.add({
+          targets: rail,
+          alpha: { from: 0.15, to: 0.6 },
+          duration: 1600, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+          delay: t.ty * -150,
+        });
+      }
     }
   }
 

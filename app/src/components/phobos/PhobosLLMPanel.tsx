@@ -227,8 +227,8 @@ function ProgressBar({ received, total, label }: { received?: number; total?: nu
 
 const BACKEND_BADGE: Record<string, { border: string; text: string; label: string; lightStyle: React.CSSProperties }> = {
   cuda:   { border: 'border-phobos-green/20', text: 'text-phobos-green/40', label: 'CUDA',   lightStyle: { color: 'hsl(130 60% 22%)', background: 'hsl(130 35% 82%)', borderColor: 'hsl(130 40% 50%)' } },
-  vulkan: { border: 'border-amber-500/20',    text: 'text-amber-500/40',    label: 'Vulkan', lightStyle: { color: 'hsl(36 65% 22%)',  background: 'hsl(36 50% 84%)',  borderColor: 'hsl(36 50% 46%)' } },
-  metal:  { border: 'border-blue-400/20',     text: 'text-blue-400/40',     label: 'Metal',  lightStyle: { color: 'hsl(270 50% 26%)', background: 'hsl(270 35% 86%)', borderColor: 'hsl(270 40% 54%)' } },
+  vulkan: { border: 'border-phobos-amber/20',    text: 'text-phobos-amber/40',    label: 'Vulkan', lightStyle: { color: 'hsl(36 65% 22%)',  background: 'hsl(36 50% 84%)',  borderColor: 'hsl(36 50% 46%)' } },
+  metal:  { border: 'border-phobos-blue/20',     text: 'text-phobos-blue/40',     label: 'Metal',  lightStyle: { color: 'hsl(270 50% 26%)', background: 'hsl(270 35% 86%)', borderColor: 'hsl(270 40% 54%)' } },
 };
 
 // ── SystemCapabilityCard ──────────────────────────────────────────────────────
@@ -773,7 +773,7 @@ export function PhobosLLMPanel({ onClose }: Props) {
         <div className="phobos-llm-panel bg-card border border-phobos-green/25 rounded-sm shadow-[0_0_40px_hsl(120_100%_50%/0.08)] font-mono flex flex-col flex-1 min-h-0 overflow-y-auto scrollbar-phobos">
 
           {/* Header */}
-          <div className="flex items-center justify-between px-5 py-3 border-b border-border/40">
+          <div className="phobos-chrome-zone flex items-center justify-between px-5 py-3 border-b border-border/40 bg-background">
             <span className="text-xs font-terminal tracking-[0.2em] text-phobos-green/80 uppercase">PHOBOS COMMAND CENTER</span>
             <div className="flex items-center gap-1">
               {/* TODO: wire isDarkMode to your theme provider */}
@@ -1065,8 +1065,8 @@ export function PhobosLLMPanel({ onClose }: Props) {
                               className="flex items-center gap-1.5 hover:opacity-80 transition-opacity group"
                               title="PyTorch packages have been updated — click to upgrade your environment"
                             >
-                              <span className="w-1.5 h-1.5 rounded-full bg-phobos-amber inline-block group-hover:bg-amber-400" />
-                              <span className="text-[10px] font-mono text-phobos-amber/80 group-hover:text-amber-400 underline decoration-dotted underline-offset-2">
+                              <span className="w-1.5 h-1.5 rounded-full bg-phobos-amber inline-block group-hover:bg-phobos-amber" />
+                              <span className="text-[10px] font-mono text-phobos-amber/80 group-hover:text-phobos-amber underline decoration-dotted underline-offset-2">
                                 Update PyTorch env
                               </span>
                             </button>
@@ -1081,8 +1081,8 @@ export function PhobosLLMPanel({ onClose }: Props) {
                               className="flex items-center gap-1.5 hover:opacity-80 transition-opacity group"
                               title="Python 3.12 required before PyTorch can be installed"
                             >
-                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block group-hover:bg-amber-400" />
-                              <span className="text-[10px] font-mono text-amber-500/80 group-hover:text-amber-400 underline decoration-dotted underline-offset-2">
+                              <span className="w-1.5 h-1.5 rounded-full bg-phobos-amber inline-block group-hover:bg-phobos-amber" />
+                              <span className="text-[10px] font-mono text-phobos-amber/80 group-hover:text-phobos-amber underline decoration-dotted underline-offset-2">
                                 Install Python first
                               </span>
                             </button>
@@ -1291,8 +1291,7 @@ export function PhobosLLMPanel({ onClose }: Props) {
 
           {/* ── LLM Models ── */}
           <div className="phobos-llm-panel flex-1 flex flex-col min-h-0 bg-card border border-phobos-green/25 rounded-sm shadow-[0_0_40px_hsl(120_100%_50%/0.08)] font-mono overflow-y-auto scrollbar-phobos">
-            <div className="flex items-center justify-between px-5 py-3">
-              {/* Left: label + GB + path controls — all on one line */}
+            <div className="phobos-chrome-zone flex items-center justify-between px-5 py-3 bg-background border-b border-border/40">
               <div className="flex items-center gap-3 min-w-0">
                 <span className="text-xs font-terminal tracking-[0.2em] text-phobos-green/80 uppercase">LLM MODELS</span>
                 {modelsInfo && (
@@ -1370,7 +1369,7 @@ export function PhobosLLMPanel({ onClose }: Props) {
 
                 {/* Row 1 — role hint */}
                 <div className="flex items-center gap-4 px-3 py-2 border border-border/15 rounded bg-black/20">
-                  <span className="text-[11px] font-terminal tracking-[0.12em] text-blue-300/70">SAYON</span>
+                  <span className="text-[11px] font-terminal tracking-[0.12em] text-phobos-blue/70">SAYON</span>
                   <span className="text-[10px] text-foreground/35 font-mono">Fast coordinator — speed-optimised responses</span>
                   <span className="text-[10px] text-foreground/20 font-mono mx-1">·</span>
                   <span className="text-[11px] font-terminal tracking-[0.12em] text-phobos-amber/70">SEREN</span>
@@ -1452,7 +1451,7 @@ export function PhobosLLMPanel({ onClose }: Props) {
                               <div className="flex-1 min-w-0">
                                 {/* Row 1 — name + rec + running + license */}
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <span className={`text-[13px] ${overBudget ? 'text-red-400/70' : spec.role === 'sayon' ? 'text-blue-300/80' : 'text-phobos-amber/80'}`}>{spec.label}</span>
+                                  <span className={`text-[13px] ${overBudget ? 'text-red-400/70' : spec.role === 'sayon' ? 'text-phobos-blue/80' : 'text-phobos-amber/80'}`}>{spec.label}</span>
                                   {isSayonRec && <span className="text-[11px] text-phobos-green/60 flex items-center gap-0.5"><Cpu className="w-3 h-3" /> ★ SAYON</span>}
                                   {isSerenRec && <span className="text-[11px] text-phobos-green/60 flex items-center gap-0.5"><Zap className="w-3 h-3" /> ★ SEREN</span>}
                                   {isRunning && (
@@ -1570,7 +1569,7 @@ export function PhobosLLMPanel({ onClose }: Props) {
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 flex-wrap">
-                              <span className={`text-[13px] ${spec.role === 'sayon' ? 'text-blue-300/55' : 'text-phobos-amber/55'}`}>{spec.label}</span>
+                              <span className={`text-[13px] ${spec.role === 'sayon' ? 'text-phobos-blue/55' : 'text-phobos-amber/55'}`}>{spec.label}</span>
                             </div>
                             <div className="flex items-center gap-2 mt-0.5">
                               <SpeedBadge speed={spec.speedClass} />
@@ -1600,7 +1599,7 @@ export function PhobosLLMPanel({ onClose }: Props) {
 
           {/* ── Optional Models ── */}
           <div className="phobos-llm-panel flex-1 flex flex-col min-h-0 bg-card border border-phobos-green/25 rounded-sm shadow-[0_0_40px_hsl(120_100%_50%/0.08)] font-mono overflow-y-auto scrollbar-phobos">
-            <div className="flex items-center justify-between px-5 py-3">
+            <div className="phobos-chrome-zone flex items-center justify-between px-5 py-3 bg-background border-b border-border/40">
               <span className="text-xs font-terminal tracking-[0.2em] text-phobos-green/80 uppercase">OPTIONAL MODELS</span>
             </div>
             <div className="border-t border-border/20 scrollbar-phobos">
@@ -1977,7 +1976,7 @@ function PythonSetupDialog({ progress, running, onInstall, onRetry, onClose }: P
               {running  && <Loader2 className="w-3.5 h-3.5 animate-spin text-phobos-amber flex-shrink-0 mt-0.5" />}
               {isDone   && <span className="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0 inline-block mt-1" />}
               {isError  && <span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0 inline-block mt-1" />}
-              <span className={`text-[11px] font-mono leading-snug ${isError ? 'text-red-400' : isDone ? 'text-emerald-400' : 'text-phobos-amber'}`}>
+              <span className={`text-[11px] font-mono leading-snug ${isError ? 'text-destructive' : isDone ? 'text-phobos-green' : 'text-phobos-amber'}`}>
                 {progress.label}
               </span>
             </div>
@@ -2550,7 +2549,7 @@ function PhobosOptionalModelsPanel({ onClose, embedded }: { onClose: () => void;
   return (
     <div className="relative w-[500px] max-h-[92vh] flex flex-col bg-card border border-phobos-green/25 rounded-sm shadow-[0_0_40px_hsl(120_100%_50%/0.08)] font-mono">
       {/* Header */}
-      <div className="flex items-center justify-between px-5 py-3 border-b border-border/40 shrink-0">
+      <div className="phobos-chrome-zone flex items-center justify-between px-5 py-3 border-b border-border/40 bg-background shrink-0">
         <span className="text-xs font-terminal tracking-[0.2em] text-phobos-green/80 uppercase">OPTIONAL MODELS</span>
         <button onClick={onClose} disabled={panelLocked} className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors disabled:opacity-30"
           title={panelLocked ? 'Download in progress — cannot close' : 'Close'}>
@@ -2886,7 +2885,7 @@ function ImageModelCard({ model, hw, stage, isActiveDownload, anyDownloading, ch
                 </span>
               )}
               {isKontext && (
-                <span className="text-[10px] font-terminal tracking-[0.1em] text-indigo-400/50 border border-indigo-400/15 px-1 py-0.5 rounded">
+                <span className="text-[10px] font-terminal tracking-[0.1em] text-phobos-blue/50 border border-phobos-blue/15 px-1 py-0.5 rounded">
                   WORKFLOW NODE
                 </span>
               )}
@@ -2894,10 +2893,10 @@ function ImageModelCard({ model, hw, stage, isActiveDownload, anyDownloading, ch
                 <span className="text-[11px] font-terminal tracking-[0.1em] text-phobos-green/70">● READY</span>
               )}
               {model.pytorchVariantReady && (
-                <span className="text-[11px] font-terminal tracking-[0.1em] text-indigo-400/70" title="Pre-converted diffusers directory — loads faster and works with all transformers versions">⚡ PyTorch</span>
+                <span className="text-[11px] font-terminal tracking-[0.1em] text-phobos-blue/70" title="Pre-converted diffusers directory — loads faster and works with all transformers versions">⚡ PyTorch</span>
               )}
               {isConvertDone && !model.pytorchVariantReady && (
-                <span className="text-[11px] font-terminal tracking-[0.1em] text-indigo-400/70">⚡ CONVERTED</span>
+                <span className="text-[11px] font-terminal tracking-[0.1em] text-phobos-blue/70">⚡ CONVERTED</span>
               )}
               {isConverting && (
                 <span className="text-[11px] font-terminal tracking-[0.1em] text-phobos-amber/60 animate-pulse">◌ Converting…</span>
@@ -2918,7 +2917,7 @@ function ImageModelCard({ model, hw, stage, isActiveDownload, anyDownloading, ch
                 const shortName = g.gpuName.replace(/NVIDIA |AMD |Intel |Apple |Radeon\(TM\) |GeForce /g, '').trim();
                 if (g.vulkanBlocked) {
                   return (
-                    <span key={g.gpuIndex} className="text-[10px] font-terminal text-orange-400/70 border border-orange-400/20 px-1.5 py-0.5 rounded" title={`${shortName}: ${g.reason ?? 'Vulkan incompatible'}`}>
+                    <span key={g.gpuIndex} className="text-[10px] font-terminal text-phobos-amber/70 border border-phobos-amber/20 px-1.5 py-0.5 rounded" title={`${shortName}: ${g.reason ?? 'Vulkan incompatible'}`}>
                       {label}
                     </span>
                   );
@@ -2952,7 +2951,7 @@ function ImageModelCard({ model, hw, stage, isActiveDownload, anyDownloading, ch
               </div>
             )}
             {isKontext && (
-              <div className="text-[11px] font-mono text-indigo-400/40">
+              <div className="text-[11px] font-mono text-phobos-blue/40">
                 Prompt-driven image editing — adds a KEDIT node to the workflow builder
               </div>
             )}
@@ -2965,7 +2964,7 @@ function ImageModelCard({ model, hw, stage, isActiveDownload, anyDownloading, ch
             {showConvertButton && (
               <button
                 onClick={(e) => { e.stopPropagation(); onStartConvert(model.modelId); }}
-                className="text-[10px] font-terminal tracking-[0.1em] text-indigo-400/50 hover:text-indigo-400/80 border border-indigo-400/15 hover:border-indigo-400/30 px-1.5 py-0.5 rounded-sm transition-all"
+                className="text-[10px] font-terminal tracking-[0.1em] text-phobos-blue/50 hover:text-phobos-blue/80 border border-phobos-blue/15 hover:border-phobos-blue/30 px-1.5 py-0.5 rounded-sm transition-all"
                 title="Convert to PyTorch format — one-time conversion for faster loading and full compatibility. Requires ~3-4 GB extra disk space."
               >
                 ⚡ PyTorch
@@ -3030,7 +3029,7 @@ function ImageModelCard({ model, hw, stage, isActiveDownload, anyDownloading, ch
             <span>{Math.round(convertPct * 100)}%</span>
           </div>
           <div className="h-0.5 bg-border/20 rounded-full overflow-hidden">
-            <div className="h-full bg-indigo-400/50 transition-all duration-300"
+            <div className="h-full bg-phobos-blue/50 transition-all duration-300"
               style={{ width: `${convertPct * 100}%` }} />
           </div>
           <div className="text-[10px] font-mono text-muted-foreground/30">
@@ -3351,7 +3350,7 @@ function AudioModelsSection({
                   downloaded
                     ? 'border-phobos-green/20 bg-phobos-green/[0.03]'
                     : isActive
-                      ? 'border-cyan-400/20 bg-cyan-400/[0.03]'
+                      ? 'border-sayon/20 bg-sayon/[0.03]'
                       : 'border-border/20 bg-accent/10'
                 }`}
               >
@@ -3361,7 +3360,7 @@ function AudioModelsSection({
                     {downloaded ? (
                       <CheckCircle2 className="w-4 h-4 text-phobos-green/60 shrink-0 mt-0.5" />
                     ) : isActive ? (
-                      <Loader2 className="w-4 h-4 text-cyan-400/60 animate-spin shrink-0 mt-0.5" />
+                      <Loader2 className="w-4 h-4 text-sayon/60 animate-spin shrink-0 mt-0.5" />
                     ) : (
                       <div className="w-4 h-4 rounded-sm border-2 border-border/30 shrink-0 mt-0.5" />
                     )}
@@ -3374,7 +3373,7 @@ function AudioModelsSection({
                         {spec.requiresPytorch && (
                           <span className={`text-[10px] font-terminal tracking-[0.1em] border rounded px-1 py-0.5 ${
                             pytorchReady
-                              ? 'border-indigo-400/20 text-indigo-400/50'
+                              ? 'border-phobos-blue/20 text-phobos-blue/50'
                               : 'border-phobos-amber/20 text-phobos-amber/50'
                           }`}>
                             PyTorch
@@ -3398,7 +3397,7 @@ function AudioModelsSection({
                     canDownload ? (
                       <button
                         onClick={() => onStartDownload([spec.modelId])}
-                        className="flex items-center gap-1.5 text-[11px] font-terminal tracking-[0.1em] text-cyan-400/70 hover:text-cyan-400 border border-cyan-400/20 hover:border-cyan-400/40 px-2.5 py-1 rounded-sm transition-all shrink-0"
+                        className="flex items-center gap-1.5 text-[11px] font-terminal tracking-[0.1em] text-sayon/70 hover:text-sayon border border-sayon/20 hover:border-sayon/40 px-2.5 py-1 rounded-sm transition-all shrink-0"
                       >
                         <Download className="w-3 h-3" />
                         DOWNLOAD
@@ -3428,7 +3427,7 @@ function AudioModelsSection({
                     </div>
                     <div className="h-1 bg-border/20 rounded-full overflow-hidden">
                       <div
-                        className="h-full bg-cyan-400/50 rounded-full transition-all duration-300"
+                        className="h-full bg-sayon/50 rounded-full transition-all duration-300"
                         style={{ width: `${audioStage.pct}%` }}
                       />
                     </div>

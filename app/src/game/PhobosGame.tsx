@@ -272,6 +272,30 @@ export function PhobosGame() {
           };
           setActiveBuild(cachedBuild.current);
 
+          // Push the full build to WorldScene immediately so the combat
+          // controller gets real stats rather than the default fallback.
+          // Poll until the scene is ready since this fetch races with create().
+          const buildSnapshot = cachedBuild.current!;
+          const tryApplyBuild = () => {
+            const game  = gameRef.current;
+            const scene = game?.scene.getScene('WorldScene') as any;
+            if (scene?.configurePlayer) {
+              const config = {
+                name:         buildSnapshot.name,
+                element:      buildSnapshot.element,
+                playerClass:  buildSnapshot.class,
+                bodyType:     buildSnapshot.body,
+                weapon:       (buildSnapshot.equipment?.melee?.weaponBaseId ?? 'sword') as any,
+                laserColor:   '#ffffff',
+                weaponAssembly: undefined,
+              };
+              scene.configurePlayer(config, buildSnapshot);
+            } else {
+              setTimeout(tryApplyBuild, 200);
+            }
+          };
+          setTimeout(tryApplyBuild, 200);
+
           // Restore persisted HP — controller may not be ready yet, poll until it is
           if (data.current_hp != null) {
             const savedHp = data.current_hp as number;

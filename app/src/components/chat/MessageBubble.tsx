@@ -79,7 +79,7 @@ function QueryFileChip({
         disabled={isImage || loading}
         className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono rounded border transition-colors ${
           isImage
-            ? 'border-blue-400/30 bg-blue-400/10 text-blue-300 cursor-default'
+            ? 'border-phobos-blue/30 bg-phobos-blue/10 text-phobos-blue cursor-default'
             : loading
               ? 'border-border/30 bg-black/20 text-muted-foreground/30 cursor-wait'
               : 'border-border/40 bg-black/30 text-muted-foreground/60 hover:text-foreground hover:border-border/70 cursor-pointer'

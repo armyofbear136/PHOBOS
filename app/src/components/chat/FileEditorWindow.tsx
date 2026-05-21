@@ -146,7 +146,7 @@ export function FileEditorWindow({ threadId, filename, initialContent, language,
       >
         <File className="w-3 h-3 text-muted-foreground" />
         <span className="text-[11px] font-mono text-foreground truncate">{filename}</span>
-        {isDirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />}
+        {isDirty && <span className="w-1.5 h-1.5 rounded-full bg-phobos-amber shrink-0" />}
         <span className="text-[10px] font-mono text-muted-foreground/50 shrink-0 ml-auto mr-2">{language}</span>
         <button onClick={handleClose} className="p-0.5 hover:text-destructive transition-colors text-muted-foreground">
           <X className="w-3 h-3" />
@@ -178,9 +178,9 @@ export function FileEditorWindow({ threadId, filename, initialContent, language,
 
       {/* Confirm close banner */}
       {confirmClose && (
-        <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-400/10 border-b border-amber-400/30 text-[11px] font-mono text-amber-300 shrink-0">
+        <div className="flex items-center gap-2 px-3 py-1.5 bg-phobos-amber/10 border-b border-phobos-amber/30 text-[11px] font-mono text-phobos-amber shrink-0">
           Unsaved changes — close anyway?
-          <button onClick={onClose} className="px-2 py-0.5 rounded bg-amber-400/20 hover:bg-amber-400/30 text-amber-300">Yes</button>
+          <button onClick={onClose} className="px-2 py-0.5 rounded bg-phobos-amber/20 hover:bg-phobos-amber/30 text-phobos-amber">Yes</button>
           <button onClick={() => setConfirmClose(false)} className="px-2 py-0.5 rounded bg-muted hover:bg-accent text-muted-foreground">Cancel</button>
         </div>
       )}

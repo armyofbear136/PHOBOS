@@ -313,7 +313,7 @@ export function HeaderBar() {
 
   return (
     <>
-      <header className="h-10 flex items-center justify-between px-3 border-b border-border/50 bg-background shrink-0 relative z-50 overflow-visible">
+      <header className="phobos-header phobos-chrome-zone h-10 flex items-center justify-between px-3 border-b border-border/50 bg-background shrink-0 relative z-50 overflow-visible">
         <div className="flex items-center gap-2">
           <button onClick={toggleSidebar} className="p-1.5 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors">
             <PanelLeft className="w-4 h-4" />

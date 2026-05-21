@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-phobos-diffusers.py — PyTorch / HuggingFace Diffusers image generation CLI.
+phobos-diffusers.py -- PyTorch / HuggingFace Diffusers image generation CLI.
 
 Spawned by ImageServerManager.ts as a child process, same pattern as sd-cli.
 All parameters via CLI args. Progress output matches sd-cli format so the
@@ -26,7 +26,7 @@ import time
 import json
 from pathlib import Path
 
-# ── Argument parsing ─────────────────────────────────────────────────────────
+# -- Argument parsing ---------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="PHOBOS PyTorch image generation")
@@ -71,11 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--fps", type=int, default=12, help="Video frames per second (Wan)")
     p.add_argument("--flow-shift", type=float, default=3.0, help="Flow matching shift (Wan: 3.0 for 480P, 5.0 for 720P)")
 
-    # Artist Plugin System — multi-adapter LoRA
-    # Colon-delimited lists for 1–3 plugins per node.
+    # Artist Plugin System -- multi-adapter LoRA
+    # Colon-delimited lists for 1-3 plugins per node.
     # --lora-kinds: 'plugin' = read lora.safetensors from .phobos zip; 'raw_lora' = flat file.
     p.add_argument("--lora-paths",   default=None, help="Colon-delimited LoRA archive/file paths")
-    p.add_argument("--lora-weights", default=None, help="Colon-delimited adapter weights (0.0–1.0)")
+    p.add_argument("--lora-weights", default=None, help="Colon-delimited adapter weights (0.0-1.0)")
     p.add_argument("--lora-names",   default=None, help="Colon-delimited adapter names (plugin_0, ...)")
     p.add_argument("--lora-kinds",   default=None, help="Colon-delimited kinds: 'plugin' or 'raw_lora'")
 
@@ -99,14 +99,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Performance optimisations (opt-in, CUDA Ampere+ recommended for sage)
     p.add_argument("--sage-attention", action="store_true",
-                   help="Enable SageAttention 2.x attention backend (requires sageattention ≥2.1.1)")
+                   help="Enable SageAttention 2.x attention backend (requires sageattention ?2.1.1)")
     p.add_argument("--torch-compile", action="store_true",
                    help="Compile transformer with torch.compile reduce-overhead (first run ~2 min warm-up)")
 
     return p
 
 
-# ── Progress output ──────────────────────────────────────────────────────────
+# -- Progress output ----------------------------------------------------------
 # Matches sd-cli format so WorkflowEngine.ts parseProgressLine() works unchanged.
 
 def log(msg: str) -> None:
@@ -123,7 +123,7 @@ def log_progress(step: int, total: int, elapsed: float) -> None:
     print(f"  step {step}/{total} - {val:.2f} {unit}", flush=True)
 
 
-# ── Device selection ─────────────────────────────────────────────────────────
+# -- Device selection ---------------------------------------------------------
 
 def select_device(requested: str) -> str:
     """Validate and return the best available device."""
@@ -156,7 +156,7 @@ def resolve_dtype(name: str):
     return {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}[name]
 
 
-# ── GGUF model loading ───────────────────────────────────────────────────────
+# -- GGUF model loading -------------------------------------------------------
 
 def is_gguf(path: str) -> bool:
     return path.lower().endswith(".gguf")
@@ -182,13 +182,13 @@ def load_flux_gguf_pipeline(args, device: str, dtype):
 
     is_chroma = args.model_type == "chroma"
 
-    # ── Config source per model type ─────────────────────────────────────────
+    # -- Config source per model type -----------------------------------------
     # Each model type needs a non-gated HuggingFace repo for its config.json.
     # These are tiny JSON downloads (~500 bytes), cached permanently.
     #
     # IMPORTANT: schnell has a different transformer config (distilled, fewer layers)
     # but shares the same VAE as FLUX dev. The bundled configs/flux1-schnell/ dir
-    # only contains transformer/config.json — it has no VAE config. So we track
+    # only contains transformer/config.json -- it has no VAE config. So we track
     # transformer_config and vae_config separately.
     if is_chroma:
         transformer_config = "lodestones/Chroma1-HD"
@@ -211,16 +211,16 @@ def load_flux_gguf_pipeline(args, device: str, dtype):
             else:
                 transformer_config = "city96/FLUX.1-schnell-gguf"
         else:
-            transformer_config = "ostris/Flex.1-alpha"  # FLUX dev — Apache 2.0, not gated
+            transformer_config = "ostris/Flex.1-alpha"  # FLUX dev -- Apache 2.0, not gated
         TransformerClass = FluxTransformer2DModel
         PipelineClass = FluxPipeline
 
-    # Explicit user override always wins — applies to both configs
+    # Explicit user override always wins -- applies to both configs
     if args.config_path and os.path.isdir(args.config_path):
         transformer_config = args.config_path
         vae_config = args.config_path
 
-    # ── Load transformer from GGUF ───────────────────────────────────────────
+    # -- Load transformer from GGUF -------------------------------------------
     log(f"loading diffusion model from {Path(args.model_path).name}")
 
     quant_config = GGUFQuantizationConfig(compute_dtype=dtype)
@@ -234,7 +234,7 @@ def load_flux_gguf_pipeline(args, device: str, dtype):
     )
     log("loading diffusion model completed")
 
-    # ── Load VAE ─────────────────────────────────────────────────────────────
+    # -- Load VAE -------------------------------------------------------------
     vae = None
     if args.vae_path and os.path.exists(args.vae_path):
         log(f"loading vae from {Path(args.vae_path).name}")
@@ -246,7 +246,7 @@ def load_flux_gguf_pipeline(args, device: str, dtype):
         )
         log("loading vae completed")
 
-    # ── Load T5 encoder ──────────────────────────────────────────────────────
+    # -- Load T5 encoder ------------------------------------------------------
     text_encoder_2 = None
     tokenizer_2 = None
     if args.t5_path:
@@ -264,11 +264,11 @@ def load_flux_gguf_pipeline(args, device: str, dtype):
                 torch_dtype=dtype,
             )
         log("loading t5xxl completed")
-        # T5 tokenizer — small, public, cached permanently
+        # T5 tokenizer -- small, public, cached permanently
         log("loading t5 tokenizer")
         tokenizer_2 = T5TokenizerFast.from_pretrained("google/t5-v1_1-xxl", legacy=False)
 
-    # ── Load CLIP-L encoder (FLUX.1 only, not Chroma) ────────────────────────
+    # -- Load CLIP-L encoder (FLUX.1 only, not Chroma) ------------------------
     text_encoder = None
     tokenizer = None
     if not is_chroma:
@@ -289,7 +289,7 @@ def load_flux_gguf_pipeline(args, device: str, dtype):
             tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
             log("loading clip completed")
 
-    # ── Assemble pipeline ────────────────────────────────────────────────────
+    # -- Assemble pipeline ----------------------------------------------------
     log("loading pipeline components")
 
     scheduler = FlowMatchEulerDiscreteScheduler()
@@ -336,16 +336,16 @@ def load_sdxl_safetensors_pipeline(args, device: str, dtype):
 
     Load order:
     1. If args.pytorch_variant_dir points to a valid diffusers directory
-       (model_index.json present), use from_pretrained — fast, works with
+       (model_index.json present), use from_pretrained -- fast, works with
        any diffusers/transformers version.
-    2. Fall back to from_single_file on the raw safetensors — works on
+    2. Fall back to from_single_file on the raw safetensors -- works on
        diffusers <0.36 / older transformers, but may fail on newer envs due
        to the CLIPTextModel break in transformers >=4.52. Users should convert
        via the "Convert to PyTorch" button in the image model settings.
     """
     from diffusers import StableDiffusionXLPipeline
 
-    # ── Path 1: from_pretrained on converted directory ──────────────────────
+    # -- Path 1: from_pretrained on converted directory ----------------------
     variant_dir = getattr(args, 'pytorch_variant_dir', None)
     if variant_dir and os.path.isdir(variant_dir) and os.path.exists(os.path.join(variant_dir, "model_index.json")):
         log(f"loading diffusion model from pytorch variant (from_pretrained)")
@@ -362,9 +362,9 @@ def load_sdxl_safetensors_pipeline(args, device: str, dtype):
         log("loading tensors completed")
         return pipe
 
-    # ── Path 2: from_single_file fallback ───────────────────────────────────
+    # -- Path 2: from_single_file fallback -----------------------------------
     log(f"loading diffusion model from {Path(args.model_path).name}")
-    log("[WARN] Loading SDXL via from_single_file — may fail with transformers >=4.52. "
+    log("[WARN] Loading SDXL via from_single_file -- may fail with transformers >=4.52. "
         "Convert this model via Phobos image settings for reliable loading.")
 
     pipe = StableDiffusionXLPipeline.from_single_file(
@@ -393,14 +393,14 @@ def load_wan_pipeline(args, device: str, dtype):
     from diffusers.schedulers import UniPCMultistepScheduler
 
     # ftfy is required by WanPipeline.__call__ for text pre-processing.
-    # diffusers 0.36 does not declare it as a dependency — install it in the venv
+    # diffusers 0.36 does not declare it as a dependency -- install it in the venv
     # via PythonEnvManager Pass 1. Import here so a missing package gives a clear
     # error at load time rather than a NameError deep inside the pipeline.
-    import ftfy  # noqa: F401  — side-effect import, pipeline reads it via its own import
+    import ftfy  # noqa: F401  -- side-effect import, pipeline reads it via its own import
 
     config_repo = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
 
-    # ── Load transformer from GGUF ──────────────────────────────────────────
+    # -- Load transformer from GGUF ------------------------------------------
     log(f"loading diffusion model from {Path(args.model_path).name}")
     quant_config = GGUFQuantizationConfig(compute_dtype=dtype)
     transformer = WanTransformer3DModel.from_single_file(
@@ -412,7 +412,7 @@ def load_wan_pipeline(args, device: str, dtype):
     )
     log("loading diffusion model completed")
 
-    # ── Load VAE (must be float32 for Wan) ──────────────────────────────────
+    # -- Load VAE (must be float32 for Wan) ----------------------------------
     log("loading vae from Wan pretrained")
     vae = AutoencoderKLWan.from_pretrained(
         config_repo,
@@ -421,7 +421,7 @@ def load_wan_pipeline(args, device: str, dtype):
     )
     log("loading vae completed")
 
-    # ── Assemble pipeline ───────────────────────────────────────────────────
+    # -- Assemble pipeline ---------------------------------------------------
     log("loading pipeline components")
     pipe = WanPipeline.from_pretrained(
         config_repo,
@@ -452,7 +452,7 @@ def load_qwen_image_pipeline(args, device: str, dtype):
     a GGUF file, we load the transformer separately via from_single_file() and
     inject it into the pretrained pipeline.
 
-    On ≤12 GB VRAM cards, sequential CPU offload is essential.
+    On ?12 GB VRAM cards, sequential CPU offload is essential.
     Config repo Qwen/Qwen-Image is not gated.
     """
     from diffusers import QwenImagePipeline, GGUFQuantizationConfig
@@ -499,7 +499,7 @@ def load_kontext_pipeline(args, device: str, dtype):
     """Load FLUX Kontext pipeline.
 
     Uses FluxKontextPipeline. The official repo (black-forest-labs/FLUX.1-Kontext-dev)
-    is gated — falls back to bundled config or user-provided --config-path.
+    is gated -- falls back to bundled config or user-provided --config-path.
     Shares FLUX.1 aux pool: VAE + CLIP-L + T5.
     """
     import torch
@@ -507,10 +507,10 @@ def load_kontext_pipeline(args, device: str, dtype):
     from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
     from transformers import CLIPTextModel, CLIPTokenizer, T5EncoderModel, T5TokenizerFast
 
-    # Kontext uses FLUX architecture — same transformer class, different pipeline
+    # Kontext uses FLUX architecture -- same transformer class, different pipeline
     config_repo = args.config_path if (args.config_path and os.path.isdir(args.config_path)) else "ostris/Flex.1-alpha"
 
-    # ── Load transformer from GGUF ──────────────────────────────────────────
+    # -- Load transformer from GGUF ------------------------------------------
     log(f"loading diffusion model from {Path(args.model_path).name}")
     quant_config = GGUFQuantizationConfig(compute_dtype=dtype)
     transformer = FluxTransformer2DModel.from_single_file(
@@ -522,7 +522,7 @@ def load_kontext_pipeline(args, device: str, dtype):
     )
     log("loading diffusion model completed")
 
-    # ── Load VAE ────────────────────────────────────────────────────────────
+    # -- Load VAE ------------------------------------------------------------
     vae = None
     if args.vae_path and os.path.exists(args.vae_path):
         log(f"loading vae from {Path(args.vae_path).name}")
@@ -534,7 +534,7 @@ def load_kontext_pipeline(args, device: str, dtype):
         )
         log("loading vae completed")
 
-    # ── Load T5 encoder ─────────────────────────────────────────────────────
+    # -- Load T5 encoder -----------------------------------------------------
     text_encoder_2 = None
     tokenizer_2 = None
     if args.t5_path:
@@ -554,7 +554,7 @@ def load_kontext_pipeline(args, device: str, dtype):
         log("loading t5xxl completed")
         tokenizer_2 = T5TokenizerFast.from_pretrained("google/t5-v1_1-xxl", legacy=False)
 
-    # ── Load CLIP-L encoder ─────────────────────────────────────────────────
+    # -- Load CLIP-L encoder -------------------------------------------------
     log("loading clip from openai/clip-vit-large-patch14")
     text_encoder = CLIPTextModel.from_pretrained(
         "openai/clip-vit-large-patch14",
@@ -563,7 +563,7 @@ def load_kontext_pipeline(args, device: str, dtype):
     tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
     log("loading clip completed")
 
-    # ── Assemble pipeline ───────────────────────────────────────────────────
+    # -- Assemble pipeline ---------------------------------------------------
     log("loading pipeline components")
     scheduler = FlowMatchEulerDiscreteScheduler()
     pipe_kwargs = {
@@ -618,7 +618,7 @@ def load_zimage_pipeline(args, device: str, dtype):
 
     quant_config = GGUFQuantizationConfig(compute_dtype=dtype)
 
-    # ── Text encoder (Qwen3 GGUF) ────────────────────────────────────────────
+    # -- Text encoder (Qwen3 GGUF) --------------------------------------------
     if args.llm_path:
         log(f"loading text encoder from {Path(args.llm_path).name}")
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -637,11 +637,11 @@ def load_zimage_pipeline(args, device: str, dtype):
     else:
         raise ValueError("Z-Image requires --llm-path (Qwen3 GGUF text encoder)")
 
-    # ── Diffusion transformer (Z-Image GGUF) ─────────────────────────────────
+    # -- Diffusion transformer (Z-Image GGUF) ---------------------------------
     # Load via from_single_file with GGUFQuantizationConfig.
     # cap_pad_token is stored as (dim,) in the GGUF but model expects (1, dim).
     # Use ignore_mismatched_sizes=True to bypass the strict shape check, then
-    # unsqueeze the tensor immediately after. The trained value is preserved —
+    # unsqueeze the tensor immediately after. The trained value is preserved --
     # unsqueezing doesn't change the data, only adds a batch dimension.
     log(f"loading transformer from {Path(args.model_path).name}")
     transformer = ZImageTransformer2DModel.from_single_file(
@@ -657,16 +657,16 @@ def load_zimage_pipeline(args, device: str, dtype):
         import torch
         with torch.no_grad():
             transformer.cap_pad_token.data = transformer.cap_pad_token.data.unsqueeze(0)
-        log("fixed cap_pad_token shape: (dim,) → (1, dim)")
+        log("fixed cap_pad_token shape: (dim,) -> (1, dim)")
 
-    # ── VAE ──────────────────────────────────────────────────────────────────
+    # -- VAE ------------------------------------------------------------------
     vae = None
     if args.vae_path:
         log(f"loading vae from {Path(args.vae_path).name}")
         vae = AutoencoderKL.from_single_file(args.vae_path, torch_dtype=dtype)
         log("loading vae completed")
 
-    # ── Assemble pipeline ────────────────────────────────────────────────────
+    # -- Assemble pipeline ----------------------------------------------------
     log("loading pipeline components")
     scheduler = FlowMatchEulerDiscreteScheduler()
     pipe = ZImagePipeline(
@@ -691,7 +691,7 @@ def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
 
     phobos-convert.py saves only the transformer component to
     ~/.phobos/models/image/pytorch/<modelId>/transformer/.
-    VAE, T5, and CLIP are still loaded from their aux file paths — identical to
+    VAE, T5, and CLIP are still loaded from their aux file paths -- identical to
     the GGUF path. Skips de-quantization; loads in seconds on subsequent runs.
     """
     from diffusers import (
@@ -722,7 +722,7 @@ def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
     # model.load_state_dict(checkpoint, strict=False). We replicate that here:
     #   1. Load the config.json from the converted dir and instantiate the model.
     #   2. Load all safetensors shards into a flat state_dict.
-    #   3. Call load_state_dict(strict=False) — loads every key that matches by name
+    #   3. Call load_state_dict(strict=False) -- loads every key that matches by name
     #      and shape, silently skips mismatches. For Chroma1-HD the GGUF weights
     #      already have the correct shapes for the model diffusers builds from the
     #      patched config, so all keys load correctly.
@@ -730,7 +730,7 @@ def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
     import glob as _glob
     import safetensors.torch as _st
 
-    # ── Read the patched config.json once so patch logic can inspect it ────────
+    # -- Read the patched config.json once so patch logic can inspect it --------
     with open(os.path.join(transformer_dir, "config.json")) as _f:
         _cfg = _json.load(_f)
 
@@ -738,11 +738,11 @@ def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
     _orig_paatp_init          = None
 
     if is_chroma:
-        # ── Patch 1: ChromaTransformerBlock / ChromaSingleTransformerBlock ────
+        # -- Patch 1: ChromaTransformerBlock / ChromaSingleTransformerBlock ----
         # Chroma1-HD has a decoupled residual stream dim (1728) vs attention
         # output dim (3072 = num_heads * head_dim). diffusers builds all blocks
         # with dim=self.inner_dim=3072, making to_q/k/v = Linear(3072, 3072).
-        # The saved weights have to_q = Linear(1728, 3072) — query_dim=1728,
+        # The saved weights have to_q = Linear(1728, 3072) -- query_dim=1728,
         # inner_dim=3072. FluxAttention supports this via separate query_dim and
         # out_dim, but ChromaTransformerBlock only exposes a single dim param.
         #
@@ -760,11 +760,11 @@ def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
             _orig_chroma_block_init  = _tc.ChromaTransformerBlock.__init__
             _orig_chroma_single_init = _tc.ChromaSingleTransformerBlock.__init__
 
-            _bdim = _block_hidden_dim  # 1728 — residual stream / query_dim
+            _bdim = _block_hidden_dim  # 1728 -- residual stream / query_dim
 
             # Confirmed weight shapes from inspect_ff_structure on live GGUF model:
             #   attn.to_q/k/v/out/add_*:  [3072, 1728]  Linear(bdim=1728, inner=3072)
-            #   attn.to_add_out:           [3072, 1728]  Linear(bdim, inner) — same
+            #   attn.to_add_out:           [3072, 1728]  Linear(bdim, inner) -- same
             #   ff.net.0.proj:             [12288, 1728] GELU proj Linear(bdim, ff_up=12288)
             #   ff.net.2:                  [3072, 6912]  Linear(ff_down=6912, inner)
             #   single.proj_mlp:           [12288, 1728] Linear(bdim, 12288)
@@ -843,7 +843,7 @@ def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
             _inner = _cfg.get("num_attention_heads", 24) * _cfg.get("attention_head_dim", 128)
             log(f"ChromaTransformerBlock patched: bdim={_bdim} inner={_inner}")
 
-        # ── Patch 2: ChromaApproximator concat-residual GLU ───────────────────
+        # -- Patch 2: ChromaApproximator concat-residual GLU -------------------
         # Chroma1-HD approximator uses cat([x, norm(x)]) as input to each linear
         # instead of PixArtAlphaTextProjection(hidden, hidden). Weights confirm:
         # linear_1/linear_2 are [hidden, 2*hidden]. Replace the class before
@@ -863,9 +863,10 @@ def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
                     self.linear_2 = _nn.Linear(hidden_dim * 2, hidden_dim, bias=True)
 
                 def forward(self, x, norm_x):
-                    h = _nn.functional.silu(self.linear_1(torch.cat([x, norm_x], dim=-1)))
+                    import torch as _torch
+                    h = _nn.functional.silu(self.linear_1(_torch.cat([x, norm_x], dim=-1)))
                     norm_h = _nn.functional.layer_norm(h, h.shape[-1:])
-                    return self.linear_2(torch.cat([h, norm_h], dim=-1))
+                    return self.linear_2(_torch.cat([h, norm_h], dim=-1))
 
             class _ConcatResidualApproximator(_nn.Module):
                 """Replaces ChromaApproximator; matches the saved state_dict key layout."""
@@ -880,11 +881,12 @@ def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
                     self.out_proj = _nn.Linear(hidden_dim * 2, out_dim, bias=True)
 
                 def forward(self, x):
+                    import torch as _torch
                     x = self.in_proj(x)
                     for layer, norm in zip(self.layers, self.norms):
                         nx = norm(x)
                         x  = x + layer(x, nx)
-                    return self.out_proj(torch.cat([x, x], dim=-1))
+                    return self.out_proj(_torch.cat([x, x], dim=-1))
 
             # Monkey-patch PixArtAlphaTextProjection so ChromaApproximator.__init__
             # builds _ConcatResidualApproximator-compatible layers. We intercept the
@@ -907,7 +909,7 @@ def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
                     f"in={_approx_in} hidden={_approx_hidden} out={_approx_out} "
                     f"layers={_approx_layers}")
 
-    # Build model from config — uses the patched config.json written by phobos-convert.py.
+    # Build model from config -- uses the patched config.json written by phobos-convert.py.
     transformer = TransformerClass.from_config(
         TransformerClass.load_config(transformer_dir),
         torch_dtype=dtype,
@@ -931,9 +933,23 @@ def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
     for shard in shard_files:
         state_dict.update(_st.load_file(shard, device="cpu"))
 
+    # Patch context_embedder to match saved weight shape.
+    # Saved: [3072, 8192] = Linear(in=8192, out=3072).
+    # ChromaTransformer2DModel builds Linear(joint_attention_dim, inner_dim).
+    # joint_attention_dim=8192 in config already produces the right shape --
+    # but if T5 outputs 4096 the forward will fail at runtime. The mismatch
+    # lives at the pipeline level, not the config level. Patch here for safety.
+    if is_chroma and "context_embedder.weight" in state_dict:
+        import torch.nn as _nn2
+        _ce_w = state_dict["context_embedder.weight"]
+        _ce_out, _ce_in = _ce_w.shape  # 3072, 8192
+        if list(transformer.context_embedder.weight.shape) != [_ce_out, _ce_in]:
+            transformer.context_embedder = _nn2.Linear(_ce_in, _ce_out, bias="context_embedder.bias" in state_dict)
+            log(f"context_embedder patched: Linear({_ce_in}, {_ce_out})")
+
     # Patch proj_out to match saved weight shape before load_state_dict.
-    # Saved: [64, 6144] = Linear(in=2*inner_dim, out=patch²*out_channels=64).
-    # ChromaTransformer2DModel builds Linear(inner_dim, patch²*in_channels) — wrong on both dims.
+    # Saved: [64, 6144] = Linear(in=2*inner_dim, out=patch?*out_channels=64).
+    # ChromaTransformer2DModel builds Linear(inner_dim, patch?*in_channels) -- wrong on both dims.
     # Derive correct shapes directly from the checkpoint.
     if is_chroma and "proj_out.weight" in state_dict:
         import torch.nn as _nn2
@@ -952,6 +968,25 @@ def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
     if unexpected:
         log(f"WARNING: {len(unexpected)} unexpected keys in transformer state_dict")
     del state_dict
+    transformer = transformer.to(dtype)
+
+    # Wrap context_embedder to double T5 input when context_in_dim = 2 * T5_dim.
+    # T5-XXL outputs 4096-dim; context_embedder.weight [3072, 8192] expects 8192.
+    # The GGUF was trained with cat(t5, t5) as input.
+    if is_chroma:
+        import torch as _torch
+        import torch.nn as _nn3
+        _ce = transformer.context_embedder
+        _ce_in = _ce.weight.shape[1] if hasattr(_ce, 'weight') else 0
+        if _ce_in == 8192:  # 2 * T5-XXL d_model (4096)
+            class _DoublingContextEmbedder(_nn3.Module):
+                def __init__(self, linear):
+                    super().__init__()
+                    self.linear = linear
+                def forward(self, x):
+                    return self.linear(_torch.cat([x, x], dim=-1))
+            transformer.context_embedder = _DoublingContextEmbedder(_ce)
+            log("context_embedder wrapped: cat(t5, t5) 4096->8192")
 
     log("loading diffusion model completed")
 
@@ -965,14 +1000,14 @@ def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
     text_encoder_2 = None
     tokenizer_2    = None
     if args.t5_path and os.path.exists(args.t5_path):
-        # Prefer pre-converted BF16 safetensors alongside the transformer —
+        # Prefer pre-converted BF16 safetensors alongside the transformer --
         # avoids dequantizing 219 tensors on every load.
         converted_t5_dir = os.path.join(variant_dir, "text_encoder_2")
         if os.path.exists(os.path.join(converted_t5_dir, "config.json")):
             log(f"loading t5xxl from converted BF16 ({converted_t5_dir})")
             text_encoder_2 = T5EncoderModel.from_pretrained(converted_t5_dir, torch_dtype=dtype)
         elif is_gguf(args.t5_path):
-            log(f"loading t5xxl from {Path(args.t5_path).name} (GGUF — run convert to cache as BF16)")
+            log(f"loading t5xxl from {Path(args.t5_path).name} (GGUF -- run convert to cache as BF16)")
             text_encoder_2 = T5EncoderModel.from_pretrained(
                 os.path.dirname(args.t5_path),
                 gguf_file=os.path.basename(args.t5_path),
@@ -991,12 +1026,19 @@ def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
         tokenizer    = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
 
     scheduler = FlowMatchEulerDiscreteScheduler()
-    pipe = PipelineClass(
-        transformer=transformer, vae=vae,
-        text_encoder=text_encoder, tokenizer=tokenizer,
-        text_encoder_2=text_encoder_2, tokenizer_2=tokenizer_2,
-        scheduler=scheduler,
-    )
+    if is_chroma:
+        pipe = PipelineClass(
+            transformer=transformer, vae=vae,
+            text_encoder=text_encoder_2, tokenizer=tokenizer_2,
+            scheduler=scheduler,
+        )
+    else:
+        pipe = PipelineClass(
+            transformer=transformer, vae=vae,
+            text_encoder=text_encoder, tokenizer=tokenizer,
+            text_encoder_2=text_encoder_2, tokenizer_2=tokenizer_2,
+            scheduler=scheduler,
+        )
     log("loading tensors completed")
     if args.offload_cpu:
         pipe.enable_model_cpu_offload()
@@ -1018,7 +1060,7 @@ def load_pipeline(args, device: str, dtype):
         if is_gguf(args.model_path):
             return load_flux_gguf_pipeline(args, device, dtype)
         else:
-            # safetensors single-file — same pipeline, different loader
+            # safetensors single-file -- same pipeline, different loader
             from diffusers import FluxPipeline
             log(f"loading diffusion model from {Path(args.model_path).name}")
             pipe = FluxPipeline.from_single_file(
@@ -1049,7 +1091,7 @@ def load_pipeline(args, device: str, dtype):
     raise ValueError(f"Unsupported model type: {model_type}")
 
 
-# ── Post-load optimisations ───────────────────────────────────────────────────
+# -- Post-load optimisations ---------------------------------------------------
 
 # Models where SageAttention is known to produce broken output.
 # Z-Image: produces black images. Quantised Wan: NaN in query tensors.
@@ -1064,7 +1106,7 @@ def _is_wan_quantised(args) -> bool:
 def apply_optimizations(pipe, args, device: str) -> None:
     """Apply SageAttention and/or torch.compile after pipeline load.
 
-    Both are opt-in via CLI flags. Neither raises on failure — a warning is
+    Both are opt-in via CLI flags. Neither raises on failure -- a warning is
     logged and generation continues with the default attention backend.
     """
     if args.sage_attention:
@@ -1077,25 +1119,25 @@ def _apply_sage_attention(pipe, args, device: str) -> None:
     """Set SageAttention 2.x as the attention backend.
 
     Diffusers 0.36 reads DIFFUSERS_ATTN_BACKEND at the start of each
-    attention forward() call — setting it here after load is safe and
+    attention forward() call -- setting it here after load is safe and
     affects all subsequent inference steps.
     """
     import importlib.util
 
     if args.model_type in _SAGE_BLOCKED_TYPES:
-        log(f"[INFO ] SageAttention skipped — not supported for model type '{args.model_type}'")
+        log(f"[INFO ] SageAttention skipped -- not supported for model type '{args.model_type}'")
         return
 
     if _is_wan_quantised(args):
-        log("[INFO ] SageAttention skipped — quantised Wan model (NaN risk in query tensors)")
+        log("[INFO ] SageAttention skipped -- quantised Wan model (NaN risk in query tensors)")
         return
 
     if not (device.startswith("cuda") or device.startswith("rocm")):
-        log(f"[INFO ] SageAttention skipped — not supported on device '{device}'")
+        log(f"[INFO ] SageAttention skipped -- not supported on device '{device}'")
         return
 
     if importlib.util.find_spec("sageattention") is None:
-        log("[WARN] --sage-attention set but sageattention package not installed — skipping")
+        log("[WARN] --sage-attention set but sageattention package not installed -- skipping")
         return
 
     try:
@@ -1104,7 +1146,7 @@ def _apply_sage_attention(pipe, args, device: str) -> None:
 
         raw_ver = getattr(sageattention, "__version__", None)
         if raw_ver is not None and Version(raw_ver) < Version("2.1.1"):
-            log(f"[WARN] SageAttention {raw_ver} < 2.1.1 required — skipping")
+            log(f"[WARN] SageAttention {raw_ver} < 2.1.1 required -- skipping")
             return
 
         os.environ["DIFFUSERS_ATTN_BACKEND"] = "sage_attn"
@@ -1112,50 +1154,50 @@ def _apply_sage_attention(pipe, args, device: str) -> None:
         log(f"[INFO ] SageAttention {ver_str} enabled")
 
     except Exception as e:
-        log(f"[WARN] SageAttention setup failed — falling back to SDPA: {e}")
+        log(f"[WARN] SageAttention setup failed -- falling back to SDPA: {e}")
 
 
 def _apply_torch_compile(pipe, args) -> None:
     """Compile the diffusion transformer with torch.compile reduce-overhead.
 
     Traces the graph once and emits CUDA graphs for subsequent steps.
-    Cache lives in ~/.triton/cache/ — reused across runs for the same model.
+    Cache lives in ~/.triton/cache/ -- reused across runs for the same model.
 
     Skipped on non-CUDA (no Triton backend) and Wan video (dynamic latent
     shapes change per call, causing retrace on every denoising step).
-    Skipped when --offload-cpu is set — torch.compile and CPU offload are
+    Skipped when --offload-cpu is set -- torch.compile and CPU offload are
     incompatible in PyTorch <2.5; guard kept for correctness on all versions.
     """
     import torch
 
     if args.model_type == "wan":
-        log("[INFO ] torch.compile skipped — Wan video uses dynamic latent shapes")
+        log("[INFO ] torch.compile skipped -- Wan video uses dynamic latent shapes")
         return
 
     if args.offload_cpu:
-        log("[INFO ] torch.compile skipped — incompatible with --offload-cpu")
+        log("[INFO ] torch.compile skipped -- incompatible with --offload-cpu")
         return
 
     if not torch.cuda.is_available():
-        log("[INFO ] torch.compile skipped — requires CUDA")
+        log("[INFO ] torch.compile skipped -- requires CUDA")
         return
 
     # ROCm on Windows: triton-windows is CUDA-only. torch.compile calls the
-    # Triton backend which has no Windows ROCm support — it raises a
+    # Triton backend which has no Windows ROCm support -- it raises a
     # TorchDynamo error immediately. Detect via torch.version.hip (only set
     # on ROCm builds) + sys.platform.
     import sys
     if sys.platform == "win32" and getattr(torch.version, "hip", None) is not None:
-        log("[INFO ] torch.compile skipped — Triton has no ROCm Windows backend")
+        log("[INFO ] torch.compile skipped -- Triton has no ROCm Windows backend")
         return
 
     transformer = getattr(pipe, "transformer", None) or getattr(pipe, "unet", None)
     if transformer is None:
-        log("[WARN] torch.compile: no transformer/unet found on pipeline — skipping")
+        log("[WARN] torch.compile: no transformer/unet found on pipeline -- skipping")
         return
 
     try:
-        log("[INFO ] torch.compile: compiling transformer (first run ~2 min, cached after)…")
+        log("[INFO ] torch.compile: compiling transformer (first run ~2 min, cached after)?")
         compiled = torch.compile(transformer, mode="reduce-overhead", fullgraph=False)
         if hasattr(pipe, "transformer"):
             pipe.transformer = compiled
@@ -1163,10 +1205,10 @@ def _apply_torch_compile(pipe, args) -> None:
             pipe.unet = compiled
         log("[INFO ] torch.compile: ready")
     except Exception as e:
-        log(f"[WARN] torch.compile failed — running uncompiled: {e}")
+        log(f"[WARN] torch.compile failed -- running uncompiled: {e}")
 
 
-# ── Callback for step progress ───────────────────────────────────────────────
+# -- Callback for step progress -----------------------------------------------
 
 class ProgressCallback:
     """Diffusers callback that emits sd-cli-compatible progress lines."""
@@ -1198,13 +1240,13 @@ class ProgressCallback:
 
         Strategy by model family:
         - FLUX / Chroma / Z-Image / Kontext / FLUX2 / Qwen-Image:
-            Linear channel projection — no VAE decode. Takes first 3 of the 16
+            Linear channel projection -- no VAE decode. Takes first 3 of the 16
             latent channels, normalises per-channel to [0,1], saves as RGB.
             Same concept as sd-cli --preview proj. Zero VRAM impact.
         - SDXL:
             Same projection on 4-channel latents, drop ch3.
         - Wan (video):
-            Skipped — 5D latents, not useful as a still frame.
+            Skipped -- 5D latents, not useful as a still frame.
         """
         import torch
         from PIL import Image
@@ -1246,7 +1288,7 @@ class ProgressCallback:
                 log(f"[WARN] preview write failed (will not retry): {e}")
 
 
-# ── Generation ───────────────────────────────────────────────────────────────
+# -- Generation ---------------------------------------------------------------
 
 def generate_txt2img(pipe, args, device: str, dtype):
     """Run txt2img generation with the loaded pipeline."""
@@ -1291,7 +1333,7 @@ def generate_txt2img(pipe, args, device: str, dtype):
     )
     gen_kwargs["callback_on_step_end"] = callback
 
-    # Artist Plugin System — multi-adapter loading
+    # Artist Plugin System -- multi-adapter loading
     if args.lora_paths:
         import zipfile
         import io as _io
@@ -1308,7 +1350,7 @@ def generate_txt2img(pipe, args, device: str, dtype):
             log(f"loading plugin '{adapter_name}' from {Path(archive_path).name} (weight={weight})")
             try:
                 if kind == "plugin":
-                    # Read lora.safetensors directly from .phobos zip — no extraction to disk
+                    # Read lora.safetensors directly from .phobos zip -- no extraction to disk
                     with zipfile.ZipFile(archive_path, "r") as zf:
                         if "lora.safetensors" not in zf.namelist():
                             raise ValueError(f"lora.safetensors not found inside {archive_path}")
@@ -1316,14 +1358,14 @@ def generate_txt2img(pipe, args, device: str, dtype):
                     lora_buf = _io.BytesIO(lora_bytes)
                     pipe.load_lora_weights(lora_buf, adapter_name=adapter_name)
                 else:
-                    # raw_lora — flat file path
+                    # raw_lora -- flat file path
                     pipe.load_lora_weights(archive_path, adapter_name=adapter_name)
 
                 loaded_names.append(adapter_name)
                 loaded_weights.append(weight)
                 log(f"plugin '{adapter_name}' loaded")
             except Exception as e:
-                # Non-fatal — log and skip. Degraded generation beats a crash.
+                # Non-fatal -- log and skip. Degraded generation beats a crash.
                 log(f"[WARN] failed to load plugin '{adapter_name}': {e}")
 
         if loaded_names:
@@ -1439,13 +1481,13 @@ def generate_video(pipe, args, device: str, dtype):
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
-    # export_to_video requires opencv — fall back to PIL if not installed
+    # export_to_video requires opencv -- fall back to PIL if not installed
     frames = result.frames[0]
     try:
         from diffusers.utils import export_to_video
         export_to_video(frames, output_path, fps=args.fps)
     except ImportError:
-        log("[WARN] OpenCV not found — using PIL for frame export")
+        log("[WARN] OpenCV not found -- using PIL for frame export")
         import torch as _torch
         import numpy as np
         from PIL import Image as PILImage
@@ -1457,7 +1499,7 @@ def generate_video(pipe, args, device: str, dtype):
                 # Shape: (C, H, W) or (H, W, C), range [0,1] or [0,255]
                 arr = frame.cpu().float().numpy()
                 if arr.ndim == 3 and arr.shape[0] in (1, 3, 4):
-                    arr = np.transpose(arr, (1, 2, 0))  # CHW → HWC
+                    arr = np.transpose(arr, (1, 2, 0))  # CHW -> HWC
                 if arr.max() <= 1.0:
                     arr = (arr * 255).clip(0, 255)
                 PILImage.fromarray(arr.astype(np.uint8)).save(f"{stem}-frame{i:04d}.png")
@@ -1479,16 +1521,16 @@ def generate_video(pipe, args, device: str, dtype):
     return seed, elapsed
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# -- Main ---------------------------------------------------------------------
 
 def main():
     parser = build_parser()
     args = parser.parse_args()
 
-    # ── HuggingFace cache configuration ──────────────────────────────────────
+    # -- HuggingFace cache configuration --------------------------------------
     # Store HF configs alongside PHOBOS models to avoid repeated network hits.
     # After first download, set HF_HUB_OFFLINE=1 so all subsequent runs are
-    # fully local — eliminates the "unauthenticated requests" warning and the
+    # fully local -- eliminates the "unauthenticated requests" warning and the
     # network round-trip on every generation.
     phobos_home = os.path.join(os.path.expanduser("~"), ".phobos")
     hf_cache = os.path.join(phobos_home, "hf-cache")
@@ -1496,7 +1538,7 @@ def main():
     os.environ.setdefault("HF_HOME", hf_cache)
     os.environ.setdefault("TRANSFORMERS_CACHE", os.path.join(hf_cache, "transformers"))
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-    # Suppress the unauthenticated HF Hub warning — PHOBOS uses cached configs only
+    # Suppress the unauthenticated HF Hub warning -- PHOBOS uses cached configs only
     os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 
     # Resolve device
@@ -1505,11 +1547,11 @@ def main():
     dtype = resolve_dtype(args.dtype)
     log(f"[INFO ] Device: {device}, dtype: {args.dtype}")
 
-    # ── XPU fp64 workaround ───────────────────────────────────────────────────
+    # -- XPU fp64 workaround ---------------------------------------------------
     # Intel Arc (Alchemist/Xe-HPG) does not support fp64 in hardware.
     # Diffusers' RoPE embedding path calls torch.arange(..., dtype=float64) which
     # crashes with "Required aspect fp64 is not supported on the device".
-    # Patch torch.arange to silently downcast float64 → float32 on XPU devices.
+    # Patch torch.arange to silently downcast float64 -> float32 on XPU devices.
     if device.startswith("xpu"):
         _original_arange = torch.arange
         def _xpu_safe_arange(*args, **kwargs):
@@ -1536,7 +1578,7 @@ def main():
     else:
         seed, gen_elapsed = generate_txt2img(pipe, args, device, dtype)
 
-    # Verify output — check original path, .mp4 variant, and PNG frame fallback for video
+    # Verify output -- check original path, .mp4 variant, and PNG frame fallback for video
     output_exists = os.path.exists(args.output)
     if not output_exists and args.model_type == "wan":
         mp4_path = os.path.splitext(args.output)[0] + ".mp4"
@@ -1546,7 +1588,7 @@ def main():
         log("[ERROR] Generation completed but output file not found")
         sys.exit(1)
 
-    log(f"[INFO ] Done — seed {seed}, {gen_elapsed:.1f}s generation, {load_elapsed:.1f}s load")
+    log(f"[INFO ] Done -- seed {seed}, {gen_elapsed:.1f}s generation, {load_elapsed:.1f}s load")
 
 
 if __name__ == "__main__":

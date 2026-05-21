@@ -169,10 +169,16 @@ export interface RoomInstance {
  * Stored so WorldScene can render it independently of the rooms.
  */
 export interface CorridorSpec {
-  fromSlot:   { worldTx: number; worldTy: number; edge: EdgeDir };
-  toSlot:     { worldTx: number; worldTy: number; edge: EdgeDir };
-  tiles:      Array<{ tx: number; ty: number; frame: number }>;
-  tint:       number;
+  fromSlot:       { worldTx: number; worldTy: number; edge: EdgeDir };
+  toSlot:         { worldTx: number; worldTy: number; edge: EdgeDir };
+  tiles:          Array<{ tx: number; ty: number; frame: number }>;
+  tint:           number;
+  /**
+   * Pre-computed outer-edge tile positions for glow rail placement.
+   * Present on L-shaped corridors where the minTx/maxTx heuristic is
+   * incorrect. When absent, _spawnRoomCorridor falls back to the heuristic.
+   */
+  glowEdgeTiles?: Array<{ tx: number; ty: number }>;
 }
 
 /**
@@ -4904,7 +4910,7 @@ export const ROOM_CATALOGUE: RoomDef[] = [
   {
     id: 'bunker-corridor-junction',
     zone_act: 2,
-    region_types: ['bunker-corridor'],
+    region_types: ['bunker-corridor', 'bunker-branch'],
     type: 'standard',
     size: { w: 8, h: 8 },
     connections: [
@@ -4947,7 +4953,7 @@ export const ROOM_CATALOGUE: RoomDef[] = [
   {
     id: 'bunker-room-small',
     zone_act: 2,
-    region_types: ['bunker-corridor'],
+    region_types: ['bunker-corridor', 'bunker-branch'],
     type: 'dead-end',
     size: { w: 8, h: 8 },
     connections: [
@@ -5097,7 +5103,7 @@ export const ROOM_CATALOGUE: RoomDef[] = [
   {
     id:           'bunker-barracks-hall',
     zone_act:     2,
-    region_types: ['bunker-corridor', 'bunker-depot', 'bunker-command'],
+    region_types: ['bunker-corridor', 'bunker-depot', 'bunker-command', 'bunker-convergence'],
     type:         'standard',
     size:         { w: 16, h: 12 },
     connections: [
@@ -5155,7 +5161,7 @@ export const ROOM_CATALOGUE: RoomDef[] = [
   {
     id:           'bunker-storage-bay',
     zone_act:     2,
-    region_types: ['bunker-corridor', 'bunker-depot', 'bunker-command'],
+    region_types: ['bunker-corridor', 'bunker-depot', 'bunker-command', 'bunker-convergence'],
     type:         'standard',
     size:         { w: 12, h: 16 },
     connections: [
@@ -5214,7 +5220,7 @@ export const ROOM_CATALOGUE: RoomDef[] = [
   {
     id:           'bunker-crossroads',
     zone_act:     2,
-    region_types: ['bunker-corridor', 'bunker-depot', 'bunker-command'],
+    region_types: ['bunker-corridor', 'bunker-depot', 'bunker-command', 'bunker-branch', 'bunker-grid'],
     type:         'standard',
     size:         { w: 8, h: 8 },
     connections: [
@@ -5294,7 +5300,7 @@ export const ROOM_CATALOGUE: RoomDef[] = [
   {
     id:           'bunker-armoury',
     zone_act:     2,
-    region_types: ['bunker-corridor', 'bunker-depot', 'bunker-command'],
+    region_types: ['bunker-corridor', 'bunker-depot', 'bunker-command', 'bunker-branch'],
     type:         'dead-end',
     size:         { w: 12, h: 8 },
     connections: [
@@ -5484,6 +5490,426 @@ export const ROOM_CATALOGUE: RoomDef[] = [
     min_room_tier: 1,
   },
 
+  // ── bunker-cell-cross ─────────────────────────────────────────────────────
+  // 8×8 four-way grid cell: S + N + E + W. The primary interior room for the
+  // grid layout. Wall gaps on all four sides; central pillar remains.
+  {
+    id:           'bunker-cell-cross',
+    zone_act:     2,
+    region_types: ['bunker-grid'],
+    type:         'standard',
+    size:         { w: 8, h: 8 },
+    connections: [
+      { id: 'south-0', edge: 'S', tx: 4, ty: 7 },
+      { id: 'north-0', edge: 'N', tx: 4, ty: 0 },
+      { id: 'east-0',  edge: 'E', tx: 7, ty: 4 },
+      { id: 'west-0',  edge: 'W', tx: 0, ty: 4 },
+    ],
+    tiles: ((): Array<{ tx: number; ty: number; frame: number }> => {
+      const t: Array<{ tx: number; ty: number; frame: number }> = [];
+      for (let ty = 0; ty < 8; ty++)
+        for (let tx = 0; tx < 8; tx++)
+          t.push({ tx, ty, frame: 0 });
+      return t;
+    })(),
+    structures: [
+      // North wall — gap at tx 3-5 for N corridor
+      { tx: 0, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 1, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 2, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 6, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // East wall — gap at ty 3-5 for E corridor
+      { tx: 7, ty: 1, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 2, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 6, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 7, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // West wall — gap at ty 3-5 for W corridor
+      { tx: 0, ty: 1, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 2, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 6, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 7, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // Central pillar
+      { tx: 3, ty: 3, frame: 35, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 4, ty: 3, frame: 36, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 3, ty: 4, frame: 28, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 4, ty: 4, frame: 29, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+    ],
+    variants: [],
+    spawn_markers: [
+      { id: 'e0', tx: 1, ty: 5, type: 'enemy' },
+      { id: 'e1', tx: 6, ty: 2, type: 'enemy' },
+      { id: 'e2', tx: 1, ty: 2, type: 'enemy' },
+      { id: 'e3', tx: 6, ty: 5, type: 'enemy' },
+    ],
+    min_room_tier: 0,
+  },
+
+  // ── bunker-cell-west ──────────────────────────────────────────────────────
+  // 8×8 three-way grid cell: S + N + W. Left-column grid room; mirrors
+  // bunker-crossroads (S+N+E). Outer west wall is open; east wall is solid.
+  {
+    id:           'bunker-cell-west',
+    zone_act:     2,
+    region_types: ['bunker-grid'],
+    type:         'standard',
+    size:         { w: 8, h: 8 },
+    connections: [
+      { id: 'south-0', edge: 'S', tx: 4, ty: 7 },
+      { id: 'north-0', edge: 'N', tx: 4, ty: 0 },
+      { id: 'west-0',  edge: 'W', tx: 0, ty: 4 },
+    ],
+    tiles: ((): Array<{ tx: number; ty: number; frame: number }> => {
+      const t: Array<{ tx: number; ty: number; frame: number }> = [];
+      for (let ty = 0; ty < 8; ty++)
+        for (let tx = 0; tx < 8; tx++)
+          t.push({ tx, ty, frame: 0 });
+      return t;
+    })(),
+    structures: [
+      // North wall — gap at tx 3-5
+      { tx: 0, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 1, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 2, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 6, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // East wall — solid (no east corridor from this room)
+      { tx: 7, ty: 1, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 2, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 3, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 4, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 5, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 6, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 7, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // West wall — gap at ty 3-5 for W corridor
+      { tx: 0, ty: 1, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 2, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 6, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 7, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // Central pillar
+      { tx: 3, ty: 3, frame: 35, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 4, ty: 3, frame: 36, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 3, ty: 4, frame: 28, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 4, ty: 4, frame: 29, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+    ],
+    variants: [],
+    spawn_markers: [
+      { id: 'e0', tx: 1, ty: 2, type: 'enemy' },
+      { id: 'e1', tx: 6, ty: 5, type: 'enemy' },
+      { id: 'l0', tx: 5, ty: 1, type: 'loot'  },
+    ],
+    min_room_tier: 0,
+  },
+
+  // ── bunker-ring-junction ──────────────────────────────────────────────────
+  // 8×8 ring base node: S + E + W. Entry point of the ring loop. Opens south
+  // to the prior region, east and west to start the two ring legs.
+  // No north slot — this room does not chain north directly.
+  {
+    id:           'bunker-ring-junction',
+    zone_act:     2,
+    region_types: ['bunker-ring'],
+    type:         'standard',
+    size:         { w: 8, h: 8 },
+    connections: [
+      { id: 'south-0', edge: 'S', tx: 4, ty: 7 },
+      { id: 'east-0',  edge: 'E', tx: 7, ty: 4 },
+      { id: 'west-0',  edge: 'W', tx: 0, ty: 4 },
+    ],
+    tiles: ((): Array<{ tx: number; ty: number; frame: number }> => {
+      const t: Array<{ tx: number; ty: number; frame: number }> = [];
+      for (let ty = 0; ty < 8; ty++)
+        for (let tx = 0; tx < 8; tx++)
+          t.push({ tx, ty, frame: 0 });
+      return t;
+    })(),
+    structures: [
+      // North wall — solid (no N slot; ring goes east and west)
+      { tx: 0, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 1, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 2, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 3, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 4, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 5, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 6, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // East wall — gap at ty 3-5 for E corridor
+      { tx: 7, ty: 1, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 2, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 6, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 7, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // West wall — gap at ty 3-5 for W corridor
+      { tx: 0, ty: 1, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 2, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 6, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 7, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // Central divider — two consoles flanking the path
+      { tx: 3, ty: 2, frame: 7, tint: TINT_BUNKER_DETAIL, depth: 5 },
+      { tx: 4, ty: 2, frame: 7, tint: TINT_BUNKER_DETAIL, depth: 5 },
+      { tx: 3, ty: 6, frame: 28, tint: TINT_BUNKER_DETAIL, depth: 5, blocked: true },
+      { tx: 4, ty: 6, frame: 28, tint: TINT_BUNKER_DETAIL, depth: 5, blocked: true },
+    ],
+    variants: [],
+    spawn_markers: [
+      { id: 'e0', tx: 2, ty: 4, type: 'enemy' },
+      { id: 'e1', tx: 5, ty: 4, type: 'enemy' },
+    ],
+    min_room_tier: 0,
+  },
+
+  // ── bunker-ring-apex ──────────────────────────────────────────────────────
+  // 8×8 ring top node: E + W + N. Receives from both ring legs (E and W),
+  // exits north to continue the region chain. The loop closes here.
+  {
+    id:           'bunker-ring-apex',
+    zone_act:     2,
+    region_types: ['bunker-ring'],
+    type:         'standard',
+    size:         { w: 8, h: 8 },
+    connections: [
+      { id: 'north-0', edge: 'N', tx: 4, ty: 0 },
+      { id: 'east-0',  edge: 'E', tx: 7, ty: 4 },
+      { id: 'west-0',  edge: 'W', tx: 0, ty: 4 },
+    ],
+    tiles: ((): Array<{ tx: number; ty: number; frame: number }> => {
+      const t: Array<{ tx: number; ty: number; frame: number }> = [];
+      for (let ty = 0; ty < 8; ty++)
+        for (let tx = 0; tx < 8; tx++)
+          t.push({ tx, ty, frame: 0 });
+      return t;
+    })(),
+    structures: [
+      // South wall — solid (no S slot; ring arrives from E and W)
+      { tx: 0, ty: 7, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 1, ty: 7, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 2, ty: 7, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 3, ty: 7, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 4, ty: 7, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 5, ty: 7, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 6, ty: 7, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 7, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // East wall — gap at ty 3-5 for E corridor arrival
+      { tx: 7, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 1, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 2, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 6, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // West wall — gap at ty 3-5 for W corridor arrival
+      { tx: 0, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 1, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 2, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 6, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // Central objective marker — loot cache / terminal
+      { tx: 3, ty: 3, frame: 7,  tint: TINT_BUNKER_DETAIL, depth: 5 },
+      { tx: 4, ty: 3, frame: 7,  tint: TINT_BUNKER_DETAIL, depth: 5 },
+      { tx: 3, ty: 4, frame: 28, tint: TINT_BUNKER_DETAIL, depth: 5, blocked: true },
+      { tx: 4, ty: 4, frame: 28, tint: TINT_BUNKER_DETAIL, depth: 5, blocked: true },
+    ],
+    variants: [],
+    spawn_markers: [
+      { id: 'e0', tx: 1, ty: 5, type: 'enemy' },
+      { id: 'e1', tx: 6, ty: 2, type: 'enemy' },
+      { id: 'l0', tx: 2, ty: 2, type: 'loot'  },
+      { id: 'l1', tx: 5, ty: 5, type: 'loot'  },
+    ],
+    min_room_tier: 0,
+  },
+
+  // ── bunker-ring-side-a ────────────────────────────────────────────────────
+  // 8×8 ring side room: S + N only. Used for both left and right ring legs.
+  // Narrow vertical room — feels like a guarded corridor between the ring base
+  // and apex. Wider wall segments give it a different feel from spine rooms.
+  {
+    id:           'bunker-ring-side-a',
+    zone_act:     2,
+    region_types: ['bunker-ring', 'bunker-convergence'],
+    type:         'standard',
+    size:         { w: 8, h: 8 },
+    connections: [
+      { id: 'south-0', edge: 'S', tx: 4, ty: 7 },
+      { id: 'north-0', edge: 'N', tx: 4, ty: 0 },
+    ],
+    tiles: ((): Array<{ tx: number; ty: number; frame: number }> => {
+      const t: Array<{ tx: number; ty: number; frame: number }> = [];
+      for (let ty = 0; ty < 8; ty++)
+        for (let tx = 0; tx < 8; tx++)
+          t.push({ tx, ty, frame: 0 });
+      return t;
+    })(),
+    structures: [
+      // North wall — gap at tx 3-5
+      { tx: 0, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 1, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 2, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 6, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // East and west walls — solid (ring side rooms are tight corridors)
+      { tx: 0, ty: 1, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 2, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 3, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 4, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 5, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 6, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 1, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 2, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 3, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 4, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 5, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 6, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // Central obstacle
+      { tx: 3, ty: 3, frame: 35, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 4, ty: 3, frame: 36, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+    ],
+    variants: [],
+    spawn_markers: [
+      { id: 'e0', tx: 2, ty: 5, type: 'enemy' },
+      { id: 'e1', tx: 5, ty: 2, type: 'enemy' },
+    ],
+    min_room_tier: 0,
+  },
+
+  // ── bunker-ring-side-b ────────────────────────────────────────────────────
+  // 8×12 ring side room: S + N. Wider ring side variant with a patrol alcove.
+  {
+    id:           'bunker-ring-side-b',
+    zone_act:     2,
+    region_types: ['bunker-ring', 'bunker-convergence'],
+    type:         'standard',
+    size:         { w: 8, h: 12 },
+    connections: [
+      { id: 'south-0', edge: 'S', tx: 4, ty: 11 },
+      { id: 'north-0', edge: 'N', tx: 4, ty: 0  },
+    ],
+    tiles: ((): Array<{ tx: number; ty: number; frame: number }> => {
+      const t: Array<{ tx: number; ty: number; frame: number }> = [];
+      for (let ty = 0; ty < 12; ty++)
+        for (let tx = 0; tx < 8; tx++)
+          t.push({ tx, ty, frame: 0 });
+      return t;
+    })(),
+    structures: [
+      // North wall — gap at tx 3-5
+      { tx: 0, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 1, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 2, ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 6, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // Solid east and west walls
+      { tx: 0, ty: 1,  frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 2,  frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 3,  frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 4,  frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 5,  frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 6,  frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 7,  frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 8,  frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 9,  frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 0, ty: 10, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 1,  frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 2,  frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 3,  frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 4,  frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 5,  frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 6,  frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 7,  frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 8,  frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 9,  frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7, ty: 10, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // Patrol alcove obstacle mid-room
+      { tx: 2, ty: 5, frame: 35, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 3, ty: 5, frame: 36, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 4, ty: 7, frame: 7,  tint: TINT_BUNKER_DETAIL, depth: 5 },
+      { tx: 5, ty: 7, frame: 7,  tint: TINT_BUNKER_DETAIL, depth: 5 },
+    ],
+    variants: [],
+    spawn_markers: [
+      { id: 'e0', tx: 2, ty: 3,  type: 'enemy' },
+      { id: 'e1', tx: 5, ty: 8,  type: 'enemy' },
+      { id: 'l0', tx: 3, ty: 9,  type: 'loot'  },
+      { id: 'm0', tx: 1, ty: 2,  type: 'mineral' },
+    ],
+    min_room_tier: 0,
+  },
+
+  // ── bunker-convergence-boss ───────────────────────────────────────────────
+  // 20×16 final boss arena for the convergence region. Single south connection
+  // at the centre — all three feed corridors converge here. No north slot;
+  // this is the terminal room. High enemy density, multiple loot markers.
+  {
+    id:           'bunker-convergence-boss',
+    zone_act:     2,
+    region_types: ['bunker-convergence'],
+    type:         'boss',
+    size:         { w: 20, h: 16 },
+    connections: [
+      { id: 'south-0', edge: 'S', tx: 10, ty: 15 },
+    ],
+    tiles: ((): Array<{ tx: number; ty: number; frame: number }> => {
+      const t: Array<{ tx: number; ty: number; frame: number }> = [];
+      for (let ty = 0; ty < 16; ty++)
+        for (let tx = 0; tx < 20; tx++)
+          t.push({ tx, ty, frame: 0 });
+      return t;
+    })(),
+    structures: [
+      // North wall — solid
+      { tx: 0,  ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 1,  ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 2,  ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 3,  ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 4,  ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 5,  ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 6,  ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 7,  ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 8,  ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 9,  ty: 0, frame: 21, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 10, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 11, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 12, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 13, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 14, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 15, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 16, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 17, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 18, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 19, ty: 0, frame: 22, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // Four corner pillars — arena obstacle layout
+      { tx: 3,  ty: 3,  frame: 35, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 4,  ty: 3,  frame: 36, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 3,  ty: 4,  frame: 28, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 4,  ty: 4,  frame: 29, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 15, ty: 3,  frame: 35, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 16, ty: 3,  frame: 36, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 15, ty: 4,  frame: 28, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 16, ty: 4,  frame: 29, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 3,  ty: 11, frame: 35, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 4,  ty: 11, frame: 36, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 3,  ty: 12, frame: 28, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 4,  ty: 12, frame: 29, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 15, ty: 11, frame: 35, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 16, ty: 11, frame: 36, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 15, ty: 12, frame: 28, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      { tx: 16, ty: 12, frame: 29, tint: TINT_BUNKER_WALL, depth: 4, blocked: true },
+      // Central objective
+      { tx: 9,  ty: 7, frame: 7,  tint: TINT_BUNKER_DETAIL, depth: 5 },
+      { tx: 10, ty: 7, frame: 7,  tint: TINT_BUNKER_DETAIL, depth: 5 },
+      { tx: 9,  ty: 8, frame: 28, tint: TINT_BUNKER_DETAIL, depth: 5, blocked: true },
+      { tx: 10, ty: 8, frame: 28, tint: TINT_BUNKER_DETAIL, depth: 5, blocked: true },
+    ],
+    variants: [],
+    spawn_markers: [
+      { id: 'e0', tx: 7,  ty: 6,  type: 'enemy' },
+      { id: 'e1', tx: 12, ty: 6,  type: 'enemy' },
+      { id: 'e2', tx: 2,  ty: 10, type: 'enemy' },
+      { id: 'e3', tx: 17, ty: 10, type: 'enemy' },
+      { id: 'e4', tx: 7,  ty: 13, type: 'enemy' },
+      { id: 'e5', tx: 12, ty: 13, type: 'enemy' },
+      { id: 'l0', tx: 1,  ty: 2,  type: 'loot'  },
+      { id: 'l1', tx: 18, ty: 2,  type: 'loot'  },
+      { id: 'l2', tx: 9,  ty: 12, type: 'loot'  },
+    ],
+    min_room_tier: 1,
+  },
+
 ];  // end ROOM_CATALOGUE
 
 // ── REGION_REGISTRY ───────────────────────────────────────────────────────
@@ -5522,6 +5948,50 @@ export const REGION_REGISTRY: RegionDef[] = [
     corridor_max:   12,
     tint:           TINT_BUNKER_FLOOR,
   },
+  {
+    id:             'bunker-branch',
+    label:          'Bunker Branch Wing',
+    zone_acts:      [2],
+    layout:         'branching',
+    room_count_min: 5,
+    room_count_max: 8,
+    corridor_min:   3,
+    corridor_max:   8,
+    tint:           TINT_BUNKER_FLOOR,
+  },
+  {
+    id:             'bunker-grid',
+    label:          'Bunker Grid Block',
+    zone_acts:      [2],
+    layout:         'grid',
+    room_count_min: 4,
+    room_count_max: 8,
+    corridor_min:   3,
+    corridor_max:   6,
+    tint:           TINT_BUNKER_FLOOR,
+  },
+  {
+    id:             'bunker-ring',
+    label:          'Bunker Ring Sector',
+    zone_acts:      [2],
+    layout:         'ring',
+    room_count_min: 4,
+    room_count_max: 5,
+    corridor_min:   3,
+    corridor_max:   7,
+    tint:           TINT_BUNKER_FLOOR,
+  },
+  {
+    id:             'bunker-convergence',
+    label:          'Bunker Convergence Point',
+    zone_acts:      [2],
+    layout:         'convergence',
+    room_count_min: 3,
+    room_count_max: 4,
+    corridor_min:   4,
+    corridor_max:   8,
+    tint:           TINT_BUNKER_FLOOR,
+  },
 ];
 
 // ── ZONE_LIBRARY ──────────────────────────────────────────────────────────
@@ -5534,12 +6004,180 @@ export const ZONE_LIBRARY: ZoneDef[] = [
     region_defs:   [
       REGION_REGISTRY.find(r => r.id === 'bunker-corridor')!,
       REGION_REGISTRY.find(r => r.id === 'bunker-depot')!,
+      REGION_REGISTRY.find(r => r.id === 'bunker-branch')!,
+      REGION_REGISTRY.find(r => r.id === 'bunker-grid')!,
+      REGION_REGISTRY.find(r => r.id === 'bunker-ring')!,
       REGION_REGISTRY.find(r => r.id === 'bunker-command')!,
+      REGION_REGISTRY.find(r => r.id === 'bunker-convergence')!,
     ],
     enemy_flavour: 'sentinels',
     tint:          TINT_BUNKER_FLOOR,
   },
 ];
+
+// ── buildLCorridor ────────────────────────────────────────────────────────
+//
+// Builds a CorridorSpec connecting two world-tile connection points. Handles
+// four cases:
+//
+//   Straight N/S  — pure vertical 3-wide strip (degenerate L, no jog)
+//   Straight E/W  — pure horizontal 3-wide strip
+//   L: vertical first — exits a N or S slot, jogs E/W to reach target tx
+//   L: horizontal first — exits an E or W slot, jogs N/S to reach target ty
+//
+// For L-shaped corridors the two legs meet at a 3×3 corner patch. Tiles in
+// the corner are added once via a Set to avoid duplicates.
+//
+// glowEdgeTiles is always computed so _spawnRoomCorridor never needs to
+// heuristically derive edge positions from the tile set.
+//
+// Parameters
+//   fromTx/Ty  — world tile of the from-room's connection slot
+//   fromEdge   — direction the from-room faces outward (N/S/E/W)
+//   toTx/Ty    — world tile of the to-room's connection slot
+//   toEdge     — direction the to-room faces outward
+//   tint       — region palette tint
+//   minLen     — minimum tiles for the primary leg (from region def)
+//   maxLen     — maximum tiles for the primary leg
+//   rng        — seeded LCG function
+//
+// The secondary leg length is always exactly |Δtx| or |Δty| — the geometry
+// dictates it. minLen/maxLen apply only to the primary leg.
+
+export function buildLCorridor(
+  fromTx:   number,
+  fromTy:   number,
+  fromEdge: EdgeDir,
+  toTx:     number,
+  toTy:     number,
+  toEdge:   EdgeDir,
+  tint:     number,
+  minLen:   number,
+  maxLen:   number,
+  rng:      () => number,
+): CorridorSpec {
+  const tiles:          Array<{ tx: number; ty: number; frame: number }> = [];
+  const glowEdgeTiles:  Array<{ tx: number; ty: number }>                = [];
+  // Key set for dedup — "tx,ty" strings
+  const placed = new Set<string>();
+
+  const addTile = (tx: number, ty: number): void => {
+    const k = `${tx},${ty}`;
+    if (placed.has(k)) return;
+    placed.add(k);
+    tiles.push({ tx, ty, frame: 7 });
+  };
+
+  const addGlow = (tx: number, ty: number): void => {
+    glowEdgeTiles.push({ tx, ty });
+  };
+
+  // Primary leg length: clamped to [minLen, maxLen]
+  const span = minLen + Math.floor(rng() * Math.max(1, maxLen - minLen + 1));
+
+  // ── Vertical-first: from N or S slot ─────────────────────────────────
+  if (fromEdge === 'N' || fromEdge === 'S') {
+    const stepY = fromEdge === 'N' ? -1 : 1;
+
+    // Primary vertical leg
+    // bendTy is where the horizontal jog begins
+    const bendTy = fromTy + stepY * span;
+
+    for (let step = 1; step <= span; step++) {
+      const curTy = fromTy + stepY * step;
+      const isCornerRow = (curTy === bendTy);
+      for (let dx = -1; dx <= 1; dx++) {
+        addTile(fromTx + dx, curTy);
+        if (dx !== 0 && !isCornerRow) {
+          addGlow(fromTx + dx, curTy);
+        }
+      }
+    }
+
+    // Horizontal jog from bendTy to toTx
+    const dx = toTx - fromTx;
+    if (dx !== 0) {
+      const stepX = dx > 0 ? 1 : -1;
+      const jogLen = Math.abs(dx);
+
+      for (let step = 1; step <= jogLen; step++) {
+        const curTx = fromTx + stepX * step;
+        const isCornerCol = (step === 1);
+        for (let dy = -1; dy <= 1; dy++) {
+          addTile(curTx, bendTy + dy);
+          if (dy !== 0 && !isCornerCol) {
+            addGlow(curTx, bendTy + dy);
+          }
+        }
+      }
+
+      // Corner patch outer glow edges: two far corners of the 3×3 bend
+      // (the inner corner where legs meet has no glow — it's interior)
+      addGlow(fromTx + (dx > 0 ? -1 : 1), bendTy);
+      addGlow(fromTx + stepX, bendTy + stepY);
+    } else {
+      // Straight vertical — standard edge columns
+      for (let step = 1; step <= span; step++) {
+        const curTy = fromTy + stepY * step;
+        addGlow(fromTx - 1, curTy);
+        addGlow(fromTx + 1, curTy);
+      }
+    }
+
+  // ── Horizontal-first: from E or W slot ───────────────────────────────
+  } else {
+    const stepX = fromEdge === 'E' ? 1 : -1;
+
+    const bendTx = fromTx + stepX * span;
+
+    for (let step = 1; step <= span; step++) {
+      const curTx = fromTx + stepX * step;
+      const isCornerCol = (curTx === bendTx);
+      for (let dy = -1; dy <= 1; dy++) {
+        addTile(curTx, fromTy + dy);
+        if (dy !== 0 && !isCornerCol) {
+          addGlow(curTx, fromTy + dy);
+        }
+      }
+    }
+
+    // Vertical jog from bendTx to toTy
+    const dy = toTy - fromTy;
+    if (dy !== 0) {
+      const stepY = dy > 0 ? 1 : -1;
+      const jogLen = Math.abs(dy);
+
+      for (let step = 1; step <= jogLen; step++) {
+        const curTy = fromTy + stepY * step;
+        const isCornerRow = (step === 1);
+        for (let dx = -1; dx <= 1; dx++) {
+          addTile(bendTx + dx, curTy);
+          if (dx !== 0 && !isCornerRow) {
+            addGlow(bendTx + dx, curTy);
+          }
+        }
+      }
+
+      addGlow(bendTx, fromTy + (dy > 0 ? -1 : 1));
+      addGlow(bendTx + stepX, fromTy + stepY);
+    } else {
+      // Straight horizontal
+      for (let step = 1; step <= span; step++) {
+        const curTx = fromTx + stepX * step;
+        addGlow(curTx, fromTy - 1);
+        addGlow(curTx, fromTy + 1);
+      }
+    }
+  }
+
+  return {
+    fromSlot:      { worldTx: fromTx, worldTy: fromTy, edge: fromEdge },
+    toSlot:        { worldTx: toTx,   worldTy: toTy,   edge: toEdge   },
+    tiles,
+    tint,
+    glowEdgeTiles,
+  };
+}
 
 // ── Spine layout assembler ────────────────────────────────────────────────
 //
@@ -5697,6 +6335,769 @@ function assembleSpineRegion(
   };
 }
 
+// ── Grid layout assembler ─────────────────────────────────────────────────
+//
+// Places rooms in a 2-column layout running north. Column A is the left
+// spine, column B is the right spine. The columns are separated by a fixed
+// horizontal gap seeded per-region (COL_SEP tiles between the east face of
+// col-A rooms and the west face of col-B rooms). At each row a horizontal
+// bridge connects col-A's E slot to col-B's W slot via buildLCorridor.
+//
+// Room pool: must include 'bunker-grid' region_type. Rooms are assigned to
+// columns alternately. Column A rooms need an E slot (or the bridge is
+// skipped). Column B rooms need a W slot. Both columns independently chain
+// north via N slots and corridors exactly as assembleSpineRegion does.
+//
+// Exit: the exitTy of whichever column terminates further north (smaller ty).
+//
+// If the grid room pool has fewer than 2 rooms the region falls back to a
+// single spine (assembleSpineRegion behaviour) so it never crashes on a
+// sparse catalogue.
+
+// Minimum horizontal separation between column A's east edge and col-B's
+// west edge, in tiles. Seeded within [COL_SEP_MIN, COL_SEP_MAX].
+const GRID_COL_SEP_MIN = 3;
+const GRID_COL_SEP_MAX = 6;
+
+function assembleGridRegion(
+  def: RegionDef,
+  seed: number,
+  entryTx: number,
+  entryTy: number,
+): RegionInstance {
+  const rng = makeLcg(seed);
+
+  // ── Room pool ─────────────────────────────────────────────────────────
+  const allRooms   = ROOM_CATALOGUE.filter(r => r.region_types.includes(def.id));
+  const colAPool   = allRooms.filter(r => r.connections.some(c => c.edge === 'E') && r.connections.some(c => c.edge === 'N'));
+  const colBPool   = allRooms.filter(r => r.connections.some(c => c.edge === 'W') && r.connections.some(c => c.edge === 'N'));
+  const terminalA  = allRooms.filter(r => r.connections.some(c => c.edge === 'E') && !r.connections.some(c => c.edge === 'N'));
+  const terminalB  = allRooms.filter(r => r.connections.some(c => c.edge === 'W') && !r.connections.some(c => c.edge === 'N'));
+
+  // Fallback: if either pool is empty, defer to spine
+  if (colAPool.length === 0 || colBPool.length === 0) {
+    return assembleSpineRegion(def, seed, entryTx, entryTy);
+  }
+
+  const roomCount = def.room_count_min + Math.floor(rng() * (def.room_count_max - def.room_count_min + 1));
+  // Split evenly; col A gets the extra room if odd
+  const countA = Math.ceil(roomCount / 2);
+  const countB = Math.floor(roomCount / 2);
+
+  // Select rooms for each column
+  const selectRooms = (
+    pool:     RoomDef[],
+    termPool: RoomDef[],
+    count:    number,
+  ): RoomDef[] => {
+    const result: RoomDef[] = [];
+    const middleCount = count - 1;
+    for (let i = 0; i < middleCount; i++) {
+      result.push(pool[Math.floor(rng() * pool.length)]);
+    }
+    // Last room: prefer terminal (dead-end), fall back to through-room
+    const lastPool = termPool.length > 0 ? termPool : pool;
+    result.push(lastPool[Math.floor(rng() * lastPool.length)]);
+    return result;
+  };
+
+  const roomsA = selectRooms(colAPool, terminalA, countA);
+  const roomsB = selectRooms(colBPool, terminalB, countB);
+
+  // ── Column separation ─────────────────────────────────────────────────
+  // Column A starts at entryTx. Column B starts at entryTx + widestA + sep.
+  const widestA  = Math.max(...roomsA.map(r => r.size.w));
+  const colSep   = GRID_COL_SEP_MIN + Math.floor(rng() * (GRID_COL_SEP_MAX - GRID_COL_SEP_MIN + 1));
+  const colBEntryTx = entryTx + widestA + colSep;
+
+  // ── Place column helper ───────────────────────────────────────────────
+  const rooms:     RoomInstance[] = [];
+  const corridors: CorridorSpec[] = [];
+
+  // Returns array of placed RoomInstances for this column, advancing north.
+  // Returns the final exitTy (world ty of the last room's north edge).
+  const placeColumn = (
+    colRooms: RoomDef[],
+    colEntryTx: number,
+    colEntryTy: number,
+  ): { instances: RoomInstance[]; exitTy: number; exitTx: number } => {
+    let curTx = colEntryTx;
+    let curTy = colEntryTy;
+    const instances: RoomInstance[] = [];
+
+    for (let i = 0; i < colRooms.length; i++) {
+      const roomDef   = colRooms[i];
+      const southSlot = roomDef.connections.find(c => c.edge === 'S') ?? roomDef.connections[0];
+
+      const worldOffsetTx = curTx - southSlot.tx;
+      const worldOffsetTy = curTy - southSlot.ty;
+
+      const instance: RoomInstance = {
+        def:           roomDef,
+        worldOffsetTx,
+        worldOffsetTy,
+        usedSlots:     new Set<string>([southSlot.id]),
+      };
+      instances.push(instance);
+      rooms.push(instance);
+
+      const northSlot = roomDef.connections.find(c => c.edge === 'N');
+      if (northSlot && i < colRooms.length - 1) {
+        instance.usedSlots.add(northSlot.id);
+        const fromTx = worldOffsetTx + northSlot.tx;
+        const fromTy = worldOffsetTy + northSlot.ty;
+        const cLen   = def.corridor_min + Math.floor(rng() * (def.corridor_max - def.corridor_min + 1));
+
+        const colCorridorTiles: Array<{ tx: number; ty: number; frame: number }> = [];
+        for (let dy = 1; dy <= cLen; dy++)
+          for (let dx = -1; dx <= 1; dx++)
+            colCorridorTiles.push({ tx: fromTx + dx, ty: fromTy - dy, frame: 7 });
+
+        const toTy = fromTy - cLen;
+        corridors.push({
+          fromSlot: { worldTx: fromTx, worldTy: fromTy, edge: 'N' },
+          toSlot:   { worldTx: fromTx, worldTy: toTy,   edge: 'S' },
+          tiles:    colCorridorTiles,
+          tint:     def.tint,
+        });
+        curTx = fromTx;
+        curTy = toTy;
+      } else {
+        // Terminal room or last room — compute exit
+        const exitTx = worldOffsetTx + Math.floor(roomDef.size.w / 2);
+        const exitTy = worldOffsetTy;
+        return { instances, exitTy, exitTx };
+      }
+    }
+    // Shouldn't reach here but safe fallback
+    const last = instances[instances.length - 1];
+    return {
+      instances,
+      exitTy: last.worldOffsetTy,
+      exitTx: last.worldOffsetTx + Math.floor(last.def.size.w / 2),
+    };
+  };
+
+  const colAResult = placeColumn(roomsA, entryTx, entryTy);
+  const colBResult = placeColumn(roomsB, colBEntryTx, entryTy);
+
+  // ── Horizontal bridges between columns ───────────────────────────────
+  // For each row pair (min of countA, countB) connect col-A's E slot to
+  // col-B's W slot. Bridge at the shared row midpoint ty.
+  const bridgeCount = Math.min(colAResult.instances.length, colBResult.instances.length);
+  for (let i = 0; i < bridgeCount; i++) {
+    const instA = colAResult.instances[i];
+    const instB = colBResult.instances[i];
+    const eastSlotA = instA.def.connections.find(c => c.edge === 'E');
+    const westSlotB = instB.def.connections.find(c => c.edge === 'W');
+    if (!eastSlotA || !westSlotB) continue;
+    if (instA.usedSlots.has(eastSlotA.id) && eastSlotA.id !== 'east-0') continue;
+
+    instA.usedSlots.add(eastSlotA.id);
+    instB.usedSlots.add(westSlotB.id);
+
+    const fromTx = instA.worldOffsetTx + eastSlotA.tx;
+    const fromTy = instA.worldOffsetTy + eastSlotA.ty;
+    const toTx   = instB.worldOffsetTx + westSlotB.tx;
+    const toTy   = instB.worldOffsetTy + westSlotB.ty;
+
+    corridors.push(buildLCorridor(
+      fromTx, fromTy, 'E',
+      toTx,   toTy,   'W',
+      def.tint,
+      1, colSep + widestA,   // primary leg spans the gap
+      rng,
+    ));
+  }
+
+  // ── Region exit: whichever column ends further north ─────────────────
+  const exitTy = Math.min(colAResult.exitTy, colBResult.exitTy);
+  const exitTx = colAResult.exitTy <= colBResult.exitTy ? colAResult.exitTx : colBResult.exitTx;
+
+  return {
+    def,
+    rooms,
+    corridors,
+    entryTx,
+    entryTy,
+    exitTx,
+    exitTy,
+  };
+}
+
+// ── Convergence layout assembler ──────────────────────────────────────────
+//
+// Places 3 feed branches running north in parallel, each offset horizontally,
+// then builds L-shaped corridors from each branch's north slot converging on
+// a single large boss room centred above them.
+//
+// Layout:
+//
+//            [ BOSS: S only ]
+//           /       |       \
+//    L-corridor  straight  L-corridor
+//         |         |         |
+//    [FEED-L]   [FEED-C]   [FEED-R]
+//         |         |         |
+//    N corridor  N corridor  N corridor
+//          \        |        /
+//           ---- entry tx ----
+//
+// Feed rooms are S+N throughRooms. Centre feed runs straight north; left and
+// right feeds are placed at ±CONV_BRANCH_OFFSET tx, using buildLCorridor for
+// the converging final leg to the boss S slot.
+//
+// The boss room's S slot is placed at the top of the centre feed. The region
+// exit is the boss room's north edge (or north-centre if no N slot).
+
+const CONV_BRANCH_OFFSET = 12;   // tile distance left/right from centre branch
+
+function assembleConvergenceRegion(
+  def: RegionDef,
+  seed: number,
+  entryTx: number,
+  entryTy: number,
+): RegionInstance {
+  const rng = makeLcg(seed);
+
+  // ── Room pools ────────────────────────────────────────────────────────
+  const feedPool = ROOM_CATALOGUE.filter(r =>
+    r.region_types.includes(def.id) &&
+    r.type !== 'boss' &&
+    r.connections.some(c => c.edge === 'S') &&
+    r.connections.some(c => c.edge === 'N'),
+  );
+  const bossPool = ROOM_CATALOGUE.filter(r =>
+    r.region_types.includes(def.id) && r.type === 'boss',
+  );
+
+  if (feedPool.length === 0 || bossPool.length === 0) {
+    return assembleSpineRegion(def, seed, entryTx, entryTy);
+  }
+
+  const rooms:     RoomInstance[] = [];
+  const corridors: CorridorSpec[] = [];
+
+  const bossDef   = bossPool[Math.floor(rng() * bossPool.length)];
+  const bossSouth = bossDef.connections.find(c => c.edge === 'S')!;
+
+  // Each branch: pick a feed room, drop a north corridor, record the N slot pos
+  const branchOffsets = [-CONV_BRANCH_OFFSET, 0, CONV_BRANCH_OFFSET];
+  const branchNorthTx: number[] = [];
+  const branchNorthTy: number[] = [];
+
+  for (const xOff of branchOffsets) {
+    const feedDef    = feedPool[Math.floor(rng() * feedPool.length)];
+    const feedSouth  = feedDef.connections.find(c => c.edge === 'S')!;
+    const feedNorth  = feedDef.connections.find(c => c.edge === 'N')!;
+    const branchTx   = entryTx + xOff;
+
+    const feedOffTx  = branchTx - feedSouth.tx;
+    const feedOffTy  = entryTy  - feedSouth.ty;
+
+    const feedInst: RoomInstance = {
+      def:           feedDef,
+      worldOffsetTx: feedOffTx,
+      worldOffsetTy: feedOffTy,
+      usedSlots:     new Set(['south-0', 'north-0']),
+    };
+    rooms.push(feedInst);
+
+    const nSlotTx = feedOffTx + feedNorth.tx;
+    const nSlotTy = feedOffTy + feedNorth.ty;
+
+    // North corridor from feed room up to convergence height
+    const cLen = def.corridor_min + Math.floor(rng() * (def.corridor_max - def.corridor_min + 1));
+    const feedCorridorTiles: Array<{ tx: number; ty: number; frame: number }> = [];
+    for (let dy = 1; dy <= cLen; dy++)
+      for (let dx = -1; dx <= 1; dx++)
+        feedCorridorTiles.push({ tx: nSlotTx + dx, ty: nSlotTy - dy, frame: 7 });
+
+    corridors.push({
+      fromSlot: { worldTx: nSlotTx, worldTy: nSlotTy,        edge: 'N' },
+      toSlot:   { worldTx: nSlotTx, worldTy: nSlotTy - cLen, edge: 'S' },
+      tiles:    feedCorridorTiles,
+      tint:     def.tint,
+    });
+
+    branchNorthTx.push(nSlotTx);
+    branchNorthTy.push(nSlotTy - cLen);
+  }
+
+  // ── Place boss room above centre branch ───────────────────────────────
+  // Boss S slot lands at the centre branch's N slot tx, slightly above it.
+  const bossTy    = branchNorthTy[1] - 1;
+  const bossOffTx = entryTx - bossSouth.tx;
+  const bossOffTy = bossTy  - bossSouth.ty;
+
+  const bossInst: RoomInstance = {
+    def:           bossDef,
+    worldOffsetTx: bossOffTx,
+    worldOffsetTy: bossOffTy,
+    usedSlots:     new Set(['south-0']),
+  };
+  rooms.push(bossInst);
+
+  const bossSouthWorldTx = bossOffTx + bossSouth.tx;
+  const bossSouthWorldTy = bossOffTy + bossSouth.ty;
+
+  // ── Converging corridors: each branch N slot → boss S slot ───────────
+  for (let b = 0; b < 3; b++) {
+    corridors.push(buildLCorridor(
+      branchNorthTx[b], branchNorthTy[b], 'N',
+      bossSouthWorldTx, bossSouthWorldTy, 'S',
+      def.tint,
+      1, def.corridor_max,
+      rng,
+    ));
+  }
+
+  // ── Region exit: boss room north edge ────────────────────────────────
+  const exitTx = bossOffTx + Math.floor(bossDef.size.w / 2);
+  const exitTy = bossOffTy;
+
+  return {
+    def,
+    rooms,
+    corridors,
+    entryTx,
+    entryTy,
+    exitTx,
+    exitTy,
+  };
+}
+
+// ── Ring layout assembler ─────────────────────────────────────────────────
+//
+// Builds a rectangular loop of rooms: entry at the bottom, two legs going
+// north on the left and right, meeting at the apex room at the top. The
+// player can traverse the loop in either direction. The region exit goes
+// north from the apex.
+//
+// Layout (world tile space, north = decreasing ty):
+//
+//        [ APEX: E+W+N ]     ← exit north
+//       /                \
+//  left leg              right leg
+//  (N-S spine)           (N-S spine)
+//       \                /
+//        [ ENTRY: S+E+W ]    ← enters from prior region south
+//
+// Left leg: one or more S+N side rooms directly north of entry's W corridor.
+// Right leg: one or more S+N side rooms directly north of entry's E corridor.
+// The two legs connect to the apex via L-corridors: left leg's last N slot
+// jogs east to the apex's W slot; right leg's last N slot jogs west to the
+// apex's E slot.
+//
+// Room pool requirements:
+//   junctionPool — rooms with S+E+W (ring entry base)
+//   apexPool     — rooms with E+W+N (ring top node)
+//   sidePool     — rooms with S+N   (ring legs)
+//
+// If any pool is empty the region falls back to spine.
+
+// Horizontal distance from the entry centre to each leg's corridor centre.
+// Leg corridors run at entryTx ± RING_LEG_OFFSET.
+const RING_LEG_OFFSET = 10;
+
+function assembleRingRegion(
+  def: RegionDef,
+  seed: number,
+  entryTx: number,
+  entryTy: number,
+): RegionInstance {
+  const rng = makeLcg(seed);
+
+  // ── Room pools ────────────────────────────────────────────────────────
+  const allRooms     = ROOM_CATALOGUE.filter(r => r.region_types.includes(def.id));
+  const junctionPool = allRooms.filter(r =>
+    r.connections.some(c => c.edge === 'S') &&
+    r.connections.some(c => c.edge === 'E') &&
+    r.connections.some(c => c.edge === 'W'),
+  );
+  const apexPool = allRooms.filter(r =>
+    r.connections.some(c => c.edge === 'N') &&
+    r.connections.some(c => c.edge === 'E') &&
+    r.connections.some(c => c.edge === 'W'),
+  );
+  const sidePool = allRooms.filter(r =>
+    r.connections.some(c => c.edge === 'S') &&
+    r.connections.some(c => c.edge === 'N'),
+  );
+
+  if (junctionPool.length === 0 || apexPool.length === 0 || sidePool.length === 0) {
+    return assembleSpineRegion(def, seed, entryTx, entryTy);
+  }
+
+  const rooms:     RoomInstance[] = [];
+  const corridors: CorridorSpec[] = [];
+
+  // ── Place entry (junction) room ───────────────────────────────────────
+  const junctionDef  = junctionPool[Math.floor(rng() * junctionPool.length)];
+  const junctionSouth = junctionDef.connections.find(c => c.edge === 'S')!;
+  const junctionEast  = junctionDef.connections.find(c => c.edge === 'E')!;
+  const junctionWest  = junctionDef.connections.find(c => c.edge === 'W')!;
+
+  const jOffTx = entryTx - junctionSouth.tx;
+  const jOffTy = entryTy - junctionSouth.ty;
+
+  const jInstance: RoomInstance = {
+    def:           junctionDef,
+    worldOffsetTx: jOffTx,
+    worldOffsetTy: jOffTy,
+    usedSlots:     new Set(['south-0', 'east-0', 'west-0']),
+  };
+  rooms.push(jInstance);
+
+  // East and west slot world positions on the junction room
+  const jEastTx = jOffTx + junctionEast.tx;
+  const jEastTy = jOffTy + junctionEast.ty;
+  const jWestTx = jOffTx + junctionWest.tx;
+  const jWestTy = jOffTy + junctionWest.ty;
+
+  // ── Place apex room ───────────────────────────────────────────────────
+  // Apex is placed RING_LEG_OFFSET above the junction, centred.
+  const apexDef   = apexPool[Math.floor(rng() * apexPool.length)];
+  const apexNorth = apexDef.connections.find(c => c.edge === 'N')!;
+  const apexEast  = apexDef.connections.find(c => c.edge === 'E')!;
+  const apexWest  = apexDef.connections.find(c => c.edge === 'W')!;
+
+  // Leg length: seeded within corridor range
+  const legLen = def.corridor_min + Math.floor(rng() * (def.corridor_max - def.corridor_min + 1));
+
+  // How many side rooms per leg (0–1 for a minimal ring, up to room_count allows)
+  const sideCount = def.room_count_min <= 4 ? 0 : 1;
+
+  // Total vertical span of each leg: legLen corridors + side rooms height
+  // We place the apex so its E/W slots land at the correct ty for the L-turn.
+  // Leg arrival ty = junction ty - legLen - (sideRoomHeight + corridorLen) * sideCount
+  const sideRoomH   = sidePool[0].size.h;  // approximate — all side rooms same height
+  const legArrivalTy = jEastTy - legLen - (sideCount > 0 ? sideRoomH + legLen : 0);
+
+  // Place apex so its W slot ty = legArrivalTy and its centre tx = entryTx
+  const aOffTx = entryTx - Math.floor(apexDef.size.w / 2);
+  const aOffTy = legArrivalTy - apexWest.ty;
+
+  const aInstance: RoomInstance = {
+    def:           apexDef,
+    worldOffsetTx: aOffTx,
+    worldOffsetTy: aOffTy,
+    usedSlots:     new Set(['north-0', 'east-0', 'west-0']),
+  };
+  rooms.push(aInstance);
+
+  const apexEastWorldTx = aOffTx + apexEast.tx;
+  const apexEastWorldTy = aOffTy + apexEast.ty;
+  const apexWestWorldTx = aOffTx + apexWest.tx;
+  const apexWestWorldTy = aOffTy + apexWest.ty;
+
+  // ── Build each leg ────────────────────────────────────────────────────
+  // Returns the world tx/ty of the northernmost N slot on this leg so
+  // the closing L-corridor can be built.
+  const buildLeg = (
+    startTx: number,
+    startTy: number,
+    startEdge: EdgeDir,
+  ): { northTx: number; northTy: number } => {
+    let curTx = startTx;
+    let curTy = startTy;
+
+    for (let s = 0; s < sideCount; s++) {
+      const sideDef   = sidePool[Math.floor(rng() * sidePool.length)];
+      const sideSouth = sideDef.connections.find(c => c.edge === 'S')!;
+      const sideNorth = sideDef.connections.find(c => c.edge === 'N')!;
+
+      // Straight N corridor from current pos to side room south
+      const cLen = def.corridor_min + Math.floor(rng() * (def.corridor_max - def.corridor_min + 1));
+
+      // The leg corridor connects the junction's E or W slot northward.
+      // First step is an L from the horizontal E/W exit up to a vertical run.
+      const legCorridor = buildLCorridor(
+        curTx, curTy, startEdge,
+        curTx, curTy - cLen, 'S',
+        def.tint, cLen, cLen, rng,
+      );
+      corridors.push(legCorridor);
+
+      const sideEntryTy = curTy - cLen;
+      const sideOffTx   = curTx - sideSouth.tx;
+      const sideOffTy   = sideEntryTy - sideSouth.ty;
+
+      const sideInstance: RoomInstance = {
+        def:           sideDef,
+        worldOffsetTx: sideOffTx,
+        worldOffsetTy: sideOffTy,
+        usedSlots:     new Set(['south-0', 'north-0']),
+      };
+      rooms.push(sideInstance);
+
+      curTx = sideOffTx + sideNorth.tx;
+      curTy = sideOffTy + sideNorth.ty;
+      startEdge = 'N';  // subsequent steps go straight north
+    }
+
+    if (sideCount === 0) {
+      // No side rooms — leg is a single corridor from junction E/W to apex E/W
+      return { northTx: curTx, northTy: curTy };
+    }
+
+    return { northTx: curTx, northTy: curTy };
+  };
+
+  const leftLeg  = buildLeg(jWestTx, jWestTy, 'W');
+  const rightLeg = buildLeg(jEastTx, jEastTy, 'E');
+
+  // ── Closing L-corridors: legs to apex ────────────────────────────────
+  // Left leg north → apex west slot (L-shape: go north then jog east)
+  if (sideCount === 0) {
+    // Direct: build one L-corridor from junction W to apex W slot
+    corridors.push(buildLCorridor(
+      jWestTx,      jWestTy,      'W',
+      apexWestWorldTx, apexWestWorldTy, 'E',
+      def.tint, legLen, legLen, rng,
+    ));
+    corridors.push(buildLCorridor(
+      jEastTx,      jEastTy,      'E',
+      apexEastWorldTx, apexEastWorldTy, 'W',
+      def.tint, legLen, legLen, rng,
+    ));
+  } else {
+    corridors.push(buildLCorridor(
+      leftLeg.northTx, leftLeg.northTy, 'N',
+      apexWestWorldTx, apexWestWorldTy, 'E',
+      def.tint, def.corridor_min, def.corridor_max, rng,
+    ));
+    corridors.push(buildLCorridor(
+      rightLeg.northTx, rightLeg.northTy, 'N',
+      apexEastWorldTx,  apexEastWorldTy,  'W',
+      def.tint, def.corridor_min, def.corridor_max, rng,
+    ));
+  }
+
+  // ── Region exit: apex north slot ─────────────────────────────────────
+  const exitTx = aOffTx + apexNorth.tx;
+  const exitTy = aOffTy + apexNorth.ty;
+
+  return {
+    def,
+    rooms,
+    corridors,
+    entryTx,
+    entryTy,
+    exitTx,
+    exitTy,
+  };
+}
+
+// ── Branching layout assembler ────────────────────────────────────────────
+//
+// Runs a spine along the N axis, identical to assembleSpineRegion.
+// At every junction-capable room (any room with an unused E slot), it
+// spawns one east-going side branch: 1–3 terminal rooms connected by a
+// single horizontal corridor.
+//
+// Branch corridors go east (incrementing tx, constant ty). Branch rooms
+// must have a west connection slot (edge 'W') — if none exists in the
+// catalogue the branch is skipped silently so the assembler never crashes.
+//
+// The region exit is the north end of the main spine, identical to spine.
+
+function assembleBranchRegion(
+  def: RegionDef,
+  seed: number,
+  entryTx: number,
+  entryTy: number,
+): RegionInstance {
+  const rng = makeLcg(seed);
+
+  // ── Room pool selection (same logic as assembleSpineRegion) ───────────
+  const entryRooms    = ROOM_CATALOGUE.filter(r => r.region_types.includes(def.id) && r.type === 'entry');
+  const bossRooms     = ROOM_CATALOGUE.filter(r => r.region_types.includes(def.id) && r.type === 'boss');
+  const standardRooms = ROOM_CATALOGUE.filter(r => r.region_types.includes(def.id) && r.type !== 'entry' && r.type !== 'boss');
+  const throughRooms  = standardRooms.filter(r => r.connections.some(c => c.edge === 'N'));
+  const terminalRooms = standardRooms.filter(r => !r.connections.some(c => c.edge === 'N'));
+  const middlePool    = throughRooms.length > 0 ? throughRooms : standardRooms;
+  const finalPool     = standardRooms.length > 0 ? standardRooms : throughRooms;
+
+  // Branch terminal pool: rooms that can terminate a side branch.
+  // They need a west connection slot to attach to the east-going corridor.
+  // Dead-ends with a west slot are ideal; fall back to any room with a W slot.
+  const westTerminals = ROOM_CATALOGUE.filter(
+    r => r.region_types.includes(def.id) && r.connections.some(c => c.edge === 'W'),
+  );
+
+  const roomCount   = def.room_count_min + Math.floor(rng() * (def.room_count_max - def.room_count_min + 1));
+  const middleCount = bossRooms.length > 0 ? roomCount - 2 : roomCount - 1;
+
+  const selectedRoomDefs: RoomDef[] = [];
+
+  if (entryRooms.length > 0) {
+    selectedRoomDefs.push(entryRooms[Math.floor(rng() * entryRooms.length)]);
+  } else if (middlePool.length > 0) {
+    selectedRoomDefs.push(middlePool[Math.floor(rng() * middlePool.length)]);
+  }
+
+  for (let i = 0; i < Math.max(0, middleCount - 1); i++) {
+    selectedRoomDefs.push(middlePool[Math.floor(rng() * middlePool.length)]);
+  }
+  if (middleCount >= 1) {
+    selectedRoomDefs.push(finalPool[Math.floor(rng() * finalPool.length)]);
+  }
+  if (bossRooms.length > 0) {
+    selectedRoomDefs.push(bossRooms[Math.floor(rng() * bossRooms.length)]);
+  }
+
+  // ── Main spine placement (identical to assembleSpineRegion) ───────────
+  let currentTy = entryTy;
+  let currentTx = entryTx;
+
+  const rooms:     RoomInstance[] = [];
+  const corridors: CorridorSpec[] = [];
+
+  let overallEntryTx = entryTx;
+  let overallEntryTy = entryTy;
+  let overallExitTx  = entryTx;
+  let overallExitTy  = entryTy;
+
+  for (let i = 0; i < selectedRoomDefs.length; i++) {
+    const roomDef  = selectedRoomDefs[i];
+    const southSlot = roomDef.connections.find(c => c.edge === 'S') ?? roomDef.connections[0];
+
+    const worldOffsetTx = currentTx - southSlot.tx;
+    const worldOffsetTy = currentTy - southSlot.ty;
+
+    const instance: RoomInstance = {
+      def:           roomDef,
+      worldOffsetTx,
+      worldOffsetTy,
+      usedSlots:     new Set<string>(),
+    };
+    instance.usedSlots.add(southSlot.id);
+    rooms.push(instance);
+
+    if (i === 0) {
+      overallEntryTx = currentTx;
+      overallEntryTy = currentTy;
+    }
+
+    // ── Side branch off east slot ────────────────────────────────────────
+    // Fire at most once per region (first junction-capable room found) so
+    // the branch doesn't multiply on every room and blow up the tile count.
+    // The rng roll still advances so seed order is deterministic regardless.
+    const eastSlot = roomDef.connections.find(c => c.edge === 'E');
+    const shouldBranch = eastSlot && !instance.usedSlots.has(eastSlot.id) && westTerminals.length > 0;
+
+    if (shouldBranch && eastSlot) {
+      instance.usedSlots.add(eastSlot.id);
+
+      const fromTx = worldOffsetTx + eastSlot.tx;
+      const fromTy = worldOffsetTy + eastSlot.ty;
+
+      // 1–3 branch rooms
+      const branchCount  = 1 + Math.floor(rng() * 3);
+      let   branchCurTx  = fromTx;
+
+      for (let b = 0; b < branchCount; b++) {
+        const branchRoomDef = westTerminals[Math.floor(rng() * westTerminals.length)];
+        const westSlot      = branchRoomDef.connections.find(c => c.edge === 'W')!;
+
+        const corridorLen = def.corridor_min + Math.floor(rng() * (def.corridor_max - def.corridor_min + 1));
+
+        // Corridor tiles: 3-wide horizontal strip going east
+        const corridorTiles: Array<{ tx: number; ty: number; frame: number }> = [];
+        for (let dx = 1; dx <= corridorLen; dx++) {
+          for (let dy = -1; dy <= 1; dy++) {
+            corridorTiles.push({ tx: branchCurTx + dx, ty: fromTy + dy, frame: 7 });
+          }
+        }
+
+        const toTx = branchCurTx + corridorLen;
+
+        corridors.push({
+          fromSlot: { worldTx: branchCurTx, worldTy: fromTy, edge: 'E' },
+          toSlot:   { worldTx: toTx,        worldTy: fromTy, edge: 'W' },
+          tiles:    corridorTiles,
+          tint:     def.tint,
+        });
+
+        // Place branch room so its west slot lands at the corridor end
+        const branchOffsetTx = toTx - westSlot.tx;
+        const branchOffsetTy = fromTy - westSlot.ty;
+
+        const branchInstance: RoomInstance = {
+          def:           branchRoomDef,
+          worldOffsetTx: branchOffsetTx,
+          worldOffsetTy: branchOffsetTy,
+          usedSlots:     new Set<string>([westSlot.id]),
+        };
+        rooms.push(branchInstance);
+
+        // If the branch room also has an east slot and we have more branch
+        // rooms to place, chain them east. Otherwise stop.
+        const nextEastSlot = branchRoomDef.connections.find(c => c.edge === 'E');
+        if (nextEastSlot && b < branchCount - 1) {
+          branchCurTx = branchOffsetTx + nextEastSlot.tx;
+          branchInstance.usedSlots.add(nextEastSlot.id);
+        } else {
+          break;
+        }
+      }
+    } else if (!shouldBranch) {
+      // Advance the rng the same number of times a branch would have consumed
+      // so seed output is stable regardless of whether a branch fires.
+      rng(); // branchCount roll
+      rng(); // corridorLen roll (single branch room)
+      rng(); // room pick roll
+    }
+
+    // ── Continue main spine north ────────────────────────────────────────
+    const northSlot = roomDef.connections.find(c => c.edge === 'N');
+
+    if (northSlot && i < selectedRoomDefs.length - 1) {
+      instance.usedSlots.add(northSlot.id);
+
+      const fromTx = worldOffsetTx + northSlot.tx;
+      const fromTy = worldOffsetTy + northSlot.ty;
+
+      const corridorLen = def.corridor_min + Math.floor(rng() * (def.corridor_max - def.corridor_min + 1));
+
+      const corridorTiles: Array<{ tx: number; ty: number; frame: number }> = [];
+      for (let dy = 1; dy <= corridorLen; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          corridorTiles.push({ tx: fromTx + dx, ty: fromTy - dy, frame: 7 });
+        }
+      }
+
+      const toTy = fromTy - corridorLen;
+      corridors.push({
+        fromSlot: { worldTx: fromTx, worldTy: fromTy, edge: 'N' },
+        toSlot:   { worldTx: fromTx, worldTy: toTy,   edge: 'S' },
+        tiles:    corridorTiles,
+        tint:     def.tint,
+      });
+
+      currentTx = fromTx;
+      currentTy = toTy;
+    } else if (!northSlot) {
+      overallExitTx = worldOffsetTx + Math.floor(roomDef.size.w / 2);
+      overallExitTy = worldOffsetTy;
+    } else {
+      overallExitTx = worldOffsetTx + Math.floor(roomDef.size.w / 2);
+      overallExitTy = worldOffsetTy;
+    }
+  }
+
+  return {
+    def,
+    rooms,
+    corridors,
+    entryTx: overallEntryTx,
+    entryTy: overallEntryTy,
+    exitTx:  overallExitTx,
+    exitTy:  overallExitTy,
+  };
+}
+
 // ── generateZoneGraph — Phase A stub ──────────────────────────────────────
 //
 // Currently wraps the existing 3-chunk linear output so WorldScene can begin
@@ -5723,7 +7124,15 @@ export function generateZoneGraph(seed: number): ZoneGraph {
   for (let ri = 0; ri < zoneDef.region_defs.length; ri++) {
     const regionDef    = zoneDef.region_defs[ri];
     const regionSeed   = (seed ^ ((ri + 1) * 0x9e3779b9)) >>> 0;
-    const region       = assembleSpineRegion(regionDef, regionSeed, chainTx, chainTy);
+    const region       = regionDef.layout === 'branching'
+      ? assembleBranchRegion(regionDef, regionSeed, chainTx, chainTy)
+      : regionDef.layout === 'grid'
+      ? assembleGridRegion(regionDef, regionSeed, chainTx, chainTy)
+      : regionDef.layout === 'ring'
+      ? assembleRingRegion(regionDef, regionSeed, chainTx, chainTy)
+      : regionDef.layout === 'convergence'
+      ? assembleConvergenceRegion(regionDef, regionSeed, chainTx, chainTy)
+      : assembleSpineRegion(regionDef, regionSeed, chainTx, chainTy);
     regions.push(region);
     // Chain the next region's entry to this one's exit
     chainTx = region.exitTx;

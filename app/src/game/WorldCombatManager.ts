@@ -20,7 +20,8 @@ import * as Phaser from 'phaser';
 import { EnemyWorldSprite, EnemyWorldSpriteConfig, EnemySpawnOverrides } from './EnemyWorldSprite';
 import { ENEMY_TEMPLATES, EnemyTemplate } from './CombatState';
 import { ExplorationZoneManager, ZONE_DEPTH, ZONE_HALF_W } from './ExplorationZoneManager';
-import type { ChunkSpec } from './ExplorationZoneManager';
+import type { ChunkSpec, ZoneGraph, SpawnMarker } from './ExplorationZoneManager';
+import type { MineralNodeDef } from './MineralNode';
 import { TileWorld } from './TileWorld';
 import type { HitEvent } from './PlayerCombatController';
 import type { PlayerCombatController } from './PlayerCombatController';
@@ -154,6 +155,8 @@ export class WorldCombatManager {
   // Callbacks
   onEnemyKilled:  ((enemy: EnemyWorldSprite) => void) | null                             = null;
   onZoneClear:    (() => void) | null                                                    = null;
+  /** Called once per mineral SpawnMarker during seedZoneGraph. WorldScene wires this to spawn MineralNodes. */
+  onMineralMarker: ((def: MineralNodeDef) => void) | null                               = null;
   onHitLanded:    ((x: number, y: number, damage: number, isCrit: boolean) => void) | null = null;
 
   // Dependencies injected at construction — never fetched inside update
@@ -208,6 +211,107 @@ export class WorldCombatManager {
 
       const spawnPos = this._randomZoneTilePos(rng, TileWorld.getInstance());
       this._spawnEnemy(key, template, spawnPos.x, spawnPos.y, bounds, overrides);
+    }
+  }
+
+  /**
+   * Seed enemies and minerals for a fully assembled ZoneGraph.
+   * Replaces seedChunk for the three-tier zone path.
+   *
+   * For each RoomInstance in the graph, iterates spawn_markers:
+   *   'enemy'   — spawns at the authored world position using the region flavour pool.
+   *              Boss rooms spawn one boss-archetype enemy + fill enemies.
+   *   'mineral' — fires onMineralMarker callback so WorldScene can create a MineralNode.
+   *              marker.tag carries the mineral type (e.g. 'lumite'); defaults to 'lumite'.
+   *   'loot'    — reserved; skipped until in-zone pre-placed loot is implemented.
+   *
+   * Seed: daily seed XOR'd with the room's position so each room's spawns are
+   * independent but stable — same enemies every visit on the same day.
+   */
+  seedZoneGraph(
+    graph:      ZoneGraph,
+    dailySeed:  number,
+    difficulty: DifficultyParams = buildDifficultyParams(0),
+  ): void {
+    const tw      = TileWorld.getInstance();
+    const tiles   = ExplorationZoneManager.getInstance().getZoneTiles();
+    const bounds  = tiles.length > 0
+      ? this._computeZoneBounds(tiles, tw)
+      : { minX: -9999, minY: -9999, maxX: 9999, maxY: 9999 };
+
+    const flavour  = ExplorationZoneManager.getInstance().getDailyFlavour();
+    const pool     = FLAVOUR_POOLS[flavour] ?? FLAVOUR_POOLS['default'];
+    const overrides = toSpawnOverrides(difficulty, flavour);
+
+    // Track mineral node index across all rooms for unique nodeId generation
+    let mineralIdx = 0;
+
+    for (const region of graph.regions) {
+      for (const room of region.rooms) {
+        // Per-room seed: mix daily seed with room world position
+        let s = (dailySeed ^ ((room.worldOffsetTx * 73856093) ^ (room.worldOffsetTy * 19349663))) >>> 0;
+        const rng = (): number => {
+          s = (s * 16807) % 2147483647;
+          return s / 2147483647;
+        };
+
+        const isBossRoom = room.def.type === 'boss';
+
+        // Enemy markers
+        const enemyMarkers = room.def.spawn_markers.filter((m: SpawnMarker) => m.type === 'enemy');
+
+        if (isBossRoom && enemyMarkers.length > 0) {
+          // Boss room: spawn one boss-archetype at the first marker, fill rest with elites
+          const bossKeys: string[] = [];
+          for (const [k, t] of Object.entries(ENEMY_TEMPLATES)) {
+            if (t.archetype === 'boss') bossKeys.push(k);
+          }
+          if (bossKeys.length > 0) {
+            const bossKey  = bossKeys[Math.floor(rng() * bossKeys.length)];
+            const bossTmpl = ENEMY_TEMPLATES[bossKey];
+            if (bossTmpl) {
+              const m     = enemyMarkers[0];
+              const world = tw.tileToWorld(room.worldOffsetTx + m.tx, room.worldOffsetTy + m.ty);
+              this._spawnEnemy(bossKey, bossTmpl, world.x, world.y, bounds, overrides);
+            }
+          }
+          // Fill remaining enemy markers with elite/warrior pool
+          for (let i = 1; i < enemyMarkers.length; i++) {
+            const key = weightedSample(pool, rng);
+            const tmpl = ENEMY_TEMPLATES[key];
+            if (!tmpl) continue;
+            const m     = enemyMarkers[i];
+            const world = tw.tileToWorld(room.worldOffsetTx + m.tx, room.worldOffsetTy + m.ty);
+            this._spawnEnemy(key, tmpl, world.x, world.y, bounds, overrides);
+          }
+        } else {
+          for (const m of enemyMarkers) {
+            const key = weightedSample(pool, rng);
+            const tmpl = ENEMY_TEMPLATES[key];
+            if (!tmpl) continue;
+            const world = tw.tileToWorld(room.worldOffsetTx + m.tx, room.worldOffsetTy + m.ty);
+            this._spawnEnemy(key, tmpl, world.x, world.y, bounds, overrides);
+          }
+        }
+
+        // Mineral markers
+        if (this.onMineralMarker) {
+          for (const m of room.def.spawn_markers.filter((mk: SpawnMarker) => mk.type === 'mineral')) {
+            const mineralType = m.tag ?? 'lumite';
+            const sizeVariant = mineralIdx % 3 === 0 ? 'medium' : 'small';
+            const nodeDef: MineralNodeDef = {
+              nodeId:    `zone_${mineralType}_${dailySeed % 10000}_${mineralIdx}`,
+              spriteKey: `mineral-${mineralType}-${sizeVariant}`,
+              barItemId: `${mineralType}_bar`,
+              barName:   `${mineralType.charAt(0).toUpperCase()}${mineralType.slice(1)} Bar`,
+              tx:        room.worldOffsetTx + m.tx,
+              ty:        room.worldOffsetTy + m.ty,
+            };
+            this.onMineralMarker(nodeDef);
+            mineralIdx++;
+          }
+        }
+      }
     }
   }
 

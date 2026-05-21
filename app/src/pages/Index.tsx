@@ -473,7 +473,7 @@ const Index = () => {
             }`}>
               {/* Ghost PHOBOS background hidden — game world is the background */}
 
-              <div className="px-4 py-1.5 border-b border-border/30 bg-background/80 relative z-20 flex items-center justify-between">
+              <div className="phobos-chrome-zone px-4 py-1.5 border-b border-border/30 bg-background/80 relative z-20 flex items-center justify-between">
                 <div className="flex-1 min-w-0">
                   <h2 className="text-[11px] font-mono font-medium text-foreground/70 truncate">
                     {activeThread?.title || 'Select a conversation'}

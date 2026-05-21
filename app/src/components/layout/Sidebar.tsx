@@ -70,7 +70,7 @@ function SidebarIconGrid() {
           title="Music Player"
           className={`flex items-center gap-1.5 px-2 py-1 rounded-sm border transition-all text-[9px] font-terminal uppercase tracking-widest ${
             polarisPlayerOpen
-              ? 'border-amber-500/30 text-amber-500/70'
+              ? 'border-phobos-amber/30 text-phobos-amber/70'
               : 'border-transparent hover:border-phobos-green/20 text-muted-foreground/40 hover:text-phobos-green'
           }`}
         >
@@ -82,7 +82,7 @@ function SidebarIconGrid() {
           title="Reading Library"
           className={`flex items-center gap-1.5 px-2 py-1 rounded-sm border transition-all text-[9px] font-terminal uppercase tracking-widest ${
             kavitaBrowserOpen
-              ? 'border-cyan-500/30 text-cyan-400/70'
+              ? 'border-sayon/30 text-sayon/70'
               : 'border-transparent hover:border-phobos-green/20 text-muted-foreground/40 hover:text-phobos-green'
           }`}
         >
@@ -95,7 +95,7 @@ function SidebarIconGrid() {
           title="Video Library"
           className={`flex items-center gap-1.5 px-2 py-1 rounded-sm border transition-all text-[9px] font-terminal uppercase tracking-widest ${
             jellyfinBrowserOpen
-              ? 'border-blue-500/30 text-blue-400/70'
+              ? 'border-phobos-blue/30 text-phobos-blue/70'
               : 'border-transparent hover:border-phobos-green/20 text-muted-foreground/40 hover:text-phobos-green'
           }`}
         >
@@ -107,7 +107,7 @@ function SidebarIconGrid() {
           title="Photo Library"
           className={`flex items-center gap-1.5 px-2 py-1 rounded-sm border transition-all text-[9px] font-terminal uppercase tracking-widest ${
             meridianBrowserOpen
-              ? 'border-teal-500/30 text-teal-400/70'
+              ? 'border-sayon/30 text-sayon/70'
               : 'border-transparent hover:border-phobos-green/20 text-muted-foreground/40 hover:text-phobos-green'
           }`}
         >
@@ -476,7 +476,7 @@ export function Sidebar() {
 
   return (
     <>
-      <aside className="w-56 border-r border-border/50 bg-background flex flex-col shrink-0 h-full">
+      <aside className="phobos-sidebar phobos-chrome-zone w-56 border-r border-border/50 bg-background flex flex-col shrink-0 h-full">
         {/* Polaris dock — top of sidebar */}
         <div className="p-2 border-b border-border/30">
           <PolarisPlayerDock />

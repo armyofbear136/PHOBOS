@@ -26,17 +26,17 @@ function SliderRowImpl({
   label, min, max, step, value, unit, format, onChange, color = 'green', disabled = false,
 }: SliderRowProps) {
   const accent =
-    color === 'green' ? 'accent-phobos-green' :
-    color === 'amber' ? 'accent-phobos-amber' :
-                        'accent-blue-500';
+    color === 'green' ? 'accent-phob-green' :
+    color === 'amber' ? 'accent-phob-amber' :
+                        'accent-phob-teal';
   const vColor =
-    color === 'green' ? 'text-phobos-green/70' :
-    color === 'amber' ? 'text-phobos-amber/70' :
-                        'text-blue-400/80';
+    color === 'green' ? 'text-phob-green/70' :
+    color === 'amber' ? 'text-phob-amber/70' :
+                        'text-phob-teal/70';
 
   return (
     <label className={`flex items-center gap-3 py-1.5 ${disabled ? 'opacity-40' : ''}`}>
-      <span className="w-20 text-[9px] font-terminal uppercase tracking-[0.12em] text-muted-foreground/70">
+      <span className="w-20 text-[9px] font-terminal uppercase tracking-[0.12em] text-phob-steel/60">
         {label}
       </span>
       <input

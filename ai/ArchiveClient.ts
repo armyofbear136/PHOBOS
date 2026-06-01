@@ -17,6 +17,7 @@ import { ArchiveStore, type ArchiveDomain, type SemanticSearchRow } from '../db/
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface ArchiveSearchOptions {
+  username: string;
   query:    string;
   domains:  ArchiveDomain[];
   k?:       number;       // default 8
@@ -41,7 +42,7 @@ export interface ArchiveChunkResult {
  * or an empty string if SYBIL is unavailable or no results meet the score floor.
  */
 export async function search(opts: ArchiveSearchOptions): Promise<string> {
-  const { query, domains, k = 8, minScore = 0.65 } = opts;
+  const { username, query, domains, k = 8, minScore = 0.65 } = opts;
   if (domains.length === 0) return '';
 
   const queryVec = await embed(query.slice(0, 800));
@@ -50,9 +51,9 @@ export async function search(opts: ArchiveSearchOptions): Promise<string> {
   let results: ArchiveChunkResult[];
 
   if (domains.length === 1) {
-    results = await searchSingleDomain(domains[0], queryVec, query, k, minScore);
+    results = await searchSingleDomain(username, domains[0], queryVec, query, k, minScore);
   } else {
-    results = await searchMultiDomain(domains, queryVec, query, k, minScore);
+    results = await searchMultiDomain(username, domains, queryVec, query, k, minScore);
   }
 
   if (results.length === 0) return '';
@@ -64,21 +65,22 @@ export async function search(opts: ArchiveSearchOptions): Promise<string> {
  * Used by archiveRoutes search endpoint for the UI search panel.
  */
 export async function searchRaw(opts: ArchiveSearchOptions): Promise<ArchiveChunkResult[]> {
-  const { query, domains, k = 8, minScore = 0.65 } = opts;
+  const { username, query, domains, k = 8, minScore = 0.65 } = opts;
   if (domains.length === 0) return [];
 
   const queryVec = await embed(query.slice(0, 800));
   if (!queryVec) return [];
 
   if (domains.length === 1) {
-    return searchSingleDomain(domains[0], queryVec, query, k, minScore);
+    return searchSingleDomain(username, domains[0], queryVec, query, k, minScore);
   }
-  return searchMultiDomain(domains, queryVec, query, k, minScore);
+  return searchMultiDomain(username, domains, queryVec, query, k, minScore);
 }
 
 // ── Single-domain path ────────────────────────────────────────────────────────
 
 async function searchSingleDomain(
+  username: string,
   domain: ArchiveDomain,
   queryVec: number[],
   queryText: string,
@@ -86,8 +88,8 @@ async function searchSingleDomain(
   minScore: number,
 ): Promise<ArchiveChunkResult[]> {
   const [semantic, fts] = await Promise.all([
-    ArchiveStore.semanticSearch(domain, queryVec, k, minScore),
-    ArchiveStore.ftsSearch(domain, queryText, k),
+    ArchiveStore.semanticSearch(username, domain, queryVec, k, minScore),
+    ArchiveStore.ftsSearch(username, domain, queryText, k),
   ]);
 
   return mergeAndRerank(semantic, fts, k);
@@ -96,13 +98,14 @@ async function searchSingleDomain(
 // ── Multi-domain ATTACH path ──────────────────────────────────────────────────
 
 async function searchMultiDomain(
+  username: string,
   domains: ArchiveDomain[],
   queryVec: number[],
   queryText: string,
   k: number,
   minScore: number,
 ): Promise<ArchiveChunkResult[]> {
-  const { db, attachedAliases } = await ArchiveStore.openAttachConnection(domains);
+  const { db, attachedAliases } = await ArchiveStore.openAttachConnection(username, domains);
   if (attachedAliases.length === 0) { await db.close(); return []; }
 
   const EMBED_DIM = 768;
@@ -156,7 +159,7 @@ async function searchMultiDomain(
 
   // FTS across individual domains in parallel — ATTACH doesn't support FTS extension.
   const ftsResults = await Promise.all(
-    domains.map(d => ArchiveStore.ftsSearch(d, queryText, k))
+    domains.map(d => ArchiveStore.ftsSearch(username, d, queryText, k))
   );
   const ftsFlat = ftsResults.flat();
 

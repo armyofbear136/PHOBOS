@@ -36,7 +36,7 @@ import {
   getPythonPathForGpu,
 } from './PythonEnvManager.js';
 
-export type SdModelType = 'flux' | 'chroma' | 'sdxl' | 'kontext' | 'flux2' | 'z-image' | 'qwen-image' | 'wan';
+export type SdModelType = 'flux' | 'chroma' | 'sdxl' | 'kontext' | 'flux2' | 'z-image' | 'qwen-image' | 'wan' | 'sana' | 'sana-sprint' | 'sana-video' | 'sana-video-i2v';
 
 export interface SdServerConfig {
   modelType:    SdModelType;
@@ -110,8 +110,10 @@ export interface GenerateImageResult {
 }
 
 /** Returns the output file extension for a given model type. Wan outputs .avi; all others .png. */
-export function nodeOutputExt(modelType: SdModelType): '.png' | '.avi' {
-  return modelType === 'wan' ? '.avi' : '.png';
+export function nodeOutputExt(modelType: SdModelType): '.png' | '.avi' | '.mp4' {
+  if (modelType === 'wan') return '.avi';
+  if (modelType === 'sana-video' || modelType === 'sana-video-i2v') return '.mp4';
+  return '.png';
 }
 
 // ── CLI arg builders ──────────────────────────────────────────────────────────
@@ -865,6 +867,15 @@ export function selectBackend(
     return 'sdcli';
   }
 
+  // SANA: no sd-cli backend — PyTorch only
+  if (cfg.modelType === 'sana' || cfg.modelType === 'sana-sprint' ||
+      cfg.modelType === 'sana-video' || cfg.modelType === 'sana-video-i2v') {
+    if (gpu && isReadyForGpu(gpu)) return 'pytorch';
+    throw new Error(
+      'SANA requires the PyTorch venv. Install it from the PHOBOS Command Center.'
+    );
+  }
+
   // Intel Arc has no sd-cli backend — PyTorch XPU is the only path
   // intel-discrete runner kind is planned but not yet in GpuRunnerKind.
   // Detect by GPU name until the kind is added.
@@ -911,13 +922,17 @@ function buildPyTorchArgs(
   const isWan    = cfg.modelType === 'wan';
 
   // Map SdModelType to phobos-diffusers.py --model-type
-  const modelTypeArg = cfg.modelType === 'kontext' ? 'kontext'
-    : cfg.modelType === 'flux2' ? 'flux2'
-    : cfg.modelType === 'z-image' ? 'z-image'
-    : cfg.modelType === 'qwen-image' ? 'qwen-image'
-    : cfg.modelType === 'wan' ? 'wan'
-    : cfg.modelType === 'sdxl' ? 'sdxl'
-    : cfg.modelType === 'chroma' ? 'chroma'
+  const modelTypeArg = cfg.modelType === 'kontext'         ? 'kontext'
+    : cfg.modelType === 'flux2'                              ? 'flux2'
+    : cfg.modelType === 'z-image'                           ? 'z-image'
+    : cfg.modelType === 'qwen-image'                        ? 'qwen-image'
+    : cfg.modelType === 'wan'                               ? 'wan'
+    : cfg.modelType === 'sdxl'                              ? 'sdxl'
+    : cfg.modelType === 'chroma'                            ? 'chroma'
+    : cfg.modelType === 'sana'                              ? 'sana'
+    : cfg.modelType === 'sana-sprint'                       ? 'sana-sprint'
+    : cfg.modelType === 'sana-video'                        ? 'sana-video'
+    : cfg.modelType === 'sana-video-i2v'                    ? 'sana-video-i2v'
     : 'flux';
 
   const steps  = opts.steps  ?? cfg.steps  ?? spec.profile?.defaultSteps ?? 20;
@@ -928,7 +943,7 @@ function buildPyTorchArgs(
 
   const args: string[] = [
     resolvePhobosScript(),
-    '--model-path',  modelPath,
+    ...(['sana','sana-sprint','sana-video','sana-video-i2v'].includes(modelTypeArg) ? [] : ['--model-path', modelPath]),
     '--model-type',  modelTypeArg,
     '--prompt',      opts.prompt,
     '--steps',       String(steps),
@@ -993,19 +1008,20 @@ function buildPyTorchArgs(
   // All model types: pass pre-converted diffusers directory if present.
   // Falls back to inline GGUF de-quantization when no conversion exists.
   // forceDeQuant skips the converted dir and forces inline de-quant — test script only.
-  if (!opts.forceDeQuant) {
+  if (!opts.forceDeQuant && !['sana','sana-sprint','sana-video','sana-video-i2v'].includes(modelTypeArg)) {
     const variantDir = getPytorchVariantDir(spec.modelId);
     if (variantDir) args.push('--pytorch-variant-dir', variantDir);
   }
 
   // Artist Plugin System — multi-adapter LoRA loading
-  // Colon-delimited lists: --lora-paths p1:p2 --lora-weights 0.8:0.6 --lora-names plugin_0:plugin_1
+  // Pipe-delimited lists: --lora-paths p1|p2 --lora-weights 0.8|0.6 --lora-names plugin_0|plugin_1
+  // Pipe avoids colon conflict with Windows drive letters (C:\...).
   // Python side reads lora.safetensors directly from .phobos zip (kind=plugin) or flat path (kind=raw_lora).
   if (opts.plugins && opts.plugins.length > 0) {
-    const paths   = opts.plugins.map(p => p.archivePath).join(':');
-    const weights = opts.plugins.map(p => String(p.weight)).join(':');
-    const names   = opts.plugins.map((_, i) => `plugin_${i}`).join(':');
-    const kinds   = opts.plugins.map(p => p.kind).join(':');
+    const paths   = opts.plugins.map(p => p.archivePath).join('|');
+    const weights = opts.plugins.map(p => String(p.weight)).join('|');
+    const names   = opts.plugins.map((_, i) => `plugin_${i}`).join('|');
+    const kinds   = opts.plugins.map(p => p.kind).join('|');
     args.push('--lora-paths',   paths);
     args.push('--lora-weights', weights);
     args.push('--lora-names',   names);
@@ -1828,6 +1844,15 @@ export async function buildSdConfig(
       console.log(`[ImageServerManager] Selected model: ${spec.label} (wan runner)${offloadToCpu ? ' (CPU offload)' : ''}`);
       break;
 
+    case 'sana':
+    case 'sana-sprint':
+    case 'sana-video':
+    case 'sana-video-i2v':
+      // HF-native: all weights fetched from HF cache on first run — no local aux files.
+      auxFiles = [];
+      console.log(`[ImageServerManager] Selected model: ${spec.label} (${spec.runnerProfile} runner) · HF-native${offloadToCpu ? ' (CPU offload)' : ''}`);
+      break;
+
     default: {
       // flux and chroma — T5 tiered by VRAM, chroma skips CLIP-L.
       // Use freeVramGb (live reading after SAYON is stopped) when available —
@@ -1849,6 +1874,10 @@ export async function buildSdConfig(
       case 'z-image':       return 'z-image';
       case 'qwen-image':    return 'qwen-image';
       case 'wan':           return 'wan';
+      case 'sana':          return 'sana';
+      case 'sana-sprint':   return 'sana-sprint';
+      case 'sana-video':    return 'sana-video';
+      case 'sana-video-i2v': return 'sana-video-i2v';
       default:              return spec.variant === 'chroma' ? 'chroma' : 'flux';
     }
   })();

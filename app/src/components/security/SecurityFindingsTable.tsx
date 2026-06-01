@@ -32,18 +32,18 @@ const SEV_ORDER: Record<string, number> = {
 
 const SEV_DOT: Record<string, string> = {
   critical: 'bg-destructive',
-  high:     'bg-phobos-amber',
+  high:     'bg-phob-amber',
   medium:   'bg-warning',
   low:      'bg-muted-foreground/50',
-  info:     'bg-phobos-green/40',
+  info:     'bg-phob-green/40',
 };
 
 const SEV_LABEL: Record<string, string> = {
   critical: 'text-destructive',
-  high:     'text-phobos-amber',
+  high:     'text-phob-amber',
   medium:   'text-warning',
-  low:      'text-muted-foreground/70',
-  info:     'text-muted-foreground/40',
+  low:      'text-phob-steel/65',
+  info:     'text-phob-steel/40',
 };
 
 const SCAN_LABEL: Record<string, string> = {
@@ -112,7 +112,7 @@ export function SecurityFindingsTable({ findings }: Props) {
       <button
         onClick={() => handleSort(col)}
         className={`text-left text-[9px] font-terminal uppercase tracking-widest transition-colors ${
-          active ? 'text-phobos-green/70' : 'text-muted-foreground/40 hover:text-muted-foreground/70'
+          active ? 'text-phob-orange/60' : 'text-phob-steel/40 hover:text-phob-steel/70'
         }`}
       >
         {label}{active ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
@@ -123,11 +123,11 @@ export function SecurityFindingsTable({ findings }: Props) {
   return (
     <table className="w-full text-xs border-collapse">
       <thead>
-        <tr className="border-b border-border/30">
+        <tr className="border-b border-phob-red/15">
           <th className="px-2 py-2 w-6" />
           <th className="px-2 py-2 text-left"><SortBtn col="severity"   label="Sev" /></th>
           <th className="px-2 py-2 text-left"><SortBtn col="scan_type"  label="Type" /></th>
-          <th className="px-2 py-2 text-left text-[9px] font-terminal uppercase tracking-widest text-muted-foreground/40 font-normal">
+          <th className="px-2 py-2 text-left text-[9px] font-terminal uppercase tracking-widest text-phob-steel/40 font-normal">
             Finding
           </th>
           <th className="px-2 py-2 text-left"><SortBtn col="is_new"     label="New" /></th>
@@ -141,11 +141,11 @@ export function SecurityFindingsTable({ findings }: Props) {
             <>
               <tr
                 key={f.id}
-                className="border-b border-border/20 hover:bg-accent/20 transition-colors cursor-pointer"
+                className="border-b border-phob-red/15 hover:bg-phob-white/4 transition-colors cursor-pointer"
                 onClick={() => setExpandedId(expanded ? null : f.id)}
               >
                 {/* Expand */}
-                <td className="px-2 py-2 text-muted-foreground/30">
+                <td className="px-2 py-2 text-phob-steel/30">
                   {expanded
                     ? <ChevronDown className="w-3 h-3" />
                     : <ChevronRight className="w-3 h-3" />}
@@ -163,14 +163,14 @@ export function SecurityFindingsTable({ findings }: Props) {
 
                 {/* Type */}
                 <td className="px-2 py-2">
-                  <span className="text-[9px] font-mono text-muted-foreground/50">
+                  <span className="text-[9px] font-mono text-phob-steel/45">
                     {SCAN_LABEL[f.scan_type] ?? f.scan_type}
                   </span>
                 </td>
 
                 {/* Title */}
                 <td className="px-2 py-2 max-w-[280px]">
-                  <span className="text-[10px] text-foreground/70 truncate block">
+                  <span className="text-[10px] text-phob-white/70 truncate block">
                     {f.title}
                   </span>
                   {f.target && (
@@ -183,7 +183,7 @@ export function SecurityFindingsTable({ findings }: Props) {
                 {/* New badge */}
                 <td className="px-2 py-2">
                   {f.is_new && (
-                    <span className="text-[8px] font-terminal uppercase tracking-widest text-phobos-amber/70 bg-phobos-amber/10 px-1 py-0.5 rounded-sm">
+                    <span className="text-[8px] font-terminal uppercase tracking-widest text-phob-amber/70 bg-phob-amber/8 px-1 py-0.5 ">
                       new
                     </span>
                   )}
@@ -199,13 +199,13 @@ export function SecurityFindingsTable({ findings }: Props) {
 
               {/* Expanded detail row */}
               {expanded && (
-                <tr key={`${f.id}-detail`} className="border-b border-border/10 bg-black/30">
+                <tr key={`${f.id}-detail`} className="border-b border-border/10 bg-phob-white/4">
                   <td colSpan={6} className="px-6 py-3">
                     <div className="space-y-2">
                       {f.cve_id && (
                         <div className="flex items-center gap-2">
                           <span className="text-[9px] font-terminal text-muted-foreground/40 uppercase tracking-widest w-16">CVE</span>
-                          <span className="text-[9px] font-mono text-phobos-amber/70">{f.cve_id}</span>
+                          <span className="text-[9px] font-mono text-phob-amber/70">{f.cve_id}</span>
                         </div>
                       )}
                       {f.target && (

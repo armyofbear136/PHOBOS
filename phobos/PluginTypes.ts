@@ -17,9 +17,14 @@ export type PluginCategory = 'style' | 'subject' | 'lighting' | 'texture' | 'con
 export type PluginBaseModel =
   | 'flux-dev'
   | 'flux-schnell'
+  | 'flux-kontext'
   | 'flux2-klein'
   | 'sdxl'
   | 'chroma'
+  | 'wan'
+  | 'qwen-image'
+  | 'sana'
+  | 'sana-sprint'
   | '*';
 
 /** plugin.json inside a .phobos archive. */
@@ -111,6 +116,7 @@ export interface PluginRecord {
   archive_path:       string;
   is_local_author:    boolean;
   has_license_unlock: boolean;
+  owner_username:     string | null;
   installed_at:       string;
 }
 

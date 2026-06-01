@@ -15,6 +15,7 @@ import type { PeerConnection, DataChannel, IceServer, RelayType } from 'node-dat
 import type { SignalingClient } from './SignalingClient.js';
 import type { SignalOffer, SignalIce } from './RemoteProtocol.js';
 import { DataChannelHandler } from './DataChannelHandler.js';
+import type { LocalSignalingServer } from './LocalSignalingServer.js';
 import type { FastifyInstance } from 'fastify';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 
@@ -31,13 +32,14 @@ function getNdc(): typeof import('node-datachannel') {
 }
 
 export interface WebRTCServerOptions {
-  fastify:          FastifyInstance;
-  signalingClient:  SignalingClient;
-  systemDb:         DatabaseManager;
-  instanceId:       string;
-  relayUrl:         string;
-  onConnected:      () => void;
-  onDisconnected:   () => void;
+  fastify:           FastifyInstance;
+  signalingClient:   SignalingClient;
+  localSignaling?:   LocalSignalingServer;   // set when LAN signaling is active
+  systemDb:          DatabaseManager;
+  instanceId:        string;
+  relayUrl:          string;
+  onConnected:       () => void;
+  onDisconnected:    () => void;
 }
 
 interface SessionState {
@@ -51,8 +53,9 @@ interface SessionState {
 }
 
 export class WebRTCServer {
-  private _session: SessionState | null = null;
-  private _pendingIce: SignalIce[]      = [];
+  private _session:    SessionState | null = null;
+  private _pendingIce: SignalIce[]         = [];
+  private _isLanSession = false;
 
   constructor(private readonly opts: WebRTCServerOptions) {}
 
@@ -81,6 +84,21 @@ export class WebRTCServer {
 
   /** Called by SignalingClient when mobile sends an offer. */
   async handleOffer(offer: SignalOffer): Promise<void> {
+    this._isLanSession = false;
+    await this._handleOfferInternal(offer);
+  }
+
+  /**
+   * Called by POST /api/webrtc/offer (LAN path).
+   * Synthesizes a SignalOffer with a fixed code so the rest of the logic is identical.
+   */
+  async handleLanOffer(sdp: string): Promise<void> {
+    this._isLanSession = true;
+    await this._handleOfferInternal({ type: 'offer', activeUser: 'owner', code: 'lan-local', sdp, candidates: [] });
+  }
+
+  /** Called by SignalingClient when mobile sends an offer. */
+  private async _handleOfferInternal(offer: SignalOffer): Promise<void> {
     // Tear down any existing session first
     this._teardown();
 
@@ -145,12 +163,25 @@ export class WebRTCServer {
     // Wire ICE candidate emission
     pc.onLocalCandidate((candidate: string, mid: string) => {
       const bare = candidate.startsWith('a=') ? candidate.slice(2) : candidate;
-      // node-datachannel mid may be empty — fall back to sdpMLineIndex 0 so the
-      // browser's addIceCandidate doesn't silently reject the candidate.
       const sdpMid         = mid || null;
       const sdpMLineIndex  = mid ? null : 0;
       console.log(`[WebRTCServer] Local ICE mid=${mid || '(empty)'}: ${bare.substring(0, 80)}`);
-      this.opts.signalingClient.sendIce(offer.code, bare, sdpMid, sdpMLineIndex);
+      if (this._isLanSession) {
+        this.opts.localSignaling?.submitLocalIce({
+          candidate:     bare,
+          sdpMid,
+          sdpMLineIndex,
+        });
+      } else {
+        this.opts.signalingClient.sendIce(offer.code, bare, sdpMid, sdpMLineIndex);
+      }
+    });
+
+    // Signal done when ICE gathering finishes (for LAN path)
+    pc.onGatheringStateChange?.((state: string) => {
+      if (state === 'complete' && this._isLanSession) {
+        this.opts.localSignaling?.signalDone();
+      }
     });
 
     const thisPC = pc;  // capture for closure
@@ -178,8 +209,12 @@ export class WebRTCServer {
     // once ready — send it then drain pending ICE.
     pc.onLocalDescription((sdp: string, type: string) => {
       if (type !== 'answer') return;
-      console.log('[WebRTCServer] Answer SDP ready — sending to relay');
-      this.opts.signalingClient.sendAnswer(offer.code, sdp);
+      console.log('[WebRTCServer] Answer SDP ready — sending to ' + (this._isLanSession ? 'LAN client' : 'relay'));
+      if (this._isLanSession) {
+        this.opts.localSignaling?.submitAnswer(sdp);
+      } else {
+        this.opts.signalingClient.sendAnswer(offer.code, sdp);
+      }
 
       // Drain any ICE candidates that arrived before the answer was sent
       for (const ice of this._pendingIce) {
@@ -201,9 +236,15 @@ export class WebRTCServer {
       console.log(`[WebRTCServer] Remote ICE: ${ice.candidate.substring(0, 80)}`);
       this._session.pc.addRemoteCandidate(ice.candidate, ice.sdpMid ?? '');
     } else {
-      // Offer may not have been processed yet — buffer
       this._pendingIce.push(ice);
     }
+  }
+
+  /** Called by POST /api/webrtc/ice (LAN path). */
+  addLanIceCandidate(candidate: string, sdpMid: string | null): void {
+    if (!this._session || !this._isLanSession) return;
+    console.log(`[WebRTCServer] LAN remote ICE: ${candidate.substring(0, 80)}`);
+    this._session.pc.addRemoteCandidate(candidate, sdpMid ?? '');
   }
 
   /** Gracefully disconnect the current session. */
@@ -237,6 +278,14 @@ export class WebRTCServer {
       case 'phobos-media-upload':
         session.mediaUploadDC = dc;
         session.handler.attachMediaUploadChannel(dc);
+        break;
+      case 'phobos-friend-handshake':
+        // One-shot channel from a remote PHOBOS core presenting a PH1.FRD.* code.
+        // Runs the bilateral friend handshake then closes. Not counted toward the
+        // three-channel openCount — this is not a normal session channel.
+        dc.onOpen(() => {
+          session.handler.attachFriendHandshakeChannel(dc);
+        });
         break;
       default:
         console.warn(`[WebRTCServer] Unknown data channel: ${label}`);

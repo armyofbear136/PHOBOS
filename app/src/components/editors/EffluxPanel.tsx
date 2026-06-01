@@ -85,9 +85,9 @@ function EffluxToolbar({
   onClose:         () => void;
   onNoteEntry:     () => void;
 }) {
-  const base  = 'flex items-center gap-2 px-4 py-1.5 text-sm font-terminal uppercase tracking-[0.12em] rounded-sm border transition-all disabled:opacity-30 disabled:cursor-not-allowed';
-  const amber = `${base} border-phobos-amber/25 text-phobos-amber/60 hover:text-phobos-amber hover:border-phobos-amber/50`;
-  const green = `${base} border-phobos-green/25 text-phobos-green/60 hover:text-phobos-green hover:border-phobos-green/50`;
+  const base  = 'flex items-center gap-2 px-4 py-1.5 text-sm font-terminal uppercase tracking-[0.12em] border transition-all disabled:opacity-30 disabled:cursor-not-allowed';
+  const amber = `${base} border-phob-amber/25 text-phob-amber/60 hover:text-phob-amber hover:border-phob-amber/50`;
+  const green = `${base} border-phob-orange/25 text-phob-orange/60 hover:text-phob-orange hover:border-phob-orange/50`;
 
   // Inline title editing. Idle: looks like static text with a faint underline
   // that brightens on hover. Click → real input. Blur or Enter commits via
@@ -129,9 +129,9 @@ function EffluxToolbar({
   }, [commit, title]);
 
   return (
-    <div className="h-14 flex items-center justify-between px-5 border-b border-border/30 bg-black/80 shrink-0">
+    <div className="h-14 flex items-center justify-between px-5 border-b border-phob-orange/20 bg-[#080808] shrink-0">
       <div className="flex items-center gap-3 min-w-0">
-        <span className="text-base font-terminal text-phobos-green/60 uppercase tracking-widest shrink-0">EFFLUX DAW</span>
+        <span className="text-base font-terminal text-phob-orange/70 uppercase tracking-widest shrink-0">EFFLUX DAW</span>
         {hasSession && <div className="w-px h-4 bg-border/40 shrink-0" />}
 
         {/* Inline-editable title — only meaningful when a session is loaded.
@@ -143,13 +143,13 @@ function EffluxToolbar({
             onChange={(e) => setTitleBuf(e.target.value)}
             onBlur={commit}
             onKeyDown={onTitleKeyDown}
-            className="text-sm font-mono bg-transparent border-b border-phobos-green/60 text-phobos-green focus:outline-none px-1 max-w-[320px] min-w-[120px]"
+            className="text-sm font-mono bg-transparent border-b border-phob-orange/50 text-phob-orange focus:outline-none px-1 max-w-[320px] min-w-[120px]"
             placeholder="Untitled"
           />
         ) : (
           <button
             onClick={beginEdit}
-            className="text-sm font-mono text-muted-foreground/70 hover:text-foreground border-b border-border/30 hover:border-border/70 transition-colors truncate max-w-[320px] px-1 cursor-text text-left"
+            className="text-sm font-mono text-phob-steel/60 hover:text-phob-white border-b border-phob-orange/20 hover:border-phob-orange/50 transition-colors truncate max-w-[320px] px-1 cursor-text text-left"
             title="Click to rename"
           >
             {title || 'Untitled'}{dirty ? ' *' : ''}
@@ -211,7 +211,7 @@ function EffluxToolbar({
         <div className="w-px h-4 bg-border/40 mx-1" />
         <button
           onClick={onClose}
-          className="p-1.5 rounded text-muted-foreground/40 hover:text-foreground hover:bg-accent transition-colors"
+          className="p-1.5 text-phob-steel/40 hover:text-phob-white hover:bg-phob-orange/8 transition-colors"
           title="Close panel"
         >
           <X className="w-5 h-5" />
@@ -243,10 +243,10 @@ function EffluxWelcome({
 
         {/* Title block */}
         <div className="text-center flex flex-col gap-3">
-          <h1 className="text-2xl font-terminal text-phobos-green/90 uppercase tracking-[0.18em]">
+          <h1 className="text-2xl font-terminal text-phob-orange/90 uppercase tracking-[0.18em]">
             Efflux DAW
           </h1>
-          <p className="text-xs font-mono text-muted-foreground/70 leading-relaxed max-w-2xl">
+          <p className="text-xs font-mono text-phob-steel/60 leading-relaxed max-w-2xl">
             A tracker-style sequencer with a per-channel instrument chain. Build patterns step by step,
             pick the synth that drives each channel, then layer effects after it. Save your work as a session
             file to come back to later.
@@ -257,22 +257,22 @@ function EffluxWelcome({
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 w-full">
 
           {/* Channels */}
-          <div className="rounded-sm border border-phobos-green/30 bg-phobos-green/[0.05] backdrop-blur-sm p-4 flex flex-col gap-2">
-            <div className="text-[10px] font-terminal text-phobos-green/80 uppercase tracking-widest">
+          <div className="rounded-sm border border-phob-green/25 bg-phob-green/[0.04] p-4 flex flex-col gap-2">
+            <div className="text-[10px] font-terminal text-phob-green/80 uppercase tracking-widest">
               01 — Channels
             </div>
-            <div className="text-xs font-mono text-muted-foreground/70 leading-relaxed">
+            <div className="text-xs font-mono text-phob-steel/55 leading-relaxed">
               Eight instrument channels arranged left to right. Each channel runs its own pattern of notes
               and has its own instrument chain. Click a header to select it; double-click to open its chain editor.
             </div>
           </div>
 
           {/* Instrument + FX chain */}
-          <div className="rounded-sm border border-phobos-amber/30 bg-phobos-amber/[0.04] backdrop-blur-sm p-4 flex flex-col gap-2">
-            <div className="text-[10px] font-terminal text-phobos-amber/80 uppercase tracking-widest">
+          <div className="rounded-sm border border-phob-orange/25 bg-phob-orange/[0.04] p-4 flex flex-col gap-2">
+            <div className="text-[10px] font-terminal text-phob-orange/80 uppercase tracking-widest">
               02 — Instrument Chain
             </div>
-            <div className="text-xs font-mono text-muted-foreground/70 leading-relaxed">
+            <div className="text-xs font-mono text-phob-steel/55 leading-relaxed">
               Each channel has one instrument (green) and a chain of effects (amber). Pick an instrument
               from the browser, then drop effects after it — signal flows down the chain into your mix.
               Bypass any slot to skip its processing.
@@ -280,11 +280,11 @@ function EffluxWelcome({
           </div>
 
           {/* Plugin browser */}
-          <div className="rounded-sm border border-phobos-blue/30 bg-phobos-blue/[0.05] backdrop-blur-sm p-4 flex flex-col gap-2">
-            <div className="text-[10px] font-terminal text-phobos-blue/80 uppercase tracking-widest">
+          <div className="rounded-sm border border-phob-teal/25 bg-phob-teal/[0.04] p-4 flex flex-col gap-2">
+            <div className="text-[10px] font-terminal text-phob-teal/80 uppercase tracking-widest">
               03 — Plugin Browser
             </div>
-            <div className="text-xs font-mono text-muted-foreground/70 leading-relaxed">
+            <div className="text-xs font-mono text-phob-steel/55 leading-relaxed">
               The chain editor includes a browser of every VST3 plugin discovered on this machine —
               both the bundled phobos plugins and your system VST3s. Drag, drop, or double-click to add.
             </div>
@@ -296,15 +296,15 @@ function EffluxWelcome({
           <div className="flex items-center gap-3">
             <button
               onClick={onNewSession}
-              className="flex items-center gap-2 px-5 py-2.5 text-sm font-terminal uppercase tracking-[0.12em] rounded-sm border border-phobos-green/50 text-phobos-green/90 bg-phobos-green/[0.05] hover:bg-phobos-green/[0.10] hover:border-phobos-green/80 transition-all"
+              className="flex items-center gap-2 px-5 py-2.5 text-sm font-terminal uppercase tracking-[0.12em] border border-phob-orange/50 text-phob-orange/90 bg-phob-orange/[0.05] hover:bg-phob-orange/[0.10] hover:border-phob-orange/80 transition-all"
             >
               <FilePlus className="w-4 h-4" />
               New Session
             </button>
-            <span className="text-[10px] font-mono text-muted-foreground/40 uppercase tracking-widest">or</span>
+            <span className="text-[10px] font-mono text-phob-steel/35 uppercase tracking-widest">or</span>
             <button
               onClick={onOpenSession}
-              className="flex items-center gap-2 px-5 py-2.5 text-sm font-terminal uppercase tracking-[0.12em] rounded-sm border border-phobos-green/30 text-phobos-green/70 hover:text-phobos-green/90 hover:border-phobos-green/60 transition-all"
+              className="flex items-center gap-2 px-5 py-2.5 text-sm font-terminal uppercase tracking-[0.12em] border border-phob-orange/30 text-phob-orange/70 hover:text-phob-orange/90 hover:border-phob-orange/60 transition-all"
             >
               <FolderOpen className="w-4 h-4" />
               Open Saved Session
@@ -315,16 +315,16 @@ function EffluxWelcome({
           <button
             onClick={onLoadTestSong}
             disabled={unlocking}
-            className="mt-2 px-3 py-1 text-[9px] font-terminal uppercase tracking-[0.12em] rounded-sm border border-border/30 text-muted-foreground/40 hover:text-muted-foreground/70 hover:border-border/60 disabled:opacity-30 transition-colors"
+            className="mt-2 px-3 py-1 text-[9px] font-terminal uppercase tracking-[0.12em] border border-phob-orange/15 text-phob-steel/40 hover:text-phob-steel/70 hover:border-phob-orange/30 disabled:opacity-30 transition-colors"
           >
             Load Test Song (dev)
           </button>
         </div>
 
         {/* Footnote */}
-        <p className="text-[10px] font-mono text-muted-foreground/35 text-center max-w-xl leading-relaxed">
-          Sessions save to <span className="text-muted-foreground/55">~/.phobos/media/efflux/</span> as
-          <span className="text-muted-foreground/55"> .phobos-session</span> files. Plugin chains, channel
+        <p className="text-[10px] font-mono text-phob-steel/35 text-center max-w-xl leading-relaxed">
+          Sessions save to <span className="text-phob-steel/50">~/.phobos/media/efflux/</span> as
+          <span className="text-phob-steel/50"> .phobos-session</span> files. Plugin chains, channel
           state, and patterns all persist together. Channel 0 is reserved by the phobos audio backend and
           is not surfaced in this editor.
         </p>
@@ -363,33 +363,33 @@ function DirtyPrompt({
 
   if (!open) return null;
 
-  const btn = 'px-4 py-1.5 text-xs font-terminal uppercase tracking-[0.12em] rounded-sm border transition-all';
+  const btn = 'px-4 py-1.5 text-xs font-terminal uppercase tracking-[0.12em] border transition-all';
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-phob-void/85"
       onClick={onCancel}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-[400px] max-w-[95vw] bg-background border border-phobos-amber/40 rounded-sm shadow-2xl"
+        className="w-[400px] max-w-[95vw] bg-[#0f0f0a] border border-phob-amber/35 shadow-2xl phob-corners"
       >
-        <div className="px-5 py-4 border-b border-border/30">
-          <h2 className="text-sm font-terminal uppercase tracking-[0.12em] text-phobos-amber">
+        <div className="px-5 py-4 border-b border-phob-amber/20">
+          <h2 className="text-sm font-terminal uppercase tracking-[0.12em] text-phob-amber">
             Unsaved changes
           </h2>
         </div>
-        <div className="px-5 py-4 text-xs font-mono text-muted-foreground/80 leading-relaxed">
+        <div className="px-5 py-4 text-xs font-mono text-phob-steel/70 leading-relaxed">
           You have unsaved changes in the current session. Save before continuing?
         </div>
-        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border/30">
-          <button onClick={onCancel}  className={`${btn} border-border/40 text-muted-foreground/70 hover:text-foreground hover:border-border/70`}>
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-phob-amber/15">
+          <button onClick={onCancel}  className={`${btn} border-phob-orange/20 text-phob-steel/60 hover:text-phob-white hover:border-phob-orange/40`}>
             Cancel
           </button>
           <button onClick={onDiscard} className={`${btn} border-destructive/40 text-destructive/80 hover:text-destructive hover:border-destructive/70`}>
             Discard
           </button>
-          <button onClick={onSave}    className={`${btn} border-phobos-green/40 text-phobos-green/80 hover:text-phobos-green hover:border-phobos-green/70`}>
+          <button onClick={onSave}    className={`${btn} border-phob-orange/35 text-phob-orange/80 hover:text-phob-orange hover:border-phob-orange/65`}>
             Save
           </button>
         </div>
@@ -702,7 +702,7 @@ export function EffluxPanel() {
           analyserIndex={0}
           width={viewport.w}
           height={viewport.h - HEADER_HEIGHT_PX}
-          color="#22c55e"
+          color="#00ff41"
           background="transparent"
           lineWidth={1}
         />

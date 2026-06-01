@@ -3,6 +3,17 @@ import { usePolarisPlaybackStore } from './usePolarisPlaybackStore';
 
 export type MessageRole = 'user' | 'assistant' | 'coordinator' | 'status';
 
+export type FriendTone = 'sayon' | 'seren' | 'green' | 'amber';
+
+export interface DockedChat {
+  friendId:    string;
+  displayName: string;
+  tone:        FriendTone;
+  /** true = tab is in dock but window is not shown */
+  minimized:   boolean;
+  unread:      number;
+}
+
 export interface ExecuteResult {
   taskIndex: number;
   exitCode: number;
@@ -134,7 +145,6 @@ interface AppState {
       providers: Array<{ id: string; label: string; defaultEndpoint: string; requiresApiKey: boolean }>;
     };
   } | null;
-  sidebarOpen: boolean;
   /** 'hidden' = panel not rendered. 'compact' = 280px sidebar (original default). 'expanded' = half-screen hero+stats+chat. */
   copilotMode: 'hidden' | 'compact' | 'expanded';
   thinkingOpen: boolean;
@@ -154,7 +164,9 @@ interface AppState {
   imageGenStatus: string;
   projectDocs: ProjectDoc[];
   backendAlive: boolean;
-  bootPhase: 'prep_deps' | 'db_init' | 'core_init' | 'services_wait' | 'ready' | null;
+  bootPhase: 'awaiting_setup' | 'prep_deps' | 'db_init' | 'core_init' | 'services_wait' | 'ready' | null;
+  activeUser:     string;
+  activeUserRole: 'admin' | 'full' | 'guest' | 'read';
   versionMismatch: boolean;
   coreVersion: string;
   agentStates: {
@@ -213,8 +225,19 @@ interface AppState {
   /** Vision capability of the currently active coordinator and engine models. */
   visionCapability: { coordinatorSupportsVision: boolean; engineSupportsVision: boolean } | null;
 
+  // ── Social — Friends Panel & Chat Dock ──────────────────────────────────
+  friendsPanelOpen:    boolean;
+  dockedChats:         DockedChat[];
+  dockScrollOffset:    number;
+  setFriendsPanelOpen:  (open: boolean) => void;
+  openDockedChat:       (friendId: string, displayName: string, tone: FriendTone) => void;
+  closeDockedChat:      (friendId: string) => void;
+  minimizeDockedChat:   (friendId: string) => void;
+  expandDockedChat:     (friendId: string) => void;
+  scrollDockUp:         () => void;
+  scrollDockDown:       () => void;
+
   setActiveThread: (id: string) => void;
-  toggleSidebar: () => void;
   /** Cycles: hidden → compact → expanded → hidden */
   cycleCopilot: () => void;
   /** Expand directly — used by keyboard shortcuts or external triggers */
@@ -245,7 +268,9 @@ interface AppState {
   updateThreadProject: (threadId: string, projectId: string | null) => void;
   updateThreadTitle: (threadId: string, title: string) => void;
   setBackendAlive: (alive: boolean) => void;
-  setBootPhase: (phase: 'prep_deps' | 'db_init' | 'core_init' | 'services_wait' | 'ready' | null) => void;
+  setBootPhase: (phase: 'awaiting_setup' | 'prep_deps' | 'db_init' | 'core_init' | 'services_wait' | 'ready' | null) => void;
+  setActiveUser:     (user: string) => void;
+  setActiveUserRole: (role: 'admin' | 'full' | 'guest' | 'read') => void;
   setVersionMismatch: (mismatch: boolean, coreVersion?: string) => void;
   setAgentState: (role: 'sayon' | 'seren', state: AgentState, detail: string) => void;
   clearAgentStates: () => void;
@@ -342,7 +367,9 @@ Every answer should leave the user better equipped than before.
     coordinatorProvider: '',
   },
   modelConfig: null,
-  sidebarOpen: true,
+  friendsPanelOpen:  false,
+  dockedChats:       [] as DockedChat[],
+  dockScrollOffset:  0,
   copilotMode: 'compact' as const,
   thinkingOpen: true,
   segments: {},
@@ -355,6 +382,8 @@ Every answer should leave the user better equipped than before.
   projectDocs: [],
   backendAlive: false,
   bootPhase: null,
+  activeUser:     'owner',
+  activeUserRole: 'admin',
   versionMismatch: false,
   coreVersion: '',
   agentStates: { sayon: null, seren: null },
@@ -405,7 +434,51 @@ Every answer should leave the user better equipped than before.
       ? { ...s.messages, [s.activeThreadId]: [] }
       : s.messages,
   })),
-  toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+  setFriendsPanelOpen: (open) => set({ friendsPanelOpen: open }),
+
+  openDockedChat: (friendId, displayName, tone) => set((s) => {
+    const existing = s.dockedChats.find((c) => c.friendId === friendId);
+    if (existing) {
+      return {
+        dockedChats: s.dockedChats.map((c) =>
+          c.friendId === friendId ? { ...c, minimized: false } : c
+        ),
+      };
+    }
+    return {
+      dockedChats: [...s.dockedChats, { friendId, displayName, tone, minimized: false, unread: 0 }],
+    };
+  }),
+
+  closeDockedChat: (friendId) => set((s) => {
+    const next = s.dockedChats.filter((c) => c.friendId !== friendId);
+    const maxOffset = Math.max(0, next.length - 3);
+    return {
+      dockedChats:      next,
+      dockScrollOffset: Math.min(s.dockScrollOffset, maxOffset),
+    };
+  }),
+
+  minimizeDockedChat: (friendId) => set((s) => ({
+    dockedChats: s.dockedChats.map((c) =>
+      c.friendId === friendId ? { ...c, minimized: true } : c
+    ),
+  })),
+
+  expandDockedChat: (friendId) => set((s) => ({
+    dockedChats: s.dockedChats.map((c) =>
+      c.friendId === friendId ? { ...c, minimized: false } : c
+    ),
+  })),
+
+  scrollDockUp: () => set((s) => ({
+    dockScrollOffset: Math.max(0, s.dockScrollOffset - 1),
+  })),
+
+  scrollDockDown: () => set((s) => ({
+    dockScrollOffset: Math.min(Math.max(0, s.dockedChats.length - 3), s.dockScrollOffset + 1),
+  })),
+
   cycleCopilot: () => set((s) => {
     const next: Record<string, 'hidden' | 'compact' | 'expanded'> = {
       hidden: 'compact', compact: 'expanded', expanded: 'hidden',
@@ -522,7 +595,9 @@ Every answer should leave the user better equipped than before.
       threads: s.threads.map((t) => (t.id === threadId ? { ...t, title } : t)),
     })),
   setBackendAlive: (alive) => set({ backendAlive: alive }),
-  setBootPhase: (phase) => set({ bootPhase: phase }),
+  setBootPhase:    (phase) => set({ bootPhase: phase }),
+  setActiveUser:     (user) => set({ activeUser: user }),
+  setActiveUserRole: (role) => set({ activeUserRole: role }),
   setVersionMismatch: (mismatch, coreVersion) => set({
     versionMismatch: mismatch,
     ...(coreVersion !== undefined ? { coreVersion } : {}),

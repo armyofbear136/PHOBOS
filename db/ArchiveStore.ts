@@ -27,16 +27,26 @@
 import Database from 'duckdb-async';
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 import { randomUUID } from 'crypto';
-import { BUNDLED_EXTENSION_DIR } from './DatabaseManager.js';
+import { BUNDLED_EXTENSION_DIR, userDir } from './DatabaseManager.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-export const ARCHIVE_DIR = path.join(os.homedir(), '.phobos', 'archive');
-
 /** Embedding dimension — must match nomic-embed-text-v1.5 and MemoryStore.EMBED_DIM */
 const EMBED_DIM = 768;
+
+// ── Per-user archive directory ────────────────────────────────────────────────
+//
+// Each user's archive lives inside their user directory so that copying or
+// deleting ~/.phobos/users/{username}/ takes all archive data with it.
+//
+// ~/.phobos/users/{username}/archive/{domain}.duckdb
+
+function archiveDir(username: string): string {
+  const dir = path.join(userDir(username), 'archive');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
 
 // ── Domain taxonomy ───────────────────────────────────────────────────────────
 //
@@ -149,12 +159,8 @@ export interface DomainInfo {
 
 // ── Private helpers ─────────────────────────────────────────────────────────
 
-function domainFilePath(domain: ArchiveDomain): string {
-  return path.join(ARCHIVE_DIR, `${domain}.duckdb`);
-}
-
-function ensureArchiveDir(): void {
-  fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
+function domainFilePath(username: string, domain: ArchiveDomain): string {
+  return path.join(archiveDir(username), `${domain}.duckdb`);
 }
 
 
@@ -322,13 +328,12 @@ export class ArchiveStore {
    * Opens the DB file, runs schema DDL, closes.
    * Safe to call on an existing domain (idempotent).
    */
-  static async ensureDomain(domain: ArchiveDomain): Promise<void> {
-    ensureArchiveDir();
-    const filePath = domainFilePath(domain);
+  static async ensureDomain(username: string, domain: ArchiveDomain): Promise<void> {
+    const filePath = domainFilePath(username, domain);
     const { db, ftsAvailable } = await getDomainDb(filePath);
     try {
       await initDomainSchema(db, domain, ftsAvailable);
-      console.log(`[ArchiveStore] Domain ready: ${domain} (fts=${ftsAvailable})`);
+      console.log(`[ArchiveStore] Domain ready: ${username}/${domain} (fts=${ftsAvailable})`);
     } finally {
     }
   }
@@ -337,40 +342,42 @@ export class ArchiveStore {
    * Delete a domain and its entire DuckDB file.
    * Irreversible. The caller (archiveRoutes) must confirm with the user first.
    */
-  static async deleteDomain(domain: ArchiveDomain): Promise<void> {
-    const filePath = domainFilePath(domain);
-    // Evict from cache — runs CHECKPOINT then closes the Database handle.
+  static async deleteDomain(username: string, domain: ArchiveDomain): Promise<void> {
+    const filePath = domainFilePath(username, domain);
     await evictDomainDb(filePath);
-
-    // Delete each file independently with retry. On Windows the WAL is the
-    // last handle released — deleting it before the main file often unblocks both.
     await deleteWithRetry(filePath + '.wal');
     await deleteWithRetry(filePath);
-    console.log(`[ArchiveStore] Domain deleted: ${domain}`);
+    console.log(`[ArchiveStore] Domain deleted: ${username}/${domain}`);
   }
 
   /**
-   * Returns true if any domain .duckdb file exists in the archive directory.
+   * Returns true if any user has archive content on disk.
+   * Scans all ~/.phobos/users/{username}/archive/ directories.
    * Used by server.ts to determine whether SYBIL is required at startup.
    */
-  static hasAnyContent(): boolean {
-    if (!fs.existsSync(ARCHIVE_DIR)) return false;
-    return fs.readdirSync(ARCHIVE_DIR).some(f => f.endsWith('.duckdb'));
+  static hasAnyContent(allUsernames: string[]): boolean {
+    for (const username of allUsernames) {
+      const dir = path.join(userDir(username), 'archive');
+      if (!fs.existsSync(dir)) continue;
+      if (fs.readdirSync(dir).some(f => f.endsWith('.duckdb'))) return true;
+    }
+    return false;
   }
 
   /**
-   * List all domains that have a .duckdb file on disk,
+   * List all domains that have a .duckdb file in the user's archive directory,
    * with their chunk counts, last ingest time, and file size.
    */
-  static async listDomains(): Promise<DomainInfo[]> {
-    if (!fs.existsSync(ARCHIVE_DIR)) return [];
+  static async listDomains(username: string): Promise<DomainInfo[]> {
+    const dir = path.join(userDir(username), 'archive');
+    if (!fs.existsSync(dir)) return [];
 
-    const files = fs.readdirSync(ARCHIVE_DIR).filter(f => f.endsWith('.duckdb'));
+    const files = fs.readdirSync(dir).filter(f => f.endsWith('.duckdb'));
     const results: DomainInfo[] = [];
 
     for (const file of files) {
       const domain = file.replace(/\.duckdb$/, '') as ArchiveDomain;
-      const filePath = path.join(ARCHIVE_DIR, file);
+      const filePath = path.join(dir, file);
       const sizeBytes = fs.statSync(filePath).size;
 
       let chunkCount  = 0;
@@ -378,7 +385,6 @@ export class ArchiveStore {
       let lastIngest: string | null = null;
 
       try {
-        // getDomainDb reuses cached instance — no file lock race.
         const { db } = await getDomainDb(filePath);
         const conn = await db.connect();
         try {
@@ -408,10 +414,11 @@ export class ArchiveStore {
    * Returns null if not found.
    */
   static async getSource(
+    username: string,
     domain: ArchiveDomain,
     sourcePath: string,
   ): Promise<ArchiveSourceRecord | null> {
-    const filePath = domainFilePath(domain);
+    const filePath = domainFilePath(username, domain);
     if (!fs.existsSync(filePath)) return null;
 
     const { db } = await getDomainDb(filePath);
@@ -449,8 +456,8 @@ export class ArchiveStore {
   /**
    * List all sources in a domain, ordered by most recently ingested.
    */
-  static async listSources(domain: ArchiveDomain): Promise<ArchiveSourceRecord[]> {
-    const filePath = domainFilePath(domain);
+  static async listSources(username: string, domain: ArchiveDomain): Promise<ArchiveSourceRecord[]> {
+    const filePath = domainFilePath(username, domain);
     if (!fs.existsSync(filePath)) return [];
 
     try {
@@ -506,6 +513,7 @@ export class ArchiveStore {
    * @param chunks        Array of chunk records to insert
    */
   static async writeChunks(
+    username: string,
     domain: ArchiveDomain,
     sourceId: string,
     sourcePath: string,
@@ -521,8 +529,7 @@ export class ArchiveStore {
       charCount:  number;
     }>,
   ): Promise<void> {
-    ensureArchiveDir();
-    const filePath = domainFilePath(domain);
+    const filePath = domainFilePath(username, domain);
     const { db, ftsAvailable } = await getDomainDb(filePath);
 
     try {
@@ -591,8 +598,8 @@ export class ArchiveStore {
    * Delete all chunks and the source record for a given source_path.
    * Used both for explicit user deletion and for re-ingest (delete-then-rewrite).
    */
-  static async deleteSource(domain: ArchiveDomain, sourcePath: string): Promise<void> {
-    const filePath = domainFilePath(domain);
+  static async deleteSource(username: string, domain: ArchiveDomain, sourcePath: string): Promise<void> {
+    const filePath = domainFilePath(username, domain);
     if (!fs.existsSync(filePath)) return;
 
     const { db, ftsAvailable } = await getDomainDb(filePath);
@@ -625,8 +632,8 @@ export class ArchiveStore {
    * Delete a source by its stable UUID.
    * Used by archiveRoutes DELETE /api/archive/sources/:sourceId.
    */
-  static async deleteSourceById(domain: ArchiveDomain, sourceId: string): Promise<void> {
-    const filePath = domainFilePath(domain);
+  static async deleteSourceById(username: string, domain: ArchiveDomain, sourceId: string): Promise<void> {
+    const filePath = domainFilePath(username, domain);
     if (!fs.existsSync(filePath)) return;
 
     const { db, ftsAvailable } = await getDomainDb(filePath);
@@ -663,12 +670,13 @@ export class ArchiveStore {
    * (caller merges with FTS results before final top-k cut).
    */
   static async semanticSearch(
+    username: string,
     domain: ArchiveDomain,
     queryVec: number[],
     k: number,
     minScore: number,
   ): Promise<SemanticSearchRow[]> {
-    const filePath = domainFilePath(domain);
+    const filePath = domainFilePath(username, domain);
     if (!fs.existsSync(filePath)) return [];
 
     const { db } = await getDomainDb(filePath);
@@ -709,11 +717,12 @@ export class ArchiveStore {
    * Returns empty array if FTS index is unavailable.
    */
   static async ftsSearch(
+    username: string,
     domain: ArchiveDomain,
     queryText: string,
     k: number,
   ): Promise<SemanticSearchRow[]> {
-    const filePath = domainFilePath(domain);
+    const filePath = domainFilePath(username, domain);
     if (!fs.existsSync(filePath)) return [];
 
     const { db, ftsAvailable } = await getDomainDb(filePath);
@@ -767,6 +776,7 @@ export class ArchiveStore {
    * Domains whose files do not exist are silently skipped.
    */
   static async openAttachConnection(
+    username: string,
     domains: ArchiveDomain[],
   ): Promise<{ db: Database.Database; attachedAliases: string[] }> {
     const dbConfig = BUNDLED_EXTENSION_DIR
@@ -792,7 +802,7 @@ export class ArchiveStore {
     const conn = await db.connect();
     try {
       for (const domain of domains) {
-        const filePath = domainFilePath(domain);
+        const filePath = domainFilePath(username, domain);
         if (!fs.existsSync(filePath)) continue;
         // Alias: 'custom-foo' → 'custom_foo' (DuckDB identifiers disallow hyphens).
         const alias = domain.replace(/-/g, '_');
@@ -824,4 +834,3 @@ export interface SemanticSearchRow {
   domain:      ArchiveDomain;
   score:       number;
 }
-

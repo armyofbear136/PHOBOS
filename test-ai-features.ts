@@ -277,11 +277,6 @@ if (REBUILD_CONFIG) {
     console.log('\n  Edit config.json to change, then run the suite normally.\n');
     process.exit(0);
   })().catch(err => { console.error('--rebuildconfig failed:', err); process.exit(1); });
-} else {
-  // Normal run — log which models will be forced (if any)
-  if (FORCE_SAYON_MODEL || FORCE_SEREN_MODEL) {
-    // Deferred to startServer where the log context is active
-  }
 }
 
 // ── Result tracking ────────────────────────────────────────────────────────────
@@ -702,7 +697,7 @@ async function startServer(): Promise<boolean> {
 
   // On Windows, spawn needs shell:true to resolve npx/npx.cmd from PATH.
   const isWindows = process.platform === 'win32';
-  serverProc = spawn(isWindows ? 'npx.cmd' : 'npx', ['tsx', 'server.ts'], {
+  serverProc = spawn(isWindows ? 'npx.cmd' : 'npx', ['tsx', '--import', './test-esm-shim.ts', 'server.ts'], {
     cwd: __dirname,
     env: {
       ...process.env,
@@ -711,6 +706,7 @@ async function startServer(): Promise<boolean> {
       WORKSPACES_ROOT:        path.join(SCRATCH_DIR, 'workspaces'),
       PORT:                   String(SERVER_PORT),
       PHOBOS_SKIP_DEP_PREP:   '1',
+      PHOBOS_BIN_DIR:         path.join(__dirname, 'dist'),
       ...(!isNaN(SAYON_CTX) ? { PHOBOS_TEST_SAYON_CTX: String(SAYON_CTX) } : {}),
       ...(!isNaN(SEREN_CTX) ? { PHOBOS_TEST_SEREN_CTX: String(SEREN_CTX) } : {}),
     },
@@ -742,40 +738,6 @@ async function startServer(): Promise<boolean> {
     return false;
   }
   console.log(`    Port ${SERVER_PORT} open — waiting for LLM servers to load models…`);
-
-  // Phase 1.5: apply model selection from config.json (if any) before waiting
-  // for models to load. PUT /api/config/models triggers reconcilePhobosServers
-  // with the chosen models, which launches the correct llama-server processes.
-  if (FORCE_SAYON_MODEL || FORCE_SEREN_MODEL) {
-    console.log(`    🔧 Applying model config: SAYON=${FORCE_SAYON_MODEL ?? 'auto'} SEREN=${FORCE_SEREN_MODEL ?? 'auto'}`);
-    try {
-      const body: Record<string, unknown> = {};
-      if (FORCE_SAYON_MODEL) body.coordinator = { provider: 'phobos', model: FORCE_SAYON_MODEL };
-      if (FORCE_SEREN_MODEL) body.engine       = { provider: 'phobos', model: FORCE_SEREN_MODEL };
-      await new Promise<void>((resolve, reject) => {
-        const data = JSON.stringify(body);
-        const req  = http.request({
-          hostname: '127.0.0.1', port: SERVER_PORT,
-          path: '/api/config/models', method: 'PUT',
-          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
-          timeout: 10_000,
-        }, res => {
-          res.resume();
-          res.on('end', () => {
-            if (res.statusCode === 200) resolve();
-            else reject(new Error(`PUT /api/config/models returned ${res.statusCode}`));
-          });
-        });
-        req.on('error', reject);
-        req.on('timeout', () => { req.destroy(); reject(new Error('PUT /api/config/models timed out')); });
-        req.write(data);
-        req.end();
-      });
-      console.log(`    ✅ Model config applied`);
-    } catch (err) {
-      console.warn(`    ⚠️  Model config apply failed (non-fatal): ${(err as Error).message}`);
-    }
-  }
 
   // Phase 2: wait up to 120s for both coordinator AND engine to report connected.
   // The llama-server processes need time to load model weights into VRAM/RAM.
@@ -965,18 +927,28 @@ async function checkPort(port: number): Promise<boolean> {
  * Max wait: 120s. Logs every 10s if still waiting.
  */
 async function waitForModelIdle(label = ''): Promise<void> {
-  for (let i = 0; i < 120; i++) {
+  for (let i = 0; i < 300; i++) {
     await new Promise(r => setTimeout(r, 1000));
     try {
       const res = await apiGet('/api/status', 3000).catch(() => ({ status: 0, json: null }));
       const j   = res.json as any;
-      if (j?.coordinator === 'connected' && j?.engine === 'connected') return;
-      if (i > 0 && i % 10 === 0) {
-        console.log(`    ⏳ [${label}] waiting for models… coordinator=${j?.coordinator} engine=${j?.engine} (${i}s)`);
+      if (j?.coordinator === 'connected' && j?.engine === 'connected') {
+        // Both LLM servers are online — now also wait until neither is actively generating
+        const sayonIdle = !j?.sayonBusy;
+        const serenIdle = !j?.serenBusy;
+        const queueEmpty = (j?.queueActiveTasks ?? 0) === 0;
+        if (sayonIdle && serenIdle && queueEmpty) return;
+        if (i > 0 && i % 5 === 0) {
+          console.log(`    ⏳ [${label}] waiting for inference to finish… sayon=${j?.sayonBusy ? 'busy' : 'idle'} seren=${j?.serenBusy ? 'busy' : 'idle'} queue=${j?.queueActiveTasks ?? 0} (${i}s)`);
+        }
+      } else {
+        if (i > 0 && i % 10 === 0) {
+          console.log(`    ⏳ [${label}] waiting for models… coordinator=${j?.coordinator} engine=${j?.engine} (${i}s)`);
+        }
       }
     } catch { /* retry */ }
   }
-  console.log(`    ⚠️  [${label}] model idle wait timed out after 120s — proceeding anyway`);
+  console.log(`    ⚠️  [${label}] model idle wait timed out after 300s — proceeding anyway`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1258,21 +1230,77 @@ async function testS12_copilotSerenWiring(): Promise<void> {
 }
 
 async function testS13_weatherNeedsSerenNotDirect(): Promise<void> {
-  startTest('S13', 'Real-time data query (weather) routes through SEREN browse, not SAYON direct', 'short');
-  // This test documents the CORRECT behavior. If it fails, the classifier is routing
-  // weather/live-data queries to ANSWER_DIRECTLY (SAYON has no tools for this).
+  startTest('S13', 'Real-time data query (weather) routes ANSWER_DIRECTLY with requiresWebSearch flag', 'short');
+  // Before WebSearchPipeline: weather routed to NEEDS_SEREN (SEREN's browse op).
+  // After WebSearchPipeline: SAYON handles it directly via the pipeline.
+  // requiresWebSearch:true is emitted by the classifier and drives the pipeline.
   const tid = randomUUID();
   const s   = await sendMessageAndCapture(tid, "What's the weather in Denver right now?", {}, t(180_000));
 
-  assert('no timeout',    !s.timedOut, `elapsed ${s.durationMs}ms`);
-  assert('complete',       s.complete, 'stream finished');
-  // Weather requires live data — should route to SEREN to use browse operation
-  // If this fails with ANSWER_DIRECTLY, fix the classifier: weather/news/live → NEEDS_SEREN
-  warnAssert('routes to NEEDS_SEREN for live data', s.routing === 'NEEDS_SEREN',
-    s.routing === 'ANSWER_DIRECTLY'
-      ? 'SAYON answered directly — no live data access. Fix classifier to route real-time queries to SEREN.'
-      : `got: ${s.routing}`
-  );
+  assert('no timeout',              !s.timedOut,                          `elapsed ${s.durationMs}ms`);
+  assert('complete',                 s.complete,                           'stream finished');
+  assert('routes ANSWER_DIRECTLY',   s.routing === 'ANSWER_DIRECTLY',     `got: ${s.routing}`);
+  assert('no SEREN task dispatched', s.taskStarts.length === 0,           `task_starts: ${s.taskStarts.length}`);
+  endTest();
+}
+
+async function testS14_webSearchPipelineFiresOnLiveDataQuery(): Promise<void> {
+  startTest('S14', 'WebSearchPipeline: live-data query triggers pipeline status pills and returns answer', 'short');
+
+  const camofoxUp = await checkPort(9377);
+  if (!camofoxUp) {
+    endTest('SKIP', 'Camofox not running on :9377 — pipeline cannot execute without browser');
+    return;
+  }
+
+  const tid = randomUUID();
+  const s   = await sendMessageAndCapture(tid, 'What is the current price of Bitcoin?', {}, t(120_000));
+
+  assert('no timeout',               !s.timedOut,                          `elapsed ${s.durationMs}ms`);
+  assert('routes ANSWER_DIRECTLY',    s.routing === 'ANSWER_DIRECTLY',     `got: ${s.routing}`);
+  assert('complete event received',   s.complete,                           'stream finished');
+  assert('no SEREN task dispatched',  s.taskStarts.length === 0,           `task_starts: ${s.taskStarts.length}`);
+
+  // Pipeline emits status SSE events as it progresses through stages
+  const hasSearchPill  = s.statusPills.some(p => /search|query|formulat/i.test(p));
+  const hasSourcePill  = s.statusPills.some(p => /source|evaluat|reading|page/i.test(p));
+  warnAssert('pipeline status pill: query formulation', hasSearchPill,
+    hasSearchPill ? 'present' : `pills: ${JSON.stringify(s.statusPills)}`);
+  warnAssert('pipeline status pill: reading pages',     hasSourcePill,
+    hasSourcePill ? 'present' : `pills: ${JSON.stringify(s.statusPills)}`);
+
+  // Response should contain something price-like (number or currency symbol)
+  const msgs    = await apiGetMessages(tid);
+  const content = msgs.find(m => m.role === 'assistant')?.content ?? '';
+  warnAssert('response contains price-related content',
+    /\$|USD|bitcoin|BTC|price|value/i.test(content),
+    content.length > 0 ? `content starts: ${content.slice(0, 120)}` : 'empty response');
+
+  endTest();
+}
+
+async function testS15_webSearchSkippedForStaticQuery(): Promise<void> {
+  startTest('S15', 'WebSearchPipeline: static knowledge query skips pipeline entirely', 'short');
+  const tid = randomUUID();
+  const s   = await sendMessageAndCapture(tid, 'What is the difference between a stack and a queue?', {}, t(120_000));
+
+  assert('no timeout',               !s.timedOut,                          `elapsed ${s.durationMs}ms`);
+  assert('routes ANSWER_DIRECTLY',    s.routing === 'ANSWER_DIRECTLY',     `got: ${s.routing}`);
+  assert('complete event received',   s.complete,                           'stream finished');
+
+  // No pipeline status pills — static query, no web search triggered
+  const hasSearchPill = s.statusPills.some(p => /search|formulat|source|evaluat|reading/i.test(p));
+  assert('no pipeline status pills',  !hasSearchPill,
+    hasSearchPill ? `unexpected pill: ${s.statusPills.find(p => /search|formulat|source|evaluat|reading/i.test(p))}` : 'clean');
+
+  // Response should be substantive knowledge-based answer
+  const msgs    = await apiGetMessages(tid);
+  const content = msgs.find(m => m.role === 'assistant')?.content ?? '';
+  assert('response is substantive',   content.length > 100,                `len: ${content.length}`);
+  warnAssert('response mentions stack or queue',
+    /stack|queue|LIFO|FIFO|push|pop|enqueue|dequeue/i.test(content),
+    content.slice(0, 120));
+
   endTest();
 }
 
@@ -2501,6 +2529,50 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  // Pre-patch the scratch DB with the forced model IDs so the first
+  // reconcile starts the correct llama-server directly — no hot-swap,
+  // no Vulkan driver churn from an immediate stop-start cycle.
+  if (FORCE_SAYON_MODEL || FORCE_SEREN_MODEL) {
+    const scratchDbPath = [
+      path.join(SCRATCH_DIR, 'phobos.duckdb'),
+      path.join(SCRATCH_DIR, 'localai.duckdb'),
+    ].find(p => existsSync(p));
+    if (scratchDbPath) {
+      try {
+        const patchDb = await Database.Database.create(scratchDbPath);
+        const patchConn = await patchDb.connect();
+        const patchQuery = async (sql: string, params: unknown[]) =>
+          new Promise<void>((res, rej) => patchConn.run(sql, ...params, (err: Error | null) => err ? rej(err) : res()));
+        const patchGet = async (sql: string, params: unknown[]) =>
+          new Promise<Record<string, unknown> | undefined>((res, rej) =>
+            patchConn.all(sql, ...params, (err: Error | null, rows: Record<string, unknown>[]) =>
+              err ? rej(err) : res(rows[0])));
+        const now = new Date().toISOString();
+        const patchRole = async (key: string, model: string) => {
+          const row = await patchGet(`SELECT value FROM model_config WHERE key = ?`, [key]);
+          if (row?.value) {
+            try {
+              const cfg = JSON.parse(row.value as string) as Record<string, unknown>;
+              cfg.model = model;
+              await patchQuery(`UPDATE model_config SET value = ?, updated_at = ? WHERE key = ?`,
+                [JSON.stringify(cfg), now, key]);
+            } catch { /* corrupt row — leave as-is */ }
+          }
+        };
+        if (FORCE_SAYON_MODEL) await patchRole('coordinator', FORCE_SAYON_MODEL);
+        if (FORCE_SEREN_MODEL) await patchRole('engine', FORCE_SEREN_MODEL);
+        await patchConn.close();
+        await patchDb.close();
+        const parts = [];
+        if (FORCE_SAYON_MODEL) parts.push(`SAYON=${FORCE_SAYON_MODEL}`);
+        if (FORCE_SEREN_MODEL) parts.push(`SEREN=${FORCE_SEREN_MODEL}`);
+        console.log(`  ✅ Scratch DB pre-patched: ${parts.join(', ')}`);
+      } catch (err) {
+        console.warn(`  ⚠️  Scratch DB pre-patch failed (non-fatal): ${(err as Error).message}`);
+      }
+    }
+  }
+
   const serverStarted = await startServer();
   if (!serverStarted) {
     console.error('\n  ❌ Server failed to start — aborting');
@@ -2525,7 +2597,7 @@ async function main(): Promise<void> {
   // ── Short tests ────────────────────────────────────────────────────────────
   const runShort = !LONG_ONLY && (!ONLY_ID || ONLY_ID.startsWith('S'));
   if (runShort) {
-    console.log('\n── Short Tests (S01–S13) ─────────────────────────────────────');
+    console.log('\n── Short Tests (S01–S15) ─────────────────────────────────────');
     if (!ONLY_ID || ONLY_ID === 'S01') { await testS01_intentRoutingDirect();              await waitForModelIdle('S01'); }
     if (!ONLY_ID || ONLY_ID === 'S02') { await testS02_intentRoutingNeeds();               await waitForModelIdle('S02'); }
     if (!ONLY_ID || ONLY_ID === 'S03') { await testS03_ctxComputedEvent();                 await waitForModelIdle('S03'); }
@@ -2539,6 +2611,8 @@ async function main(): Promise<void> {
     if (!ONLY_ID || ONLY_ID === 'S11') { await testS11_imageRequestForcedRouting();        await waitForModelIdle('S11'); }
     if (!ONLY_ID || ONLY_ID === 'S12') { await testS12_copilotSerenWiring();               await waitForModelIdle('S12'); }
     if (!ONLY_ID || ONLY_ID === 'S13') { await testS13_weatherNeedsSerenNotDirect();       await waitForModelIdle('S13'); }
+    if (!ONLY_ID || ONLY_ID === 'S14') { await testS14_webSearchPipelineFiresOnLiveDataQuery(); await waitForModelIdle('S14'); }
+    if (!ONLY_ID || ONLY_ID === 'S15') { await testS15_webSearchSkippedForStaticQuery();   await waitForModelIdle('S15'); }
   }
 
   // ── Medium tests ───────────────────────────────────────────────────────────

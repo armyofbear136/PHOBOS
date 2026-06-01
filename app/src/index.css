@@ -26,34 +26,49 @@
 ══════════════════════════════════════════════════════════════════════════ */
 
 /* ── @font-face (offline-bundled, no CDN) ─────────────────────────────── */
+
+/* Noto Sans JP — Display + Body (latin + japanese subsets) */
 @font-face {
-  font-family: 'Caveat';
-  src: url('/fonts/Caveat-Medium.woff2') format('woff2');
-  font-weight: 500;
-  font-display: swap;
-}
-@font-face {
-  font-family: 'Inter';
-  src: url('/fonts/Inter-Regular.woff2') format('woff2');
+  font-family: 'Noto Sans JP';
+  src: url('/fonts/NotoSansJP-Regular.woff2') format('woff2'),
+       url('/fonts/NotoSansJP-JP-Regular.woff2') format('woff2');
   font-weight: 400;
   font-display: swap;
 }
 @font-face {
-  font-family: 'Inter';
-  src: url('/fonts/Inter-Medium.woff2') format('woff2');
-  font-weight: 500;
-  font-display: swap;
-}
-@font-face {
-  font-family: 'Inter';
-  src: url('/fonts/Inter-SemiBold.woff2') format('woff2');
-  font-weight: 600;
-  font-display: swap;
-}
-@font-face {
-  font-family: 'Inter';
-  src: url('/fonts/Inter-Bold.woff2') format('woff2');
+  font-family: 'Noto Sans JP';
+  src: url('/fonts/NotoSansJP-Bold.woff2') format('woff2'),
+       url('/fonts/NotoSansJP-JP-Bold.woff2') format('woff2');
   font-weight: 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Noto Sans JP';
+  src: url('/fonts/NotoSansJP-Black.woff2') format('woff2'),
+       url('/fonts/NotoSansJP-JP-Black.woff2') format('woff2');
+  font-weight: 900;
+  font-display: swap;
+}
+
+/* Space Mono — Data + Terminal */
+@font-face {
+  font-family: 'Space Mono';
+  src: url('/fonts/SpaceMono-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Space Mono';
+  src: url('/fonts/SpaceMono-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-display: swap;
+}
+
+/* Legacy fonts kept for backward compat during transition */
+@font-face {
+  font-family: 'Caveat';
+  src: url('/fonts/Caveat-Medium.woff2') format('woff2');
+  font-weight: 500;
   font-display: swap;
 }
 @font-face {
@@ -84,141 +99,145 @@
 /* ── Dark mode tokens (:root) ────────────────────────────────────────── */
 @layer base {
   :root {
-    /* shadcn required */
-    --background:             0 0% 0%;
-    --foreground:             220 15% 85%;
-    --card:                   0 0% 5%;
-    --card-foreground:        220 15% 85%;
-    --popover:                0 0% 5%;
-    --popover-foreground:     220 15% 85%;
-    --primary:                120 100% 50%;
-    --primary-foreground:     0 0% 0%;
-    --secondary:              0 0% 8%;
-    --secondary-foreground:   220 15% 75%;
-    --muted:                  0 0% 10%;
-    --muted-foreground:       220 12% 62%;
-    /* --accent is dark grey in dark mode — safe for both hover and sub-surface */
-    --accent:                 0 0% 12%;
-    --accent-foreground:      220 15% 85%;
-    --destructive:            0 72% 51%;
-    --destructive-foreground: 0 0% 100%;
-    --border:                 0 0% 12%;
-    --input:                  0 0% 10%;
-    --ring:                   120 100% 50%;
-    --radius:                 0.25rem;
+    /* Void and surfaces */
+    --background:          0 0% 3%;
+    --foreground:          60 14% 87%;
+    --card:                60 5% 6%;
+    --card-foreground:     60 14% 87%;
+    --popover:             60 5% 7%;
+    --popover-foreground:  60 14% 87%;
+    --secondary:           60 3% 10%;
+    --secondary-foreground: 60 14% 80%;
+    --muted:               60 3% 12%;
+    --muted-foreground:    60 1% 53%;
+    --accent:              18 94% 47%;
+    --accent-foreground:   60 14% 87%;
+    --border:              18 94% 47%;
+    --input:               60 5% 7%;
+    --ring:                18 94% 47%;
+    --radius:              0rem;
 
     /* Brand tokens */
-    --phobos-green:   120 100% 50%;
-    --phobos-amber:   36 100% 63%;
-    --phobos-blue:    208 100% 62%;
-    --sayon-tint:     200 60% 45%;
-    --seren-tint:     36 80% 50%;
-    --coordinator:    40 70% 50%;
-    --coordinator-bg: 40 70% 50% / 0.1;
-    --ui-accent:      270 50% 40%;
+    --phob-orange:          18 94% 47%;
+    --phob-amber:           47 100% 39%;
+    --phob-green:           135 100% 50%;
+    --phob-teal:            167 100% 42%;
+    --phob-yellow:          77 100% 51%;
+    --phob-electric-violet: 285 100% 74%;
+    --phob-red:             0 100% 62%;
+    --phob-white:           60 14% 87%;
+    --phob-steel:           60 1% 53%;
+    --phob-void:            0 0% 3%;
 
-    /* Semantic */
-    --success:        120 100% 40%;
-    --warning:        40 70% 50%;
+    /* Backward-compat aliases */
+    --phobos-green:        135 100% 50%;
+    --phobos-amber:        18 94% 47%;
+    --phobos-blue:         167 100% 42%;
+    --sayon-tint:          167 100% 42%;
+    --seren-tint:          77 100% 51%;
+    --coordinator:         167 100% 42%;
+    --coordinator-bg:      167 100% 42% / 0.08;
+    --ui-accent:           285 100% 74%;
 
-    /* Structural */
-    --sidebar-bg:                     0 0% 3%;
-    --sidebar-hover:                  0 0% 8%;
-    --sidebar-active:                 120 100% 50%;
-    --sidebar-active-alpha:           120 100% 50% / 0.15;
-    --copilot-bg:                     0 0% 3%;
-    --header-bg:                      0 0% 3%;
-    --header-border:                  0 0% 10%;
-    --status-bg:                      0 0% 8%;
-    --status-text:                    220 10% 60%;
-    --file-panel-bg:                  0 0% 6%;
-    --file-panel-header:              0 0% 8%;
-    --thinking-bg:                    0 0% 4%;
-    --thinking-border:                0 0% 12%;
+    /* Semantic shortcuts */
+    --primary:             18 94% 47%;
+    --primary-foreground:  0 0% 3%;
+    --destructive:         0 100% 62%;
+    --destructive-foreground: 0 0% 100%;
+    --success:             135 100% 50%;
+    --warning:             47 100% 39%;
+
+    /* Media CSS vars */
+    --color-surface:       #0f0f0a;
+    --color-surface-2:     #171712;
+    --color-border:        rgba(232,66,10,0.2);
+    --color-accent:        #e8420a;
+    --color-text:          #e8e8d8;
+    --color-text-muted:    rgba(232,232,216,0.45);
+
+    /* Sidebar structural */
     --sidebar-background:             0 0% 3%;
-    --sidebar-foreground:             220 15% 75%;
-    --sidebar-primary:                120 100% 50%;
-    --sidebar-primary-foreground:     0 0% 0%;
-    --sidebar-accent:                 0 0% 8%;
-    --sidebar-accent-foreground:      220 15% 85%;
-    --sidebar-border:                 0 0% 12%;
-    --sidebar-ring:                   120 100% 50%;
+    --sidebar-foreground:             60 14% 87%;
+    --sidebar-primary:                18 94% 47%;
+    --sidebar-primary-foreground:     0 0% 3%;
+    --sidebar-accent:                 18 94% 47%;
+    --sidebar-accent-foreground:      60 14% 87%;
+    --sidebar-border:                 18 94% 47%;
+    --sidebar-ring:                   18 94% 47%;
   }
 }
 
 /* ── Light mode tokens (.light) ──────────────────────────────────────── */
 /*
-   BG-A chrome stays navy — the .phobos-chrome-zone class restores
-   bright token values specifically inside chrome-zone elements.
-   BG-B panels use bg-card = parchment 35 20% 90%.
-   BG-C conversation uses white (set via phobos-conversation-area).
-   --accent in light is warm grey — safe for BOTH hover highlights
-   and sub-surface cards (no more mid-blue card backgrounds).
+   Chrome zones (header, sidebar, copilot rail, chat input) stay dark in both modes.
+   The .phob-chrome-zone class forces dark tokens regardless of theme.
+   Panel bodies flip to warm paper. Conversation area flips to warm paper.
 */
 .light {
-  --background:             220 55% 18%;   /* BG-A navy */
-  --foreground:             30 15% 8%;     /* near-black for BG-B/C */
-  --card:                   35 20% 90%;    /* BG-B parchment */
-  --card-foreground:        30 15% 8%;
-  --popover:                35 20% 90%;    /* BG-E same as card */
-  --popover-foreground:     30 15% 8%;
-  --primary:                220 75% 52%;
-  --primary-foreground:     0 0% 100%;
-  --secondary:              35 15% 82%;
-  --secondary-foreground:   30 15% 12%;
-  --muted:                  35 12% 78%;
-  --muted-foreground:       30 20% 18%;    /* dark warm brown — correct on parchment */
-  /* KEY FIX: accent is warm grey, not saturated blue.
-     Works for hover highlights AND sub-surface cards on parchment. */
-  --accent:                 35 18% 82%;
-  --accent-foreground:      30 15% 8%;
-  --destructive:            0 65% 42%;
+  /* Void inverts to warm paper */
+  --background:          38 25% 92%;
+  --foreground:          60 14% 9%;
+  --card:                38 20% 89%;
+  --card-foreground:     60 14% 9%;
+  --popover:             38 20% 89%;
+  --popover-foreground:  60 14% 9%;
+  --secondary:           38 18% 84%;
+  --secondary-foreground: 60 14% 12%;
+  --muted:               38 15% 80%;
+  --muted-foreground:    60 1% 26%;
+  --accent:              18 90% 37%;
+  --accent-foreground:   60 14% 9%;
+  --border:              18 90% 37%;
+  --input:               0 0% 100%;
+  --ring:                18 90% 37%;
+  --radius:              0rem;
+
+  /* Brand tokens darkened for paper readability */
+  --phob-orange:          18 90% 37%;
+  --phob-amber:           47 100% 27%;
+  --phob-green:           135 100% 21%;
+  --phob-teal:            167 100% 21%;
+  --phob-yellow:          90 100% 12%;
+  --phob-electric-violet: 270 65% 45%;
+  --phob-red:             0 100% 40%;
+  --phob-white:           60 14% 9%;
+  --phob-steel:           60 1% 26%;
+  --phob-void:            38 25% 92%;
+
+  /* Backward-compat aliases darkened */
+  --phobos-green:        135 100% 21%;
+  --phobos-amber:        18 90% 37%;
+  --phobos-blue:         167 100% 21%;
+  --sayon-tint:          167 100% 21%;
+  --seren-tint:          90 100% 12%;
+  --coordinator:         167 100% 21%;
+  --coordinator-bg:      167 100% 21% / 0.1;
+  --ui-accent:           270 65% 45%;
+  --primary:             18 90% 37%;
+  --primary-foreground:  0 0% 100%;
+  --destructive:         0 100% 40%;
   --destructive-foreground: 0 0% 100%;
-  --border:                 35 20% 65%;
-  --input:                  0 0% 100%;     /* BG-D: white inputs */
-  --ring:                   220 75% 52%;
-  --radius:                 0.35rem;
+  --success:             135 100% 21%;
+  --warning:             47 100% 27%;
 
-  /* Brand tokens — darkened for readability on parchment (BG-B/C).
-     .phobos-chrome-zone restores the original bright values on BG-A. */
-  --phobos-green:   130 65% 28%;
-  --phobos-amber:   36 65% 35%;
-  --phobos-blue:    220 75% 52%;
-  --sayon-tint:     200 55% 30%;
-  --seren-tint:     36 65% 32%;
-  --coordinator:    200 55% 30%;
-  --coordinator-bg: 200 55% 30% / 0.1;
-  --ui-accent:      220 70% 52%;
+  /* Media CSS vars (light) */
+  --color-surface:       #e8e4da;
+  --color-surface-2:     #d8d4c8;
+  --color-border:        rgba(184,50,8,0.25);
+  --color-accent:        #b83208;
+  --color-text:          #1a1a14;
+  --color-text-muted:    rgba(26,26,20,0.5);
 
-  /* Semantic */
-  --success:        130 60% 28%;
-  --warning:        36 65% 38%;
-
-  /* Structural */
-  --foreground-on-navy:             220 25% 90%;
-  --sidebar-bg:                     220 55% 16%;
-  --sidebar-hover:                  220 50% 26%;
-  --sidebar-active:                 220 75% 60%;
-  --sidebar-active-alpha:           220 75% 60% / 0.15;
-  --sidebar-background:             220 55% 16%;
-  --sidebar-foreground:             220 25% 88%;
-  --sidebar-primary:                220 75% 60%;
-  --sidebar-primary-foreground:     0 0% 100%;
-  --sidebar-accent:                 220 50% 26%;
-  --sidebar-accent-foreground:      220 25% 90%;
-  --sidebar-border:                 220 50% 30%;
-  --sidebar-ring:                   220 75% 60%;
-  --copilot-bg:                     220 55% 16%;
-  --header-bg:                      220 55% 14%;
-  --header-border:                  220 50% 28%;
-  --thinking-bg:                    0 0% 100%;
-  --thinking-border:                220 30% 72%;
-  --file-panel-bg:                  35 20% 88%;
-  --file-panel-header:              35 15% 82%;
-  --status-bg:                      220 50% 22%;
-  --status-text:                    220 20% 78%;
+  /* Sidebar structural */
+  --sidebar-background:             0 0% 3%;
+  --sidebar-foreground:             60 14% 87%;
+  --sidebar-primary:                18 94% 47%;
+  --sidebar-primary-foreground:     0 0% 3%;
+  --sidebar-accent:                 18 94% 47%;
+  --sidebar-accent-foreground:      60 14% 87%;
+  --sidebar-border:                 18 94% 47%;
+  --sidebar-ring:                   18 94% 47%;
 }
-
 /* ── Base layer ───────────────────────────────────────────────────────── */
 @layer base {
   * {
@@ -226,13 +245,13 @@
   }
   body {
     @apply bg-background text-foreground;
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-family: 'Noto Sans JP', system-ui, -apple-system, sans-serif;
   }
   .font-mono {
-    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-family: 'Space Mono', 'JetBrains Mono', 'Fira Code', monospace;
   }
   .font-terminal {
-    font-family: 'Share Tech Mono', 'JetBrains Mono', monospace;
+    font-family: 'Space Mono', 'Share Tech Mono', monospace;
   }
 }
 
@@ -242,150 +261,185 @@
    Applied as a className to: <header>, sidebar <aside>, copilot rail <aside>,
    the thinking collapsed strip, and every panel's h-10 header strip div.
    
-   Restores the original dark-mode bright token values so all existing
-   text-phobos-green, text-sayon, text-ui-glow etc. classes render correctly
-   on the navy background in light mode. No !important needed anywhere here —
-   these are scoped token overrides, not class overrides.
-══════════════════════════════════════════════════════════════════════════ */
+/* ── Chrome zone — always dark regardless of theme ─────────────────── */
+/*
+   Applied to: <header>, sidebar <aside>, copilot rail <aside>,
+   ThinkingPanel collapsed strip, panel header strips.
+   Forces dark token values so all phob-* classes render as bright phosphors.
+*/
+.phob-chrome-zone,
+.phobos-chrome-zone,
+.light .phob-chrome-zone,
 .light .phobos-chrome-zone {
-  --phobos-green:   120 100% 50%;
-  --phobos-amber:   36 100% 63%;
-  --phobos-blue:    208 100% 62%;
-  --sayon-tint:     200 60% 65%;
-  --seren-tint:     36 80% 65%;
-  --coordinator:    200 60% 65%;
-  --foreground:     220 15% 88%;
-  --muted-foreground: 220 15% 65%;
-  --border:         220 40% 35%;
-  --accent:         220 50% 26%;   /* hover bg on navy */
-  --accent-foreground: 220 15% 88%;
-}
-/* text-ui-glow on chrome zone: restore purple glow */
-.light .phobos-chrome-zone .text-ui-glow {
-  color: hsl(270 50% 68%);
-  text-shadow: 0 0 6px hsla(40, 60%, 85%, 0.25), 0 0 12px hsla(270, 60%, 60%, 0.15);
-}
-.light .phobos-chrome-zone .text-ui-glow-hover:hover {
-  color: hsl(270 55% 75%);
-  text-shadow: 0 0 8px hsla(40, 60%, 90%, 0.35), 0 0 16px hsla(270, 60%, 65%, 0.25);
-}
-.light .phobos-chrome-zone .text-ui-glow-bright {
-  color: hsl(270 45% 72%);
-  text-shadow: 0 0 8px hsla(40, 60%, 90%, 0.3), 0 0 14px hsla(270, 60%, 65%, 0.2);
-}
-/* text-destructive on chrome zone: softer red on dark bg */
-.light .phobos-chrome-zone .text-destructive {
-  color: hsl(0 70% 70%);
+  --background:       0 0% 3%;
+  --foreground:       60 14% 87%;
+  --phob-orange:      18 94% 47%;
+  --phob-amber:       47 100% 39%;
+  --phob-green:       135 100% 50%;
+  --phob-teal:        167 100% 42%;
+  --phob-yellow:      77 100% 51%;
+  --phob-white:       60 14% 87%;
+  --phob-steel:       60 1% 53%;
+  --phob-void:        0 0% 3%;
+  --phobos-green:     135 100% 50%;
+  --phobos-amber:     18 94% 47%;
+  --phobos-blue:      167 100% 42%;
+  --sayon-tint:       167 100% 42%;
+  --seren-tint:       77 100% 51%;
+  --muted-foreground: 60 1% 53%;
+  --border:           18 94% 47%;
+  --accent:           18 94% 47%;
+  background-color: #080808;
+  color: hsl(60 14% 87%);
 }
 
-/* ── Dark mode text-ui-glow (unchanged) ─────────────────────────────── */
+/* text-ui-glow — electric violet, works on dark chrome */
 @layer utilities {
   .text-ui-glow {
-    color: hsl(270 50% 45%);
-    text-shadow: 0 0 6px hsla(40, 60%, 85%, 0.25), 0 0 12px hsla(270, 60%, 60%, 0.15);
+    color: hsl(285 100% 74%);
+    text-shadow: 0 0 6px rgba(200,125,255,0.3);
   }
   .text-ui-glow-hover:hover {
-    color: hsl(270 55% 55%);
-    text-shadow: 0 0 8px hsla(40, 60%, 90%, 0.35), 0 0 16px hsla(270, 60%, 65%, 0.25);
+    color: hsl(285 100% 80%);
+    text-shadow: 0 0 8px rgba(200,125,255,0.4);
   }
   .text-ui-glow-bright {
-    color: hsl(270 45% 55%);
-    text-shadow: 0 0 8px hsla(40, 60%, 90%, 0.3), 0 0 14px hsla(270, 60%, 65%, 0.2);
+    color: hsl(285 100% 78%);
+    text-shadow: 0 0 8px rgba(200,125,255,0.35);
   }
 }
 
-/* ── Light: text-ui-glow on panel/conversation surfaces (BG-B/C) ─────── */
-/* Only overrides when NOT inside a chrome-zone — the chrome-zone rules above win there */
-.light .text-ui-glow {
-  color: hsl(220 60% 35%);
-  text-shadow: none;
-}
-.light .text-ui-glow-hover:hover {
-  color: hsl(220 65% 30%);
-  text-shadow: none;
-}
-.light .text-ui-glow-bright {
-  color: hsl(220 65% 30%);
-  text-shadow: none;
-}
-
-/* ── Light: SAYON / SEREN on BG-B / BG-C surfaces ─────────────────── */
-.light .text-sayon { color: hsl(var(--sayon-tint)); }
-.light .text-seren { color: hsl(var(--seren-tint)); }
-/* No text-shadow on light surfaces */
-.light .text-phobos-green { text-shadow: none; }
-
 /* ══════════════════════════════════════════════════════════════════════════
-   GLOBAL SCROLLBARS
+   SCROLLBARS — square, orange-tinted
 ══════════════════════════════════════════════════════════════════════════ */
 html {
   scrollbar-width: thin;
-  scrollbar-color: hsl(var(--border)) transparent;
+  scrollbar-color: rgba(232,66,10,0.3) transparent;
 }
-html::-webkit-scrollbar { width: 6px; height: 6px; }
-html::-webkit-scrollbar-track { background: transparent; }
-html::-webkit-scrollbar-thumb {
-  background-color: hsl(var(--border));
-  border-radius: 3px;
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(232,66,10,0.3);
+  border-radius: 0;
 }
-html::-webkit-scrollbar-thumb:hover {
-  background-color: hsl(var(--accent));
+::-webkit-scrollbar-thumb:hover { background: rgba(232,66,10,0.6); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   PHOB SHAPE SYSTEM — panels, headers, corners, effects
+══════════════════════════════════════════════════════════════════════════ */
+
+/* Primary panel shape — chamfered hex corners */
+.phob-panel {
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+  border: 1px solid rgba(232,66,10,0.35);
+  box-shadow: 0 0 24px rgba(232,66,10,0.12);
+  position: relative;
 }
 
-@layer utilities {
-  .scrollbar-thin {
-    scrollbar-width: thin;
-    scrollbar-color: hsl(var(--border)) transparent;
-  }
-  .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
-  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
-  .scrollbar-thin::-webkit-scrollbar-thumb {
-    background-color: hsl(var(--border));
-    border-radius: 3px;
-  }
-  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-    background-color: hsl(var(--accent));
-  }
-
-  .scrollbar-phobos {
-    scrollbar-width: thin;
-    scrollbar-color: hsl(var(--phobos-blue) / 0.2) transparent;
-  }
-  .scrollbar-phobos::-webkit-scrollbar { width: 4px; height: 4px; }
-  .scrollbar-phobos::-webkit-scrollbar-track { background: transparent; }
-  .scrollbar-phobos::-webkit-scrollbar-thumb {
-    background-color: hsl(var(--phobos-blue) / 0.2);
-    border-radius: 2px;
-  }
-  .scrollbar-phobos::-webkit-scrollbar-thumb:hover {
-    background-color: hsl(var(--phobos-blue) / 0.4);
-  }
-
-  .scrollbar-hidden {
-    scrollbar-width: none;
-  }
-  .scrollbar-hidden::-webkit-scrollbar {
-    display: none;
-  }
+/* Parallelogram header strip */
+.phob-header {
+  clip-path: polygon(12px 0%, 100% 0%, 100% 100%, 0% 100%);
+  padding-left: 20px;
+  background: rgba(232,66,10,0.12);
+  border-bottom: 2px solid rgba(232,66,10,0.5);
 }
 
-/* Light scrollbars: blue accent */
-.light html,
-.light * {
-  scrollbar-color: hsl(220 55% 55% / 0.4) transparent;
+/* Corner tick marks — top-left and top-right L-shapes */
+.phob-corners { position: relative; }
+.phob-corners::before,
+.phob-corners::after {
+  content: '';
+  position: absolute;
+  width: 16px; height: 16px;
+  border-color: rgba(232,66,10,0.8);
+  border-style: solid;
+  pointer-events: none;
+  z-index: 1;
 }
-.light ::-webkit-scrollbar-thumb,
-.light html::-webkit-scrollbar-thumb,
-.light .scrollbar-thin::-webkit-scrollbar-thumb,
-.light .scrollbar-phobos::-webkit-scrollbar-thumb {
-  background-color: hsl(220 55% 55% / 0.35);
-  border-radius: 2px;
+.phob-corners::before { top: 0; left: 0; border-width: 2px 0 0 2px; }
+.phob-corners::after  { top: 0; right: 0; border-width: 2px 2px 0 0; }
+/* Full 4-corner variant */
+.phob-corners-full::before { bottom: 0; left: 0; top: auto; border-width: 0 0 2px 2px; }
+.phob-corners-full::after  { bottom: 0; right: 0; top: auto; border-width: 0 2px 2px 0; }
+
+/* Hazard stripe — for locked/critical states */
+.phob-hazard {
+  background: repeating-linear-gradient(
+    45deg, transparent, transparent 4px,
+    rgba(232,66,10,0.15) 4px, rgba(232,66,10,0.15) 8px
+  );
 }
-.light ::-webkit-scrollbar-thumb:hover,
-.light html::-webkit-scrollbar-thumb:hover,
-.light .scrollbar-thin::-webkit-scrollbar-thumb:hover,
-.light .scrollbar-phobos::-webkit-scrollbar-thumb:hover {
-  background-color: hsl(220 65% 55% / 0.6);
+
+/* JP watermark stamp */
+.phob-jp-stamp {
+  font-family: 'Noto Sans JP', sans-serif;
+  font-weight: 900;
+  font-size: 120px;
+  line-height: 1;
+  color: rgba(232,66,10,0.05);
+  position: absolute;
+  pointer-events: none;
+  user-select: none;
+  letter-spacing: -4px;
+  z-index: 0;
+}
+.light .phob-jp-stamp { color: rgba(184,50,8,0.04); }
+
+/* Status dot with pulse */
+.phob-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: phob-pulse 2.4s ease-in-out infinite;
+}
+@keyframes phob-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
+  50%       { box-shadow: 0 0 6px 2px currentColor; opacity: 0.7; }
+}
+.phob-dot-static { animation: none; }
+
+/* Wipe-in animation */
+@keyframes phob-wipe {
+  from { clip-path: inset(0 100% 0 0); opacity: 0; }
+  to   { clip-path: inset(0 0% 0 0); opacity: 1; }
+}
+.phob-wipe-in { animation: phob-wipe 0.2s ease-out forwards; }
+
+/* Ticker scan line across header */
+@keyframes phob-scan { from { transform: translateX(-100%); } to { transform: translateX(400%); } }
+.phob-scan-line { position: relative; overflow: hidden; }
+.phob-scan-line::after {
+  content: '';
+  position: absolute; top: 0; left: 0;
+  width: 25%; height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(232,66,10,0.6), transparent);
+  animation: phob-scan 3s linear infinite;
+  pointer-events: none;
+}
+
+/* Critical alert border pulse */
+@keyframes phob-alert {
+  0%, 100% { border-color: rgba(255,60,60,0.3); box-shadow: 0 0 0 rgba(255,60,60,0); }
+  50%       { border-color: rgba(255,60,60,0.9); box-shadow: 0 0 40px rgba(255,60,60,0.3); }
+}
+.phob-alert-pulse { animation: phob-alert 1.5s ease-in-out infinite; }
+
+/* CRT scanlines overlay */
+.phob-scanlines { position: relative; }
+.phob-scanlines::after {
+  content: '';
+  position: absolute; inset: 0;
+  pointer-events: none; z-index: 9999;
+  background: repeating-linear-gradient(
+    0deg, transparent, transparent 2px,
+    rgba(0,0,0,0.04) 2px, rgba(0,0,0,0.04) 4px
+  );
+}
+
+/* User message parallelogram bubble */
+.phob-bubble-user {
+  clip-path: polygon(8px 0%, 100% 0%, 100% 100%, 0% 100%);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -409,8 +463,8 @@ html::-webkit-scrollbar-thumb:hover {
   background: repeating-linear-gradient(
     0deg,
     transparent, transparent 2px,
-    rgba(0, 255, 65, 0.015) 2px,
-    rgba(0, 255, 65, 0.015) 4px
+    rgba(0,0,0,0.04) 2px,
+    rgba(0,0,0,0.04) 4px
   );
   animation: scanlines 8s linear infinite;
   z-index: 1;
@@ -419,8 +473,8 @@ html::-webkit-scrollbar-thumb:hover {
   background: repeating-linear-gradient(
     0deg,
     transparent, transparent 2px,
-    rgba(150, 180, 255, 0.025) 2px,
-    rgba(150, 180, 255, 0.025) 4px
+    rgba(0,0,0,0.03) 2px,
+    rgba(0,0,0,0.03) 4px
   );
 }
 
@@ -429,12 +483,12 @@ html::-webkit-scrollbar-thumb:hover {
   50% { opacity: 0.06; }
 }
 .phobos-grid {
-  background-image: radial-gradient(circle, hsl(120 100% 50% / 0.08) 1px, transparent 1px);
+  background-image: radial-gradient(circle, rgba(232,66,10,0.06) 1px, transparent 1px);
   background-size: 24px 24px;
   animation: gridPulse 6s ease-in-out infinite;
 }
 .light .phobos-grid {
-  background-image: radial-gradient(circle, hsl(220 80% 62% / 0.12) 1px, transparent 1px);
+  background-image: radial-gradient(circle, rgba(184,50,8,0.05) 1px, transparent 1px);
 }
 
 @keyframes subtleGlow {
@@ -445,76 +499,14 @@ html::-webkit-scrollbar-thumb:hover {
   animation: subtleGlow 3s ease-in-out infinite;
 }
 
-/* Chat background — dark starfield */
+/* Chat background — void black with faint orange bloom */
 .phobos-chat-bg {
-  background-color: #000000;
-  background-image:
-    radial-gradient(ellipse 80% 40% at 50% 0%, rgba(0,40,80,0.18) 0%, transparent 70%),
-    radial-gradient(1px 1px at 11%  8%, rgba(255,255,255,0.55) 0%, transparent 100%),
-    radial-gradient(1px 1px at 27% 15%, rgba(255,255,255,0.45) 0%, transparent 100%),
-    radial-gradient(1px 1px at 43%  4%, rgba(255,255,255,0.6)  0%, transparent 100%),
-    radial-gradient(1px 1px at 61% 21%, rgba(255,255,255,0.4)  0%, transparent 100%),
-    radial-gradient(1px 1px at 78%  9%, rgba(255,255,255,0.55) 0%, transparent 100%),
-    radial-gradient(1px 1px at 91% 17%, rgba(255,255,255,0.5)  0%, transparent 100%),
-    radial-gradient(1px 1px at  5% 33%, rgba(255,255,255,0.35) 0%, transparent 100%),
-    radial-gradient(1px 1px at 19% 41%, rgba(255,255,255,0.5)  0%, transparent 100%),
-    radial-gradient(1px 1px at 35% 38%, rgba(255,255,255,0.4)  0%, transparent 100%),
-    radial-gradient(1px 1px at 52% 29%, rgba(255,255,255,0.55) 0%, transparent 100%),
-    radial-gradient(1px 1px at 69% 44%, rgba(255,255,255,0.45) 0%, transparent 100%),
-    radial-gradient(1px 1px at 84% 36%, rgba(255,255,255,0.5)  0%, transparent 100%),
-    radial-gradient(1px 1px at 96% 52%, rgba(255,255,255,0.4)  0%, transparent 100%),
-    radial-gradient(1px 1px at  8% 57%, rgba(255,255,255,0.45) 0%, transparent 100%),
-    radial-gradient(1px 1px at 24% 63%, rgba(255,255,255,0.35) 0%, transparent 100%),
-    radial-gradient(1px 1px at 47% 71%, rgba(255,255,255,0.5)  0%, transparent 100%),
-    radial-gradient(1px 1px at 73% 59%, rgba(255,255,255,0.4)  0%, transparent 100%),
-    radial-gradient(1px 1px at 88% 68%, rgba(255,255,255,0.45) 0%, transparent 100%),
-    radial-gradient(1px 1px at 15% 79%, rgba(255,255,255,0.35) 0%, transparent 100%),
-    radial-gradient(1px 1px at 38% 84%, rgba(255,255,255,0.4)  0%, transparent 100%),
-    radial-gradient(1px 1px at 62% 91%, rgba(255,255,255,0.3)  0%, transparent 100%),
-    radial-gradient(1px 1px at 82% 86%, rgba(255,255,255,0.45) 0%, transparent 100%),
-    radial-gradient(1.5px 1.5px at 33% 12%, rgba(200,220,255,0.3)  0%, transparent 100%),
-    radial-gradient(1.5px 1.5px at 67% 31%, rgba(200,220,255,0.25) 0%, transparent 100%),
-    radial-gradient(1.5px 1.5px at 14% 55%, rgba(200,220,255,0.2)  0%, transparent 100%),
-    radial-gradient(1.5px 1.5px at 56% 78%, rgba(200,220,255,0.3)  0%, transparent 100%),
-    radial-gradient(1.5px 1.5px at 89% 22%, rgba(200,220,255,0.25) 0%, transparent 100%),
-    radial-gradient(1.5px 1.5px at  3% 88%, rgba(200,220,255,0.2)  0%, transparent 100%);
-  background-attachment: fixed;
+  background-color: #080808;
+  background-image: radial-gradient(ellipse 60% 40% at 50% 0%, rgba(232,66,10,0.04) 0%, transparent 60%);
 }
-/* Light chat background — navy starfield, same star positions */
 .light .phobos-chat-bg {
-  background-color: hsl(220 55% 14%);
-  background-image:
-    radial-gradient(ellipse 80% 40% at 50% 0%, rgba(80,120,255,0.14) 0%, transparent 70%),
-    radial-gradient(ellipse 60% 50% at 80% 60%, rgba(40,90,200,0.08) 0%, transparent 60%),
-    radial-gradient(1px 1px at 11%  8%, rgba(200,220,255,0.45) 0%, transparent 100%),
-    radial-gradient(1px 1px at 27% 15%, rgba(200,220,255,0.35) 0%, transparent 100%),
-    radial-gradient(1px 1px at 43%  4%, rgba(200,220,255,0.5)  0%, transparent 100%),
-    radial-gradient(1px 1px at 61% 21%, rgba(200,220,255,0.3)  0%, transparent 100%),
-    radial-gradient(1px 1px at 78%  9%, rgba(200,220,255,0.45) 0%, transparent 100%),
-    radial-gradient(1px 1px at 91% 17%, rgba(200,220,255,0.4)  0%, transparent 100%),
-    radial-gradient(1px 1px at  5% 33%, rgba(200,220,255,0.3)  0%, transparent 100%),
-    radial-gradient(1px 1px at 19% 41%, rgba(200,220,255,0.45) 0%, transparent 100%),
-    radial-gradient(1px 1px at 35% 38%, rgba(200,220,255,0.35) 0%, transparent 100%),
-    radial-gradient(1px 1px at 52% 29%, rgba(200,220,255,0.5)  0%, transparent 100%),
-    radial-gradient(1px 1px at 69% 44%, rgba(200,220,255,0.4)  0%, transparent 100%),
-    radial-gradient(1px 1px at 84% 36%, rgba(200,220,255,0.45) 0%, transparent 100%),
-    radial-gradient(1px 1px at 96% 52%, rgba(200,220,255,0.35) 0%, transparent 100%),
-    radial-gradient(1px 1px at  8% 57%, rgba(200,220,255,0.4)  0%, transparent 100%),
-    radial-gradient(1px 1px at 24% 63%, rgba(200,220,255,0.3)  0%, transparent 100%),
-    radial-gradient(1px 1px at 47% 71%, rgba(200,220,255,0.45) 0%, transparent 100%),
-    radial-gradient(1px 1px at 73% 59%, rgba(200,220,255,0.35) 0%, transparent 100%),
-    radial-gradient(1px 1px at 88% 68%, rgba(200,220,255,0.4)  0%, transparent 100%),
-    radial-gradient(1px 1px at 15% 79%, rgba(200,220,255,0.3)  0%, transparent 100%),
-    radial-gradient(1px 1px at 38% 84%, rgba(200,220,255,0.35) 0%, transparent 100%),
-    radial-gradient(1px 1px at 62% 91%, rgba(200,220,255,0.25) 0%, transparent 100%),
-    radial-gradient(1px 1px at 82% 86%, rgba(200,220,255,0.4)  0%, transparent 100%),
-    radial-gradient(1.5px 1.5px at 33% 12%, rgba(160,200,255,0.3)  0%, transparent 100%),
-    radial-gradient(1.5px 1.5px at 67% 31%, rgba(160,200,255,0.25) 0%, transparent 100%),
-    radial-gradient(1.5px 1.5px at 14% 55%, rgba(160,200,255,0.2)  0%, transparent 100%),
-    radial-gradient(1.5px 1.5px at 56% 78%, rgba(160,200,255,0.3)  0%, transparent 100%),
-    radial-gradient(1.5px 1.5px at 89% 22%, rgba(160,200,255,0.25) 0%, transparent 100%),
-    radial-gradient(1.5px 1.5px at  3% 88%, rgba(160,200,255,0.2)  0%, transparent 100%);
-  background-attachment: fixed;
+  background-color: #f0ede6;
+  background-image: radial-gradient(ellipse 60% 40% at 50% 0%, rgba(184,50,8,0.03) 0%, transparent 60%);
 }
 
 .phobos-noise {
@@ -571,26 +563,18 @@ html::-webkit-scrollbar-thumb:hover {
   align-items: center;
   width: 80px;
   height: 28px;
-  border: 1px solid hsl(120 100% 50% / 0.15);
+  border: 1px solid rgba(232,66,10,0.15);
   border-radius: 2px 2px 0 0;
-  background: hsl(0 0% 6%);
+  background: #080808;
   position: relative;
   overflow: hidden;
 }
 .skill-cartridge:hover .skill-cartridge-body {
-  border-color: hsl(120 100% 50% / 0.35);
-  box-shadow: 0 -4px 12px hsl(120 100% 50% / 0.08);
+  border-color: rgba(232,66,10,0.35);
+  box-shadow: 0 -4px 12px rgba(232,66,10,0.08);
 }
 /* Light: body stays navy — it's BG-A chrome */
-.light .skill-cartridge-body {
-  background: hsl(220 55% 18%);
-  border-color: hsl(120 100% 50% / 0.25);
-}
-.light .skill-cartridge:hover .skill-cartridge-body {
-  border-color: hsl(120 100% 50% / 0.5);
-  box-shadow: 0 -4px 12px hsl(120 100% 50% / 0.12);
-}
-/* CYBERNETICS label: already handled by phobos-chrome-zone token restore */
+/* CYBERNETICS label: handled by phob-chrome-zone token restore */
 
 .skill-cartridge-label {
   flex: 1;
@@ -611,8 +595,8 @@ html::-webkit-scrollbar-thumb:hover {
 .light .skill-cartridge-pins {
   background: repeating-linear-gradient(
     90deg,
-    hsl(220 40% 30%) 0px, hsl(220 40% 30%) 2px,
-    hsl(220 45% 38%) 2px, hsl(220 45% 38%) 3px,
+    hsl(0 0% 15%) 0px, hsl(0 0% 15%) 2px,
+    hsl(0 0% 25%) 2px, hsl(0 0% 25%) 3px,
     transparent 3px, transparent 5px
   );
 }
@@ -625,17 +609,17 @@ html::-webkit-scrollbar-thumb:hover {
   left: 50%;
   transform: translateX(-50%);
   min-width: 130px;
-  background: hsl(0 0% 6%);
-  border: 1px solid hsl(120 100% 50% / 0.2);
+  background: #080808;
+  border: 1px solid rgba(232,66,10,0.3);
   border-radius: 2px;
   overflow: hidden;
   z-index: 200;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.7), 0 0 12px hsl(120 100% 50% / 0.06);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.7), 0 0 12px rgba(232,66,10,0.06);
 }
 .light .skill-cartridge-dropdown {
-  background: hsl(35 25% 91%);
-  border-color: hsl(120 100% 50% / 0.3);
-  box-shadow: 0 4px 20px rgba(10,20,50,0.25), 0 0 12px hsl(120 100% 50% / 0.08);
+  background: #080808;
+  border-color: rgba(232,66,10,0.3);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.7), 0 0 12px rgba(232,66,10,0.06);
 }
 
 /* Dropdown items — the portal renders outside any .phobos-chrome-zone,
@@ -655,29 +639,29 @@ html::-webkit-scrollbar-thumb:hover {
   cursor: pointer;
   text-align: left;
   transition: background 0.1s, color 0.1s;
-  border-bottom: 1px solid hsl(120 100% 50% / 0.06);
+  border-bottom: 1px solid rgba(232,66,10,0.06);
 }
 /* Dark mode item colour */
 .dark .skill-cartridge-dropdown-item,
 :root:not(.light) .skill-cartridge-dropdown-item {
-  color: hsl(120 100% 50% / 0.7);
+  color: rgba(232,66,10,0.7);
 }
 /* Light mode item colour — dark green on parchment */
 .light .skill-cartridge-dropdown-item {
-  color: hsl(120 100% 50% / 0.85);
-  border-bottom-color: hsl(120 100% 50% / 0.12);
+  color: rgba(232,66,10,0.7);
+  border-bottom-color: rgba(232,66,10,0.06);
 }
 .skill-cartridge-dropdown-item:last-child { border-bottom: none; }
 
 /* Dark hover */
 .skill-cartridge-dropdown-item:hover {
-  background: hsl(120 100% 50% / 0.05);
-  color: hsl(120 100% 50% / 0.95);
+  background: rgba(232,66,10,0.05);
+  color: rgba(232,66,10,0.95);
 }
-/* Light hover: flip to navy with light green text */
+/* Light hover: consistent orange accent */
 .light .skill-cartridge-dropdown-item:hover {
-  background: hsl(220 55% 18%);
-  color: hsl(120 100% 55%);
+  background: rgba(232,66,10,0.08);
+  color: rgba(232,66,10,0.95);
 }
 
 .skill-cartridge-dropdown-icon {
@@ -686,13 +670,13 @@ html::-webkit-scrollbar-thumb:hover {
 }
 .dark .skill-cartridge-dropdown-icon,
 :root:not(.light) .skill-cartridge-dropdown-icon {
-  color: hsl(120 100% 50% / 0.45);
+  color: rgba(232,66,10,0.45);
 }
 .light .skill-cartridge-dropdown-icon {
-  color: hsl(120 100% 50% / 0.75);
+  color: rgba(232,66,10,0.6);
 }
 .light .skill-cartridge-dropdown-item:hover .skill-cartridge-dropdown-icon {
-  color: hsl(120 100% 55%);
+  color: rgba(232,66,10,0.80);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -710,7 +694,7 @@ html::-webkit-scrollbar-thumb:hover {
   transition: all 0.15s ease;
   overflow: hidden;
 }
-.skill-slot-filled:hover { border-color: hsl(120 100% 50% / 0.2); }
+.skill-slot-filled:hover { border-color: rgba(232,66,10,0.3); }
 .skill-slot-tape {
   flex: 1;
   display: flex;
@@ -755,35 +739,26 @@ html::-webkit-scrollbar-thumb:hover {
 ══════════════════════════════════════════════════════════════════════════ */
 .skill-field { display: flex; flex-direction: column; }
 .skill-field-label {
-  font-family: 'Share Tech Mono', monospace;
+  font-family: 'Space Mono', 'Share Tech Mono', monospace;
   font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: hsl(220 10% 50%);
+  color: hsl(60 1% 50%);
   margin-bottom: 4px;
 }
 .skill-input {
-  background: hsl(0 0% 5%);
-  border: 1px solid hsl(0 0% 12%);
-  border-radius: 2px;
+  background: #0f0f0a;
+  border: 1px solid rgba(232,66,10,0.2);
   padding: 6px 8px;
   font-size: 12px;
-  color: hsl(220 15% 85%);
-  font-family: 'Inter', sans-serif;
+  color: hsl(60 14% 87%);
+  font-family: 'Space Mono', monospace;
   outline: none;
   transition: border-color 0.15s ease;
 }
-.skill-input:focus { border-color: hsl(120 100% 50% / 0.3); }
-.skill-input::placeholder { color: hsl(220 10% 30%); }
-/* Light mode: BG-D white input inside BG-B panel */
-.light .skill-field-label { color: hsl(30 20% 22%); }
-.light .skill-input {
-  background: #ffffff;
-  border-color: hsl(220 30% 65%);
-  color: hsl(30 15% 8%);
-}
-.light .skill-input:focus { border-color: hsl(220 70% 55%); }
-.light .skill-input::placeholder { color: hsl(30 15% 45%); }
+.skill-input:focus { border-color: rgba(232,66,10,0.4); }
+.skill-input::placeholder { color: rgba(136,136,128,0.4); }
+/* Light mode skill inputs — see end of file */
 
 /* ══════════════════════════════════════════════════════════════════════════
    ANIMATE INK
@@ -837,579 +812,195 @@ html::-webkit-scrollbar-thumb:hover {
 .light .hljs-meta             { color: #4078f2; }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   BG-C — CONVERSATION AREA
-   Applied via className="phobos-conversation-area" on the scroll container.
-   White in light, pure black in dark — tokens already handle text correctly.
+   LIGHT MODE — Conversation + Panel overrides
+   
+   The phob-* token system handles most light mode automatically via .light.
+   The phob-chrome-zone class keeps header/sidebar/copilot/chat always dark.
+   Only add !important overrides for things that cannot be handled by tokens.
 ══════════════════════════════════════════════════════════════════════════ */
+
+/* Conversation area — paper in light */
 .light .phobos-conversation-area {
-  background-color: #ffffff;
-  color: hsl(30 15% 8%);
+  background-color: #f0ede6;
+  color: hsl(60 14% 9%);
 }
 
-/* Message bubbles on white BG-C */
-.light .phobos-conversation-area .bg-primary\/10 {
-  background-color: hsl(270 40% 92%);
-  border-color: hsl(270 35% 72%);
-  color: hsl(270 30% 15%);
-}
-.light .phobos-conversation-area .bg-coordinator-bg,
-.light .phobos-conversation-area [class*="bg-coordinator"] {
-  background-color: hsl(270 30% 90%);
-  border-color: hsl(270 28% 70%);
-}
-.light .phobos-conversation-area .bg-seren\/10,
-.light .phobos-conversation-area [class*="bg-seren/"] {
-  background-color: hsl(36 45% 92%);
-  border-color: hsl(36 40% 72%);
-}
-.light .phobos-conversation-area .bg-secondary {
-  background-color: hsl(35 25% 96%);
-  color: hsl(30 15% 8%);
-  border-color: hsl(35 20% 78%);
-}
-.light .phobos-conversation-area [class*="bg-black/"] {
-  background-color: hsl(210 15% 90%);
-}
-.light .phobos-conversation-area [class*="bg-accent"] {
-  background-color: hsl(35 20% 92%);
-}
-.light .phobos-conversation-area [class*="bg-background"] {
-  background-color: hsl(35 15% 93%);
-  color: hsl(30 15% 8%);
-}
-
-/* ══════════════════════════════════════════════════════════════════════════
-   BG-A — THINKING PANEL
-   Open body = BG-C (white). Collapsed strip = BG-A (navy).
-   Header strips inside open panel = BG-A via data-navy-header + chrome-zone.
-══════════════════════════════════════════════════════════════════════════ */
+/* Thinking panel body — paper in light */
 .light .phobos-thinking-panel {
-  background-color: #ffffff;
-  color: hsl(30 15% 8%);
-}
-.light .phobos-thinking-panel .text-muted-foreground,
-.light .phobos-thinking-panel [class*="text-muted-foreground"] {
-  color: hsl(30 20% 22%);
-}
-.light .phobos-thinking-panel [class*="bg-accent"] {
-  background-color: hsl(35 15% 92%);
-}
-.light .phobos-thinking-panel [class*="border-border"] {
-  border-color: hsl(35 20% 70%);
-}
-/* data-navy-header strips inside thinking panel — BG-A chrome */
-.light .phobos-thinking-panel [data-navy-header] {
-  background-color: hsl(220 55% 18%);
-  /* Token restore happens via phobos-chrome-zone on the same element */
+  background-color: #f0ede6;
+  color: hsl(60 14% 9%);
 }
 .light .phobos-thinking-collapsed {
-  background-color: hsl(220 55% 16%);
+  background-color: #080808;
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   BG-A — COPILOT PANEL
-   Rail aside = BG-A. Message body (phobos-copilot-body) = BG-C.
-══════════════════════════════════════════════════════════════════════════ */
+/* Copilot message body — stays dark (it's chrome zone) */
 .light .phobos-copilot-body {
-  background-color: #ffffff;
-  color: hsl(30 15% 8%);
-}
-/* Copilot message area inherits BG-C token handling from conversation area rules */
-.light .phobos-copilot-body [class*="bg-black/"] {
-  background-color: hsl(210 15% 90%);
-}
-/* Copilot input bar at bottom */
-.light .phobos-copilot-body > div:last-child[class*="border-t"] {
-  background-color: hsl(35 15% 88%);
-  border-color: hsl(35 22% 68%);
-  color: hsl(30 15% 8%);
+  background-color: #080808;
+  color: hsl(60 14% 87%);
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   BG-B — PANEL BODY (all modals/dialogs)
-   
-   Root bg is bg-card = parchment in light.
-   Tokens --foreground and --muted-foreground are already dark on parchment.
-   
-   The ONLY overrides needed here are:
-   1. bg-foreground/N sub-surfaces — handled by token (no CSS needed)
-   2. Opacity floors — some /20 /25 /30 text is too faint on parchment
-   3. bg-black/N legacy — must redirect to bg-foreground/N equivalent visually
-   4. Inputs inside panels use bg-input (white)
-══════════════════════════════════════════════════════════════════════════ */
-
-/* Opacity floor: text that's too faint on parchment at low opacity fractions.
-   Scoped to all known panel hook classes. Raises floor to readable minimum. */
-.light .phobos-panel [class*="text-muted-foreground/2"],
-.light .phobos-panel [class*="text-muted-foreground/3"],
-.light .phobos-panel [class*="text-muted-foreground/4"],
-.light .phobos-llm-panel [class*="text-muted-foreground/2"],
-.light .phobos-llm-panel [class*="text-muted-foreground/3"],
-.light .phobos-llm-panel [class*="text-muted-foreground/4"],
-.light .phobos-weclone-panel [class*="text-muted-foreground/2"],
-.light .phobos-weclone-panel [class*="text-muted-foreground/3"],
-.light .phobos-weclone-panel [class*="text-muted-foreground/4"],
-.light .phobos-cartridges-panel [class*="text-muted-foreground/2"],
-.light .phobos-cartridges-panel [class*="text-muted-foreground/3"],
-.light .phobos-skills-panel [class*="text-muted-foreground/2"],
-.light .phobos-skills-panel [class*="text-muted-foreground/3"],
-.light .phobos-directives-panel [class*="text-muted-foreground/2"],
-.light .phobos-directives-panel [class*="text-muted-foreground/3"],
-.light .phobos-ha-panel [class*="text-muted-foreground/2"],
-.light .phobos-ha-panel [class*="text-muted-foreground/3"] {
-  color: hsl(30 20% 25%) !important;
+/* Sidebar stays dark */
+.light .phobos-world-panel > aside {
+  background-color: #080808 !important;
 }
 
-.light .phobos-panel [class*="text-foreground/2"],
-.light .phobos-panel [class*="text-foreground/3"],
-.light .phobos-panel [class*="text-foreground/4"],
-.light .phobos-llm-panel [class*="text-foreground/2"],
-.light .phobos-llm-panel [class*="text-foreground/3"],
-.light .phobos-llm-panel [class*="text-foreground/4"],
-.light .phobos-weclone-panel [class*="text-foreground/2"],
-.light .phobos-weclone-panel [class*="text-foreground/3"],
-.light .phobos-weclone-panel [class*="text-foreground/4"] {
-  color: hsl(30 15% 20%) !important;
+/* Opacity floor — text at low fractions can vanish on paper.
+   Raise minimum readable opacity for muted text in panels. */
+.light .phobos-panel [class*="text-phob-steel/2"],
+.light .phobos-panel [class*="text-phob-steel/3"],
+.light .phobos-llm-panel [class*="text-phob-steel/2"],
+.light .phobos-llm-panel [class*="text-phob-steel/3"],
+.light .phobos-weclone-panel [class*="text-phob-steel/2"],
+.light .phobos-weclone-panel [class*="text-phob-steel/3"] {
+  color: hsl(60 1% 30%) !important;
 }
 
-/* bg-black/N inside BG-B panels: redirect to parchment tints.
-   bg-foreground/N is the correct new approach; this handles legacy classes. */
-.light .phobos-panel [class*="bg-black/2"],
-.light .phobos-panel [class*="bg-black/3"],
-.light .phobos-panel [class*="bg-black/4"],
-.light .phobos-cartridges-panel [class*="bg-black/"],
-.light .phobos-skills-panel [class*="bg-black/"],
-.light .phobos-weclone-panel [class*="bg-black/2"],
-.light .phobos-weclone-panel [class*="bg-black/3"],
-.light .phobos-weclone-panel [class*="bg-black/4"],
-.light .phobos-directives-panel [class*="bg-black/"],
-.light .phobos-archive-panel [class*="bg-black/"],
-.light .phobos-plugins-panel [class*="bg-black/"],
-.light .phobos-ha-panel [class*="bg-black/"],
-.light .phobos-mediahub-panel [class*="bg-black/"],
-.light .phobos-efflux-panel [class*="bg-black/2"],
-.light .phobos-efflux-panel [class*="bg-black/3"],
-.light .phobos-efflux-panel [class*="bg-black/4"] {
-  background-color: hsl(35 15% 84%);
-  color: hsl(30 15% 12%);
-}
-
-/* bg-background inside BG-B panel bodies = panel header strips (BG-A navy).
-   These are the h-10 header divs. Each panel adds phobos-chrome-zone to them,
-   so token restore handles the text. We only need to set the background. */
-.light .phobos-panel [class*="bg-background"],
-.light .phobos-llm-panel [class*="bg-background"],
-.light .phobos-weclone-panel [class*="bg-background"],
-.light .phobos-cartridges-panel [class*="bg-background"],
-.light .phobos-skills-panel [class*="bg-background"],
-.light .phobos-directives-panel [class*="bg-background"],
-.light .phobos-archive-panel [class*="bg-background"],
-.light .phobos-plugins-panel [class*="bg-background"],
-.light .phobos-ha-panel [class*="bg-background"],
-.light .phobos-mediahub-panel [class*="bg-background"],
-.light .phobos-efflux-panel [class*="bg-background"] {
-  background-color: hsl(220 55% 18%);
-}
-
-/* All inputs/textareas/selects inside BG-B panels = BG-D white */
+/* Inputs inside panels: always white background in light */
 .light .phobos-panel input,
 .light .phobos-panel textarea,
 .light .phobos-panel select,
 .light .phobos-llm-panel input,
 .light .phobos-llm-panel textarea,
-.light .phobos-llm-panel select,
 .light .phobos-weclone-panel input,
 .light .phobos-weclone-panel textarea,
-.light .phobos-weclone-panel select,
 .light .phobos-cartridges-panel input,
-.light .phobos-cartridges-panel textarea,
-.light .phobos-skills-panel input,
-.light .phobos-skills-panel textarea,
-.light .phobos-directives-panel input,
-.light .phobos-directives-panel textarea,
-.light .phobos-archive-panel input,
-.light .phobos-archive-panel textarea,
-.light .phobos-plugins-panel input,
-.light .phobos-plugins-panel textarea,
-.light .phobos-ha-panel input,
-.light .phobos-ha-panel textarea,
-.light .phobos-mediahub-panel input,
-.light .phobos-mediahub-panel textarea,
-.light .phobos-efflux-panel input,
-.light .phobos-efflux-panel textarea {
+.light .phobos-skills-panel input {
   background-color: #ffffff !important;
-  color: hsl(30 15% 8%) !important;
-  border-color: hsl(220 30% 65%) !important;
+  color: hsl(60 14% 9%) !important;
+  border-color: rgba(184,50,8,0.3) !important;
 }
 .light .phobos-panel input:focus,
 .light .phobos-panel textarea:focus,
 .light .phobos-llm-panel input:focus,
-.light .phobos-llm-panel textarea:focus,
-.light .phobos-weclone-panel input:focus,
-.light .phobos-weclone-panel textarea:focus,
-.light .phobos-directives-panel input:focus,
-.light .phobos-directives-panel textarea:focus {
-  border-color: hsl(220 70% 55%) !important;
+.light .phobos-weclone-panel input:focus {
+  border-color: rgba(184,50,8,0.6) !important;
 }
 
-/* Global fallback: any input with bg-background class outside panels */
-.light textarea[class*="bg-background"],
-.light input[class*="bg-background"] {
-  background-color: #ffffff !important;
-  color: hsl(30 15% 8%) !important;
-  border-color: hsl(220 30% 65%) !important;
+/* Skill config form inputs — white in light */
+.light .skill-field-label { color: rgba(184,50,8,0.6); }
+.light .skill-input {
+  background: #ffffff;
+  border-color: rgba(184,50,8,0.3);
+  color: hsl(60 14% 9%);
 }
-.light select {
-  background-color: #ffffff !important;
-  color: hsl(30 15% 8%) !important;
-  border-color: hsl(220 30% 65%) !important;
-}
+.light .skill-input:focus { border-color: rgba(184,50,8,0.6); }
+.light .skill-input::placeholder { color: rgba(26,26,20,0.4); }
 
-/* ── Sidebar search — BG-A input style ─────────────────────────────── */
-.light .phobos-sidebar input {
-  color: hsl(220 25% 90%) !important;
-  background-color: hsl(220 45% 24%) !important;
-  border-color: hsl(220 45% 35%) !important;
-}
-.light .phobos-sidebar input::placeholder {
-  color: hsl(220 25% 72%) !important;
-  opacity: 1 !important;
-}
-
-/* ── PhobosLLMPanel specific sub-surface fixes ──────────────────────── */
-/* Hardware cards: bg-accent/20 inside LLM panel — parchment tint */
-.light .phobos-llm-panel [class*="bg-accent/20"],
-.light .phobos-llm-panel [class*="bg-accent\/20"] {
-  background-color: hsl(35 18% 86%) !important;
-  color: hsl(30 20% 10%) !important;
-}
-/* bg-black/30 inside LLM panel = navy section (Optional Add-ons etc) */
-.light .phobos-llm-panel [class*="bg-black/30"],
-.light .phobos-llm-panel [class*="bg-black/85"] {
-  background-color: hsl(220 40% 22%) !important;
-  color: hsl(220 20% 82%) !important;
-}
-/* bg-black/20 inside LLM panel = capability grid offline cards, parchment */
-.light .phobos-llm-panel [class*="bg-black/20"] {
-  background-color: hsl(35 18% 84%) !important;
-  color: hsl(30 18% 20%) !important;
-}
-/* bg-black/50 and /60 inside LLM panel = deeper navy sections */
-.light .phobos-llm-panel [class*="bg-black/50"],
-.light .phobos-llm-panel [class*="bg-black/60"] {
-  background-color: hsl(220 40% 22%) !important;
-  color: hsl(220 20% 80%) !important;
-}
-/* Text inside navy sections of LLM panel */
-.light .phobos-llm-panel [class*="bg-black/30"] [class*="text-muted-foreground"],
-.light .phobos-llm-panel [class*="bg-black/85"] [class*="text-muted-foreground"] {
-  color: hsl(220 20% 75%) !important;
-}
-.light .phobos-llm-panel [class*="bg-black/30"] [class*="text-foreground"],
-.light .phobos-llm-panel [class*="bg-black/85"] [class*="text-foreground"] {
-  color: hsl(220 20% 82%) !important;
-}
-/* Reset: hardware cards inside bg-black/30 wrapper — parchment bg wins */
-.light .phobos-llm-panel [class*="bg-black/30"] [class*="bg-accent/20"],
-.light .phobos-llm-panel [class*="bg-black/30"] [class*="bg-accent\/20"] {
-  background-color: hsl(35 18% 86%) !important;
-  color: hsl(30 20% 10%) !important;
-}
-.light .phobos-llm-panel [class*="bg-black/30"] [class*="bg-accent/20"] [class*="text-muted-foreground"],
-.light .phobos-llm-panel [class*="bg-black/30"] [class*="bg-accent/20"] [class*="text-foreground"],
-.light .phobos-llm-panel [class*="bg-black/30"] [class*="bg-accent/20"] span,
-.light .phobos-llm-panel [class*="bg-black/30"] [class*="bg-accent/20"] svg {
-  color: unset !important;
-}
-/* Model pills: bg-phobos-green/[0.04] on parchment — needs tint bump */
-.light .phobos-llm-panel [class*="bg-phobos-green/[0.04]"],
-.light .phobos-llm-panel [class*="bg-phobos-green\/\[0\.04\]"] {
-  background-color: hsl(130 20% 87%) !important;
-  border-color: hsl(130 40% 52%) !important;
-}
-/* bg-phobos-green/5 model cards */
-.light .phobos-llm-panel [class*="bg-phobos-green/5"] {
-  background-color: hsl(130 20% 86%) !important;
-  border-color: hsl(130 45% 45%) !important;
-}
-/* bg-accent/10 section tint */
-.light .phobos-llm-panel [class*="bg-accent/10"] {
-  background-color: hsl(35 15% 83%) !important;
-}
-/* Checkboxes */
-.light .phobos-llm-panel input[type="checkbox"] {
-  accent-color: hsl(130 60% 35%) !important;
-  background-color: #ffffff !important;
-}
-/* Custom checkbox boxes (w-3, w-4 border rounded) */
-.light .phobos-llm-panel [class*="border"][class*="rounded"][class*="w-4"],
-.light .phobos-llm-panel [class*="border"][class*="rounded"][class*="w-3"] {
-  border-color: hsl(35 28% 55%) !important;
-}
-.light .phobos-llm-panel [class*="bg-phobos-green"][class*="w-4"],
-.light .phobos-llm-panel [class*="bg-phobos-green"][class*="w-3"] {
-  background-color: hsl(130 55% 35%) !important;
-  border-color: hsl(130 50% 28%) !important;
-}
-/* SAYON / SEREN in LLM panel — keep dark readable versions */
-.light .phobos-llm-panel [class*="text-sayon"],
-.light .phobos-llm-panel [class*="text-blue-300"] {
-  color: hsl(200 55% 28%) !important;
-}
-.light .phobos-llm-panel [class*="text-seren"] {
-  color: hsl(36 65% 30%) !important;
-}
-/* indigo-400 (PyTorch ready badge) */
-.light .phobos-llm-panel [class*="text-indigo-400"] {
-  color: hsl(240 50% 30%) !important;
-}
-/* blue-400 / blue-300 outside of hardware badge context */
-.light .phobos-llm-panel [class*="text-blue-400"] {
-  color: hsl(210 65% 30%) !important;
-}
-.light .phobos-llm-panel [class*="border-blue-400"] {
-  border-color: hsl(210 50% 50%) !important;
-}
-/* PyTorch model pills inside navy (bg-black/30) section */
-.light .phobos-llm-panel [class*="bg-black/30"] [class*="border-phobos-green"][class*="rounded"] {
-  background-color: hsl(220 40% 26%) !important;
-  border-color: hsl(130 50% 45%) !important;
-}
-.light .phobos-llm-panel [class*="bg-black/30"] [class*="border-phobos-green"][class*="rounded"] * {
-  color: hsl(130 60% 75%) !important;
-}
-/* Section label row opacity */
-.light .phobos-llm-panel [class*="text-muted-foreground"][class*="tracking-"] {
-  color: hsl(30 20% 20%) !important;
-}
-/* bg-black/20 text override (capability grid) */
-.light .phobos-llm-panel [class*="bg-black/20"] [class*="text-foreground"],
-.light .phobos-llm-panel [class*="bg-black/20"] [class*="text-muted-foreground"] {
-  color: hsl(30 18% 20%) !important;
-}
-
-/* ── Security panel tabs (bg-black/30) ─────────────────────────────── */
-.light .phobos-panel [class*="bg-black/30"] {
-  background-color: hsl(220 45% 22%) !important;
-  color: hsl(220 25% 80%) !important;
-}
-.light .phobos-panel [class*="bg-black/30"] * {
-  color: hsl(220 25% 80%) !important;
-}
-.light .phobos-panel [class*="bg-black/30"] [class*="text-phobos-green"] {
-  color: hsl(130 65% 60%) !important;
-  border-color: hsl(130 65% 55%) !important;
-}
-.light .phobos-panel [class*="bg-black/30"] [class*="text-foreground"] {
-  color: hsl(220 20% 70%) !important;
-}
-
-/* ── Scheduler / panel action button on navy ────────────────────────── */
-.light .phobos-panel button[class*="text-phobos-green"][class*="border"] {
-  background-color: hsl(220 55% 20%) !important;
-  border-color: hsl(130 50% 40%) !important;
-  color: hsl(130 60% 60%) !important;
-}
-.light .phobos-panel [class*="bg-phobos-green"][class*="border-phobos-green"] {
-  background-color: hsl(220 55% 18%) !important;
-  border-color: hsl(130 55% 40%) !important;
-  color: hsl(130 60% 58%) !important;
-}
-
-/* ── bg-black/20 inside non-LLM panels ─────────────────────────────── */
-.light .phobos-panel [class*="bg-black/20"] {
-  background-color: hsl(35 18% 82%) !important;
-}
-
-/* ── Vault panel footer/expanded rows ──────────────────────────────── */
-.light .phobos-panel [class*="text-phobos-green/60"] {
-  color: hsl(130 60% 30%) !important;
-}
-.light .phobos-panel [class*="bg-phobos-green/5"] {
-  background-color: hsl(130 20% 86%) !important;
-  border-color: hsl(130 40% 52%) !important;
-}
-/* Panel footer bar */
-.light .phobos-panel > div:last-child[class*="border-t"] {
-  background-color: hsl(35 15% 86%) !important;
-  border-color: hsl(35 22% 62%) !important;
-  color: hsl(30 18% 16%) !important;
-}
-
-/* ── Title bar strip (conversation zone BG-A overlay) ──────────────── */
-/* phobos-chrome-zone class is applied directly to the title strip div in TSX */
-
-/* ── Sidebar ────────────────────────────────────────────────────────── */
-/* phobos-chrome-zone on <aside> handles all token restoration */
-/* Copilot rail aside stays navy */
-.light .phobos-world-panel > aside {
-  background-color: hsl(220 55% 16%) !important;
-}
-
-/* ── Weclone panel seren tints ──────────────────────────────────────── */
-.light .phobos-weclone-panel [class*="bg-seren"] {
-  background-color: hsl(36 45% 87%) !important;
-  border-color: hsl(36 45% 60%) !important;
-}
-.light .phobos-weclone-panel [class*="border-seren"] {
-  border-color: hsl(36 50% 50%) !important;
-}
-
-/* ── Cartridges panel category badge colors ─────────────────────────── */
-/* These use hardcoded Tailwind palette classes; redirect to readable values */
-.light .phobos-cartridges-panel [class*="bg-blue-400/5"]   { background-color: hsl(210 40% 85%) !important; }
-.light .phobos-cartridges-panel [class*="bg-purple-400/5"] { background-color: hsl(270 35% 87%) !important; }
-.light .phobos-cartridges-panel [class*="bg-teal-400/5"]   { background-color: hsl(175 35% 85%) !important; }
-.light .phobos-cartridges-panel [class*="bg-orange-400/5"] { background-color: hsl(25 40% 87%)  !important; }
-.light .phobos-cartridges-panel [class*="bg-pink-400/5"]   { background-color: hsl(340 35% 87%) !important; }
-.light .phobos-cartridges-panel [class*="bg-indigo-400/5"] { background-color: hsl(230 40% 87%) !important; }
-.light .phobos-cartridges-panel [class*="text-blue-400"]   { color: hsl(210 65% 30%) !important; }
-.light .phobos-cartridges-panel [class*="text-purple-400"] { color: hsl(270 55% 32%) !important; }
-.light .phobos-cartridges-panel [class*="text-teal-400"]   { color: hsl(175 60% 26%) !important; }
-.light .phobos-cartridges-panel [class*="text-orange-400"] { color: hsl(25 65% 32%)  !important; }
-.light .phobos-cartridges-panel [class*="text-pink-400"]   { color: hsl(340 55% 32%) !important; }
-.light .phobos-cartridges-panel [class*="text-indigo-400"] { color: hsl(230 60% 35%) !important; }
-
-/* ── Kavita panel ────────────────────────────────────────────────────── */
-.light .phobos-kavita-panel {
-  color: hsl(30 15% 8%);
-}
-.light .phobos-kavita-panel [class*="text-muted-foreground"] {
-  color: hsl(30 20% 18%) !important;
-}
-.light .phobos-kavita-panel [style*="background: white"],
-.light .phobos-kavita-panel [style*="background:#fff"],
-.light .phobos-kavita-panel [style*="background-color: white"] {
-  background-color: hsl(35 15% 85%) !important;
-  color: hsl(30 15% 8%) !important;
-}
-
-/* ── Directives panel ───────────────────────────────────────────────── */
-.light .phobos-directives-panel {
-  background-color: hsl(35 20% 90%) !important;
-  color: hsl(30 15% 8%) !important;
-}
-.light .phobos-directives-panel button[class*="text-muted-foreground"] {
-  background-color: hsl(35 18% 80%) !important;
-  border-color: hsl(35 22% 58%) !important;
-  color: hsl(30 20% 18%) !important;
-}
-
-/* ── MediaHub panel ─────────────────────────────────────────────────── */
-.light .phobos-mediahub-panel {
-  background-color: hsl(35 20% 90%) !important;
-  color: hsl(30 15% 8%) !important;
-}
-.light .phobos-mediahub-panel button[class*="text-phobos-green"],
-.light .phobos-mediahub-panel button[class*="bg-phobos-green"] {
-  background-color: hsl(220 55% 18%) !important;
-  border-color: hsl(130 50% 40%) !important;
-  color: hsl(130 60% 60%) !important;
-}
-.light .phobos-mediahub-panel button[class*="text-phobos-amber"] {
-  background-color: hsl(220 55% 18%) !important;
-  border-color: hsl(36 60% 45%) !important;
-  color: hsl(36 75% 62%) !important;
-}
-.light .phobos-mediahub-panel [class*="text-amber-400"]  { color: hsl(38 65% 30%) !important; }
-.light .phobos-mediahub-panel [class*="text-cyan-400"]   { color: hsl(195 65% 26%) !important; }
-.light .phobos-mediahub-panel [class*="text-pink-400"]   { color: hsl(340 60% 30%) !important; }
-.light .phobos-mediahub-panel [class*="text-violet-400"] { color: hsl(265 55% 30%) !important; }
-.light .phobos-mediahub-panel [class*="text-blue-400"]   { color: hsl(210 65% 28%) !important; }
-
-/* ── Efflux DAW panel ───────────────────────────────────────────────── */
-.light .phobos-efflux-panel {
-  background-color: hsl(35 20% 88%) !important;
-  color: hsl(30 15% 8%) !important;
-}
-.light .phobos-efflux-panel [class*="bg-black/6"],
-.light .phobos-efflux-panel [class*="bg-black/7"],
-.light .phobos-efflux-panel [class*="bg-black/8"] {
-  background-color: hsl(220 40% 22%) !important;
-  color: hsl(220 20% 82%) !important;
-}
-.light .phobos-efflux-panel [class*="bg-accent/"] { background-color: hsl(220 35% 78%) !important; }
-.light .phobos-efflux-panel [class*="bg-muted"] { background-color: hsl(35 15% 80%) !important; }
-
-/* ── Archive panel ──────────────────────────────────────────────────── */
-.light .phobos-archive-panel {
-  background-color: hsl(35 20% 90%) !important;
-  color: hsl(30 15% 8%) !important;
-}
-
-/* ── Plugins panel ──────────────────────────────────────────────────── */
-.light .phobos-plugins-panel {
-  background-color: hsl(35 20% 90%) !important;
-  color: hsl(30 15% 8%) !important;
-}
-.light .phobos-plugins-panel [class*="text-amber-400"] { color: hsl(36 65% 30%) !important; }
-.light .phobos-plugins-panel [class*="text-blue-400"]  { color: hsl(210 65% 28%) !important; }
-.light .phobos-plugins-panel [class*="bg-amber-400/5"] { background-color: hsl(36 35% 87%) !important; }
-.light .phobos-plugins-panel [class*="bg-blue-400/"]   { background-color: hsl(210 35% 87%) !important; }
-
-/* ── HomeAssistant panel ────────────────────────────────────────────── */
-/* Root changed to bg-card in TSX so token handles base bg.
-   Entity hover on parchment: */
-.light .phobos-ha-panel [class*="hover:bg-white"] {
-  --tw-bg-opacity: 1;
-}
-.light .phobos-ha-panel [class*="border-phobos-green/40"] {
-  border-color: hsl(130 50% 40%) !important;
-  color: hsl(130 60% 26%) !important;
-  background-color: hsl(130 20% 87%) !important;
-}
-.light .phobos-ha-panel [class*="text-amber-400"] { color: hsl(36 65% 30%) !important; }
-
-/* ── Finance panel ──────────────────────────────────────────────────── */
-/* Root changed to bg-card in TSX; text-white/N → text-foreground/N in TSX.
-   Only special-case the hardcoded emerald positive colour: */
-.light .phobos-finance-panel [class*="text-emerald-400"] { color: hsl(130 60% 28%) !important; }
-
-/* ── Jodit toolbar ──────────────────────────────────────────────────── */
-/* phobos-chrome-zone is applied to the toolbar root in JoditPanel TSX */
-.light .phobos-jodit-toolbar {
-  background-color: hsl(220 55% 18%) !important;
-  border-color: hsl(220 45% 30%) !important;
-}
-
-/* ══════════════════════════════════════════════════════════════════════════
-   FLOATING MODAL ROOTS — ensure bg-card / bg-background backdrops work
-══════════════════════════════════════════════════════════════════════════ */
-.light .fixed.inset-0 > div[class*="bg-card"] {
-  background-color: hsl(35 20% 90%) !important;
-  color: hsl(30 15% 8%);
-}
-
-/* Radix popper dropdowns */
+/* Radix popper dropdowns on paper */
 .light [data-radix-popper-content-wrapper] [class*="bg-popover"],
 .light [data-radix-popper-content-wrapper] [class*="bg-background"] {
-  background-color: hsl(35 20% 90%) !important;
-  color: hsl(30 15% 8%);
+  background-color: hsl(38 20% 89%) !important;
+  color: hsl(60 14% 9%);
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   COPILOT PERSONA SIDEBAR (outside phobos-copilot-body)
-   The outer aside is BG-A navy; token restore via phobos-chrome-zone.
-══════════════════════════════════════════════════════════════════════════ */
-.light .phobos-world-panel > aside > div:not(.phobos-copilot-body) {
-  background-color: hsl(220 55% 16%) !important;
-  color: hsl(220 25% 88%) !important;
+/* Panel bodies: hardcoded bg-[#0f0f0a] panels on paper background.
+   In light mode we want panel bodies to be warm card (bg-card).
+   Floating panels that use phob-corners need visible borders on paper. */
+.light .phobos-vault-panel,
+.light .phobos-security-panel,
+.light .phobos-cartridges-panel,
+.light .phobos-skills-panel,
+.light .phobos-archive-panel,
+.light .phobos-mediahub-panel,
+.light .phobos-weclone-panel {
+  background-color: hsl(38 20% 89%) !important;
+  color: hsl(60 14% 9%) !important;
 }
-.light .phobos-world-panel > aside > div:not(.phobos-copilot-body) * {
-  color: hsl(220 25% 85%) !important;
+
+/* phob-corners on paper: ticked corners in darkened orange */
+.light .phob-corners::before,
+.light .phob-corners::after,
+.light .phob-corners-full::before,
+.light .phob-corners-full::after {
+  border-color: rgba(184,50,8,0.6);
 }
-.light .phobos-world-panel > aside > div:not(.phobos-copilot-body) [class*="text-phobos-amber"] {
-  color: hsl(36 80% 65%) !important;
+
+/* phob-panel clip-path border on paper */
+.light .phob-panel {
+  border-color: rgba(184,50,8,0.30);
+  box-shadow: 0 0 24px rgba(184,50,8,0.08);
 }
-.light .phobos-world-panel > aside > div:not(.phobos-copilot-body) [class*="text-phobos-green"] {
-  color: hsl(130 60% 58%) !important;
+
+/* phob-header on paper — keep dark bg since it's a chrome strip */
+.light .phob-header {
+  background: rgba(8,8,8,0.85);
+  border-bottom-color: rgba(232,66,10,0.5);
 }
-.light .phobos-world-panel > aside > div:not(.phobos-copilot-body) [class*="text-sayon"] {
-  color: hsl(200 60% 65%) !important;
+
+/* phob-jp-stamp on paper */
+.light .phob-jp-stamp { color: rgba(184,50,8,0.04); }
+
+/* phob-dot on paper — ensure contrast */
+.light .phob-dot { filter: brightness(0.7); }
+
+/* phob-scan-line on paper */
+.light .phob-scan-line::after {
+  background: linear-gradient(90deg, transparent, rgba(184,50,8,0.5), transparent);
 }
-.light .phobos-world-panel > aside > div:not(.phobos-copilot-body) [class*="text-seren"] {
-  color: hsl(36 80% 65%) !important;
+
+/* Chat input stays dark in light mode */
+.light .phobos-chat-input-area {
+  background-color: #080808 !important;
 }
-.light .phobos-world-panel > aside > div:not(.phobos-copilot-body) [class*="text-muted-foreground"] {
-  color: hsl(220 20% 62%) !important;
+
+/* Message bubbles on paper */
+.light .phob-bubble-user {
+  background: rgba(184,50,8,0.06) !important;
+  border-color: rgba(184,50,8,0.20) !important;
 }
+
+/* Thinking panel open body on paper */
+.light .phobos-thinking-panel {
+  background-color: hsl(38 20% 89%);
+  color: hsl(60 14% 9%);
+}
+
+/* WelcomeScreen on paper */
+.light .phobos-chat-bg {
+  background-color: #f0ede6;
+  background-image: radial-gradient(ellipse 60% 40% at 50% 0%, rgba(184,50,8,0.03) 0%, transparent 60%);
+}
+
+/* phob-void/* transparent overlays stay very dark on paper — no change needed,
+   bg-phob-void/92 resolves to hsl(38 25% 92% / 92%) which is nearly opaque paper.
+   That's correct for modal backdrops in light mode. */
+
+/* phob-white/* transparent classes on paper:
+   bg-phob-white/4 etc resolve to hsl(60 14% 9% / 4%) = very faint near-black tint.
+   This is correct — sub-surfaces become slightly darker on paper. No override needed. */
+
+/* Opacity floor for very faint text on paper across all components */
+.light [class*="text-phob-steel/2"],
+.light [class*="text-phob-steel/3"] {
+  color: hsl(60 1% 30%) !important;
+}
+.light [class*="text-phob-orange/2"],
+.light [class*="text-phob-orange/3"] {
+  color: hsl(18 90% 30%) !important;
+}
+
+/* Skill-cartridge button: stays dark (it's a chrome zone element) */
+.light .skill-cartridge-body {
+  background: #080808;
+  border-color: rgba(232,66,10,0.2);
+}
+.light .skill-cartridge-dropdown {
+  background: #080808;
+  border-color: rgba(232,66,10,0.35);
+}
+.light .skill-cartridge-dropdown-item { color: rgba(232,66,10,0.75); }
+.light .skill-cartridge-dropdown-item:hover { background: rgba(232,66,10,0.06); }
+
+/* Finance panel on paper */
+.light .phobos-finance-panel {
+  background-color: hsl(38 20% 89%) !important;
+  color: hsl(60 14% 9%) !important;
+}
+
+/* Home assistant panel on paper */
+.light .phobos-homeassistant-panel {
+  background-color: hsl(38 20% 89%) !important;
+  color: hsl(60 14% 9%) !important;
+}
+

@@ -133,7 +133,14 @@ interface EnvManifest {
 //        version in the current venv (2.9.1 on ROCm, 2.11.0 on CUDA).
 //        The vendor index ships matching pairs; letting pip resolve avoids
 //        ABI mismatches across venvs.
-const REQUIRED_ENV_VERSION = 35; // v35: voice profile deps
+//  v36 — Intel XPU (Arc) venv support. torch installed from
+//        download.pytorch.org/whl/xpu (native XPU in torch >= 2.5).
+//        triton-xpu Linux-only — skipped on Windows XPU.
+//        bitsandbytes / xformers / torchao explicitly skipped on XPU
+//        (CUDA-only compiled extensions). SageAttention skipped (CUDA-only).
+//        Requires Intel GPU driver >= 31.0.101.5333 and Intel oneAPI
+//        Base Toolkit 2025.x (or Arc Control which bundles it).
+const REQUIRED_ENV_VERSION = 36; // v36: Intel XPU (Arc) venv support
 
 // ── Module state ─────────────────────────────────────────────────────────────
 
@@ -823,6 +830,9 @@ async function installTriton(
       if (process.platform !== 'win32') return { ok: true };
       return runPip(pyBin, ['-m', 'pip', 'install', 'triton-windows']);
     case 'xpu':
+      // triton-xpu is Linux-only — not available on Windows.
+      // torch.xpu on Windows works without triton (no kernel compilation needed).
+      if (process.platform !== 'linux') return { ok: true };
       return runPip(pyBin, ['-m', 'pip', 'install', 'triton-xpu', '--extra-index-url', indexUrl]);
     default:
       return { ok: true };
@@ -893,18 +903,18 @@ async function installDiffusersStack(
   const optionalDeps: Array<{ pkg: string; skip?: boolean; reason: string }> = [
     {
       pkg: 'bitsandbytes>=0.43.0',
-      skip: vendor === 'rocm' && process.platform === 'win32',
-      reason: 'no ROCm Windows wheel — CUDA-only compiled extension',
+      skip: (vendor === 'rocm' && process.platform === 'win32') || vendor === 'xpu',
+      reason: 'CUDA-only compiled extension — no ROCm Windows or XPU wheel',
     },
     {
       pkg: 'prodigyopt>=1.0',
-      skip: vendor === 'rocm' && process.platform === 'win32',
-      reason: 'no ROCm Windows wheel — C++ compiled optimizer',
+      skip: (vendor === 'rocm' && process.platform === 'win32') || vendor === 'xpu',
+      reason: 'C++ compiled optimizer — no ROCm Windows or XPU wheel',
     },
     {
       pkg: 'torchao',
-      skip: vendor === 'rocm' && process.platform === 'win32',
-      reason: 'crashes on Windows ROCm via unconditional torch._C._distributed_c10d import',
+      skip: (vendor === 'rocm' && process.platform === 'win32') || vendor === 'xpu',
+      reason: 'CUDA/ROCm-only — crashes on Windows ROCm via unconditional torch._C._distributed_c10d import; no XPU wheel',
     },
     {
       // xformers 0.0.35 requires torch>=2.10 — matches CUDA torch 2.11.0+cu128.
@@ -913,8 +923,8 @@ async function installDiffusersStack(
       // xformers is excluded on ROCm Windows because it has no HIP kernel support
       // there — unsloth uses flash_attn fallback instead.
       pkg: 'xformers==0.0.35',
-      skip: vendor === 'rocm' && process.platform === 'win32',
-      reason: 'no HIP kernel support on Windows ROCm — unsloth uses flash_attn fallback instead',
+      skip: (vendor === 'rocm' && process.platform === 'win32') || vendor === 'xpu',
+      reason: 'CUDA-only compiled extension — no HIP/XPU kernel support',
     },
   ];
   for (const dep of optionalDeps) {

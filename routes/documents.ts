@@ -17,8 +17,8 @@ const DOC_TYPE_MAP: Record<string, DocType> = {
 };
 
 export async function documentsRoute(fastify: FastifyInstance): Promise<void> {
-  const db = DatabaseManager.getUserDb();
-  const store = new DocumentStore(db);
+  const getStore = (req: import('fastify').FastifyRequest) =>
+    new DocumentStore(DatabaseManager.getUserDb(req.phobosUser));
 
   // GET /api/documents/:type
   // Optional ?project_id=xxx
@@ -26,6 +26,7 @@ export async function documentsRoute(fastify: FastifyInstance): Promise<void> {
     Params: { type: string };
     Querystring: { project_id?: string };
   }>('/api/documents/:type', async (req, reply) => {
+    const store = getStore(req);
     const docType = DOC_TYPE_MAP[req.params.type];
     if (!docType) {
       return reply.status(400).send({ error: `Unknown doc type: ${req.params.type}` });
@@ -51,6 +52,7 @@ export async function documentsRoute(fastify: FastifyInstance): Promise<void> {
     Params: { type: string };
     Body: { content: string; project_id?: string };
   }>('/api/documents/:type', async (req, reply) => {
+    const store = getStore(req);
     const docType = DOC_TYPE_MAP[req.params.type];
     if (!docType) {
       return reply.status(400).send({ error: `Unknown doc type: ${req.params.type}` });
@@ -69,6 +71,7 @@ export async function documentsRoute(fastify: FastifyInstance): Promise<void> {
     Params: { type: string };
     Querystring: { project_id?: string };
   }>('/api/documents/:type/history', async (req, reply) => {
+    const store = getStore(req);
     const docType = DOC_TYPE_MAP[req.params.type];
     if (!docType) {
       return reply.status(400).send({ error: `Unknown doc type: ${req.params.type}` });

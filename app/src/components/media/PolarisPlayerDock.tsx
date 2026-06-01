@@ -144,7 +144,7 @@ function PolarisPlayerDockImpl() {
     <>
     <div
       id="polaris-dock"
-      className="relative border-b border-border/30 overflow-hidden bg-background"
+      className="relative border-b border-phob-orange/15 overflow-hidden bg-[#080808]"
       style={{ width: DOCK_WIDTH_PX, height: DOCK_HEIGHT_PX }}
     >
       {/* ── Waveform background (master analyser tap) ────────────────────── */}
@@ -153,7 +153,7 @@ function PolarisPlayerDockImpl() {
           analyserIndex={0}
           width={DOCK_WIDTH_PX}
           height={WAVEFORM_H_PX}
-          color="#3b82f6"
+          color="#00ff41"
           background="transparent"
           lineWidth={1}
         />
@@ -165,8 +165,8 @@ function PolarisPlayerDockImpl() {
         <div className="flex items-center justify-between gap-1">
           <div className="flex items-center gap-1.5">
             <div
-              className="w-1.5 h-1.5 rounded-full bg-phobos-amber"
-              style={{ boxShadow: '0 0 5px #f59e0b' }}
+              className="w-1.5 h-1.5 bg-phob-amber"
+              style={{ boxShadow: '0 0 5px #c8a000' }}
             />
             <span className="text-[8px] font-terminal text-muted-foreground/60 tracking-[0.18em] uppercase">
               Polaris
@@ -195,8 +195,8 @@ function PolarisPlayerDockImpl() {
                 crystalError
                   ? 'border-destructive/60 text-destructive bg-destructive/10'
                   : crystalActive
-                    ? 'border-phobos-green/60 text-phobos-green bg-phobos-green/10'
-                    : 'border-border/40 text-muted-foreground/60 hover:text-phobos-green/70 hover:border-phobos-green/40'
+                    ? 'border-phob-green/60 text-phob-green bg-phob-green/10'
+                    : 'border-phob-orange/20 text-phob-steel/50 hover:text-phob-green/70 hover:border-phob-green/30'
               }`}
             >
               Crystal
@@ -207,8 +207,8 @@ function PolarisPlayerDockImpl() {
               title="Master EQ"
               className={`px-1.5 py-0.5 text-[8px] font-terminal uppercase tracking-[0.12em] rounded-sm border transition-all ${
                 eqOpen
-                  ? 'border-phobos-amber/60 text-phobos-amber bg-phobos-amber/10'
-                  : 'border-border/40 text-muted-foreground/60 hover:text-phobos-amber/70 hover:border-phobos-amber/40'
+                  ? 'border-phob-amber/60 text-phob-amber bg-phob-amber/10'
+                  : 'border-phob-orange/20 text-phob-steel/50 hover:text-phob-amber/70 hover:border-phob-amber/30'
               }`}
             >
               EQ
@@ -217,7 +217,7 @@ function PolarisPlayerDockImpl() {
             <button
               onClick={() => toggleDockFloat()}
               title="Undock to floating player"
-              className="p-0.5 text-muted-foreground/40 hover:text-foreground transition-colors"
+              className="p-0.5 text-phob-steel/40 hover:text-phob-white transition-colors"
             >
               <ExternalLink className="w-2.5 h-2.5" />
             </button>
@@ -227,7 +227,7 @@ function PolarisPlayerDockImpl() {
         {/* Middle row: title + time */}
         <div className="flex items-baseline justify-between gap-2 min-w-0">
           <span
-            className="flex-1 min-w-0 truncate text-[10px] font-mono text-phobos-green/80"
+            className="flex-1 min-w-0 truncate text-[10px] font-mono text-phob-green/80"
             title={title ?? ''}
           >
             {title ?? '—'}
@@ -240,10 +240,10 @@ function PolarisPlayerDockImpl() {
         {/* Seek bar */}
         <div
           onClick={onSeekClick}
-          className="h-0.5 bg-border/40 cursor-pointer relative"
+          className="h-0.5 bg-phob-white/10 cursor-pointer relative"
         >
           <div
-            className="h-full bg-gradient-to-r from-blue-500 to-phobos-amber transition-[width] duration-150"
+            className="h-full bg-gradient-to-r from-phob-green/60 to-phob-amber transition-[width] duration-150"
             style={{ width: `${progressPct}%` }}
           />
         </div>
@@ -258,7 +258,7 @@ function PolarisPlayerDockImpl() {
               min={0} max={1} step={0.02}
               value={volume}
               onChange={(e) => { void setVolume(parseFloat(e.target.value)); }}
-              className="h-14 w-1.5 cursor-pointer accent-phobos-green/80"
+              className="h-14 w-1.5 cursor-pointer accent-phob-orange/80"
               style={{ writingMode: 'vertical-lr', direction: 'rtl' }}
               aria-label="Volume"
             />
@@ -267,7 +267,7 @@ function PolarisPlayerDockImpl() {
           <div className="flex items-center justify-center gap-2 flex-1">
           <button
             onClick={onSkipPrev}
-            className="p-1 rounded text-muted-foreground/50 hover:text-phobos-green/80 transition-colors"
+            className="p-1 rounded text-muted-foreground/50 hover:text-phob-green/80 transition-colors"
             title="Previous"
           >
             <SkipBack className="w-3 h-3" fill="currentColor" />
@@ -277,8 +277,8 @@ function PolarisPlayerDockImpl() {
             onClick={onPlayPause}
             className={`w-6 h-6 flex items-center justify-center rounded-sm border transition-all ${
               playing
-                ? 'border-blue-500/60 text-blue-400 bg-blue-500/10'
-                : 'border-phobos-amber/60 text-phobos-amber bg-phobos-amber/10 hover:bg-phobos-amber/20'
+                ? 'border-phob-yellow/60 text-phob-yellow/80 bg-phob-yellow/8'
+                : 'border-phob-amber/60 text-phob-amber bg-phob-amber/10 hover:bg-phob-amber/20'
             }`}
             title={playing ? 'Pause' : 'Play'}
           >
@@ -289,7 +289,7 @@ function PolarisPlayerDockImpl() {
 
           <button
             onClick={onSkipNext}
-            className="p-1 rounded text-muted-foreground/50 hover:text-phobos-green/80 transition-colors"
+            className="p-1 rounded text-muted-foreground/50 hover:text-phob-green/80 transition-colors"
             title="Next"
           >
             <SkipForward className="w-3 h-3" fill="currentColor" />

@@ -9,11 +9,12 @@
 // listener list.  Phase transitions are one-way: they only ever advance forward.
 
 export type BootPhase =
-  | 'prep_deps'      // downloading / extracting PHOBOS-DEPS
-  | 'db_init'        // database initialising
-  | 'core_init'      // services, schedulers, cartridges, LLMs starting
-  | 'services_wait'  // waiting for media/browser services to come online (5 min max)
-  | 'ready';         // fully initialised — frontend may enter
+  | 'awaiting_setup'  // no users exist — waiting for first-run account creation
+  | 'prep_deps'       // downloading / extracting PHOBOS-DEPS
+  | 'db_init'         // database initialising
+  | 'core_init'       // services, schedulers, cartridges, LLMs starting
+  | 'services_wait'   // waiting for media/browser services to come online (5 min max)
+  | 'ready';          // fully initialised — frontend may enter
 
 export type ServiceReadyState = 'waiting' | 'ready' | 'failed';
 

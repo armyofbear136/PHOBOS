@@ -13,6 +13,8 @@ import {
   startMeridianServer,
   stopMeridianServer,
   getMeridianServerStatus,
+  setSignalingClient as setMeridianServerSignalingClient,
+  repairAllUserLibraries as repairMeridianUserLibraries,
   MERIDIAN_PORT,
   type MeridianStartOpts,
   type MeridianServerStatus,
@@ -20,43 +22,35 @@ import {
 import { DatabaseManager } from '../db/DatabaseManager.js';
 
 export { MERIDIAN_PORT };
+export { repairMeridianUserLibraries as repairAllUserLibraries };
 
 export type MeridianStatus = MeridianServerStatus;
 
 export async function startMeridian(opts: {
   libraryPath:  string;
   idleEnabled?: boolean;
-  // db is optional — defaults to DatabaseManager.getInstance() (main process singleton).
-  // Pass explicitly in test scripts that use an isolated database.
-  db?:     DatabaseManager;
-  // syncDb is the user-scoped DatabaseManager for phobos_sync_* tables.
-  // Defaults to DatabaseManager.getUserDb() (active user). Pass explicitly
-  // in test scripts or when switching users.
-  syncDb?: DatabaseManager;
-  // dbPath is used only when db is not provided, to open a specific database file.
-  // Primarily for test scripts that need an isolated DuckDB.
-  dbPath?: string;
+  db?:          DatabaseManager;
+  syncDb?:      DatabaseManager;
+  dbPath?:      string;
+  getUserDb?:   (username: string) => DatabaseManager;
 }): Promise<void> {
   let dbManager: DatabaseManager;
 
   if (opts.db) {
-    // Caller supplied an already-open instance (test scripts, future use).
     dbManager = opts.db;
   } else if (opts.dbPath) {
-    // Test path: open a fresh DatabaseManager at the given path.
     dbManager = DatabaseManager.getInstance(opts.dbPath);
     await dbManager.initialize();
   } else {
-    // Normal production path: use the main process singleton, already initialized.
     dbManager = DatabaseManager.getInstance();
   }
 
-  // User-scoped DB for phobos_sync_* tables.
   const syncDbManager = opts.syncDb ?? DatabaseManager.getUserDb();
 
   const startOpts: MeridianStartOpts = {
     libraryPath: opts.libraryPath,
     idleEnabled: opts.idleEnabled,
+    getUserDb:   opts.getUserDb ?? ((username: string) => DatabaseManager.getUserDb(username)),
   };
 
   await startMeridianServer(dbManager, startOpts, syncDbManager);
@@ -64,6 +58,15 @@ export async function startMeridian(opts: {
 
 export async function stopMeridian(): Promise<void> {
   await stopMeridianServer();
+}
+
+/**
+ * Wire the SignalingClient into the running Meridian sync routes after WebRTC
+ * initializes. Called from server.ts once webrtcSignalingClient is constructed,
+ * which happens after startMeridian() due to boot-sequence ordering.
+ */
+export function setMeridianSignalingClient(client: { notifySync(): void } | null): void {
+  setMeridianServerSignalingClient(client);
 }
 
 export function getMeridianStatus(): MeridianStatus {

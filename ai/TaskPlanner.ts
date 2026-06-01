@@ -149,15 +149,18 @@ const SEREN_CONTEXT_BUDGET = 80_000;
 export interface TaskPlannerDeps {
   archiveSearchFn?: (query: string, domains: import('../db/ArchiveStore.js').ArchiveDomain[], k: number) => Promise<string>;
   memorySearchFn?:  (query: string) => Promise<string>;
+  username?:        string;
 }
 
 export class TaskPlanner {
   private readonly archiveSearchFn?: TaskPlannerDeps['archiveSearchFn'];
   private readonly memorySearchFn?:  TaskPlannerDeps['memorySearchFn'];
+  private readonly username:         string;
 
   constructor(private workspaceDir: string, deps: TaskPlannerDeps = {}) {
     this.archiveSearchFn = deps.archiveSearchFn;
     this.memorySearchFn  = deps.memorySearchFn;
+    this.username        = deps.username ?? 'owner';
   }
 
   /**
@@ -210,13 +213,13 @@ export class TaskPlanner {
         ? this.memorySearchFn(userMessage).catch(() => '')
         : retrieveWorkspaceMemory(userMessage),
       _archiveClassifier
-        .classify({ userMessage, hasActiveProject, pinnedDomains: [], isCopilot: false })
+        .classify({ username: this.username, userMessage, hasActiveProject, pinnedDomains: [], isCopilot: false })
         .then(routing => {
           if (!routing.useArchive) return '';
           if (this.archiveSearchFn) {
             return this.archiveSearchFn(routing.queryText, routing.domains, routing.k);
           }
-          return archiveSearch({ query: routing.queryText, domains: routing.domains, k: routing.k });
+          return archiveSearch({ username: this.username, query: routing.queryText, domains: routing.domains, k: routing.k });
         })
         .catch(() => ''),  // Archive errors are always non-fatal
     ]);
@@ -606,7 +609,7 @@ export class TaskPlanner {
         `If the answer to ANY of those is no, return NEEDS_CLARIFICATION with specific questions. ` +
         `It is ALWAYS better to ask one question and get it right than to produce work the user has to redo.\n\n`;
 
-    const toolSkillsBlock = getPrimeTriggerList() + getUserSkillTriggerList();
+    const toolSkillsBlock = getPrimeTriggerList() + getUserSkillTriggerList(this.username);
 
     const prompt =
       `Hi SEREN, this is SAYON. I've spoken with the user and prepared the request below for you. ` +

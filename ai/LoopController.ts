@@ -1,6 +1,7 @@
 import type { FastifyReply } from 'fastify';
 import { AgentStateManager, type AgentStateEvent } from './AgentStateManager.js';
 import { engineClient, coordinatorClient, coordinatorCall, ENGINE_MODEL, COORDINATOR_MODEL, ENGINE_PROVIDER, COORDINATOR_PROVIDER, applyThinkingStrategy, getThinkingStrategy, getThinkingExtraBody, coordinatorStream } from './clients.js';
+import { getServerStatus, awaitServerReady } from '../phobos/LlamaServerManager.js';
 import { ThinkingTokenRouter } from './ThinkingTokenRouter.js';
 import { DispatchComposer, type ComposeInput } from './DispatchComposer.js';
 import { ContextIngester } from './ContextIngester.js';
@@ -210,6 +211,13 @@ export interface LoopOptions {
   memorySearchFn?: (query: string) => Promise<string>;
 
   /**
+   * The username of the user whose session this loop is running for.
+   * Used to scope user skills (getUserSkillTriggerList, getUserSkillInstructions)
+   * to the correct per-user directory. Defaults to 'owner'.
+   */
+  username?: string;
+
+  /**
    * Override for code audit. The audit operation reads + writes the security
    * scan tables and runs SEREN-driven analysis — pure DB-bound work that
    * cannot run inside the coordinator worker. When set, LoopController
@@ -271,6 +279,36 @@ interface StreamResult {
   interventionQuestion?: string;
   /** 'length' when the model hit max_tokens mid-output — paginated writing trigger */
   finishReason?: string;
+}
+
+/**
+ * Shared mutable state threaded through all parallel task execution methods.
+ * All mutations are safe under Node's cooperative single-threaded scheduler.
+ */
+interface ParallelExecContext {
+  tasks:             import('./TaskPlanner.js').Task[];
+  total:             number;
+  taskResults:       Array<{ task: import('./TaskPlanner.js').Task; approved: boolean; attempts: AttemptResult[]; failReason?: string }>;
+  taskLog:           string[];
+  allAttempts:       AttemptResult[];
+  allChangedFiles:   string[];
+  stagedContents:    Map<string, string>;
+  stagingDirsToClean: string[];
+  composeInput:      ComposeInput;
+  needsPlanning:     boolean;
+  ingestion:         Awaited<ReturnType<ContextIngester['ingest']>>;
+  maxAttempts:       number;
+  taskId:            string;
+  reply:             FastifyReply;
+  assistantMessageId?: string;
+  agentState:        AgentStateManager;
+  sendStatus:        (content: string) => void;
+  sendThinking:      (token: string) => void;
+  sendEngineThinking: (token: string) => void;
+  buildCommand:      string;
+  projectRoot:       string;
+  workspaceDir:      string;
+  options?:          LoopOptions;
 }
 
 export class LoopController {
@@ -512,6 +550,7 @@ export class LoopController {
       const planner = new TaskPlanner(workspaceDir, {
         archiveSearchFn: this.options.archiveSearchFn,
         memorySearchFn:  this.options.memorySearchFn,
+        username:        this.options.username ?? 'owner',
       });
 
       // ── SEREN clarification re-entry shortcut ────────────────────────────
@@ -631,9 +670,18 @@ export class LoopController {
       }];
     }
 
-    // ── Stage 4: Per-task execution loop ────────────────────────────────────
-    // Each task runs its own retry loop (up to maxAttempts).
-    // Failures are recorded but execution continues to the next task.
+    // ── Stage 4: Parallel DAG task execution ────────────────────────────────
+    // Tasks are partitioned by assignedTo. SAYON and SEREN each run a sequential
+    // queue concurrently. Dependencies (outputRequiredBy) gate task dispatch until
+    // the producing task is approved. SAYON also drains a verification queue for
+    // SEREN's file-writing tasks — checking between every primary task it completes.
+    //
+    // Verification queue priority:
+    //   1. Tasks that are blocking a downstream SEREN dependency — taken first
+    //   2. Non-blocking completed SEREN tasks — taken in arrival order
+    //   3. Next SAYON primary task
+    //   4. Idle-wait for SEREN to complete something
+
     const taskResults: Array<{
       task: import('./TaskPlanner.js').Task;
       approved: boolean;
@@ -645,919 +693,57 @@ export class LoopController {
     // Every subsequent task receives the full log so executors can see prior work.
     const taskLog: string[] = [];
 
-    for (const task of tasks) {
-      const total = tasks.length;
+    // Shared execution context — passed into executeTask and mutated under
+    // Node's cooperative single-threaded scheduler (no races possible).
+    const execCtx: ParallelExecContext = {
+      tasks,
+      total: tasks.length,
+      taskResults,
+      taskLog,
+      allAttempts,
+      allChangedFiles,
+      stagedContents,
+      stagingDirsToClean,
+      composeInput,
+      needsPlanning,
+      ingestion,
+      maxAttempts,
+      taskId,
+      reply,
+      assistantMessageId,
+      agentState,
+      sendStatus,
+      sendThinking,
+      sendEngineThinking,
+      buildCommand,
+      projectRoot,
+      workspaceDir,
+      options: this.options,
+    };
 
-      // ── Reserve skill on-demand injection ──────────────────────────────────
-      // Legacy SKILL_SEARCH sentinel: if SEREN planned a SKILL_SEARCH task, 
-      // convert it to a reserve search and inject results.
-      if (task.skillId === 'SKILL_SEARCH') {
-        sendStatus(`[${task.index}/${total}] Searching skill library…`);
-        const reserveResults = searchReserve(task.prompt);
-        task.prompt =
-          `You requested a skill search. Here are the reserve skills that match your query:\n\n` +
-          reserveResults +
-          `\n\nBased on these results, select the most appropriate skill (if any) and proceed ` +
-          `with the original task. If a skill is relevant, use it. If none match well enough, ` +
-          `proceed without a skill. Original request context:\n\n` +
-          task.prompt;
-        task.skillId = undefined; // clear sentinel
-        dbg(`[loop:skill_search] reserve search completed for task=${task.index}`);
+    // Single-task plans and non-planning paths skip the parallel dispatcher —
+    // no partitioning overhead, identical behaviour to the old sequential loop.
+    if (tasks.length <= 1) {
+      if (tasks.length === 1) {
+        const result = await this.executeTask(tasks[0], execCtx);
+        taskResults.push(result);
+        this.budgetMonitor.reset(taskId);
       }
-
-      // Injected reserve skill instructions — set when SEREN emitted RESERVE_SKILL_REQUEST
-      // in a prior attempt. Cleared after use so it doesn't re-inject on subsequent retries
-      // unless SEREN requests again.
-      let injectedReserveSkills = '';
-
-      this.sendEvent(reply, {
-        type: 'task_start',
-        taskIndex: task.index,
-        total,
-        title: task.title,
-      });
-      sendStatus(`[${task.index}/${total}] ${task.title}…`);
-
-      // Snapshot file count before this task runs so we can identify
-      // exactly which files this task changed for the task log summary.
-      const taskStartFileCount = allChangedFiles.length;
-
-      const taskAttempts: AttemptResult[] = [];
-      let retryContext: ComposeInput['retryContext'] | undefined;
-      let taskApproved = false;
-      let taskFailReason: string | undefined;
-
-      
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        if (attempt > 1) {
-          sendStatus(`[${task.index}/${total}] Retrying — attempt ${attempt}/${maxAttempts}…`);
-          // Tell frontend to seal the current thinking segment — prevents accumulation across attempts
-          this.sendEvent(reply, { type: 'thinking_retry', attempt });
-        }
-
-        if (this.budgetMonitor.shouldInjectFocus(taskId)) {
-          const focusSignal = this.budgetMonitor.getFocusInjection(taskId, ingestion.rewrittenUserMessage);
-          task.prompt = focusSignal + task.prompt;
-        }
-
-        // Build task with any injected reserve skill instructions from a prior attempt
-        const taskWithSkills = injectedReserveSkills
-          ? { ...task, context: task.context + injectedReserveSkills }
-          : task;
-        injectedReserveSkills = ''; // clear after use
-
-        const dispatch = await this.composer.compose({
-          ...composeInput,
-          currentTask: taskWithSkills,
-          conversationHistory: needsPlanning ? [] : composeInput.conversationHistory,
-          retryContext: retryContext ? { ...retryContext, attemptNumber: attempt } : undefined,
-          taskLog: taskLog.length > 0 ? [...taskLog] : undefined,
-        });
-
-        dbg(`[loop:attempt] task=${task.index}/${total} attempt=${attempt}/${maxAttempts} retryCtx=${retryContext ? 'yes' : 'none'}`);
-        agentState.transition('thinking', task.title.slice(0, 20), task.index, total);
-        sendStatus(`[${task.index}/${total}] Engine thinking…`);
-
-        // Fire onDispatch so messages.ts can log the full system prompt + user prompt
-        // for export/debugging. Captures exactly what SEREN receives.
-        if (this.options.onDispatch && attempt === 1) {
-          this.options.onDispatch({
-            taskIndex: task.index,
-            total,
-            title: task.title,
-            assignedTo: task.assignedTo ?? 'seren',
-            operation: task.operation,
-            targetFile: task.targetFile,
-            systemPrompt: dispatch.systemPrompt,
-            userPrompt: task.prompt,
-            messageId: assistantMessageId,
-          }).catch(() => {});
-        }
-
-        // ── Engine stream ────────────────────────────────────────────────────────
-        const attemptResult = await this.runEngineWithInterventions(
-          reply, dispatch, task.prompt, taskId, attempt, sendEngineThinking, assistantMessageId,
-          dispatch.imageAttachments
-        );
-        attemptResult.taskIndex = task.index;
-
-        // ── RESERVE_SKILL_REQUEST detection ──────────────────────────────────────
-        // If SEREN emitted "RESERVE_SKILL_REQUEST: skill-id-1, skill-id-2", fetch those
-        // skill instructions and immediately retry the task with them injected.
-        // This consumes one attempt slot but is transparent to the user.
-        const reserveMatch = attemptResult.output.match(/RESERVE_SKILL_REQUEST:\s*([^\r\n]+)/i);
-        if (reserveMatch && attempt < maxAttempts) {
-          const requestedIds = reserveMatch[1].split(',').map((s: string) => s.trim()).filter(Boolean);
-          const skillContent = getSkillInstructions(requestedIds);
-          if (skillContent) {
-            sendStatus(`[${task.index}/${total}] Injecting reserve skills: ${requestedIds.join(', ')}…`);
-            injectedReserveSkills = skillContent;
-            dbg(`[loop:reserve_skill] task=${task.index} requested=${requestedIds.join(',')} found=${skillContent.length > 0}`);
-            // Don't push this attempt — retry immediately with skills injected
-            continue;
-          }
-        }
-
-        taskAttempts.push(attemptResult);
-        allAttempts.push(attemptResult);
-
-        // ── image_gen operation: parse and dispatch workflow queue ────────────
-        if (task.operation === 'image_gen') {
-          const genMatch = attemptResult.output.match(/<generate_images>([\s\S]*?)<\/generate_images>/i);
-          if (genMatch) {
-            try {
-              const entries = JSON.parse(genMatch[1].trim()) as Array<{
-                prompt: string;
-                negativePrompt?: string;
-                modelId?: string;
-                width?: number;
-                height?: number;
-                outputFolder?: string;
-              }>;
-
-              const { IMAGE_MODEL_CATALOGUE, isFluxDownloaded, getImageModelSpec } = await import('../phobos/PhobosLocalManager.js');
-              const { buildSdConfig } = await import('../phobos/ImageServerManager.js');
-              const { createSession } = await import('../phobos/WorkflowEngine.js');
-
-              // Speed-ordered fallback for auto model selection
-              const IMAGE_SPEED_ORDER = [
-                'sdxl-turbo-fp16', 'dreamshaper-xl-turbo-v2', 'z-image-turbo-q4', 'flux2-klein-4b-q4',
-                'realvisxl-v5-lightning', 'juggernaut-xl-v9-lightning', 'dreamshaper-xl-lightning',
-                'flux-schnell-q4', 'chroma-q4', 'sdxl-base-fp16', 'flux-dev-q4',
-              ];
-              const installedModels = IMAGE_MODEL_CATALOGUE
-                .filter(m => m.category !== 'video' && isFluxDownloaded(m as Parameters<typeof isFluxDownloaded>[0]))
-                .map(m => m.modelId);
-              const fastestModel = IMAGE_SPEED_ORDER.find(id => installedModels.includes(id))
-                ?? installedModels[0]
-                ?? 'chroma-q4';
-
-              const threadId = this.options.threadId ?? 'default';
-              const baseNegative = 'blurry, low quality, watermark, deformed';
-              const createdWorkflows: string[] = [];
-
-              for (const entry of entries) {
-                // Resolve model: use requested if installed, else fallback to fastest
-                let modelId = entry.modelId && entry.modelId !== 'auto' && installedModels.includes(entry.modelId)
-                  ? entry.modelId
-                  : fastestModel;
-
-                // Validate model is loadable
-                try {
-                  const cfg = await buildSdConfig({ modelId });
-                  if (!cfg) modelId = fastestModel;
-                } catch { modelId = fastestModel; }
-
-                const spec = getImageModelSpec(modelId);
-                const profile = spec?.profile;
-                const width  = entry.width  ?? profile?.defaultWidth  ?? 1024;
-                const height = entry.height ?? profile?.defaultHeight ?? 1024;
-
-                // Snap to nearest multiple of 64
-                const snap64 = (n: number) => Math.round(n / 64) * 64;
-
-                const nodeParams = {
-                  prompt:         entry.prompt,
-                  negativePrompt: entry.negativePrompt
-                    ? `${baseNegative}, ${entry.negativePrompt}`
-                    : baseNegative,
-                  steps:   profile?.defaultSteps  ?? 20,
-                  width:   snap64(width),
-                  height:  snap64(height),
-                  seed:    -1,
-                  sampler: profile?.defaultSampler ?? 'euler',
-                };
-
-                const sessionName = entry.prompt.slice(0, 40).trim() || 'AI Generated';
-                const session = createSession(
-                  threadId,
-                  sessionName,
-                  modelId,
-                  [{ type: 'Generate' as const, label: 'Generate', params: nodeParams }],
-                  'image',
-                );
-
-                // Emit workflow created event to frontend
-                this.sendEvent(reply, {
-                  type: 'image_workflow_created' as unknown as 'status',
-                  workflowId: session.workflowId,
-                  threadId,
-                  name: session.name,
-                  prompt: entry.prompt,
-                  outputFolder: entry.outputFolder,
-                } as unknown as import('./LoopController.js').SSEEvent);
-
-                createdWorkflows.push(session.workflowId);
-                dbg(`[loop:image_gen] created workflow ${session.workflowId} model=${modelId} ${nodeParams.width}x${nodeParams.height}`);
-              }
-
-              // Fire all workflows sequentially via the internal run endpoint
-              if (createdWorkflows.length > 0) {
-                sendStatus(`Starting ${createdWorkflows.length} image generation${createdWorkflows.length > 1 ? 's' : ''}…`);
-                const port = process.env.PORT ?? '3001';
-                const { request: httpReq } = await import('node:http');
-                for (const workflowId of createdWorkflows) {
-                  try {
-                    const runUrl = `http://localhost:${port}/api/threads/${threadId}/workflows/${workflowId}/run`;
-                    const postData = JSON.stringify({ targetNodeIndex: 0, forceNodeIndex: 0 });
-                    await new Promise<void>((resolve) => {
-                      const req = httpReq(runUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) },
-                      }, () => resolve());
-                      req.on('error', () => resolve()); // non-fatal
-                      req.write(postData);
-                      req.end();
-                    });
-                  } catch { /* fire-and-forget, non-fatal */ }
-                }
-              }
-
-              taskApproved = true;
-              break;
-            } catch (imageErr) {
-              console.warn('[loop:image_gen] Failed to parse or dispatch image queue:', imageErr);
-              // Fall through to normal task handling
-            }
-          } else {
-            // No generate_images block — treat as pure text output (description of what would be generated)
-            taskApproved = true;
-            break;
-          }
-        }
-
-        // ── browse operation: fetch live web content via Camofox ─────────────
-        if (task.operation === 'browse') {
-          const { getCamofoxStatus } = await import('../phobos/CamofoxManager.js');
-          const camofox = getCamofoxStatus();
-
-          if (camofox.state !== 'running') {
-            // Degrade gracefully — SEREN narrates what it would have fetched
-            attemptResult.output =
-              `[Web browse unavailable — Camofox not running. ` +
-              `Cannot fetch: ${task.browseUrl ?? `${task.browseMacro ?? ''} ${task.browseQuery ?? ''}`.trim()}]`;
-            taskApproved = true;
-            break;
-          }
-
-          const { browseUrl, browseSearch, fetchYoutubeTranscript } = await import('../phobos/CamofoxClient.js');
-
-          let browseOutput: string;
-
-          try {
-            if (task.browseMacro === '@youtube_transcript' && task.browseUrl) {
-              // YouTube transcript — dedicated endpoint, returns full caption text
-              sendStatus(`[${task.index}/${total}] Fetching YouTube transcript…`);
-              const result = await fetchYoutubeTranscript(task.browseUrl);
-              if (result.error) {
-                browseOutput = `[YouTube transcript error: ${result.error}]`;
-              } else {
-                browseOutput =
-                  `[YOUTUBE: ${result.title}]\n[URL: ${result.url}]\n\n${result.transcript}`;
-              }
-            } else if (task.browseMacro && task.browseQuery) {
-              // Search macro
-              sendStatus(`[${task.index}/${total}] Searching web: ${task.browseQuery}…`);
-              const result = await browseSearch(task.browseMacro, task.browseQuery);
-              if (result.error) {
-                browseOutput = `[Browse error: ${result.error}]`;
-              } else {
-                browseOutput =
-                  `[WEB SEARCH: ${task.browseMacro} — ${task.browseQuery}]\n` +
-                  `[TITLE: ${result.title}]\n\n${result.snapshot}`;
-              }
-            } else if (task.browseUrl) {
-              // Direct URL
-              sendStatus(`[${task.index}/${total}] Browsing: ${task.browseUrl}…`);
-              const result = await browseUrl(task.browseUrl);
-              if (result.error) {
-                browseOutput = `[Browse error: ${result.error}]`;
-              } else {
-                browseOutput =
-                  `[WEB: ${result.title}]\n[URL: ${result.url}]\n\n${result.snapshot}`;
-              }
-            } else {
-              browseOutput = `[Browse error: task has no url, macro, or query]`;
-            }
-          } catch (browseErr) {
-            browseOutput = `[Browse error: ${(browseErr as Error).message}]`;
-          }
-
-          // Store output for outputRequiredBy injection — same mechanism as analyze
-          attemptResult.output = browseOutput;
-          task.completedOutput = browseOutput;
-          taskApproved = true;
-          break;
-        }
-
-        // ── execute / simulate operations: run code in an isolated sandbox ─────
-        // execute  = verify code PHOBOS wrote (tests, migrations, build checks).
-        //            Output formatted as diagnostic: exit code + stdout + stderr.
-        // simulate = produce computed results as the deliverable (math, modeling,
-        //            data generation). Output formatted as result data: stdout leads,
-        //            exit code is secondary, stderr only shown on failure.
-        // Both share identical sandboxing infrastructure; only output framing differs.
-        if (task.operation === 'execute' || task.operation === 'simulate') {
-          const isSimulate = task.operation === 'simulate';
-
-          // Gate on feature flag — degrade gracefully if executor is disabled.
-          // Value flows through LoopOptions.executorEnabled. Main thread reads
-          // model_path_settings; coordinator worker receives via INIT_CONFIG.
-          // No DB access from this code path.
-          const executorEnabled = this.options.executorEnabled ?? false;
-
-          if (!executorEnabled) {
-            const desc = task.entrypoint ?? task.title;
-            const fallback =
-              `[Sandbox Executor is disabled. Cannot ${isSimulate ? 'simulate' : 'execute'}: ${desc}. ` +
-              `Enable it in the PHOBOS Command Center.]`;
-            attemptResult.output = fallback;
-            task.completedOutput = fallback;
-            taskApproved = true;
-            break;
-          }
-
-          const runtime    = task.runtime ?? 'node';
-          const entrypoint = task.entrypoint;
-          const timeoutMs  = Math.min(120_000, (task.timeoutSeconds ?? 30) * 1_000);
-
-          if (!entrypoint) {
-            const errMsg = `[${isSimulate ? 'Simulate' : 'Execute'} task missing entrypoint — cannot run]`;
-            attemptResult.output = errMsg;
-            task.completedOutput = errMsg;
-            taskApproved = true;
-            break;
-          }
-
-          let sandboxOutput: string;
-          try {
-            const { createSandbox, validateEntrypoint } = await import('../execution/SandboxManager.js');
-            const { runInSandbox } = await import('../execution/SandboxExecutor.js');
-
-            const taskIdStr = `${task.index}-${Date.now()}`;
-            const sandbox = await createSandbox({
-              taskId: taskIdStr,
-              workspaceDir: projectRoot,
-              sourceFiles: task.sourceFiles ?? [],
-              useWorkspace: !!(task.sourceFiles?.length),
-            });
-
-            let execResult;
-            try {
-              if (!validateEntrypoint(entrypoint, sandbox.sandboxDir)) {
-                const srcPath = `${projectRoot}/${entrypoint}`;
-                const { copyFile } = await import('fs/promises');
-                try {
-                  await copyFile(srcPath, `${sandbox.sandboxDir}/${entrypoint}`);
-                } catch {
-                  sandboxOutput =
-                    `[${isSimulate ? 'Simulate' : 'Execute'} error: entrypoint "${entrypoint}" not found. ` +
-                    `Ensure a preceding create task writes this file.]`;
-                  await sandbox.cleanup();
-                  attemptResult.output = sandboxOutput;
-                  task.completedOutput = sandboxOutput;
-                  taskApproved = true;
-                  break;
-                }
-              }
-
-              agentState.transition('executing', entrypoint, task.index, total);
-              sendStatus(`[${task.index}/${total}] ${isSimulate ? 'Simulating' : 'Running'} ${entrypoint}…`);
-              execResult = await runInSandbox({ runtime: runtime as 'node' | 'python' | 'bash', entrypoint, sandboxDir: sandbox.sandboxDir, timeoutMs });
-
-              if (task.outputFiles?.length) {
-                await sandbox.collectOutputs(task.outputFiles);
-              }
-            } finally {
-              await sandbox.cleanup();
-            }
-
-            // Emit SSE event for frontend result card
-            const stdoutPreview = execResult.stdout.split('\n')[0]?.slice(0, 120) ?? '';
-            this.sendEvent(reply, {
-              type: 'execute_result',
-              taskIndex: task.index,
-              exitCode: execResult.exitCode,
-              durationMs: execResult.durationMs,
-              timedOut: execResult.timedOut,
-              stdoutPreview,
-              mode: isSimulate ? 'simulate' : 'execute',
-            });
-            this.options.onExecuteResult?.({
-              taskIndex: task.index,
-              exitCode: execResult.exitCode,
-              durationMs: execResult.durationMs,
-              timedOut: execResult.timedOut,
-              stdoutPreview,
-              mode: isSimulate ? 'simulate' : 'execute',
-            });
-
-            if (isSimulate) {
-              // ── Simulate: stdout IS the answer — lead with the data ──────────
-              // Downstream analyze/respond tasks receive this as structured result
-              // output. Exit code and stderr are secondary context.
-              if (execResult.timedOut) {
-                sandboxOutput =
-                  `[SIMULATION TIMED OUT after ${timeoutMs / 1000}s]\n` +
-                  (execResult.stdout ? `Partial output:\n${execResult.stdout}` : '');
-              } else if (execResult.exitCode !== 0) {
-                sandboxOutput =
-                  `[SIMULATION ERROR — exit ${execResult.exitCode}]\n` +
-                  (execResult.stderr ? `Error:\n${execResult.stderr}\n` : '') +
-                  (execResult.stdout ? `Partial output:\n${execResult.stdout}` : '');
-              } else {
-                // Success: pure output, no diagnostic noise
-                sandboxOutput =
-                  (execResult.stdout || '[Simulation produced no output]') +
-                  (execResult.stderr ? `\n\n[warnings]\n${execResult.stderr}` : '');
-              }
-            } else {
-              // ── Execute: diagnostic format — exit code + full streams ────────
-              const exitLabel = execResult.timedOut ? `TIMED OUT after ${timeoutMs / 1000}s` : `EXIT CODE: ${execResult.exitCode}`;
-              sandboxOutput =
-                `${exitLabel}\nDURATION: ${(execResult.durationMs / 1000).toFixed(1)}s\n\n` +
-                (execResult.stdout ? `STDOUT:\n${execResult.stdout}\n` : 'STDOUT:\n(empty)\n') +
-                (execResult.stderr ? `\nSTDERR:\n${execResult.stderr}` : '');
-
-              // Single automatic fix cycle on non-zero exit
-              if (execResult.exitCode !== 0 && task.retryWithFix && attempt < maxAttempts) {
-                sendStatus(`[${task.index}/${total}] Execution failed — requesting fix…`);
-                const fixInjection =
-                  `\n\n<prior_task_output task="${task.title}" operation="execute">\n` +
-                  sandboxOutput.slice(0, 8_000) +
-                  `\n</prior_task_output>\n\n` +
-                  `The script exited with a non-zero code. Fix the error in ${entrypoint} and rewrite it completely.`;
-                retryContext = {
-                  attemptNumber: attempt,
-                  priorThinking: attemptResult.thinking,
-                  errorOutput: fixInjection,
-                };
-                taskFailReason = `Execute failed: exit ${execResult.exitCode}`;
-                continue;
-              }
-            }
-          } catch (execErr) {
-            sandboxOutput = `[${isSimulate ? 'Simulate' : 'Execute'} error: ${(execErr as Error).message}]`;
-          }
-
-          attemptResult.output = sandboxOutput!;
-          task.completedOutput = sandboxOutput!;
-          taskApproved = true;
-          break;
-        }
-
-        // ── audit operation: static AST security scan via CodeAuditor ──────────────────
-        // Runs the tree-sitter 12-rule pen test engine against a target path.
-        // No sandbox, no executor feature flag -- always available.
-        // Output (findings grouped by severity + SEREN digest) flows through
-        // outputRequiredBy and DeliveryComposer identically to every other operation.
-        if (task.operation === 'audit') {
-          const rawTarget = task.targetPath ?? task.targetFile ?? '';
-
-          if (!rawTarget) {
-            const errMsg = '[Audit task missing targetPath -- cannot run]';
-            attemptResult.output = errMsg;
-            task.completedOutput = errMsg;
-            taskApproved = true;
-            break;
-          }
-
-          let auditOutput: string;
-
-          if (this.options.codeAuditFn) {
-            // Coordinator-worker path. The whole audit runs on main thread:
-            // SecurityStore createRun, runCodeAudit (file scan + SEREN digest),
-            // getRunById, getFindingsByRun. We receive the formatted output
-            // string and the metadata for the SSE result card.
-            agentState.transition('executing', rawTarget, task.index, total);
-            sendStatus(`[${task.index}/${total}] Auditing ${rawTarget}…`);
-            try {
-              const result = await this.options.codeAuditFn(rawTarget, task.index, total);
-              this.sendEvent(reply, {
-                type:          'execute_result',
-                taskIndex:     task.index,
-                exitCode:      result.exitCode,
-                durationMs:    result.durationMs,
-                timedOut:      false,
-                stdoutPreview: result.stdoutPreview,
-                mode:          'audit',
-              });
-              this.options.onExecuteResult?.({
-                taskIndex:     task.index,
-                exitCode:      result.exitCode,
-                durationMs:    result.durationMs,
-                timedOut:      false,
-                stdoutPreview: result.stdoutPreview,
-                mode:          'audit',
-              });
-              auditOutput = result.output;
-            } catch (auditErr) {
-              auditOutput = `[Audit error: ${(auditErr as Error).message}]`;
-            }
-          } else {
-            // Main-thread / test path. Direct DB access — DatabaseManager
-            // singleton is initialised here and held open for the process.
-            const nodePath  = await import('node:path');
-            const absTarget = nodePath.isAbsolute(rawTarget)
-              ? rawTarget
-              : nodePath.join(projectRoot, rawTarget);
-
-            try {
-              const { DatabaseManager: DM } = await import('../db/DatabaseManager.js');
-              const { SecurityStore }        = await import('../db/SecurityStore.js');
-              const { runCodeAudit }         = await import('../security/CodeAuditor.js');
-
-              const secStore = new SecurityStore(DM.getInstance());
-              await secStore.ensureTable();
-              const run = await secStore.createRun('code_audit');
-
-              agentState.transition('executing', rawTarget, task.index, total);
-              sendStatus(`[${task.index}/${total}] Auditing ${rawTarget}…`);
-
-              await runCodeAudit(secStore, run.id, absTarget);
-
-              const completed = await secStore.getRunById(run.id);
-              const findings  = await secStore.getFindingsByRun(run.id);
-              const durationMs = Date.now() - (completed ? Date.parse(completed.started_at) : Date.now());
-
-              // Emit SSE result card reusing execute_result shape
-              const findingPreview = findings.length > 0
-                ? findings[0].title.slice(0, 120)
-                : 'No issues found';
-              this.sendEvent(reply, {
-                type:          'execute_result',
-                taskIndex:     task.index,
-                exitCode:      findings.length > 0 ? 1 : 0,
-                durationMs,
-                timedOut:      false,
-                stdoutPreview: findingPreview,
-                mode:          'audit',
-              });
-              this.options.onExecuteResult?.({
-                taskIndex:     task.index,
-                exitCode:      findings.length > 0 ? 1 : 0,
-                durationMs,
-                timedOut:      false,
-                stdoutPreview: findingPreview,
-                mode:          'audit',
-              });
-
-              // Build output string: findings grouped by severity, digest appended.
-              // This becomes completedOutput and flows through outputRequiredBy
-              // and DeliveryComposer exactly like every other operation.
-              if (findings.length === 0) {
-                auditOutput = `[CODE AUDIT CLEAN -- ${rawTarget}]\nNo security issues detected.`;
-              } else {
-                const bySeverity: Record<string, typeof findings> = {};
-                for (const f of findings) {
-                  (bySeverity[f.severity] ??= []).push(f);
-                }
-                const lines: string[] = [
-                  `[CODE AUDIT -- ${findings.length} finding${findings.length !== 1 ? 's' : ''} in ${rawTarget}]`,
-                  '',
-                ];
-                for (const sev of ['critical', 'high', 'medium', 'low', 'info'] as const) {
-                  const group = bySeverity[sev];
-                  if (!group?.length) continue;
-                  lines.push(`${sev.toUpperCase()} (${group.length}):`);
-                  for (const f of group) {
-                    lines.push(`  [${f.target ?? rawTarget}] ${f.title}`);
-                    if (f.detail) lines.push(`    ${f.detail}`);
-                  }
-                  lines.push('');
-                }
-                if (completed?.seren_digest) {
-                  lines.push('ANALYSIS:', completed.seren_digest);
-                }
-                auditOutput = lines.join('\n');
-              }
-            } catch (auditErr) {
-              auditOutput = `[Audit error: ${(auditErr as Error).message}]`;
-            }
-          }
-
-          attemptResult.output = auditOutput;
-          task.completedOutput = auditOutput;
-          taskApproved = true;
-          break;
-        }
-
-        // SEREN emitted a <continue_writing path="..."/> tag, run continuation
-        // turns until the output is complete. Each turn appends to the prior
-        // output. Hard cap: PAGINATE_MAX_CONTINUATIONS turns to prevent loops.
-        //
-        // Test threshold: PAGINATE_THRESHOLD chars. In production this catches
-        // genuine token-limit truncations on large files. Set low for testing.
-        const PAGINATE_THRESHOLD = 1_000;
-        const PAGINATE_MAX_CONTINUATIONS = 6;
-
-        const continueWritingRe = /<continue_writing(?:\s+path="([^"]*)")?\s*\/>/;
-        let paginationCycles = 0;
-
-        while (paginationCycles < PAGINATE_MAX_CONTINUATIONS) {
-          const hitTokenLimit = attemptResult.finishReason === 'length';
-          const continueMatch = continueWritingRe.exec(attemptResult.output);
-          const outputLen = attemptResult.output.length;
-
-          if (!hitTokenLimit && !continueMatch) break;
-          if (outputLen < PAGINATE_THRESHOLD && !continueMatch) break;
-
-          paginationCycles++;
-          const targetPath = continueMatch?.[1] ?? '';
-          sendStatus(`[${task.index}/${total}] Continuing output (part ${paginationCycles + 1})…`);
-          dbg(`[loop:paginate] cycle=${paginationCycles} reason=${hitTokenLimit ? 'length' : 'tag'} path="${targetPath}"`);
-
-          // Strip the continue_writing tag from prior output before appending
-          const priorOutput = attemptResult.output.replace(continueWritingRe, '').trimEnd();
-
-          const continuationMessages = [
-            { role: 'system' as const, content: dispatch.systemPrompt },
-            ...dispatch.messages,
-            { role: 'assistant' as const, content: priorOutput },
-            {
-              role: 'user' as const,
-              content: targetPath
-                ? `Continue writing the file \`${targetPath}\` from exactly where you left off. ` +
-                  `Do not repeat any content already written. Continue seamlessly.`
-                : `You were cut off. Continue your response from exactly where you left off. ` +
-                  `Do not repeat any content already written. Continue seamlessly.`,
-            },
-          ];
-
-          const continued = await this.runSingleStream(
-            reply, continuationMessages, taskId, attemptResult.thinking, sendEngineThinking, assistantMessageId
-          );
-
-          // Concatenate: prior output + continuation. If continuation is empty, stop.
-          if (!continued.output.trim()) break;
-          attemptResult.output = priorOutput + '\n' + continued.output;
-          attemptResult.finishReason = continued.finishReason;
-        }
-
-        // ── Parse tool calls ──────────────────────────────────────────────────
-        const parsed = this.toolParser.parse(attemptResult.output);
-
-        if (parsed.toolCalls.length === 0) {
-          // Pure Q&A / analysis — no file changes
-          taskApproved = true;
-          break;
-        }
-
-        dbg(`[loop:parse] task=${task.index} toolCalls=${parsed.toolCalls.length} hasRead=${parsed.hasReadRequest} tools=${JSON.stringify(parsed.toolCalls.map(c => c.tool + ':' + c.path))}`);
-        // ── read_file → act cycle ──────────────────────────────────────────────
-        let currentOutput = attemptResult.output;
-        let currentParsed = parsed;
-        let readCycles = 0;
-
-        while (
-          currentParsed.hasReadRequest &&
-          currentParsed.toolCalls.every(c => c.tool === 'read_file') &&
-          readCycles < LoopController.MAX_READ_CYCLES
-        ) {
-          readCycles++;
-          agentState.transition('reading', `files (${readCycles})`, task.index, total);
-          sendStatus(`[${task.index}/${total}] Reading files (${readCycles})…`);
-          const readResults = await toolExecutor.executeAll(currentParsed.toolCalls);
-          const readFeedback = readResults
-            .map(r => r.success
-              ? `<file_contents path="${r.path}">\n${r.content}\n</file_contents>`
-              : `<file_error path="${r.path}">${r.error}</file_error>`
-            )
-            .join('\n');
-          const continuationMessages = [
-            { role: 'system' as const, content: dispatch.systemPrompt },
-            ...dispatch.messages,
-            { role: 'assistant' as const, content: currentOutput },
-            { role: 'user' as const, content: `Here are the file contents you requested:\n\n${readFeedback}\n\nNow proceed with your changes.` },
-          ];
-          sendStatus(`[${task.index}/${total}] Engine continuing after file read…`);
-          const continued = await this.runSingleStream(
-            reply, continuationMessages, taskId, attemptResult.thinking, sendEngineThinking, assistantMessageId
-          );
-          currentOutput = continued.output;
-          currentParsed = this.toolParser.parse(currentOutput);
-        }
-
-        // ── Execute writes ────────────────────────────────────────────────────
-        const writeCalls = currentParsed.toolCalls.filter(c => c.tool !== 'read_file');
-
-        if (writeCalls.length === 0) {
-          taskApproved = true;
-          break;
-        }
-
-        const execDetail = writeCalls[0]?.path ? writeCalls[0].path.split('/').pop()! : `${writeCalls.length} ops`;
-        agentState.transition('executing', execDetail, task.index, total);
-        sendStatus(`[${task.index}/${total}] Executing ${writeCalls.length} operation(s)…`);
-        const toolResults = await toolExecutor.simulateAll(writeCalls) as StagedFileToolResult[];
-
-        // Collect staging dirs for cleanup after delivery
-        for (const r of toolResults) {
-          if (r.stagedPath) {
-            const dir = r.stagedPath.substring(0, r.stagedPath.lastIndexOf('/'));
-            const stageRoot = dir.substring(0, dir.lastIndexOf('/'));
-            if (!stagingDirsToClean.includes(stageRoot)) stagingDirsToClean.push(stageRoot);
-          }
-        }
-
-        dbg(`[loop:exec] task=${task.index} writes=${writeCalls.length} results=${JSON.stringify(toolResults.map(r => r.tool + ':' + r.path + '=' + (r.success ? 'ok' : r.error?.slice(0,60))))}`);
-        const failedOps = toolResults.filter(r => !r.success);
-        if (failedOps.length > 0) {
-          const errorSummary = failedOps.map(r => `${r.tool} ${r.path}: ${r.error}`).join('\n');
-          this.sendEvent(reply, { type: 'build_result', success: false, errors: errorSummary });
-          retryContext = { attemptNumber: attempt, priorThinking: attemptResult.thinking, errorOutput: `File operations failed:\n${errorSummary}` };
-          taskFailReason = errorSummary;
-          continue;
-        }
-
-        const writtenFiles = toolResults.filter(r => r.success && r.content && r.tool !== 'read_file' && r.tool !== 'generate_image');
-        await this.persistAndSend(reply, {
-          type: 'patches_applied',
-          count: writtenFiles.length,
-          files: writtenFiles.map(r => r.path),
-        }, assistantMessageId);
-
-        for (const r of writtenFiles) {
-          if (!allChangedFiles.includes(r.path)) allChangedFiles.push(r.path);
-          if (r.content) stagedContents.set(r.path, r.content);
-        }
-        for (const result of writtenFiles) {
-          if (result.content) {
-            await this.persistAndSend(reply, {
-              type: 'file_panel',
-              filename: result.path,
-              language: result.path.split('.').pop() ?? 'text',
-              code: result.content,
-            }, assistantMessageId);
-          }
-        }
-
-        // ── Syntax validation ──────────────────────────────────────────────────
-        let syntaxError: { filePath: string; result: { valid: false; error: string; line?: number } } | null = null;
-        for (const result of writtenFiles) {
-          if (!result.content) continue;
-          const validation = await syntaxValidator.validate(result.path, result.content);
-          if (!validation.valid) {
-            syntaxError = { filePath: result.path, result: validation as { valid: false; error: string; line?: number } };
-            break;
-          }
-        }
-        if (syntaxError) {
-          const errMsg = `Syntax error in ${syntaxError.filePath} at line ${syntaxError.result.line ?? '?'}: ${syntaxError.result.error}`;
-          this.sendEvent(reply, { type: 'build_result', success: false, errors: errMsg });
-          retryContext = { attemptNumber: attempt, priorThinking: attemptResult.thinking, errorOutput: errMsg };
-          taskFailReason = errMsg;
-          continue;
-        }
-
-        // ── Build (only after last task) ─────────────────────────────────────
-        // Intermediate tasks may leave the project in a temporarily broken state
-        // (e.g. new imports not yet created). Only run the full build after the
-        // final task so partial-completion states don’t cause false failures.
-        const isLastTask = task.index === tasks.length;
-        if (!this.options.skipBuild && isLastTask) {
-          const hasBuildableFiles = await this.workspaceHasBuildableFiles(projectRoot);
-          if (hasBuildableFiles) {
-            agentState.transition('building', buildCommand.slice(0, 20));
-            sendStatus('Running build…');
-            const buildResult = await buildRunner.run(buildCommand);
-            if (!buildResult.success && this.isNoInputsError(buildResult)) {
-              dbg('[LoopController] Build: no-inputs error — skipped');
-            } else if (!buildResult.success) {
-              this.sendEvent(reply, { type: 'build_result', success: false, errors: errorFormatter.formatBuildErrors(buildResult) });
-              if (attempt < maxAttempts) {
-                retryContext = { attemptNumber: attempt, priorThinking: attemptResult.thinking, errorOutput: errorFormatter.formatForRetry({ buildResult, attemptNumber: attempt }) };
-                taskFailReason = 'Build failed';
-                continue;
-              }
-            } else {
-              this.sendEvent(reply, { type: 'build_result', success: true });
-            }
-          }
-        }
-
-        // ── Review ──────────────────────────────────────────────────────────────
-        sendStatus(`[${task.index}/${total}] Reviewing…`);
-        const changedSummary = writtenFiles.map(r => `${r.tool} ${r.path}`).join('\n');
-        // Pass full file content to reviewer (up to 4000 chars each) so SAYON can
-        // meaningfully assess code quality, not just see 400-char XML snippets.
-        const reviewOutput = writtenFiles
-          .map(r => `File: ${r.path}\nOperation: ${r.tool}\n---\n${(r.content ?? '').slice(0, 4_000)}\n---`)
-          .join('\n\n');
-        agentState.transition('reviewing', task.title.slice(0, 20), task.index, total);
-        dbg(`[loop:review:in] task=${task.index} prompt="${task.prompt.slice(0, 120).replace(/\n/g, ' ')}" changed="${changedSummary}" outputLen=${reviewOutput.length}`);
-        const review = await this.runReviewDispatch(task.prompt, reviewOutput, changedSummary, sendThinking);  // coordinator thinking
-
-        dbg(`[loop:review:out] task=${task.index} score=${review.score} decision=${review.decision} guidance="${(review.guidance ?? '').slice(0, 120)}"`);
-        attemptResult.reviewScore = review.score;
-        attemptResult.approved = review.decision === 'APPROVE';
-        this.sendEvent(reply, { type: 'review', score: review.score, decision: review.decision, guidance: review.guidance });
-
-        if (review.decision === 'APPROVE') {
-          taskApproved = true;
-          taskFailReason = undefined;
-          break;
-        }
-
-        if (attempt < maxAttempts && review.decision === 'NEEDS_REVISION') {
-          retryContext = {
-            attemptNumber: attempt,
-            priorThinking: attemptResult.thinking,
-            guidanceFromReview: review.guidance,
-            reviewIssues: review.issues,
-            priorOutput: attemptResult.output,
-          };
-          taskFailReason = review.guidance ?? 'Needs revision';
-          continue;
-        }
-
-        // REJECT is terminal — do not retry. NEEDS_REVISION at maxAttempts also lands here.
-        taskFailReason = review.guidance ?? 'Max attempts reached';
-        dbg(`[loop:exit] task=${task.index} attempt=${attempt} REJECT/maxAttempts — breaking`);
-        break;
-      } // end attempt loop
-
-      dbg(`[loop:task:done] task=${task.index} approved=${taskApproved} failReason="${taskFailReason ?? ''}"`);
-      if (taskApproved) {
-        this.sendEvent(reply, { type: 'task_complete', taskIndex: task.index, total, title: task.title });
-
-        // ── Store completed output and inject into downstream tasks ─────────
-        // When SEREN marks a task with outputRequiredBy, its full output is
-        // injected into the prompt of those downstream tasks before they run.
-        // This is how analyze/respond tasks pass their results forward.
-        const taskOutput = taskAttempts[taskAttempts.length - 1]?.output ?? '';
-        task.completedOutput = taskOutput;
-
-        if (task.outputRequiredBy && task.outputRequiredBy.length > 0 && taskOutput.trim()) {
-          for (const targetIdx of task.outputRequiredBy) {
-            const targetTask = tasks.find(t => t.index === targetIdx);
-            if (targetTask) {
-              const injectionBlock =
-                `\n\n<prior_task_output from_task="${task.index}" title="${task.title}">\n` +
-                taskOutput.slice(0, 12_000) +  // cap at 12k chars — generous but bounded
-                `\n</prior_task_output>\n`;
-              targetTask.prompt = targetTask.prompt + injectionBlock;
-              dbg(`[loop:inject] task ${task.index} output → task ${targetIdx} prompt (${taskOutput.length} chars)`);
-            }
-          }
-        }
-
-        // ── Generate task summary for rolling log ──────────────────────────
-        // The executor writes a short plain-prose summary of what was done.
-        // This gets passed to every subsequent task as context so executors
-        // can see the work completed before them and build on it cleanly.
-        if (tasks.length > 1) {
-          try {
-            const lastOutput = taskAttempts[taskAttempts.length - 1]?.output ?? '';
-            // Collect files changed during this specific task by comparing
-            // allChangedFiles before vs after — we track the delta via taskStartFileCount.
-            const taskChangedFiles = allChangedFiles
-              .filter((v, i, arr) => arr.indexOf(v) === i)
-              .slice(taskStartFileCount)
-              .join(', ');
-            const changedFilesList = taskChangedFiles;
-
-            const summaryPrompt =
-              `You just completed a task. Write a single short sentence (max 25 words) ` +
-              `summarising exactly what was done. Be specific — mention file names and what changed. ` +
-              `Do NOT mention what still needs to be done. Plain prose only, no markdown.\n\n` +
-              `Task: ${task.title}\n` +
-              (changedFilesList ? `Files modified: ${changedFilesList}\n` : '') +
-              `Output excerpt: ${lastOutput.slice(0, 400)}`;
-
-            // Task log summaries are always short (25 words) — coordinator handles
-            // both SAYON and SEREN task summaries. No SSE stream needed.
-            const summaryText = await coordinatorCall({
-              systemPrompt: '',
-              messages: [{ role: 'user', content: summaryPrompt }],
-              maxTokens: 80,
-              temperature: 0.1,
-              mode: 'no_think',
-            });
-
-            const cleanSummary = summaryText.trim().replace(/^["']|["']$/g, '');
-            taskLog.push(cleanSummary);
-            dbg(`[loop:tasklog] task=${task.index} summary="${cleanSummary}"`);
-          } catch (err) {
-            // Non-fatal — push a simple fallback so the log stays aligned
-            taskLog.push(`${task.title} completed.`);
-            console.warn('[LoopController] Task summary generation failed (non-fatal):', err);
-          }
-        }
-      } else {
-        this.sendEvent(reply, { type: 'task_failed', taskIndex: task.index, total, title: task.title, reason: taskFailReason ?? 'Unknown' });
-      }
-
-      taskResults.push({ task, approved: taskApproved, attempts: taskAttempts, failReason: taskFailReason });
-      this.budgetMonitor.reset(taskId);
-    } // end task loop
+    } else {
+      await this.runParallelDAG(execCtx);
+    }
+
+    // Synthetic `total` binding for the code below that references it
+    const total = tasks.length;
 
     // ── Stage 4.5: SEREN Final Validation ──────────────────────────────────
     // For multi-task plans or plans with failures, SEREN reviews all completed
     // work holistically. Single approved tasks skip this — the per-task review
     // already covered them.
+
     let overallApproved = taskResults.length > 0 && taskResults.every(r => r.approved);
     let validationSummary: string | undefined;
+
 
     const needsFinalValidation =
       taskResults.length > 1 ||
@@ -1682,6 +868,801 @@ export class LoopController {
       );
     } catch (err) {
       console.warn('[LoopController] Stage 5 delivery failed, skipping:', err);
+    }
+  }
+
+  // ── Parallel DAG execution ─────────────────────────────────────────────────
+
+  /**
+   * Stage 4: Parallel DAG dispatcher.
+   *
+   * Partitions tasks by assignedTo. SAYON and SEREN each run a sequential queue
+   * concurrently. Cross-assignment dependencies are tracked via outputRequiredBy —
+   * a task only dispatches when all its input tasks are approved.
+   *
+   * SAYON drains the verification queue between primary tasks:
+   *   - If any pending verification item is a blocking dependency, it is taken first.
+   *   - Otherwise the oldest non-blocking item is taken.
+   *   - Approval of a dependency item immediately unblocks the downstream SEREN task.
+   */
+  private async runParallelDAG(ctx: ParallelExecContext): Promise<void> {
+    const { tasks, taskResults, taskLog } = ctx;
+    const total = tasks.length;
+
+    // Dependency map: taskIndex → set of taskIndices whose output it needs
+    // Built from outputRequiredBy on all tasks
+    const dependsOn = new Map<number, Set<number>>();
+    for (const t of tasks) {
+      if (t.outputRequiredBy) {
+        for (const downstreamIdx of t.outputRequiredBy) {
+          const s = dependsOn.get(downstreamIdx) ?? new Set<number>();
+          s.add(t.index);
+          dependsOn.set(downstreamIdx, s);
+        }
+      }
+    }
+
+    // Tracks which task indices have been fully approved
+    const approved = new Set<number>();
+    // Tasks waiting for dependency resolution — keyed by task index
+    const pendingByIdx = new Map<number, import('./TaskPlanner.js').Task>();
+    // Verification queue: SEREN file-tasks that need SAYON review
+    // isDependency=true means a downstream task is waiting on this approval
+    const verifyQueue: Array<{
+      task: import('./TaskPlanner.js').Task;
+      attempts: AttemptResult[];
+      taskStartFileCount: number;
+      isDependency: boolean;
+    }> = [];
+    // Tasks dispatched to SEREN's queue but not yet verified
+    const serenInflight = new Set<number>();
+
+    // Whether dependencies for a task are all satisfied
+    const depsReady = (t: import('./TaskPlanner.js').Task): boolean => {
+      const deps = dependsOn.get(t.index);
+      if (!deps) return true;
+      return [...deps].every(d => approved.has(d));
+    };
+
+    // Dequeue next SAYON primary task — first task with deps ready that is SAYON-assigned
+    const nextSayonTask = (): import('./TaskPlanner.js').Task | undefined =>
+      tasks.find(t =>
+        (t.assignedTo === 'sayon') &&
+        !taskResults.some(r => r.task.index === t.index) &&
+        !pendingByIdx.has(t.index) &&
+        depsReady(t)
+      );
+
+    // Dequeue next SEREN primary task — first task with deps ready that is SEREN-assigned
+    const nextSerenTask = (): import('./TaskPlanner.js').Task | undefined =>
+      tasks.find(t =>
+        (t.assignedTo !== 'sayon') &&
+        !taskResults.some(r => r.task.index === t.index) &&
+        !serenInflight.has(t.index) &&
+        !pendingByIdx.has(t.index) &&
+        depsReady(t)
+      );
+
+    // Pop the highest-priority verification item:
+    // Dependency items (blocking a downstream task) float to the top.
+    const popVerifyItem = (): typeof verifyQueue[number] | undefined => {
+      const depIdx = verifyQueue.findIndex(v => v.isDependency);
+      if (depIdx !== -1) return verifyQueue.splice(depIdx, 1)[0];
+      if (verifyQueue.length > 0) return verifyQueue.shift();
+      return undefined;
+    };
+
+    // Called after any task approval — refresh isDependency on queued items
+    const refreshVerifyPriority = (): void => {
+      // A verification item is a dependency if any pending task depends on it
+      for (const v of verifyQueue) {
+        const deps = v.task.outputRequiredBy;
+        if (!deps) { v.isDependency = false; continue; }
+        v.isDependency = deps.some(downstreamIdx => {
+          const t = tasks.find(tt => tt.index === downstreamIdx);
+          return t && !taskResults.some(r => r.task.index === downstreamIdx);
+        });
+      }
+    };
+
+    // Run SAYON's review pass on a completed SEREN task.
+    // Returns the full taskResult entry and resolves any downstream dependencies.
+    const verifySeren = async (
+      verifyItem: typeof verifyQueue[number]
+    ): Promise<void> => {
+      const { task, attempts, taskStartFileCount } = verifyItem;
+      const taskApproved = await this.runTaskReviewPhase(
+        task, attempts, taskStartFileCount, total, ctx
+      );
+      const failReason = taskApproved
+        ? undefined
+        : (attempts[attempts.length - 1]?.output ? 'Review rejected' : 'No output');
+
+      if (taskApproved) {
+        approved.add(task.index);
+        this.sendEvent(ctx.reply, { type: 'task_complete', taskIndex: task.index, total, title: task.title });
+        await this.generateTaskSummary(task, attempts, taskStartFileCount, ctx);
+        // Inject output into downstream tasks
+        this.injectOutputRequiredBy(task, attempts, tasks);
+        // Unblock any tasks that were waiting on this approval
+        for (const [pendingIdx, pendingTask] of pendingByIdx) {
+          if (depsReady(pendingTask)) {
+            pendingByIdx.delete(pendingIdx);
+            // Pending tasks are re-queued into the correct executor on next tick
+          }
+        }
+        refreshVerifyPriority();
+      } else {
+        this.sendEvent(ctx.reply, { type: 'task_failed', taskIndex: task.index, total, title: task.title, reason: failReason ?? 'Unknown' });
+      }
+      taskResults.push({ task, approved: taskApproved, attempts, failReason });
+      this.budgetMonitor.reset(ctx.taskId);
+    };
+
+    // SAYON executor: runs primary queue interleaved with verification drain
+    const runSayonQueue = async (): Promise<void> => {
+      while (true) {
+        // Always check verify queue first (dependency items have priority)
+        const verifyItem = popVerifyItem();
+        if (verifyItem) {
+          await verifySeren(verifyItem);
+          continue;
+        }
+
+        const task = nextSayonTask();
+        if (task) {
+          const result = await this.executeTask(task, ctx);
+          taskResults.push(result);
+          if (result.approved) approved.add(task.index);
+          this.budgetMonitor.reset(ctx.taskId);
+          // After each primary task, drain any queued verification items
+          // before pulling the next primary task — keeps SEREN unblocked
+          let drain = popVerifyItem();
+          while (drain) {
+            await verifySeren(drain);
+            drain = popVerifyItem();
+          }
+          continue;
+        }
+
+        // No primary task ready — check if we're waiting on SEREN to finish
+        const serenRemaining = tasks.filter(t =>
+          (t.assignedTo !== 'sayon') &&
+          !taskResults.some(r => r.task.index === t.index)
+        );
+        if (serenRemaining.length === 0 && verifyQueue.length === 0) break;
+
+        // Idle-wait: yield for 50ms then re-check
+        await new Promise<void>(r => setTimeout(r, 50));
+      }
+    };
+
+    // SEREN executor: runs its queue sequentially, posting completions to verifyQueue
+    const runSerenQueue = async (): Promise<void> => {
+      while (true) {
+        const task = nextSerenTask();
+        if (!task) {
+          // Check if all SEREN tasks are accounted for
+          const serenRemaining = tasks.filter(t =>
+            (t.assignedTo !== 'sayon') &&
+            !taskResults.some(r => r.task.index === t.index) &&
+            !serenInflight.has(t.index) &&
+            !verifyQueue.some(v => v.task.index === t.index)
+          );
+          if (serenRemaining.length === 0) break;
+          // Tasks exist but deps not satisfied — idle-wait
+          await new Promise<void>(r => setTimeout(r, 50));
+          continue;
+        }
+
+        serenInflight.add(task.index);
+        const taskStartFileCount = ctx.allChangedFiles.length;
+        this.sendEvent(ctx.reply, { type: 'task_start', taskIndex: task.index, total, title: task.title });
+        ctx.sendStatus(`[${task.index}/${total}] ${task.title}…`);
+
+        // Run the task body (all retry logic, file writes, build — but NOT review)
+        const attempts = await this.executeTaskBody(task, ctx);
+        serenInflight.delete(task.index);
+
+        // Post to verification queue — SAYON will review asynchronously
+        const isDep = !!(task.outputRequiredBy?.some(downstreamIdx =>
+          tasks.find(t => t.index === downstreamIdx && (t.assignedTo !== 'sayon'))
+        ));
+        verifyQueue.push({ task, attempts, taskStartFileCount, isDependency: isDep });
+        refreshVerifyPriority();
+      }
+    };
+
+    // Run both queues concurrently
+    await Promise.all([runSayonQueue(), runSerenQueue()]);
+
+    // Final drain: any remaining verify items (shouldn't happen, but belt-and-suspenders)
+    let remaining = popVerifyItem();
+    while (remaining) {
+      await verifySeren(remaining);
+      remaining = popVerifyItem();
+    }
+  }
+
+  /**
+   * Full task execution for a SAYON-assigned task: body + review in one step.
+   * Returns a taskResult-shaped object ready to push into taskResults.
+   */
+  private async executeTask(
+    task: import('./TaskPlanner.js').Task,
+    ctx: ParallelExecContext
+  ): Promise<{ task: import('./TaskPlanner.js').Task; approved: boolean; attempts: AttemptResult[]; failReason?: string }> {
+    const total = ctx.total;
+    const taskStartFileCount = ctx.allChangedFiles.length;
+
+    this.sendEvent(ctx.reply, { type: 'task_start', taskIndex: task.index, total, title: task.title });
+    ctx.sendStatus(`[${task.index}/${total}] ${task.title}…`);
+
+    const attempts = await this.executeTaskBody(task, ctx);
+    const approved = await this.runTaskReviewPhase(task, attempts, taskStartFileCount, total, ctx);
+    const failReason = approved ? undefined : (attempts[attempts.length - 1]?.output ? 'Review rejected' : 'No output');
+
+    if (approved) {
+      this.sendEvent(ctx.reply, { type: 'task_complete', taskIndex: task.index, total, title: task.title });
+      await this.generateTaskSummary(task, attempts, taskStartFileCount, ctx);
+      this.injectOutputRequiredBy(task, attempts, ctx.tasks);
+    } else {
+      this.sendEvent(ctx.reply, { type: 'task_failed', taskIndex: task.index, total, title: task.title, reason: failReason ?? 'Unknown' });
+    }
+
+    return { task, approved, attempts, failReason };
+  }
+
+  /**
+   * Task body: all retry attempts, reserve skill injection, file writes, build.
+   * Does NOT run the per-task review — that is handled by runTaskReviewPhase.
+   * Returns all AttemptResult objects accumulated during execution.
+   *
+   * File mutations (allChangedFiles, stagedContents, stagingDirsToClean) are
+   * written into the shared ctx as they occur.
+   */
+  private async executeTaskBody(
+    task: import('./TaskPlanner.js').Task,
+    ctx: ParallelExecContext
+  ): Promise<AttemptResult[]> {
+    const {
+      composeInput, needsPlanning, maxAttempts, taskId,
+      reply, assistantMessageId, agentState,
+      sendStatus, sendEngineThinking,
+      buildCommand, projectRoot, workspaceDir,
+      allAttempts, allChangedFiles, stagedContents, stagingDirsToClean,
+      taskLog, tasks, total,
+    } = ctx;
+
+    const toolExecutor = new FileToolExecutor(projectRoot, ctx.options?.threadId ?? 'default');
+    if (ctx.options?.onImageStatus) toolExecutor.onImageStatus = ctx.options.onImageStatus;
+    const syntaxValidator = new SyntaxValidator();
+    const buildRunner = new BuildRunner(projectRoot);
+    const errorFormatter = new ErrorFormatter();
+
+    // ── Reserve skill on-demand injection ──────────────────────────────────
+    if (task.skillId === 'SKILL_SEARCH') {
+      sendStatus(`[${task.index}/${total}] Searching skill library…`);
+      const reserveResults = searchReserve(task.prompt);
+      task.prompt =
+        `You requested a skill search. Here are the reserve skills that match your query:\n\n` +
+        reserveResults +
+        `\n\nBased on these results, select the most appropriate skill (if any) and proceed ` +
+        `with the original task. If a skill is relevant, use it. If none match well enough, ` +
+        `proceed without a skill. Original request context:\n\n` +
+        task.prompt;
+      task.skillId = undefined;
+      dbg(`[loop:skill_search] reserve search completed for task=${task.index}`);
+    }
+
+    let injectedReserveSkills = '';
+    const taskAttempts: AttemptResult[] = [];
+    let retryContext: ComposeInput['retryContext'] | undefined;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (attempt > 1) {
+        sendStatus(`[${task.index}/${total}] Retrying — attempt ${attempt}/${maxAttempts}…`);
+        this.sendEvent(reply, { type: 'thinking_retry', attempt });
+      }
+
+      if (this.budgetMonitor.shouldInjectFocus(taskId)) {
+        const focusSignal = this.budgetMonitor.getFocusInjection(taskId, ctx.ingestion.rewrittenUserMessage);
+        task.prompt = focusSignal + task.prompt;
+      }
+
+      const taskWithSkills = injectedReserveSkills
+        ? { ...task, context: task.context + injectedReserveSkills }
+        : task;
+      injectedReserveSkills = '';
+
+      const dispatch = await this.composer.compose({
+        ...composeInput,
+        currentTask: taskWithSkills,
+        conversationHistory: needsPlanning ? [] : composeInput.conversationHistory,
+        retryContext: retryContext ? { ...retryContext, attemptNumber: attempt } : undefined,
+        taskLog: taskLog.length > 0 ? [...taskLog] : undefined,
+      });
+
+      dbg(`[loop:attempt] task=${task.index}/${total} attempt=${attempt}/${maxAttempts} retryCtx=${retryContext ? 'yes' : 'none'}`);
+      agentState.transition('thinking', task.title.slice(0, 20), task.index, total);
+      sendStatus(`[${task.index}/${total}] Engine thinking…`);
+
+      if (ctx.options?.onDispatch && attempt === 1) {
+        ctx.options.onDispatch({
+          taskIndex: task.index,
+          total,
+          title: task.title,
+          assignedTo: task.assignedTo ?? 'seren',
+          operation: task.operation,
+          targetFile: task.targetFile,
+          systemPrompt: dispatch.systemPrompt,
+          userPrompt: task.prompt,
+          messageId: assistantMessageId,
+        }).catch(() => {});
+      }
+
+      const attemptResult = await this.runEngineWithInterventions(
+        reply, dispatch, task.prompt, taskId, attempt, sendEngineThinking, assistantMessageId,
+        dispatch.imageAttachments
+      );
+      attemptResult.taskIndex = task.index;
+
+      // ── RESERVE_SKILL_REQUEST detection ────────────────────────────────────
+      const reserveMatch = attemptResult.output.match(/RESERVE_SKILL_REQUEST:\s*([^\r\n]+)/i);
+      if (reserveMatch && attempt < maxAttempts) {
+        const requestedIds = reserveMatch[1].split(',').map((s: string) => s.trim()).filter(Boolean);
+        const skillContent = getSkillInstructions(requestedIds, ctx.options?.username ?? 'owner');
+        if (skillContent) {
+          sendStatus(`[${task.index}/${total}] Injecting reserve skills: ${requestedIds.join(', ')}…`);
+          injectedReserveSkills = skillContent;
+          dbg(`[loop:reserve_skill] task=${task.index} requested=${requestedIds.join(',')} found=true`);
+          continue;
+        }
+      }
+
+      taskAttempts.push(attemptResult);
+      allAttempts.push(attemptResult);
+
+      // ── image_gen ───────────────────────────────────────────────────────────
+      if (task.operation === 'image_gen') {
+        const genMatch = attemptResult.output.match(/<generate_images>([\s\S]*?)<\/generate_images>/i);
+        if (genMatch) {
+          try {
+            const entries = JSON.parse(genMatch[1].trim()) as Array<{
+              prompt: string; negativePrompt?: string; modelId?: string;
+              width?: number; height?: number; outputFolder?: string;
+            }>;
+            const { IMAGE_MODEL_CATALOGUE, isFluxDownloaded, getImageModelSpec } = await import('../phobos/PhobosLocalManager.js');
+            const { buildSdConfig } = await import('../phobos/ImageServerManager.js');
+            const { createSession } = await import('../phobos/WorkflowEngine.js');
+            const IMAGE_SPEED_ORDER = [
+              'sdxl-turbo-fp16','dreamshaper-xl-turbo-v2','z-image-turbo-q4','flux2-klein-4b-q4',
+              'realvisxl-v5-lightning','juggernaut-xl-v9-lightning','dreamshaper-xl-lightning',
+              'flux-schnell-q4','chroma-q4','sdxl-base-fp16','flux-dev-q4',
+            ];
+            const installedModels = IMAGE_MODEL_CATALOGUE
+              .filter(m => m.category !== 'video' && isFluxDownloaded(m as Parameters<typeof isFluxDownloaded>[0]))
+              .map(m => m.modelId);
+            const fastestModel = IMAGE_SPEED_ORDER.find(id => installedModels.includes(id)) ?? installedModels[0] ?? 'chroma-q4';
+            const threadId = ctx.options?.threadId ?? 'default';
+            const baseNegative = 'blurry, low quality, watermark, deformed';
+            const createdWorkflows: string[] = [];
+            for (const entry of entries) {
+              let modelId = entry.modelId && entry.modelId !== 'auto' && installedModels.includes(entry.modelId)
+                ? entry.modelId : fastestModel;
+              try { const cfg = await buildSdConfig({ modelId }); if (!cfg) modelId = fastestModel; } catch { modelId = fastestModel; }
+              const spec = getImageModelSpec(modelId);
+              const profile = spec?.profile;
+              const snap64 = (n: number) => Math.round(n / 64) * 64;
+              const nodeParams = {
+                prompt: entry.prompt,
+                negativePrompt: entry.negativePrompt ? `${baseNegative}, ${entry.negativePrompt}` : baseNegative,
+                steps: profile?.defaultSteps ?? 20,
+                width: snap64(entry.width ?? profile?.defaultWidth ?? 1024),
+                height: snap64(entry.height ?? profile?.defaultHeight ?? 1024),
+                seed: -1, sampler: profile?.defaultSampler ?? 'euler',
+              };
+              const session = createSession(threadId, entry.prompt.slice(0, 40).trim() || 'AI Generated', modelId,
+                [{ type: 'Generate' as const, label: 'Generate', params: nodeParams }], 'image');
+              this.sendEvent(reply, {
+                type: 'image_workflow_created' as unknown as 'status',
+                workflowId: session.workflowId, threadId, name: session.name, prompt: entry.prompt,
+                outputFolder: entry.outputFolder,
+              } as unknown as SSEEvent);
+              createdWorkflows.push(session.workflowId);
+            }
+            if (createdWorkflows.length > 0) {
+              sendStatus(`Starting ${createdWorkflows.length} image generation${createdWorkflows.length > 1 ? 's' : ''}…`);
+              const port = process.env.PORT ?? '3001';
+              const { request: httpReq } = await import('node:http');
+              for (const workflowId of createdWorkflows) {
+                try {
+                  const runUrl = `http://localhost:${port}/api/threads/${threadId}/workflows/${workflowId}/run`;
+                  const postData = JSON.stringify({ targetNodeIndex: 0, forceNodeIndex: 0 });
+                  await new Promise<void>((resolve) => {
+                    const req = httpReq(runUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) } }, () => resolve());
+                    req.on('error', () => resolve()); req.write(postData); req.end();
+                  });
+                } catch { /* fire-and-forget */ }
+              }
+            }
+            break; // task approved implicitly
+          } catch (imageErr) {
+            console.warn('[loop:image_gen] Failed to parse or dispatch image queue:', imageErr);
+          }
+        } else { break; } // no block — text output, approved
+      }
+
+      // ── browse ──────────────────────────────────────────────────────────────
+      if (task.operation === 'browse') {
+        const { getCamofoxStatus } = await import('../phobos/CamofoxManager.js');
+        const camofox = getCamofoxStatus();
+        if (camofox.state !== 'running') {
+          attemptResult.output = `[Web browse unavailable — Camofox not running. Cannot fetch: ${task.browseUrl ?? `${task.browseMacro ?? ''} ${task.browseQuery ?? ''}`.trim()}]`;
+          task.completedOutput = attemptResult.output;
+          break;
+        }
+        const { browseUrl, browseSearch, fetchYoutubeTranscript } = await import('../phobos/CamofoxClient.js');
+        let browseOutput: string;
+        try {
+          if (task.browseMacro === '@youtube_transcript' && task.browseUrl) {
+            sendStatus(`[${task.index}/${total}] Fetching YouTube transcript…`);
+            const result = await fetchYoutubeTranscript(task.browseUrl);
+            browseOutput = result.error ? `[YouTube transcript error: ${result.error}]`
+              : `[YOUTUBE: ${result.title}]\n[URL: ${result.url}]\n\n${result.transcript}`;
+          } else if (task.browseMacro && task.browseQuery) {
+            sendStatus(`[${task.index}/${total}] Searching web: ${task.browseQuery}…`);
+            const result = await browseSearch(task.browseMacro, task.browseQuery);
+            browseOutput = result.error ? `[Browse error: ${result.error}]`
+              : `[WEB SEARCH: ${task.browseMacro} — ${task.browseQuery}]\n[TITLE: ${result.title}]\n\n${result.snapshot}`;
+          } else if (task.browseUrl) {
+            sendStatus(`[${task.index}/${total}] Browsing: ${task.browseUrl}…`);
+            const result = await browseUrl(task.browseUrl);
+            browseOutput = result.error ? `[Browse error: ${result.error}]`
+              : `[WEB: ${result.title}]\n[URL: ${result.url}]\n\n${result.snapshot}`;
+          } else { browseOutput = `[Browse error: task has no url, macro, or query]`; }
+        } catch (browseErr) { browseOutput = `[Browse error: ${(browseErr as Error).message}]`; }
+        attemptResult.output = browseOutput;
+        task.completedOutput = browseOutput;
+        break;
+      }
+
+      // ── execute / simulate ──────────────────────────────────────────────────
+      if (task.operation === 'execute' || task.operation === 'simulate') {
+        const isSimulate = task.operation === 'simulate';
+        const executorEnabled = ctx.options?.executorEnabled ?? false;
+        if (!executorEnabled) {
+          const desc = task.entrypoint ?? task.title;
+          const fallback = `[Sandbox Executor is disabled. Cannot ${isSimulate ? 'simulate' : 'execute'}: ${desc}. Enable it in the PHOBOS Command Center.]`;
+          attemptResult.output = fallback; task.completedOutput = fallback; break;
+        }
+        const runtime = task.runtime ?? 'node';
+        const entrypoint = task.entrypoint;
+        const timeoutMs = Math.min(120_000, (task.timeoutSeconds ?? 30) * 1_000);
+        if (!entrypoint) {
+          const errMsg = `[${isSimulate ? 'Simulate' : 'Execute'} task missing entrypoint — cannot run]`;
+          attemptResult.output = errMsg; task.completedOutput = errMsg; break;
+        }
+        let sandboxOutput: string;
+        try {
+          const { createSandbox, validateEntrypoint } = await import('../execution/SandboxManager.js');
+          const { runInSandbox } = await import('../execution/SandboxExecutor.js');
+          const sandbox = await createSandbox({ taskId: `${task.index}-${Date.now()}`, workspaceDir: projectRoot, sourceFiles: task.sourceFiles ?? [], useWorkspace: !!(task.sourceFiles?.length) });
+          let execResult;
+          try {
+            if (!validateEntrypoint(entrypoint, sandbox.sandboxDir)) {
+              const srcPath = `${projectRoot}/${entrypoint}`;
+              try { await (await import('fs/promises')).copyFile(srcPath, `${sandbox.sandboxDir}/${entrypoint}`); }
+              catch { sandboxOutput = `[${isSimulate ? 'Simulate' : 'Execute'} error: entrypoint "${entrypoint}" not found.]`; await sandbox.cleanup(); attemptResult.output = sandboxOutput; task.completedOutput = sandboxOutput; break; }
+            }
+            agentState.transition('executing', entrypoint, task.index, total);
+            sendStatus(`[${task.index}/${total}] ${isSimulate ? 'Simulating' : 'Running'} ${entrypoint}…`);
+            execResult = await runInSandbox({ runtime: runtime as 'node'|'python'|'bash', entrypoint, sandboxDir: sandbox.sandboxDir, timeoutMs });
+            if (task.outputFiles?.length) await sandbox.collectOutputs(task.outputFiles);
+          } finally { await sandbox.cleanup(); }
+          const stdoutPreview = execResult.stdout.split('\n')[0]?.slice(0, 120) ?? '';
+          this.sendEvent(reply, { type: 'execute_result', taskIndex: task.index, exitCode: execResult.exitCode, durationMs: execResult.durationMs, timedOut: execResult.timedOut, stdoutPreview, mode: isSimulate ? 'simulate' : 'execute' });
+          ctx.options?.onExecuteResult?.({ taskIndex: task.index, exitCode: execResult.exitCode, durationMs: execResult.durationMs, timedOut: execResult.timedOut, stdoutPreview, mode: isSimulate ? 'simulate' : 'execute' });
+          if (isSimulate) {
+            sandboxOutput = execResult.timedOut ? `[SIMULATION TIMED OUT after ${timeoutMs/1000}s]\n${execResult.stdout ? `Partial output:\n${execResult.stdout}` : ''}`
+              : execResult.exitCode !== 0 ? `[SIMULATION ERROR — exit ${execResult.exitCode}]\n${execResult.stderr ? `Error:\n${execResult.stderr}\n` : ''}${execResult.stdout ? `Partial output:\n${execResult.stdout}` : ''}`
+              : (execResult.stdout || '[Simulation produced no output]') + (execResult.stderr ? `\n\n[warnings]\n${execResult.stderr}` : '');
+          } else {
+            const exitLabel = execResult.timedOut ? `TIMED OUT after ${timeoutMs/1000}s` : `EXIT CODE: ${execResult.exitCode}`;
+            sandboxOutput = `${exitLabel}\nDURATION: ${(execResult.durationMs/1000).toFixed(1)}s\n\n${execResult.stdout ? `STDOUT:\n${execResult.stdout}\n` : 'STDOUT:\n(empty)\n'}${execResult.stderr ? `\nSTDERR:\n${execResult.stderr}` : ''}`;
+            if (execResult.exitCode !== 0 && task.retryWithFix && attempt < maxAttempts) {
+              sendStatus(`[${task.index}/${total}] Execution failed — requesting fix…`);
+              retryContext = { attemptNumber: attempt, priorThinking: attemptResult.thinking, errorOutput: `\n\n<prior_task_output task="${task.title}" operation="execute">\n${sandboxOutput.slice(0,8_000)}\n</prior_task_output>\n\nThe script exited with a non-zero code. Fix the error in ${entrypoint} and rewrite it completely.` };
+              continue;
+            }
+          }
+        } catch (execErr) { sandboxOutput = `[${isSimulate ? 'Simulate' : 'Execute'} error: ${(execErr as Error).message}]`; }
+        attemptResult.output = sandboxOutput!; task.completedOutput = sandboxOutput!; break;
+      }
+
+      // ── audit ────────────────────────────────────────────────────────────────
+      if (task.operation === 'audit') {
+        const rawTarget = task.targetPath ?? task.targetFile ?? '';
+        if (!rawTarget) {
+          const errMsg = '[Audit task missing targetPath — cannot run]';
+          attemptResult.output = errMsg; task.completedOutput = errMsg; break;
+        }
+        let auditOutput: string;
+        if (ctx.options?.codeAuditFn) {
+          agentState.transition('executing', rawTarget, task.index, total);
+          sendStatus(`[${task.index}/${total}] Auditing ${rawTarget}…`);
+          try {
+            const result = await ctx.options.codeAuditFn(rawTarget, task.index, total);
+            this.sendEvent(reply, { type: 'execute_result', taskIndex: task.index, exitCode: result.exitCode, durationMs: result.durationMs, timedOut: false, stdoutPreview: result.stdoutPreview, mode: 'audit' });
+            ctx.options.onExecuteResult?.({ taskIndex: task.index, exitCode: result.exitCode, durationMs: result.durationMs, timedOut: false, stdoutPreview: result.stdoutPreview, mode: 'audit' });
+            auditOutput = result.output;
+          } catch (auditErr) { auditOutput = `[Audit error: ${(auditErr as Error).message}]`; }
+        } else {
+          const nodePath = await import('node:path');
+          const absTarget = nodePath.isAbsolute(rawTarget) ? rawTarget : nodePath.join(projectRoot, rawTarget);
+          try {
+            const { DatabaseManager: DM } = await import('../db/DatabaseManager.js');
+            const { SecurityStore } = await import('../db/SecurityStore.js');
+            const { runCodeAudit } = await import('../security/CodeAuditor.js');
+            const secStore = new SecurityStore(DM.getInstance());
+            await secStore.ensureTable();
+            const run = await secStore.createRun('code_audit');
+            agentState.transition('executing', rawTarget, task.index, total);
+            sendStatus(`[${task.index}/${total}] Auditing ${rawTarget}…`);
+            await runCodeAudit(secStore, run.id, absTarget);
+            const completed = await secStore.getRunById(run.id);
+            const findings = await secStore.getFindingsByRun(run.id);
+            const durationMs = Date.now() - (completed ? Date.parse(completed.started_at) : Date.now());
+            const findingPreview = findings.length > 0 ? findings[0].title.slice(0, 120) : 'No issues found';
+            this.sendEvent(reply, { type: 'execute_result', taskIndex: task.index, exitCode: findings.length > 0 ? 1 : 0, durationMs, timedOut: false, stdoutPreview: findingPreview, mode: 'audit' });
+            ctx.options?.onExecuteResult?.({ taskIndex: task.index, exitCode: findings.length > 0 ? 1 : 0, durationMs, timedOut: false, stdoutPreview: findingPreview, mode: 'audit' });
+            if (findings.length === 0) {
+              auditOutput = `[CODE AUDIT CLEAN — ${rawTarget}]\nNo security issues detected.`;
+            } else {
+              const bySeverity: Record<string, typeof findings> = {};
+              for (const f of findings) (bySeverity[f.severity] ??= []).push(f);
+              const lines: string[] = [`[CODE AUDIT — ${findings.length} finding${findings.length !== 1 ? 's' : ''} in ${rawTarget}]`, ''];
+              for (const sev of ['critical','high','medium','low','info'] as const) {
+                const group = bySeverity[sev]; if (!group?.length) continue;
+                lines.push(`${sev.toUpperCase()} (${group.length}):`);
+                for (const f of group) { lines.push(`  [${f.target ?? rawTarget}] ${f.title}`); if (f.detail) lines.push(`    ${f.detail}`); }
+                lines.push('');
+              }
+              if (completed?.seren_digest) lines.push('ANALYSIS:', completed.seren_digest);
+              auditOutput = lines.join('\n');
+            }
+          } catch (auditErr) { auditOutput = `[Audit error: ${(auditErr as Error).message}]`; }
+        }
+        attemptResult.output = auditOutput; task.completedOutput = auditOutput; break;
+      }
+
+      // ── Pagination ──────────────────────────────────────────────────────────
+      const PAGINATE_THRESHOLD = 1_000;
+      const PAGINATE_MAX_CONTINUATIONS = 6;
+      const continueWritingRe = /<continue_writing(?:\s+path="([^"]*)")?\s*\/>/;
+      let paginationCycles = 0;
+      while (paginationCycles < PAGINATE_MAX_CONTINUATIONS) {
+        const hitTokenLimit = attemptResult.finishReason === 'length';
+        const continueMatch = continueWritingRe.exec(attemptResult.output);
+        if (!hitTokenLimit && !continueMatch) break;
+        if (attemptResult.output.length < PAGINATE_THRESHOLD && !continueMatch) break;
+        paginationCycles++;
+        const targetPath = continueMatch?.[1] ?? '';
+        sendStatus(`[${task.index}/${total}] Continuing output (part ${paginationCycles + 1})…`);
+        const priorOutput = attemptResult.output.replace(continueWritingRe, '').trimEnd();
+        const continuationMessages = [
+          { role: 'system' as const, content: dispatch.systemPrompt },
+          ...dispatch.messages,
+          { role: 'assistant' as const, content: priorOutput },
+          { role: 'user' as const, content: targetPath
+            ? `Continue writing the file \`${targetPath}\` from exactly where you left off. Do not repeat any content already written. Continue seamlessly.`
+            : `You were cut off. Continue your response from exactly where you left off. Do not repeat any content already written. Continue seamlessly.` },
+        ];
+        const continued = await this.runSingleStream(reply, continuationMessages, taskId, attemptResult.thinking, sendEngineThinking, assistantMessageId);
+        if (!continued.output.trim()) break;
+        attemptResult.output = priorOutput + '\n' + continued.output;
+        attemptResult.finishReason = continued.finishReason;
+      }
+
+      // ── Parse tool calls ────────────────────────────────────────────────────
+      const parsed = this.toolParser.parse(attemptResult.output);
+      if (parsed.toolCalls.length === 0) { break; } // pure Q&A
+
+      // ── read_file → act cycle ───────────────────────────────────────────────
+      let currentOutput = attemptResult.output;
+      let currentParsed = parsed;
+      let readCycles = 0;
+      while (currentParsed.hasReadRequest && currentParsed.toolCalls.every(c => c.tool === 'read_file') && readCycles < LoopController.MAX_READ_CYCLES) {
+        readCycles++;
+        agentState.transition('reading', `files (${readCycles})`, task.index, total);
+        sendStatus(`[${task.index}/${total}] Reading files (${readCycles})…`);
+        const readResults = await toolExecutor.executeAll(currentParsed.toolCalls);
+        const readFeedback = readResults.map(r => r.success ? `<file_contents path="${r.path}">\n${r.content}\n</file_contents>` : `<file_error path="${r.path}">${r.error}</file_error>`).join('\n');
+        const continuationMessages = [
+          { role: 'system' as const, content: dispatch.systemPrompt },
+          ...dispatch.messages,
+          { role: 'assistant' as const, content: currentOutput },
+          { role: 'user' as const, content: `Here are the file contents you requested:\n\n${readFeedback}\n\nNow proceed with your changes.` },
+        ];
+        sendStatus(`[${task.index}/${total}] Engine continuing after file read…`);
+        const continued = await this.runSingleStream(reply, continuationMessages, taskId, attemptResult.thinking, sendEngineThinking, assistantMessageId);
+        currentOutput = continued.output;
+        currentParsed = this.toolParser.parse(currentOutput);
+      }
+
+      // ── Execute writes ──────────────────────────────────────────────────────
+      const writeCalls = currentParsed.toolCalls.filter(c => c.tool !== 'read_file');
+      if (writeCalls.length === 0) { break; }
+
+      const execDetail = writeCalls[0]?.path ? writeCalls[0].path.split('/').pop()! : `${writeCalls.length} ops`;
+      agentState.transition('executing', execDetail, task.index, total);
+      sendStatus(`[${task.index}/${total}] Executing ${writeCalls.length} operation(s)…`);
+      const toolResults = await toolExecutor.simulateAll(writeCalls) as StagedFileToolResult[];
+
+      for (const r of toolResults) {
+        if (r.stagedPath) {
+          const dir = r.stagedPath.substring(0, r.stagedPath.lastIndexOf('/'));
+          const stageRoot = dir.substring(0, dir.lastIndexOf('/'));
+          if (!stagingDirsToClean.includes(stageRoot)) stagingDirsToClean.push(stageRoot);
+        }
+      }
+
+      const failedOps = toolResults.filter(r => !r.success);
+      if (failedOps.length > 0) {
+        const errorSummary = failedOps.map(r => `${r.tool} ${r.path}: ${r.error}`).join('\n');
+        this.sendEvent(reply, { type: 'build_result', success: false, errors: errorSummary });
+        retryContext = { attemptNumber: attempt, priorThinking: attemptResult.thinking, errorOutput: `File operations failed:\n${errorSummary}` };
+        continue;
+      }
+
+      const writtenFiles = toolResults.filter(r => r.success && r.content && r.tool !== 'read_file' && r.tool !== 'generate_image');
+      await this.persistAndSend(reply, { type: 'patches_applied', count: writtenFiles.length, files: writtenFiles.map(r => r.path) }, assistantMessageId);
+
+      for (const r of writtenFiles) {
+        if (!allChangedFiles.includes(r.path)) allChangedFiles.push(r.path);
+        if (r.content) stagedContents.set(r.path, r.content);
+      }
+      for (const result of writtenFiles) {
+        if (result.content) {
+          await this.persistAndSend(reply, { type: 'file_panel', filename: result.path, language: result.path.split('.').pop() ?? 'text', code: result.content }, assistantMessageId);
+        }
+      }
+
+      // ── Syntax validation ───────────────────────────────────────────────────
+      let syntaxError: { filePath: string; result: { valid: false; error: string; line?: number } } | null = null;
+      for (const result of writtenFiles) {
+        if (!result.content) continue;
+        const validation = await syntaxValidator.validate(result.path, result.content);
+        if (!validation.valid) { syntaxError = { filePath: result.path, result: validation as { valid: false; error: string; line?: number } }; break; }
+      }
+      if (syntaxError) {
+        const errMsg = `Syntax error in ${syntaxError.filePath} at line ${syntaxError.result.line ?? '?'}: ${syntaxError.result.error}`;
+        this.sendEvent(reply, { type: 'build_result', success: false, errors: errMsg });
+        retryContext = { attemptNumber: attempt, priorThinking: attemptResult.thinking, errorOutput: errMsg };
+        continue;
+      }
+
+      // ── Build (only after last task) ─────────────────────────────────────────
+      const isLastTask = task.index === tasks.length;
+      if (!ctx.options?.skipBuild && isLastTask) {
+        const hasBuildableFiles = await this.workspaceHasBuildableFiles(projectRoot);
+        if (hasBuildableFiles) {
+          agentState.transition('building', buildCommand.slice(0, 20));
+          sendStatus('Running build…');
+          const buildResult = await buildRunner.run(buildCommand);
+          if (!buildResult.success && this.isNoInputsError(buildResult)) {
+            dbg('[LoopController] Build: no-inputs error — skipped');
+          } else if (!buildResult.success) {
+            this.sendEvent(reply, { type: 'build_result', success: false, errors: errorFormatter.formatBuildErrors(buildResult) });
+            if (attempt < maxAttempts) {
+              retryContext = { attemptNumber: attempt, priorThinking: attemptResult.thinking, errorOutput: errorFormatter.formatForRetry({ buildResult, attemptNumber: attempt }) };
+              continue;
+            }
+          } else {
+            this.sendEvent(reply, { type: 'build_result', success: true });
+          }
+        }
+      }
+
+      // File-writing task: return attempts here — review is caller's responsibility
+      // (either runTaskReviewPhase for SAYON tasks, or verifySeren for SEREN tasks)
+      break;
+    } // end attempt loop
+
+    return taskAttempts;
+  }
+
+  /**
+   * Run the SAYON review pass for a completed task.
+   * Called by executeTask (SAYON tasks) and verifySeren (SEREN tasks).
+   * Returns true if approved.
+   */
+  private async runTaskReviewPhase(
+    task: import('./TaskPlanner.js').Task,
+    taskAttempts: AttemptResult[],
+    taskStartFileCount: number,
+    total: number,
+    ctx: ParallelExecContext,
+  ): Promise<boolean> {
+    const { allChangedFiles, sendStatus, sendThinking, maxAttempts, composeInput, needsPlanning, taskLog, tasks, reply, assistantMessageId, agentState, taskId } = ctx;
+
+    // Non-file operations are auto-approved — no review needed
+    const lastAttempt = taskAttempts[taskAttempts.length - 1];
+    if (!lastAttempt) return false;
+
+    const writtenFileCount = allChangedFiles.length - taskStartFileCount;
+    if (writtenFileCount === 0) {
+      // Pure Q&A, browse, audit, execute, simulate, image_gen — no file review
+      lastAttempt.approved = true;
+      lastAttempt.reviewScore = 1.0;
+      return true;
+    }
+
+    sendStatus(`[${task.index}/${total}] Reviewing…`);
+    agentState.transition('reviewing', task.title.slice(0, 20), task.index, total);
+
+    const writtenFiles = allChangedFiles.slice(taskStartFileCount);
+    const changedSummary = writtenFiles.map(f => `modified ${f}`).join('\n');
+    const reviewOutput = writtenFiles.map(f => `File: ${f}\n---\n[staged content]\n---`).join('\n\n');
+
+    const review = await this.runReviewDispatch(task.prompt, reviewOutput, changedSummary, sendThinking);
+    lastAttempt.reviewScore = review.score;
+    lastAttempt.approved = review.decision === 'APPROVE';
+    this.sendEvent(reply, { type: 'review', score: review.score, decision: review.decision, guidance: review.guidance });
+    dbg(`[loop:review] task=${task.index} score=${review.score} decision=${review.decision}`);
+    return review.decision === 'APPROVE';
+  }
+
+  /**
+   * Generate a short rolling task log summary after a task completes.
+   */
+  private async generateTaskSummary(
+    task: import('./TaskPlanner.js').Task,
+    taskAttempts: AttemptResult[],
+    taskStartFileCount: number,
+    ctx: ParallelExecContext,
+  ): Promise<void> {
+    const { tasks, taskLog, allChangedFiles } = ctx;
+    if (tasks.length <= 1) return;
+    try {
+      const lastOutput = taskAttempts[taskAttempts.length - 1]?.output ?? '';
+      const taskChangedFiles = allChangedFiles.slice(taskStartFileCount).join(', ');
+      const summaryPrompt =
+        `You just completed a task. Write a single short sentence (max 25 words) ` +
+        `summarising exactly what was done. Be specific — mention file names and what changed. ` +
+        `Do NOT mention what still needs to be done. Plain prose only, no markdown.\n\n` +
+        `Task: ${task.title}\n` +
+        (taskChangedFiles ? `Files modified: ${taskChangedFiles}\n` : '') +
+        `Output excerpt: ${lastOutput.slice(0, 400)}`;
+      const summaryText = await coordinatorCall({
+        systemPrompt: '', messages: [{ role: 'user', content: summaryPrompt }],
+        maxTokens: 80, temperature: 0.1, mode: 'no_think',
+      });
+      taskLog.push(summaryText.trim().replace(/^["']|["']$/g, ''));
+      dbg(`[loop:tasklog] task=${task.index} summary="${taskLog[taskLog.length - 1]}"`);
+    } catch (err) {
+      taskLog.push(`${task.title} completed.`);
+      console.warn('[LoopController] Task summary generation failed (non-fatal):', err);
+    }
+  }
+
+  /**
+   * Inject completed task output into downstream tasks' prompts.
+   */
+  private injectOutputRequiredBy(
+    task: import('./TaskPlanner.js').Task,
+    taskAttempts: AttemptResult[],
+    tasks: import('./TaskPlanner.js').Task[],
+  ): void {
+    const taskOutput = taskAttempts[taskAttempts.length - 1]?.output ?? '';
+    task.completedOutput = taskOutput;
+    if (!task.outputRequiredBy?.length || !taskOutput.trim()) return;
+    for (const targetIdx of task.outputRequiredBy) {
+      const targetTask = tasks.find(t => t.index === targetIdx);
+      if (targetTask) {
+        targetTask.prompt += `\n\n<prior_task_output from_task="${task.index}" title="${task.title}">\n${taskOutput.slice(0, 12_000)}\n</prior_task_output>\n`;
+        dbg(`[loop:inject] task ${task.index} output → task ${targetIdx} prompt (${taskOutput.length} chars)`);
+      }
     }
   }
 
@@ -1990,6 +1971,9 @@ export class LoopController {
 
     let stream: import('openai/streaming').Stream<import('openai/resources').ChatCompletionChunk> | null = null;
     let rawStream: AsyncGenerator<Record<string, unknown>> | null = null;
+
+    // WeClone ready-guard: if seren is restarting after a model swap, wait.
+    { const _s = getServerStatus().seren.state; if (_s === 'starting' || _s === 'stopped') await awaitServerReady('seren'); }
 
     if (useRawFetch) {
       const baseURL = ((engineClient as unknown as { baseURL?: string }).baseURL ?? 'http://127.0.0.1:52627/v1').replace(/\/$/, '');

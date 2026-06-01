@@ -8,7 +8,7 @@
  *   4. Triggers a rescan of the affected library so the file is indexed.
  *
  * Library → service mapping:
- *   photos    → Meridian   ~/.phobos/media/photos/<YYYY>/<MM>/
+ *   photos    → Meridian   ~/.phobos/media/meridian/{userId}/{deviceName}/{albumName}/
  *   music     → Polaris    <getLibraryPath()>/<artist|unsorted>/
  *   documents → Kavita     <defaultDocsPath()>/Uploaded/
  *   movies    → Jellyfin   <defaultMediaPath()>/Uploaded/
@@ -34,10 +34,13 @@ import type { SyncLibrary } from '../routes/sync.js';
 export interface DispatchPayload {
   library:     SyncLibrary;
   filename:    string;
+  albumName:   string;   // device album/folder name — mirrored directly on disk
   contentHash: string;
-  takenAt:     string | null;  // ISO-8601 or null
+  takenAt:     string | null;  // ISO-8601 or null — stored in manifest only
   sizeBytes:   number;
   deviceId:    string;
+  userId:      string;    // provisioned username — determines landing folder
+  deviceName:  string;    // device display name — sub-bucket under userId
   buffer:      Buffer;
 }
 
@@ -67,23 +70,7 @@ export class UploadDispatcher {
       fs.mkdirSync(destDir, { recursive: true });
       fs.writeFileSync(destPath, payload.buffer);
 
-      // Schema columns: content_hash, device_id, dest_path, file_size, taken_at, synced_at
-      // PRIMARY KEY is (content_hash, device_id) — dedup is per-device.
-      await this._db.execQuery(
-        `INSERT INTO phobos_sync_manifest
-           (content_hash, device_id, dest_path, file_size, taken_at)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT (content_hash, device_id) DO NOTHING`,
-        [
-          payload.contentHash,
-          payload.deviceId,
-          destPath,
-          payload.sizeBytes,
-          payload.takenAt ?? null,
-        ],
-      );
-
-      this._triggerRescan(payload.library, destPath);
+      this._triggerRescan(payload.library, destPath, payload.userId);
       return destPath;
     } catch (err: unknown) {
       console.error('[UploadDispatcher] dispatch error:', err);
@@ -98,7 +85,7 @@ export class UploadDispatcher {
 
     switch (payload.library) {
       case 'photos':
-        return path.join(this._photosRoot(payload.takenAt), safe);
+        return path.join(this._photosRoot(payload.userId, payload.deviceName, payload.albumName), safe);
 
       case 'music':
         return path.join(getPolarisLibraryPath(), 'Uploaded', safe);
@@ -112,19 +99,16 @@ export class UploadDispatcher {
   }
 
   /**
-   * Bucket photos under <phobosLibPath>/<YYYY>/<MM>/.
-   * Falls back to <phobosLibPath>/Unsorted/ when takenAt is unavailable.
+   * Mirror the device's album/folder structure on disk:
+   *   ~/.phobos/media/meridian/{userId}/{deviceName}/{albumName}/
+   * Falls back to Unsorted/ when albumName is empty.
    */
-  private _photosRoot(takenAt: string | null): string {
-    if (takenAt) {
-      const d = new Date(takenAt);
-      if (!isNaN(d.getTime())) {
-        const yyyy = String(d.getUTCFullYear());
-        const mm   = String(d.getUTCMonth() + 1).padStart(2, '0');
-        return path.join(this._config.phobosLibPath, yyyy, mm);
-      }
-    }
-    return path.join(this._config.phobosLibPath, 'Unsorted');
+  private _photosRoot(userId: string, deviceName: string, albumName: string): string {
+    const safeDevice = deviceName.replace(/[^a-zA-Z0-9_\-]/g, '_').slice(0, 64);
+    const safeAlbum  = albumName.trim().length > 0
+      ? sanitizeFilename(albumName)
+      : 'Unsorted';
+    return path.join(os.homedir(), '.phobos', 'media', 'meridian', userId, safeDevice, safeAlbum);
   }
 
   /**
@@ -132,24 +116,23 @@ export class UploadDispatcher {
    * Photos use Meridian's own scanner; the others trigger their service managers.
    * All rescans are fire-and-forget — upload response does not wait on them.
    */
-  private _triggerRescan(library: SyncLibrary, destPath: string): void {
+  private _triggerRescan(library: SyncLibrary, destPath: string, userId: string): void {
     if (library === 'photos') {
-      // Build a minimal MeridianLibrary shape so scanner.scanPath can accept it.
-      const libPath = this._config.phobosLibPath;
+      const libPath = path.join(os.homedir(), '.phobos', 'media', 'meridian', userId);
       const libId   = crypto
         .createHash('sha256')
-        .update(libPath + this._config.userId)
+        .update(libPath + userId)
         .digest('hex')
         .slice(0, 16);
 
       const lib = {
         id:         libId,
         path:       libPath,
-        label:      'PHOBOS Photos',
+        label:      `${userId} Photos`,
         enabled:    true,
         lastScanAt: null,
         fileCount:  0,
-        userId:     this._config.userId,
+        userId,
         createdAt:  new Date().toISOString(),
       };
 
@@ -159,9 +142,6 @@ export class UploadDispatcher {
       return;
     }
 
-    // For non-photos libraries we call the service manager's triggerScan.
-    // Imports are dynamic so we don't take a startup dep on services that may
-    // not be running.
     if (library === 'music') {
       import('../../services/PolarisManager.js').then(m => m.triggerScan()).catch(() => {});
     } else if (library === 'documents') {

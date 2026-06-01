@@ -44,9 +44,9 @@ function fmtTime(iso: string | null): string {
 
 function stateDotClass(state: ConnectionState): string {
   switch (state) {
-    case 'connected':      return 'bg-phobos-green animate-pulse-dot';
+    case 'connected':      return 'bg-phob-green animate-pulse-dot';
     case 'connecting':
-    case 'authenticating': return 'bg-phobos-amber animate-pulse';
+    case 'authenticating': return 'bg-phob-amber animate-pulse';
     case 'error':          return 'bg-destructive';
     default:               return 'bg-muted-foreground/30';
   }
@@ -204,34 +204,34 @@ export function HomeAssistantPanel({ onClose }: Props) {
   const isConnecting   = status?.state === 'connecting' || status?.state === 'authenticating';
   const exposedDomains = status?.exposed_domains ?? ALL_DOMAINS;
 
-  const INPUT = 'w-full bg-transparent border border-border/40 focus:border-phobos-green/50 rounded-sm px-3 py-2 text-sm font-mono text-foreground placeholder:text-muted-foreground/30 focus:outline-none transition-colors';
-  const LABEL = 'block text-xs font-terminal uppercase tracking-widest text-muted-foreground/60 mb-1.5';
+  const INPUT = 'w-full bg-transparent border border-phob-green/20 focus:border-phob-green/55  px-3 py-2 text-sm font-mono text-phob-white/85 placeholder:text-phob-steel/25 focus:outline-none transition-colors';
+  const LABEL = 'block text-xs font-terminal uppercase tracking-widest text-phob-green/45 mb-1.5';
 
   return (
     <div
-      className="phobos-ha-panel fixed z-50 w-[780px] bg-card border border-phobos-green/20 rounded-sm shadow-[0_0_40px_rgba(0,255,65,0.06)] flex flex-col select-none"
+      className="phobos-ha-panel fixed z-50 w-[780px] bg-[#0f0f0a] border border-phob-green/30 phob-corners phob-corners-full  shadow-[0_0_24px_rgba(232,66,10,0.08)] flex flex-col select-none"
       style={{ left: pos.x, top: pos.y }}
     >
       {/* Title bar */}
       <div
-        className="flex items-center justify-between px-5 py-3 border-b border-border/40 cursor-move"
+        className="flex items-center justify-between px-5 py-3 phob-header cursor-move border-b border-phob-green/25"
         onMouseDown={onMouseDown}
       >
         <div className="flex items-center gap-3">
-          <Home className="w-5 h-5 text-phobos-green/60" />
-          <span className="text-base font-terminal text-phobos-green/80 tracking-wider uppercase">
+          <Home className="w-5 h-5 text-phob-green/60" />
+          <span className="text-base font-terminal text-phob-green/80 tracking-wider uppercase">
             Home Assistant
           </span>
           {status && (
             <div className="flex items-center gap-2 ml-2">
               <span className={`w-2 h-2 rounded-full shrink-0 ${stateDotClass(status.state)}`} />
-              <span className="text-xs font-mono text-muted-foreground/60">
+              <span className="text-xs font-mono text-phob-steel/50">
                 {stateLabel(status.state)}
               </span>
             </div>
           )}
         </div>
-        <button onClick={onClose} className="p-1.5 text-muted-foreground/40 hover:text-foreground transition-colors">
+        <button onClick={onClose} className="p-1.5 text-phob-steel/40 hover:text-foreground transition-colors">
           <X className="w-4 h-4" />
         </button>
       </div>
@@ -239,12 +239,12 @@ export function HomeAssistantPanel({ onClose }: Props) {
       <div className="flex flex-col overflow-hidden" style={{ maxHeight: 'calc(100vh - 120px)' }}>
         {loading ? (
           <div className="flex items-center justify-center py-16">
-            <Loader2 className="w-6 h-6 text-phobos-green/40 animate-spin" />
+            <Loader2 className="w-6 h-6 text-phob-green/40 animate-spin" />
           </div>
         ) : (
           <>
             {/* Connection form */}
-            <div className="px-5 py-4 border-b border-border/30 space-y-4">
+            <div className="px-5 py-4 border-b border-phob-green/15 space-y-4">
               <div>
                 <label className={LABEL}>HA URL</label>
                 <input
@@ -270,7 +270,7 @@ export function HomeAssistantPanel({ onClose }: Props) {
                     />
                     <button
                       onClick={() => setTokenVisible(v => !v)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-mono text-muted-foreground/40 hover:text-muted-foreground/70 transition-colors"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-mono text-phob-steel/40 hover:text-phob-white/70 transition-colors"
                     >
                       {tokenVisible ? 'HIDE' : 'SHOW'}
                     </button>
@@ -278,7 +278,7 @@ export function HomeAssistantPanel({ onClose }: Props) {
                   <button
                     onClick={handleConnect}
                     disabled={saving || isConnecting}
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-terminal uppercase tracking-widest rounded-sm border border-phobos-green/40 text-phobos-green/80 hover:text-phobos-green hover:border-phobos-green/60 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="flex items-center gap-2 px-4 py-2 text-sm font-terminal uppercase tracking-widest  border border-phob-green/40 text-phob-green/80 hover:text-phob-green hover:border-phob-green/60 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlugZap className="w-4 h-4" />}
                     {isConnected ? 'Reconnect' : 'Connect'}
@@ -287,22 +287,22 @@ export function HomeAssistantPanel({ onClose }: Props) {
                     <button
                       onClick={handleDisconnect}
                       disabled={disconnecting}
-                      className="flex items-center gap-2 px-4 py-2 text-sm font-terminal uppercase tracking-widest rounded-sm border border-destructive/30 text-destructive/60 hover:text-destructive hover:border-destructive/50 transition-all disabled:opacity-40"
+                      className="flex items-center gap-2 px-4 py-2 text-sm font-terminal uppercase tracking-widest  border border-destructive/30 text-destructive/60 hover:text-destructive hover:border-destructive/50 transition-all disabled:opacity-40"
                     >
                       {disconnecting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plug className="w-4 h-4" />}
                       Disconnect
                     </button>
                   )}
                 </div>
-                <p className="text-xs font-mono text-muted-foreground/35 mt-2 leading-relaxed">
+                <p className="text-xs font-mono text-phob-steel/35 mt-2 leading-relaxed">
                   Generate a Long-Lived Token under{' '}
-                  <span className="text-muted-foreground/55">Profile &rarr; Security &rarr; Long-Lived Access Tokens</span>.
+                  <span className="text-phob-steel/50">Profile &rarr; Security &rarr; Long-Lived Access Tokens</span>.
                   Stored locally, never transmitted outside your network.
                 </p>
               </div>
 
               {error && (
-                <div className="text-sm font-mono text-destructive/90 bg-destructive/5 border border-destructive/20 rounded-sm px-3 py-2">
+                <div className="text-sm font-mono text-destructive/90 bg-destructive/5 border border-destructive/20  px-3 py-2">
                   {error}
                 </div>
               )}
@@ -310,21 +310,21 @@ export function HomeAssistantPanel({ onClose }: Props) {
 
             {/* Status bar */}
             {status && (
-              <div className="flex items-center gap-5 px-5 py-2.5 border-b border-border/20 text-xs font-mono text-muted-foreground/50">
+              <div className="flex items-center gap-5 px-5 py-2.5 border-b border-phob-green/12 text-xs font-mono text-phob-steel/45">
                 <span>
                   {isConnected
-                    ? <><Wifi className="w-3.5 h-3.5 inline mr-1.5 text-phobos-green/60" />{status.entityCount} entities</>
+                    ? <><Wifi className="w-3.5 h-3.5 inline mr-1.5 text-phob-green/60" />{status.entityCount} entities</>
                     : <><WifiOff className="w-3.5 h-3.5 inline mr-1.5" />No connection</>}
                 </span>
-                {status.ha_url && <span className="truncate text-muted-foreground/30">{status.ha_url}</span>}
+                {status.ha_url && <span className="truncate text-phob-steel/30">{status.ha_url}</span>}
                 <span className="ml-auto shrink-0">Last connected: {fmtTime(status.last_connected_at)}</span>
               </div>
             )}
 
             {/* Domain filter chips */}
-            <div className="px-5 py-4 border-b border-border/20">
+            <div className="px-5 py-4 border-b border-phob-green/12">
               <div className="flex items-center gap-3 mb-3">
-                <span className="text-xs font-terminal text-muted-foreground/50 uppercase tracking-widest">
+                <span className="text-xs font-terminal text-phob-steel/45 uppercase tracking-widest">
                   AI Context Domains
                 </span>
                 <span className="text-xs font-mono text-muted-foreground/30">
@@ -338,10 +338,10 @@ export function HomeAssistantPanel({ onClose }: Props) {
                     <button
                       key={domain}
                       onClick={() => handleToggleDomain(domain)}
-                      className={`px-3 py-1 text-xs font-mono rounded-sm border transition-all ${
+                      className={`px-3 py-1 text-xs font-mono  border transition-all ${
                         active
-                          ? 'border-phobos-green/40 text-phobos-green/80 bg-phobos-green/5 hover:border-phobos-green/60'
-                          : 'border-border/25 text-muted-foreground/35 hover:border-border/50 hover:text-muted-foreground/55'
+                          ? 'border-phob-green/40 text-phob-green/80 bg-phob-green/5 hover:border-phob-green/60'
+                          : 'border-border/25 text-muted-foreground/35 hover:border-border/50 hover:text-phob-steel/50'
                       }`}
                     >
                       {domain}
@@ -353,8 +353,8 @@ export function HomeAssistantPanel({ onClose }: Props) {
 
             {/* Live entity list */}
             <div className="flex flex-col flex-1 min-h-0">
-              <div className="flex items-center justify-between px-5 py-2.5 border-b border-border/20">
-                <span className="text-xs font-terminal text-muted-foreground/50 uppercase tracking-widest">
+              <div className="flex items-center justify-between px-5 py-2.5 border-b border-phob-green/12">
+                <span className="text-xs font-terminal text-phob-steel/45 uppercase tracking-widest">
                   Live State
                 </span>
                 <button
@@ -388,10 +388,10 @@ export function HomeAssistantPanel({ onClose }: Props) {
 
             {/* Watch Results */}
             <div className="flex flex-col border-t border-border/20">
-              <div className="flex items-center justify-between px-5 py-2.5 border-b border-border/20">
+              <div className="flex items-center justify-between px-5 py-2.5 border-b border-phob-green/12">
                 <div className="flex items-center gap-2">
-                  <Eye className="w-3.5 h-3.5 text-muted-foreground/40" />
-                  <span className="text-xs font-terminal text-muted-foreground/50 uppercase tracking-widest">
+                  <Eye className="w-3.5 h-3.5 text-phob-steel/40" />
+                  <span className="text-xs font-terminal text-phob-steel/45 uppercase tracking-widest">
                     Watch Duty
                   </span>
                   <span className="text-xs font-mono text-muted-foreground/30">
@@ -425,8 +425,8 @@ export function HomeAssistantPanel({ onClose }: Props) {
                         : <ChevronRight className="w-3 h-3 mt-0.5 shrink-0 text-muted-foreground/30" />
                       }
                       <span className={`w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 ${
-                        run.status === 'success' ? 'bg-phobos-green/60' :
-                        run.status === 'running' ? 'bg-phobos-amber animate-pulse' :
+                        run.status === 'success' ? 'bg-phob-green/60' :
+                        run.status === 'running' ? 'bg-phob-amber animate-pulse' :
                         'bg-destructive/60'
                       }`} />
                       <div className="flex-1 min-w-0">
@@ -434,9 +434,9 @@ export function HomeAssistantPanel({ onClose }: Props) {
                           <span className="text-xs font-mono text-muted-foreground/60 truncate">
                             {run.prompt.length > 60 ? run.prompt.slice(0, 60) + '…' : run.prompt}
                           </span>
-                          <span className={`text-[10px] font-terminal uppercase tracking-widest shrink-0 px-1.5 py-0.5 rounded-sm border ${
+                          <span className={`text-[10px] font-terminal uppercase tracking-widest shrink-0 px-1.5 py-0.5  border ${
                             run.origin === 'copilot'
-                              ? 'border-phobos-green/20 text-phobos-green/40'
+                              ? 'border-phob-green/20 text-phob-green/40'
                               : 'border-border/30 text-muted-foreground/35'
                           }`}>
                             {run.origin}
@@ -449,9 +449,9 @@ export function HomeAssistantPanel({ onClose }: Props) {
                       </div>
                     </button>
                     {expandedRun === run.id && (
-                      <div className="ml-6 mb-2 px-3 py-2 bg-white/[0.02] border border-border/20 rounded-sm">
+                      <div className="ml-6 mb-2 px-3 py-2 bg-white/[0.02] border border-border/20 ">
                         {run.status === 'running' && (
-                          <div className="flex items-center gap-2 text-xs font-mono text-phobos-amber/70">
+                          <div className="flex items-center gap-2 text-xs font-mono text-phob-amber/70">
                             <Loader2 className="w-3 h-3 animate-spin" />
                             Running…
                           </div>

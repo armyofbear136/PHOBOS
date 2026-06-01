@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { userDir, getActiveUser } from '../db/DatabaseManager.js';
+import { userDir } from '../db/DatabaseManager.js';
 
 // ── Skill scope ──────────────────────────────────────────────────────────────
 // 'sayon'  — injected into SAYON prompts only
@@ -368,10 +368,10 @@ export function getReserveCompactList(): string {
  * Used by LoopController when SEREN emits RESERVE_SKILL_REQUEST.
  * Returns a formatted <active_skills> block ready for prompt injection.
  */
-export function getSkillInstructions(skillIds: string[]): string {
+export function getSkillInstructions(skillIds: string[], username = 'owner'): string {
   if (!_registryLoaded || _registry.length === 0) {
     // System registry not loaded — try resolving entirely from user skills
-    return getUserSkillInstructions(skillIds);
+    return getUserSkillInstructions(skillIds, username);
   }
 
   const systemParts: string[] = [];
@@ -395,7 +395,7 @@ ${content}
 
   // Resolve any IDs not found in the system registry against user skills
   const userBlock = unresolvedIds.length > 0
-    ? getUserSkillInstructions(unresolvedIds)
+    ? getUserSkillInstructions(unresolvedIds, username)
     : '';
 
   const systemBlock = systemParts.length > 0
@@ -457,7 +457,7 @@ export async function invokeSkill(
  * Formatted identically to getPrimeTriggerList() so SEREN treats them uniformly.
  * Returns an empty string when no enabled user skills exist.
  */
-export function getUserSkillTriggerList(): string {
+export function getUserSkillTriggerList(username = 'owner'): string {
   // Dynamic import — UserSkillManager is a disk store, not loaded at startup.
   // We call listUserSkills() synchronously via a cached snapshot updated on each
   // scanOnStartup() / write operation. To avoid making this function async
@@ -467,7 +467,7 @@ export function getUserSkillTriggerList(): string {
     const path = require('node:path') as typeof import('path');
     const fs   = require('node:fs')   as typeof import('fs');
 
-    const registryPath = path.join(userDir(getActiveUser()), 'skills', '_registry.json');
+    const registryPath = path.join(userDir(username), 'skills', '_registry.json');
     if (!fs.existsSync(registryPath)) return '';
 
     const raw = fs.readFileSync(registryPath, 'utf-8');
@@ -500,14 +500,14 @@ export function getUserSkillTriggerList(): string {
  * Returns a formatted <active_skills> block, or empty string if none found.
  * Merges with system skill instructions — callers pass all requested IDs together.
  */
-export function getUserSkillInstructions(skillIds: string[]): string {
+export function getUserSkillInstructions(skillIds: string[], username = 'owner'): string {
   if (skillIds.length === 0) return '';
 
   try {
     const path = require('node:path') as typeof import('path');
     const fs   = require('node:fs')   as typeof import('fs');
 
-    const skillsDir = path.join(userDir(getActiveUser()), 'skills');
+    const skillsDir = path.join(userDir(username), 'skills');
     const parts: string[] = [];
 
     for (const id of skillIds) {

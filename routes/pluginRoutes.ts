@@ -19,6 +19,7 @@ import * as os from 'os';
 import AdmZip from 'adm-zip';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 import { PluginStore } from '../db/PluginStore.js';
+import { OwnershipError, NotFoundError } from '../db/errors.js';
 import type { PluginRecord } from '../phobos/PluginTypes.js';
 
 const TRAINING_DIR = path.join(os.homedir(), '.phobos', 'plugin-training');
@@ -193,15 +194,18 @@ export async function registerPluginRoutes(
   );
 
   // ── Delete ────────────────────────────────────────────────────────────────
-  // No auth on delete — it's a local operation. The file is on the user's machine.
+  // Ownership is enforced inside PluginStore.remove().
+  // OwnershipError → 403, NotFoundError → 404.
 
   fastify.delete<{ Params: { id: string } }>('/api/phobos/plugins/:id', async (req, reply) => {
-    const r = await store.get(req.params.id);
-    if (!r) return reply.status(404).send({ error: 'Plugin not found' });
-    try { if (fs.existsSync(r.archive_path)) fs.unlinkSync(r.archive_path); }
-    catch (e) { console.warn(`[PluginRoutes] Could not delete ${r.archive_path}:`, e); }
-    await store.remove(r.id);
-    return reply.send({ ok: true, deleted: r.id });
+    try {
+      await store.remove(req.params.id, req.phobosUser);
+      return reply.send({ ok: true, deleted: req.params.id });
+    } catch (e) {
+      if (e instanceof OwnershipError) return reply.status(403).send({ error: e.message });
+      if (e instanceof NotFoundError)  return reply.status(404).send({ error: e.message });
+      throw e;
+    }
   });
 
   // ── Upload (binary, one file per request) ────────────────────────────────

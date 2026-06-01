@@ -116,6 +116,10 @@ export interface CartridgeRecord {
   is_local_author:     boolean;
   has_license_unlock:  boolean;
   is_protected:        boolean;   // false when using default password (unprotected)
+  /** 'system' — visible to all users; 'user' — private to owner_username */
+  scope:               'system' | 'user';
+  /** username that installed or trained this cartridge */
+  owner_username:      string;
   installed_at:        string;
 }
 

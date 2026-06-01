@@ -1891,6 +1891,7 @@ export class WorldScene extends Phaser.Scene {
         this.add.image(x, y, 'moon-tiles', 7)
           .setDepth(3).setOrigin(0.5, 0.5).setTint(BRIDGE_TINT);
         tw.registerExplorationTile(bx, by);
+        tw.unregisterBlocked(bx, by);
       }
     }
     for (let by = -1; by >= EXZONE_ENTRY_TY; by--) {
@@ -2024,7 +2025,7 @@ export class WorldScene extends Phaser.Scene {
   private _spawnRoom(room: RoomInstance): void {
     const tw   = TileWorld.getInstance();
     const ezm  = ExplorationZoneManager.getInstance();
-    const tint = room.def.zone_act === 2 ? 0x4a4858 : 0x3a4060;
+    const tint = room.def.type === 'boss' ? 0x2a1010 : (room.def.zone_act === 2 ? 0x4a4858 : 0x3a4060);
 
     // Ground tiles
     const worldTiles: Array<{ tx: number; ty: number }> = [];
@@ -2035,17 +2036,78 @@ export class WorldScene extends Phaser.Scene {
       this.add.image(x, y, 'moon-tiles', t.frame)
         .setDepth(1).setOrigin(0.5, 0.5).setTint(tint);
       tw.registerExplorationTile(wtx, wty);
+      tw.unregisterBlocked(wtx, wty);  // floor tile always clears any prior blocked status at this position
       worldTiles.push({ tx: wtx, ty: wty });
     }
     ezm.registerChunkTiles(worldTiles);
 
-    // Structure tiles
+    // Structure tiles — skip any that fall within the 3-wide corridor strip of a
+    // connection slot. Those positions must be visually clear for the passage.
     for (const s of room.def.structures) {
       const wtx = s.tx + room.worldOffsetTx;
       const wty = s.ty + room.worldOffsetTy;
+      const inSlotStrip = room.def.connections.some(c => {
+        const cwx = c.tx + room.worldOffsetTx;
+        const cwy = c.ty + room.worldOffsetTy;
+        if (c.edge === 'N' || c.edge === 'S') {
+          return wty === cwy && Math.abs(wtx - cwx) <= 1;
+        } else {
+          return wtx === cwx && Math.abs(wty - cwy) <= 1;
+        }
+      }) || (room.seamStrips ?? []).some(ss => {
+        if (ss.edge === 'N' || ss.edge === 'S') {
+          return wty === ss.worldTy && Math.abs(wtx - ss.worldTx) <= 1;
+        } else {
+          return wtx === ss.worldTx && Math.abs(wty - ss.worldTy) <= 1;
+        }
+      });
+      if (inSlotStrip) continue;
       this.placeStructureTile(wtx, wty, s.frame, s.tint, s.depth);
       if (s.blocked) {
         tw.registerBlocked(wtx, wty);
+      }
+    }
+
+    // Doorframe visuals — connection slots + seam strips both get glow thresholds.
+    const DOOR_GLOW_ALPHA = 0.55;
+    const glowPoints = [
+      ...room.def.connections.map(c => ({
+        wtx: c.tx + room.worldOffsetTx,
+        wty: c.ty + room.worldOffsetTy,
+        edge: c.edge,
+      })),
+      ...(room.seamStrips ?? []).map(ss => ({
+        wtx: ss.worldTx,
+        wty: ss.worldTy,
+        edge: ss.edge,
+      })),
+    ];
+    for (const { wtx: slotWtx, wty: slotWty, edge } of glowPoints) {
+
+      if (edge === 'N' || edge === 'S') {
+        for (let dx = -1; dx <= 1; dx++) {
+          const { x, y } = this.tileToScreen(slotWtx + dx, slotWty);
+          const rail = this.add.rectangle(x, y - 1, 10, 3, 0x22c5c5, DOOR_GLOW_ALPHA)
+            .setDepth(6);
+          this.tweens.add({
+            targets: rail,
+            alpha: { from: DOOR_GLOW_ALPHA * 0.35, to: DOOR_GLOW_ALPHA },
+            duration: 1800, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+            delay: (dx + 1) * 130,
+          });
+        }
+      } else {
+        for (let dy = -1; dy <= 1; dy++) {
+          const { x, y } = this.tileToScreen(slotWtx, slotWty + dy);
+          const rail = this.add.rectangle(x, y - 1, 3, 10, 0x22c5c5, DOOR_GLOW_ALPHA)
+            .setDepth(6);
+          this.tweens.add({
+            targets: rail,
+            alpha: { from: DOOR_GLOW_ALPHA * 0.35, to: DOOR_GLOW_ALPHA },
+            duration: 1800, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+            delay: (dy + 1) * 130,
+          });
+        }
       }
     }
   }
@@ -2064,6 +2126,7 @@ export class WorldScene extends Phaser.Scene {
       this.add.image(x, y, 'moon-tiles', t.frame)
         .setDepth(3).setOrigin(0.5, 0.5).setTint(corridor.tint);
       tw.registerExplorationTile(t.tx, t.ty);
+      tw.unregisterBlocked(t.tx, t.ty);  // corridor floor always overrides room wall blocked status
       worldTiles.push({ tx: t.tx, ty: t.ty });
     }
     ezm.registerChunkTiles(worldTiles);
@@ -2111,16 +2174,59 @@ export class WorldScene extends Phaser.Scene {
   private _spawnZoneGraph(graph: ZoneGraph): void {
     const tw = TileWorld.getInstance();
 
+    // Rooms first — all regions, all rooms. Establishes floor tiles and blocked structures.
     for (const region of graph.regions) {
       for (const room of region.rooms) {
         this._spawnRoom(room);
       }
+    }
+
+    // Corridors second — all regions, all corridors. unregisterBlocked runs after all
+    // room structure tiles are placed, so corridor floors always win over room walls.
+    for (const region of graph.regions) {
       for (const corridor of region.corridors) {
         this._spawnRoomCorridor(corridor);
       }
     }
 
-    // Boss barrier — placed at the north edge of the last boss room
+    // Final pass: unblock every zone floor tile, then re-block interior wall structures.
+    // Unblocking all zone tiles first guarantees corridor-accessible seam positions
+    // (including inter-region direct adjacency tiles) are never blocked by room walls.
+    const allZoneTiles = ExplorationZoneManager.getInstance().getZoneTiles();
+    for (const t of allZoneTiles) {
+      tw.unregisterBlocked(t.tx, t.ty);
+    }
+    // Re-block structure tiles — excluding the 3-wide strip around every connection slot.
+    // This preserves wall collision while keeping all corridor entry/exit tiles walkable.
+    for (const region of graph.regions) {
+      for (const room of region.rooms) {
+        for (const s of room.def.structures) {
+          if (!s.blocked) continue;
+          const wtx = s.tx + room.worldOffsetTx;
+          const wty = s.ty + room.worldOffsetTy;
+          // Never re-block the north or south face rows of any room.
+          // These rows are always potential corridor-connection faces — seam tiles,
+          // slot strips, and inter-region adjacency all land here. Interior walls
+          // (pillars, columns, dividers) are always at local ty > 0 and ty < size.h-1.
+          const localTy = s.ty;
+          const onFaceRow = localTy === 0 || localTy === room.def.size.h - 1;
+          if (onFaceRow) continue;
+
+          const isNearSlot = room.def.connections.some(c => {
+            const cwx = c.tx + room.worldOffsetTx;
+            const cwy = c.ty + room.worldOffsetTy;
+            if (c.edge === 'N' || c.edge === 'S') {
+              return wty === cwy && Math.abs(wtx - cwx) <= 1;
+            } else {
+              return wtx === cwx && Math.abs(wty - cwy) <= 1;
+            }
+          });
+          if (!isNearSlot) {
+            tw.registerBlocked(wtx, wty);
+          }
+        }
+      }
+    }
     if (graph.bossTile) {
       this._bossBarrierTile = graph.bossTile;
       this._spawnBossBarrier(graph.bossTile.tx, graph.bossTile.ty);
@@ -2785,6 +2891,10 @@ export class WorldScene extends Phaser.Scene {
       const tw_       = TileWorld.getInstance();
       const blocked_  = tw_.isBlockedTile(tile.tx, tile.ty);
       const walkable_ = tw_.isWalkable(world.x, world.y);
+      const scene_    = WorldScene._instance;
+      const px        = scene_?.player?.x ?? 0;
+      const py        = scene_?.player?.y ?? 0;
+      const pTile     = tw_.worldToTile(px, py);
       WorldScene._debugCb?.({
         screenX: Math.round(e.clientX), screenY: Math.round(e.clientY),
         worldX:  Math.round(world.x),   worldY:  Math.round(world.y),
@@ -2797,6 +2907,10 @@ export class WorldScene extends Phaser.Scene {
         shopX:   Math.round(shop.x),    shopY:   Math.round(shop.y),
         isBlocked: blocked_,
         walkable:  walkable_,
+        playerWorldX: Math.round(px),   playerWorldY: Math.round(py),
+        playerTileX:  pTile.tx,         playerTileY:  pTile.ty,
+        playerBlocked:  tw_.isBlockedTile(pTile.tx, pTile.ty),
+        playerWalkable: tw_.isWalkable(px, py),
       });
     };
     window.addEventListener('mousemove', WorldScene._debugMoveHandler, { passive: true });
@@ -2951,5 +3065,10 @@ export namespace WorldScene {
     shopX:   number; shopY:   number;   // projected viewport coords of tile (19,14) = SHOP
     isBlocked: boolean;                 // whether the hovered tile is in the blocked set
     walkable:  boolean;                 // full isWalkable result for the hovered tile
+    // Player character position
+    playerWorldX: number; playerWorldY: number;
+    playerTileX:  number; playerTileY:  number;
+    playerBlocked: boolean;
+    playerWalkable: boolean;
   }
 }

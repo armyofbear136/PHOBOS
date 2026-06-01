@@ -5,7 +5,10 @@ import { ThreadStore } from '../db/ThreadStore.js';
 import { CopilotMemoryStore } from '../db/CopilotMemoryStore.js';
 import { CopilotRelationshipStore } from '../db/CopilotRelationshipStore.js';
 import { CopilotIndex } from '../context/CopilotIndex.js';
-import { buildCopilotSystemPrompt, COPILOT_THREAD_IDS, type CopilotPersona } from '../ai/CopilotPersonas.js';
+import { buildCopilotSystemPrompt, COPILOT_THREAD_IDS, cloneThreadId, type CopilotPersona } from '../ai/CopilotPersonas.js';
+import { getActive, deactivateClone } from '../phobos/WecloneSlotManager.js';
+import { WecloneStore } from '../db/WecloneStore.js';
+import { UserProfileStore } from '../db/UserProfileStore.js';
 import { embedCopilotExchange, embedExplicitMemory, retrieveCopilotMemory } from '../ai/MemoryWriter.js';
 import { distillAssistantContent, buildEmbedInput } from '../ai/distillAssistantContent.js';
 import { writeTurn } from '../db/ConversationStore.js';
@@ -13,6 +16,7 @@ import { embed } from '../ai/EmbedClient.js';
 import { gsm } from '../game/GameStateManager.js';
 import { getHaSnapshot } from '../services/HAManager.js';
 import { runHaWatch }    from '../ha/HaWatchHandler.js';
+import { getServerStatus, awaitServerReady } from '../phobos/LlamaServerManager.js';
 
 /**
  * Registers all copilot routes.
@@ -133,37 +137,60 @@ function stripAllDirectivesFromBuf(buf: string): string {
 }
 
 export async function registerCopilotRoutes(fastify: FastifyInstance): Promise<void> {
-  const db       = DatabaseManager.getUserDb();
+  // Copilot (Sayon/Seren) is per-user — every user gets their own copilot-sayon
+  // and copilot-seren threads in their own DB. The thread IDs are fixed constants
+  // within each per-user database.
   const systemDb = DatabaseManager.getInstance();
-  const threadStore = new ThreadStore(db);
-  const messageStore = new MessageStore(db);
-  const memoryStore = new CopilotMemoryStore(db);
-  const relStore = new CopilotRelationshipStore(db);
-  const copilotIndex = new CopilotIndex(db);
 
-  // Ensure tables exist
-  await memoryStore.ensureTable();
-  await relStore.ensureTable();
+  // Track which users have had their copilot tables and threads bootstrapped so
+  // the one-time setup only runs once per user per process lifetime.
+  const bootstrapped = new Set<string>();
 
-  // Increment session counter on startup (after first interaction exists)
-  for (const persona of ['sayon', 'seren'] as const) {
-    relStore.recordSession(persona).catch(() => { /* non-fatal */ });
-  }
+  type CopilotStores = {
+    db:           DatabaseManager;
+    threadStore:  ThreadStore;
+    messageStore: MessageStore;
+    memoryStore:  CopilotMemoryStore;
+    relStore:     CopilotRelationshipStore;
+    copilotIndex: CopilotIndex;
+  };
 
-  // Ensure both copilot threads exist
-  for (const [persona, threadId] of Object.entries(COPILOT_THREAD_IDS)) {
-    const existing = await threadStore.getById(threadId);
-    if (!existing) {
-      await threadStore.insert({
-        id: threadId,
-        title: `Copilot — ${persona.toUpperCase()}`,
-        project_id: 'default',
-      });
+  async function getUserStores(username: string): Promise<CopilotStores> {
+    const db          = DatabaseManager.getUserDb(username);
+    const threadStore = new ThreadStore(db);
+    const messageStore = new MessageStore(db);
+    const memoryStore  = new CopilotMemoryStore(db);
+    const relStore     = new CopilotRelationshipStore(db);
+    const copilotIndex = new CopilotIndex(db);
+
+    // Lazy per-user bootstrap — runs once per user per process restart.
+    if (!bootstrapped.has(username)) {
+      bootstrapped.add(username);
+      await memoryStore.ensureTable();
+      await relStore.ensureTable();
+      // Ensure both copilot threads exist in this user's DB.
+      for (const [persona, threadId] of Object.entries(COPILOT_THREAD_IDS)) {
+        const existing = await threadStore.getById(threadId);
+        if (!existing) {
+          await threadStore.insert({
+            id: threadId,
+            title: `Copilot — ${persona.toUpperCase()}`,
+            project_id: 'default',
+          });
+        }
+      }
+      // Record session start for relationship tracking (non-fatal).
+      for (const persona of ['sayon', 'seren'] as const) {
+        relStore.recordSession(persona).catch(() => {});
+      }
     }
+
+    return { db, threadStore, messageStore, memoryStore, relStore, copilotIndex };
   }
 
   // ── GET /api/copilot/overview ───────────────────────────────────────────
-  fastify.get('/api/copilot/overview', async (_req, reply) => {
+  fastify.get('/api/copilot/overview', async (req, reply) => {
+    const { copilotIndex } = await getUserStores(req.phobosUser);
     const overview = await copilotIndex.renderSystemOverview();
     return reply.send({ overview });
   });
@@ -172,6 +199,7 @@ export async function registerCopilotRoutes(fastify: FastifyInstance): Promise<v
   fastify.get<{ Querystring: { q: string } }>(
     '/api/copilot/search',
     async (req, reply) => {
+      const { copilotIndex } = await getUserStores(req.phobosUser);
       const query = req.query.q ?? '';
       const results = query.length > 2
         ? await copilotIndex.searchContents(query)
@@ -193,6 +221,7 @@ export async function registerCopilotRoutes(fastify: FastifyInstance): Promise<v
       const persona = req.params.persona as CopilotPersona;
       const threadId = COPILOT_THREAD_IDS[persona];
       if (!threadId) return reply.status(400).send({ error: 'Invalid persona' });
+      const { messageStore } = await getUserStores(req.phobosUser);
       const limit  = Math.min(parseInt(req.query.limit ?? '20', 10) || 20, 100);
       const before = req.query.before;
       const messages = await messageStore.getRecentByThread(threadId, limit, before);
@@ -206,6 +235,7 @@ export async function registerCopilotRoutes(fastify: FastifyInstance): Promise<v
     async (req, reply) => {
       const persona = req.params.persona as CopilotPersona;
       if (!COPILOT_THREAD_IDS[persona]) return reply.status(400).send({ error: 'Invalid persona' });
+      const { memoryStore } = await getUserStores(req.phobosUser);
       const memories = await memoryStore.recall(persona, req.query.category);
       return reply.send({ memories });
     }
@@ -217,6 +247,7 @@ export async function registerCopilotRoutes(fastify: FastifyInstance): Promise<v
     async (req, reply) => {
       const persona = req.params.persona as CopilotPersona;
       if (!COPILOT_THREAD_IDS[persona]) return reply.status(400).send({ error: 'Invalid persona' });
+      const { relStore } = await getUserStores(req.phobosUser);
       const state = await relStore.getState(persona);
       const days_known = await relStore.getDaysKnown(persona);
       return reply.send({
@@ -234,9 +265,12 @@ export async function registerCopilotRoutes(fastify: FastifyInstance): Promise<v
   fastify.post<{ Body: { content: string } }>(
     '/api/copilot/sayon',
     async (req, reply) => {
-      await handleCopilotStream('sayon', req.body.content, req, reply, {
-        messageStore, memoryStore, relStore, copilotIndex,
-      }, systemDb);
+      // If a WeClone is active on SAYON's slot, the user sending a message here
+      // means they want the base persona.  Deactivate the clone permanently —
+      // the model is restored before the stream begins.
+      if (getActive('sayon')) await deactivateClone('sayon');
+      const stores = await getUserStores(req.phobosUser);
+      await handleCopilotStream('sayon', req.body.content, req, reply, { ...stores, username: req.phobosUser }, systemDb);
     }
   );
 
@@ -244,9 +278,65 @@ export async function registerCopilotRoutes(fastify: FastifyInstance): Promise<v
   fastify.post<{ Body: { content: string } }>(
     '/api/copilot/seren',
     async (req, reply) => {
-      await handleCopilotStream('seren', req.body.content, req, reply, {
-        messageStore, memoryStore, relStore, copilotIndex,
-      }, systemDb);
+      if (getActive('seren')) await deactivateClone('seren');
+      const stores = await getUserStores(req.phobosUser);
+      await handleCopilotStream('seren', req.body.content, req, reply, { ...stores, username: req.phobosUser }, systemDb);
+    }
+  );
+
+  // ── GET /api/copilot/clone/:cloneId/messages ───────────────────────────
+  fastify.get<{ Params: { cloneId: string } }>(
+    '/api/copilot/clone/:cloneId/messages',
+    async (req, reply) => {
+      const { cloneId } = req.params;
+      const { messageStore } = await getUserStores(req.phobosUser);
+      const tid = cloneThreadId(cloneId);
+      const messages = await messageStore.getByThread(tid);
+      return reply.send({ messages });
+    }
+  );
+
+  // ── POST /api/copilot/clone/:cloneId ───────────────────────────────────
+  fastify.post<{ Params: { cloneId: string }; Body: { content: string } }>(
+    '/api/copilot/clone/:cloneId',
+    async (req, reply) => {
+      const { cloneId }  = req.params;
+      const username     = req.phobosUser;
+      const stores       = await getUserStores(username);
+      const userDb       = DatabaseManager.getUserDb(username);
+
+      // Resolve the clone profile.
+      const ws    = new WecloneStore(userDb);
+      await ws.ensureTable();
+      const clone = await ws.getProfile(cloneId);
+      if (!clone) return reply.status(404).send({ error: 'Clone not found' });
+
+      // Ensure the clone's thread exists.
+      const tid = cloneThreadId(cloneId);
+      const existing = await stores.threadStore.getById(tid);
+      if (!existing) {
+        await stores.threadStore.insert({
+          id:         tid,
+          title:      `Clone — ${clone.display_name}`,
+          project_id: 'default',
+        });
+      }
+
+      // Build identity injection.
+      const cloneIdentity = ws.buildIdentityBlock(clone);
+      const ups           = new UserProfileStore(userDb);
+      const userContext   = await ups.buildContextBlockForOwner();
+
+      await handleCopilotStream(
+        // The clone runs on whichever hardware slot it occupies.
+        clone.slot as CopilotPersona,
+        req.body.content,
+        req,
+        reply,
+        { ...stores, username },
+        systemDb,
+        { cloneIdentity, userContext, threadId: tid, personaLabel: clone.display_name },
+      );
     }
   );
 }
@@ -258,6 +348,14 @@ interface CopilotDeps {
   memoryStore: CopilotMemoryStore;
   relStore: CopilotRelationshipStore;
   copilotIndex: CopilotIndex;
+  username: string;
+}
+
+interface CloneOverrides {
+  cloneIdentity: string;
+  userContext:   string;
+  threadId:      string;    // replaces COPILOT_THREAD_IDS[persona]
+  personaLabel:  string;    // clone display name, for logging
 }
 
 async function handleCopilotStream(
@@ -266,10 +364,14 @@ async function handleCopilotStream(
   req: any,
   reply: any,
   deps: CopilotDeps,
-  db: DatabaseManager
+  db: DatabaseManager,
+  cloneOverrides?: CloneOverrides,
 ): Promise<void> {
-  const { messageStore, memoryStore, relStore, copilotIndex } = deps;
-  const threadId = COPILOT_THREAD_IDS[persona];
+  const { messageStore, memoryStore, relStore, copilotIndex, username } = deps;
+
+  // Clone conversations use their own thread ID; Prime conversations use the
+  // standard COPILOT_THREAD_IDS constant.
+  const threadId = cloneOverrides?.threadId ?? COPILOT_THREAD_IDS[persona];
 
   // Persist user message
   await messageStore.insert({
@@ -278,11 +380,22 @@ async function handleCopilotStream(
     content: userContent,
   });
 
-  // SSE short-circuit for WebRTC — write to emitter instead of HTTP socket
+  // SSE short-circuit for WebRTC — write to emitter instead of HTTP socket.
+  // Remote (WebRTC) requests on a slot with an active clone trigger a hotswap
+  // via hotswapForRemote — the clone is temporarily unloaded, this full handler
+  // runs recursively against the restored base model, then the clone reloads.
   const webrtcRequestId = req?.headers?.['x-webrtc-request-id'] as string | undefined;
   const webrtcSender    = webrtcRequestId
     ? (await import('../webrtc/SseEmitterRegistry.js')).getSender(webrtcRequestId)
     : null;
+
+  if (webrtcSender && !cloneOverrides && getActive(persona as 'sayon' | 'seren')) {
+    const { hotswapForRemote } = await import('../phobos/WecloneSlotManager.js');
+    await hotswapForRemote(persona as 'sayon' | 'seren', () =>
+      handleCopilotStream(persona, userContent, req, reply, deps, db, cloneOverrides),
+    );
+    return;
+  }
 
   if (!webrtcSender) {
     reply.raw.writeHead(200, {
@@ -317,7 +430,7 @@ async function handleCopilotStream(
       copilotIndex.renderSystemOverview(),
       memoryStore.renderMemoryContext(persona),
       relStore.getState(persona),
-      retrieveCopilotMemory(persona, queryText.slice(0, 800)),
+      retrieveCopilotMemory(persona, queryText.slice(0, 800), 5, username),
     ]);
     const daysKnown = await relStore.getDaysKnown(persona);
 
@@ -336,7 +449,15 @@ async function handleCopilotStream(
     // HA snapshot -- synchronous read from in-memory cache, null if not connected.
     const haSnapshot = getHaSnapshot();
 
-    const systemPrompt = buildCopilotSystemPrompt(persona, systemOverview, fullMemoryContext, relationship, haSnapshot);
+    const systemPrompt = buildCopilotSystemPrompt(
+      persona,
+      systemOverview,
+      fullMemoryContext,
+      relationship,
+      haSnapshot,
+      cloneOverrides?.cloneIdentity ?? null,
+      cloneOverrides?.userContext   ?? null,
+    );
 
     // Load conversation history via AUTO context packing — uses distilled content,
     // fits as many pairs as the budget allows (same logic as main thread pipeline).
@@ -348,9 +469,9 @@ async function handleCopilotStream(
 
     // Route to the correct model
     if (persona === 'sayon') {
-      await streamSayon(systemPrompt, history, userContent, sendEvent, threadId, messageStore, memoryStore, relStore, db);
+      await streamSayon(systemPrompt, history, userContent, sendEvent, threadId, messageStore, memoryStore, relStore, db, username);
     } else {
-      await streamSeren(systemPrompt, history, userContent, sendEvent, threadId, messageStore, memoryStore, relStore, db);
+      await streamSeren(systemPrompt, history, userContent, sendEvent, threadId, messageStore, memoryStore, relStore, db, username);
     }
   } catch (err) {
     console.error(`[Copilot:${persona}] Error:`, err);
@@ -376,7 +497,8 @@ async function streamSayon(
   messageStore: MessageStore,
   memoryStore: CopilotMemoryStore,
   relStore: CopilotRelationshipStore,
-  db: DatabaseManager
+  db: DatabaseManager,
+  username: string = 'owner'
 ): Promise<void> {
   const {
     coordinatorClient, COORDINATOR_MODEL,
@@ -524,6 +646,7 @@ async function streamSayon(
   } else {
     // ── Non-phobos: OpenAI SDK ──
     let stream: any;
+    { const _s = getServerStatus().sayon.state; if (_s === 'starting' || _s === 'stopped') await awaitServerReady('sayon'); }
     try {
       stream = await coordinatorClient.chat.completions.create({
         model: COORDINATOR_MODEL,
@@ -566,7 +689,7 @@ async function streamSayon(
   });
 
   // Extract inline memory and emotion tags from raw output, then record the exchange
-  await extractAndStoreMemories(outputBuf, 'sayon', memoryStore);
+  await extractAndStoreMemories(outputBuf, 'sayon', memoryStore, username);
   await extractAndStoreEmotion(outputBuf, 'sayon', relStore);
   await relStore.recordExchange('sayon');
 
@@ -580,7 +703,7 @@ async function streamSayon(
   })().catch(() => {});
 
   // Embed this exchange in SYBIL's semantic memory (fire-and-forget).
-  embedCopilotExchange('sayon', userContent, finalContent).catch(() => {});
+  embedCopilotExchange('sayon', userContent, finalContent, username).catch(() => {});
 
   gsm.setPersonaState('sayon', 'idle');
 
@@ -624,7 +747,8 @@ async function streamSeren(
   messageStore: MessageStore,
   memoryStore: CopilotMemoryStore,
   relStore: CopilotRelationshipStore,
-  db: DatabaseManager
+  db: DatabaseManager,
+  username: string = 'owner'
 ): Promise<void> {
   const {
     engineClient, ENGINE_MODEL,
@@ -756,6 +880,7 @@ async function streamSeren(
   } else {
     // Non-phobos: OpenAI SDK stream
     let stream: any;
+    { const _s = getServerStatus().seren.state; if (_s === 'starting' || _s === 'stopped') await awaitServerReady('seren'); }
     try {
       stream = await engineClient.chat.completions.create({
         ...(callParams as any),
@@ -854,7 +979,7 @@ async function streamSeren(
   });
 
   // Extract from raw output before stripping, then record the exchange
-  await extractAndStoreMemories(outputBuf, 'seren', memoryStore);
+  await extractAndStoreMemories(outputBuf, 'seren', memoryStore, username);
   await extractAndStoreEmotion(outputBuf, 'seren', relStore);
   await relStore.recordExchange('seren');
 
@@ -868,7 +993,7 @@ async function streamSeren(
   })().catch(() => {});
 
   // Embed this exchange in SYBIL's semantic memory (fire-and-forget).
-  embedCopilotExchange('seren', userContent, finalContent).catch(() => {});
+  embedCopilotExchange('seren', userContent, finalContent, username).catch(() => {});
 
   gsm.setPersonaState('seren', 'idle');
 
@@ -908,7 +1033,8 @@ async function streamSeren(
 async function extractAndStoreMemories(
   output: string,
   persona: CopilotPersona,
-  memoryStore: CopilotMemoryStore
+  memoryStore: CopilotMemoryStore,
+  username: string = 'owner'
 ): Promise<void> {
   const pattern = /\[REMEMBER\s+(\w+):([^=]+)=([^\]]+)\]/g;
   let match: RegExpExecArray | null;
@@ -917,8 +1043,7 @@ async function extractAndStoreMemories(
     try {
       await memoryStore.store(persona, category.trim(), key.trim(), value.trim());
       console.log(`[Copilot:${persona}] Stored memory: ${category}/${key}`);
-      // Also embed into SYBIL's vector store for semantic recall (fire-and-forget).
-      embedExplicitMemory(persona, category.trim(), key.trim(), value.trim()).catch(() => {});
+      embedExplicitMemory(persona, category.trim(), key.trim(), value.trim(), username).catch(() => {});
     } catch (err) {
       console.warn(`[Copilot:${persona}] Memory store failed:`, err);
     }

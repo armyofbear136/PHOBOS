@@ -118,17 +118,17 @@ function resolvePending<T>(
 
 // ── DB-bound callbacks — all round-trip to main ──────────────────────────────
 
-async function archiveSearchRemote(query: string, domains: import('../db/ArchiveStore.js').ArchiveDomain[], k: number): Promise<string> {
+async function archiveSearchRemote(query: string, domains: import('../db/ArchiveStore.js').ArchiveDomain[], k: number, username: string): Promise<string> {
   return makeRoundTrip(pendingArchive,
-    (requestId) => send({ type: 'ARCHIVE_SEARCH_REQUEST', requestId, query, domains, k }),
+    (requestId) => send({ type: 'ARCHIVE_SEARCH_REQUEST', requestId, query, domains, k, username }),
     30_000,
     'archive search',
   );
 }
 
-async function memorySearchRemote(query: string): Promise<string> {
+async function memorySearchRemote(query: string, username: string): Promise<string> {
   return makeRoundTrip(pendingMemory,
-    (requestId) => send({ type: 'MEMORY_SEARCH_REQUEST', requestId, query }),
+    (requestId) => send({ type: 'MEMORY_SEARCH_REQUEST', requestId, query, username }),
     15_000,
     'memory search',
   );
@@ -176,8 +176,8 @@ heartbeatTimer.unref();
 
 // ── Initial state ────────────────────────────────────────────────────────────
 
-writeState(S.SAYON_STATE,         ProcessState.STOPPED);
-writeState(S.SEREN_STATE,         ProcessState.STOPPED);
+writeState(S.SAYON_STATE,         ProcessState.RUNNING);
+writeState(S.SEREN_STATE,         ProcessState.RUNNING);
 writeState(S.SYBIL_STATE,         ProcessState.STOPPED);
 writeState(S.QUEUE_DEPTH,         0);
 writeState(S.QUEUE_ACTIVE_TASKS,  0);
@@ -246,6 +246,8 @@ queue.setDispatcher(async (task: QueueTask): Promise<TaskResult> => {
   _activeMessageId = messageId;
   _activeThreadId  = threadId;
 
+  const taskUsername = (loopOptions.username as string | undefined) ?? 'owner';
+
   const replyShim = makeReplyShim(task.taskId);
 
   const loopController = new LoopController({
@@ -255,11 +257,12 @@ queue.setDispatcher(async (task: QueueTask): Promise<TaskResult> => {
     threadId,
     skipBuild:     loopOptions.skipBuild    as boolean | undefined,
     maxAttempts:   loopOptions.maxAttempts  as number | undefined,
+    username:      taskUsername,
 
     // ── DB-free configuration injected from main ────────────────────────────
     executorEnabled: _executorEnabled,
-    archiveSearchFn: archiveSearchRemote,
-    memorySearchFn:  memorySearchRemote,
+    archiveSearchFn: (query, domains, k) => archiveSearchRemote(query, domains, k, taskUsername),
+    memorySearchFn:  (query) => memorySearchRemote(query, taskUsername),
     codeAuditFn:     codeAuditRemote,
 
     // ── Streaming + persistence callbacks ───────────────────────────────────
@@ -296,6 +299,7 @@ queue.setDispatcher(async (task: QueueTask): Promise<TaskResult> => {
   });
 
   try {
+    writeState(S.SAYON_STATE, ProcessState.BUSY);
     const attempts = await loopController.run(replyShim as never, composeInput, messageId);
     return {
       taskId:             task.taskId,
@@ -304,6 +308,7 @@ queue.setDispatcher(async (task: QueueTask): Promise<TaskResult> => {
       latencyMs:          Date.now() - startMs,
     };
   } finally {
+    writeState(S.SAYON_STATE, ProcessState.RUNNING);
     _activeTaskId    = null;
     _activeMessageId = null;
     _activeThreadId  = null;

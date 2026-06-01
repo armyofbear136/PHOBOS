@@ -45,11 +45,11 @@ export function ActivityBubble({ message }: Props) {
           onClick={() => setExpanded(!expanded)}
           className={`inline-flex items-center gap-1.5 px-3 py-1 text-[11px] font-mono rounded-md border transition-all ${
             isActive
-              ? 'bg-primary/5 border-primary/20 text-primary animate-pulse'
+              ? 'bg-phob-orange/5 border-phob-orange/20 text-phob-orange animate-pulse'
               : 'bg-muted/50 border-border/50 text-muted-foreground'
           }`}
         >
-          <AgentStateIcon state={isActive ? labelToState(currentLabel) : 'delivering'} tint={isActive ? '#00ff41' : '#6b7280'} size={12} />
+          <AgentStateIcon state={isActive ? labelToState(currentLabel) : 'delivering'} tint={isActive ? '#e8420a' : '#6b7280'} size={12} />
           <span className="truncate">{displayLabel}</span>
           {events.length > 1 && (
             <>
@@ -120,10 +120,10 @@ export function LiveActivityGizmo({ activity }: LiveActivityProps) {
           className={`inline-flex items-center gap-1.5 px-3 py-1 text-[11px] font-mono rounded-md border transition-all ${
             isDone
               ? 'bg-success/10 border-success/30 text-success'
-              : 'bg-primary/5 border-primary/20 text-primary animate-pulse'
+              : 'bg-phob-orange/5 border-phob-orange/20 text-phob-orange animate-pulse'
           }`}
         >
-          <AgentStateIcon state={isDone ? 'delivering' : labelToState(label)} tint={isDone ? '#22c55e' : '#00ff41'} size={12} />
+          <AgentStateIcon state={isDone ? 'delivering' : labelToState(label)} tint={isDone ? '#00ff41' : '#e8420a'} size={12} />
           <span className="truncate">{displayLabel}</span>
           {log.length > 1 && (
             <>

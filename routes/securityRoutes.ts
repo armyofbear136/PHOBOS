@@ -54,10 +54,10 @@ const VALID_CONFIG_KEYS = new Set<SecurityConfigKey>([
 ] as SecurityConfigKey[]);
 
 export async function registerSecurityRoutes(fastify: FastifyInstance): Promise<void> {
-  const systemDb  = DatabaseManager.getInstance();
-  const userDb    = DatabaseManager.getUserDb();
-  const store     = new SecurityStore(systemDb);
-  const taskStore = new ScheduledTaskStore(userDb);
+  const systemDb      = DatabaseManager.getInstance();
+  const store         = new SecurityStore(systemDb);
+  const getTaskStore  = (req: import('fastify').FastifyRequest) =>
+    new ScheduledTaskStore(DatabaseManager.getUserDb(req.phobosUser));
   await store.ensureTable();
 
   // ── Status — tool availability + last run per type ─────────────────────────
@@ -160,6 +160,7 @@ export async function registerSecurityRoutes(fastify: FastifyInstance): Promise<
       await store.setConfig(key as SecurityConfigKey, value);
     }
 
+    const taskStore = getTaskStore(req);
     await syncScheduledTasks(store, taskStore);
 
     return reply.send(await store.getAllConfig());

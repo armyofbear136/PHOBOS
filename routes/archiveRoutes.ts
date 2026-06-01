@@ -35,10 +35,10 @@ function isValidDomain(domain: string): domain is ArchiveDomain {
 export async function registerArchiveRoutes(fastify: FastifyInstance): Promise<void> {
 
   // ── GET /api/archive/status ────────────────────────────────────────────────
-  fastify.get('/api/archive/status', async (_req, reply) => {
+  fastify.get('/api/archive/status', async (req, reply) => {
     try {
       const sybil   = getServerStatus().sybil;
-      const domains = await ArchiveStore.listDomains();
+      const domains = await ArchiveStore.listDomains(req.phobosUser);
       const total   = domains.reduce((n, d) => n + d.chunkCount, 0);
 
       return reply.send({
@@ -60,9 +60,9 @@ export async function registerArchiveRoutes(fastify: FastifyInstance): Promise<v
   });
 
   // ── GET /api/archive/domains ───────────────────────────────────────────────
-  fastify.get('/api/archive/domains', async (_req, reply) => {
+  fastify.get('/api/archive/domains', async (req, reply) => {
     try {
-      const domains = await ArchiveStore.listDomains();
+      const domains = await ArchiveStore.listDomains(req.phobosUser);
       return reply.send({ domains });
     } catch (err) {
       console.error('[ArchiveRoutes] /api/archive/domains error:', err);
@@ -79,7 +79,7 @@ export async function registerArchiveRoutes(fastify: FastifyInstance): Promise<v
         return reply.status(400).send({ error: 'Invalid domain name. Use lowercase letters, numbers, hyphens only.' });
       }
       try {
-        await ArchiveStore.ensureDomain(domain as ArchiveDomain);
+        await ArchiveStore.ensureDomain(req.phobosUser, domain as ArchiveDomain);
         return reply.send({ ok: true, domain });
       } catch (err) {
         console.error('[ArchiveRoutes] POST /api/archive/domains error:', err);
@@ -97,7 +97,7 @@ export async function registerArchiveRoutes(fastify: FastifyInstance): Promise<v
         return reply.status(400).send({ error: 'Invalid domain name.' });
       }
       try {
-        await ArchiveStore.deleteDomain(domain as ArchiveDomain);
+        await ArchiveStore.deleteDomain(req.phobosUser, domain as ArchiveDomain);
         return reply.send({ ok: true });
       } catch (err) {
         console.error('[ArchiveRoutes] DELETE /api/archive/domains/:domain error:', err);
@@ -115,7 +115,7 @@ export async function registerArchiveRoutes(fastify: FastifyInstance): Promise<v
         return reply.status(400).send({ error: 'Invalid domain name.' });
       }
       try {
-        const sources = await ArchiveStore.listSources(domain as ArchiveDomain);
+        const sources = await ArchiveStore.listSources(req.phobosUser, domain as ArchiveDomain);
         return reply.send({ sources });
       } catch (err) {
         console.error('[ArchiveRoutes] GET /api/archive/domains/:domain/sources error:', err);
@@ -133,7 +133,7 @@ export async function registerArchiveRoutes(fastify: FastifyInstance): Promise<v
         return reply.status(400).send({ error: 'Invalid domain name.' });
       }
       try {
-        await ArchiveStore.deleteSourceById(domain as ArchiveDomain, sourceId);
+        await ArchiveStore.deleteSourceById(req.phobosUser, domain as ArchiveDomain, sourceId);
         return reply.send({ ok: true });
       } catch (err) {
         console.error('[ArchiveRoutes] DELETE /api/archive/sources/:domain/:sourceId error:', err);
@@ -182,6 +182,7 @@ export async function registerArchiveRoutes(fastify: FastifyInstance): Promise<v
 
     try {
       await ingestSource(
+        req.phobosUser,
         domain as ArchiveDomain,
         input,
         sourceType,
@@ -213,12 +214,12 @@ export async function registerArchiveRoutes(fastify: FastifyInstance): Promise<v
     try {
       const domains = domainsParam
         ? domainsParam.split(',').filter(isValidDomain) as ArchiveDomain[]
-        : (await ArchiveStore.listDomains()).map(d => d.domain);
+        : (await ArchiveStore.listDomains(req.phobosUser)).map(d => d.domain);
 
       const k        = kParam   ? Math.min(parseInt(kParam, 10) || 8, 20) : 8;
       const minScore = minParam  ? parseFloat(minParam) : 0.65;
 
-      const results = await searchRaw({ query: q, domains, k, minScore });
+      const results = await searchRaw({ username: req.phobosUser, query: q, domains, k, minScore });
       return reply.send({ results });
     } catch (err) {
       console.error('[ArchiveRoutes] GET /api/archive/search error:', err);

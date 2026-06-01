@@ -321,6 +321,21 @@ export function shutdownKokoroDaemon(): void {
   }
 }
 
+// Pre-warm the Kokoro daemon at server boot — starts the process and begins
+// loading the ONNX model so the first TTS call pays only inference cost, not
+// cold model-load cost (~3s vs ~15s on first call without pre-warm).
+// Non-fatal: if the model file is absent the call silently returns.
+export function preWarmKokoro(): void {
+  const modelDir  = resolveKokoroModelDir();
+  const modelFile = path.join(modelDir, 'onnx', 'model_quantized.onnx');
+  if (!fs.existsSync(modelFile)) return; // model not downloaded yet — skip
+  const nodeBin    = resolveNodeBin();
+  const scriptPath = resolveKokoroScript();
+  const cwd        = resolveKokoroCwd();
+  _getOrStartKokoroDaemon(nodeBin, scriptPath, modelDir, cwd);
+  console.log('[AudioServerManager] Kokoro daemon pre-warm started');
+}
+
 function resolveKokoroCwd(): string {
   const seaDir = path.dirname(process.execPath);
   if (fs.existsSync(path.join(seaDir, 'node_modules', 'kokoro-js'))) return seaDir;
@@ -340,6 +355,176 @@ function resolveKokoroModelDir(): string {
     if (fs.existsSync(path.join(c, 'onnx', 'model_quantized.onnx'))) return c;
   }
   return path.join(binDir, 'kokoro'); // return primary even if absent — caller checks
+}
+
+// ── Supertonic daemon — persistent warm process ───────────────────────────────
+//
+// Same lifecycle pattern as the Kokoro daemon. One process serves all copilot
+// TTS requests. Supertonic is the default TTS engine; Kokoro remains available
+// as an override. Both run simultaneously.
+//
+// Voice styles are pre-loaded JSON files (M1–M5, F1–F5) bundled in
+// dist/supertonic/voice_styles/. Custom voice profiles are not supported via
+// Supertonic — those route through Kokoro + VC daemon.
+
+interface SupertonicPendingJob {
+  id:      string;
+  resolve: (outputPath: string) => void;
+  reject:  (err: Error) => void;
+}
+
+interface SupertonicDaemon {
+  proc:    import('child_process').ChildProcess;
+  ready:   boolean;
+  pending: Map<string, SupertonicPendingJob>;
+  queue:   Array<string>;
+}
+
+let _supertonicDaemon: SupertonicDaemon | null = null;
+
+function resolveSupersonicScript(): string {
+  const file   = 'phobos-supertonic.mjs';
+  const seaDir = path.dirname(process.execPath);
+  const candidates = [
+    path.join(seaDir, file),
+    path.join(_thisDir, file),
+    path.join(_thisDir, '..', 'phobos', file),
+    path.join(process.cwd(), 'phobos', file),
+    path.join(process.cwd(), 'dist', file),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  throw new Error(`${file} not found.\nSearched:\n  ${candidates.join('\n  ')}`);
+}
+
+function resolveSupersonicModelDir(): string {
+  const binDir = resolveBinDir();
+  const candidates = [
+    path.join(binDir, 'supertonic'),
+    path.join(_thisDir, '..', 'supertonic'),
+    path.join(process.cwd(), 'dist', 'supertonic'),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c, 'vector_estimator.onnx'))) return c;
+  }
+  return path.join(binDir, 'supertonic'); // return primary even if absent — caller checks
+}
+
+function _startSupertonicDaemon(
+  nodeBin:    string,
+  scriptPath: string,
+  modelDir:   string,
+): SupertonicDaemon {
+  const proc = spawn(nodeBin, [
+    scriptPath,
+    '--model-dir', modelDir,
+  ], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    cwd:   path.dirname(process.execPath),
+    env:   process.env,
+  });
+
+  const daemon: SupertonicDaemon = {
+    proc,
+    ready:   false,
+    pending: new Map(),
+    queue:   [],
+  };
+
+  proc.stdout?.on('data', (chunk: Buffer) => {
+    for (const raw of chunk.toString().split('\n')) {
+      const line = raw.trim();
+      if (!line) continue;
+      console.log(`[supertonic] ${line}`);
+
+      if (line === '[READY]') {
+        daemon.ready = true;
+        for (const queued of daemon.queue) proc.stdin?.write(queued + '\n');
+        daemon.queue.length = 0;
+        return;
+      }
+
+      if (line.startsWith('[DONE ]')) {
+        const rest     = line.slice('[DONE ]'.length).trimStart();
+        const spaceIdx = rest.indexOf(' ');
+        const id       = spaceIdx >= 0 ? rest.slice(0, spaceIdx) : rest;
+        const outPath  = spaceIdx >= 0 ? rest.slice(spaceIdx + 1).trim() : '';
+        const job = daemon.pending.get(id);
+        if (job) { daemon.pending.delete(id); job.resolve(outPath); }
+        return;
+      }
+
+      if (line.startsWith('[ERROR]')) {
+        const rest     = line.slice('[ERROR]'.length).trimStart();
+        const spaceIdx = rest.indexOf(' ');
+        const id       = spaceIdx >= 0 ? rest.slice(0, spaceIdx) : rest;
+        const msg      = spaceIdx >= 0 ? rest.slice(spaceIdx + 1).trim() : 'unknown error';
+        const job = daemon.pending.get(id);
+        if (job) { daemon.pending.delete(id); job.reject(new Error(msg)); }
+        return;
+      }
+
+      if (line.startsWith('[FATAL]')) {
+        const msg = line.slice('[FATAL]'.length).trim();
+        for (const job of daemon.pending.values()) job.reject(new Error(`Supertonic daemon fatal: ${msg}`));
+        daemon.pending.clear();
+      }
+    }
+  });
+
+  proc.stderr?.on('data', (chunk: Buffer) => {
+    for (const line of chunk.toString().split('\n')) {
+      if (line.trim()) console.log(`[supertonic:err] ${line.trim()}`);
+    }
+  });
+
+  proc.on('exit', (code, signal) => {
+    console.log(`[supertonic] daemon exited (code=${code}, signal=${signal})`);
+    for (const job of daemon.pending.values())
+      job.reject(new Error(`Supertonic daemon exited unexpectedly (code=${code})`));
+    daemon.pending.clear();
+    if (_supertonicDaemon === daemon) _supertonicDaemon = null;
+  });
+
+  proc.on('error', (err: Error) => {
+    console.log(`[supertonic] daemon spawn error: ${err.message}`);
+    for (const job of daemon.pending.values())
+      job.reject(new Error(`Supertonic daemon spawn error: ${err.message}`));
+    daemon.pending.clear();
+    if (_supertonicDaemon === daemon) _supertonicDaemon = null;
+  });
+
+  _supertonicDaemon = daemon;
+  return daemon;
+}
+
+function _getOrStartSupertonicDaemon(
+  nodeBin:    string,
+  scriptPath: string,
+  modelDir:   string,
+): SupertonicDaemon {
+  if (_supertonicDaemon && !_supertonicDaemon.proc.exitCode && !(_supertonicDaemon.proc as any).killed) {
+    return _supertonicDaemon;
+  }
+  return _startSupertonicDaemon(nodeBin, scriptPath, modelDir);
+}
+
+export function shutdownSupertonicDaemon(): void {
+  if (_supertonicDaemon) {
+    try { _supertonicDaemon.proc.stdin?.end(); } catch { /**/ }
+    _supertonicDaemon = null;
+  }
+}
+
+export function preWarmSupertonic(): void {
+  const modelDir   = resolveSupersonicModelDir();
+  const modelFile  = path.join(modelDir, 'vector_estimator.onnx');
+  if (!fs.existsSync(modelFile)) return; // not downloaded yet — skip
+  const nodeBin    = resolveNodeBin();
+  const scriptPath = resolveSupersonicScript();
+  _getOrStartSupertonicDaemon(nodeBin, scriptPath, modelDir);
+  console.log('[AudioServerManager] Supertonic daemon pre-warm started');
 }
 
 // ── Whisper model ─────────────────────────────────────────────────────────────
@@ -608,6 +793,77 @@ export async function generateKokoro(opts: KokoroOptions): Promise<AudioGenerate
     output: outputPath,
     voice:  opts.voice  ?? 'af_heart',
     speed:  opts.speed  ?? 1.0,
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    daemon.pending.set(jobId, {
+      id:      jobId,
+      resolve: (outPath: string) => {
+        opts.onProgress?.(`[INFO ] Done — ${outPath}`);
+        resolve();
+      },
+      reject,
+    });
+
+    if (opts.signal) {
+      const onAbort = () => {
+        if (daemon.pending.has(jobId)) {
+          daemon.pending.delete(jobId);
+          reject(new Error('Audio generation cancelled'));
+        }
+      };
+      opts.signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    if (daemon.ready) {
+      daemon.proc.stdin?.write(job + '\n');
+    } else {
+      daemon.queue.push(job);
+    }
+  });
+
+  return { outputPath, elapsedMs: Date.now() - startMs };
+}
+
+// ── TTS — Supertonic 3 ────────────────────────────────────────────────────────
+
+export interface SupertonicOptions extends AudioRunOptions {
+  threadId: string;
+  text:     string;
+  voice?:   string;   // M1–M5 / F1–F5, default 'M1'
+  lang?:    string;   // 31-lang code or 'na' (language-agnostic), default 'na'
+  speed?:   number;
+  steps?:   number;   // denoising steps, 5–12, default 8
+  label?:   string;
+}
+
+export async function generateSupertonic(opts: SupertonicOptions): Promise<AudioGenerateResult> {
+  const modelDir  = resolveSupersonicModelDir();
+  const modelFile = path.join(modelDir, 'vector_estimator.onnx');
+
+  if (!fs.existsSync(modelFile)) {
+    throw new Error(
+      'Supertonic model not found. It should have been downloaded during Phobos startup.\n' +
+      `Expected: ${modelFile}`,
+    );
+  }
+
+  const nodeBin    = resolveNodeBin();
+  const scriptPath = resolveSupersonicScript();
+  const outputPath = path.join(os.tmpdir(), `phobos-tts-${crypto.randomUUID()}.wav`);
+  const startMs    = Date.now();
+  const jobId      = crypto.randomUUID();
+
+  const daemon = _getOrStartSupertonicDaemon(nodeBin, scriptPath, modelDir);
+
+  const job = JSON.stringify({
+    id:     jobId,
+    text:   opts.text,
+    output: outputPath,
+    voice:  opts.voice ?? 'M1',
+    lang:   opts.lang  ?? 'na',
+    speed:  opts.speed ?? 1.05,
+    steps:  opts.steps ?? 8,
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -1022,7 +1278,18 @@ export async function transcribe(opts: TranscribeOptions): Promise<string> {
 // started on first use, held resident, restarted on unexpected exit,
 // shut down cleanly via shutdownVcDaemon() / shutdownAllVcDaemons().
 
-const VOICE_PROFILES_DIR = path.join(os.homedir(), '.phobos', 'voice-profiles');
+// ── Per-user voice profile directory ─────────────────────────────────────────
+//
+// Voice profiles live inside the user's data directory so that copying or
+// deleting ~/.phobos/users/{username}/ takes all voice data with it.
+//
+// ~/.phobos/users/{username}/voice-profiles/{id}/profile.json + index.faiss + ref.wav
+
+function voiceProfilesDir(username: string): string {
+  const dir = path.join(userDir(username), 'voice-profiles');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
 
 export interface VoiceProfile {
   id:             string;
@@ -1043,13 +1310,14 @@ export interface VoiceProfileMeta {
   snrDb:     number;
 }
 
-export function listVoiceProfiles(): VoiceProfileMeta[] {
+export function listVoiceProfiles(username: string): VoiceProfileMeta[] {
   try {
-    if (!fs.existsSync(VOICE_PROFILES_DIR)) return [];
-    return fs.readdirSync(VOICE_PROFILES_DIR, { withFileTypes: true })
+    const dir = voiceProfilesDir(username);
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir, { withFileTypes: true })
       .filter(d => d.isDirectory())
       .flatMap(d => {
-        const jsonPath = path.join(VOICE_PROFILES_DIR, d.name, 'profile.json');
+        const jsonPath = path.join(dir, d.name, 'profile.json');
         if (!fs.existsSync(jsonPath)) return [];
         try {
           const p = JSON.parse(fs.readFileSync(jsonPath, 'utf8')) as VoiceProfile;
@@ -1059,16 +1327,16 @@ export function listVoiceProfiles(): VoiceProfileMeta[] {
   } catch { return []; }
 }
 
-export function getVoiceProfile(id: string): VoiceProfile | null {
-  const jsonPath = path.join(VOICE_PROFILES_DIR, id, 'profile.json');
+export function getVoiceProfile(username: string, id: string): VoiceProfile | null {
+  const jsonPath = path.join(voiceProfilesDir(username), id, 'profile.json');
   if (!fs.existsSync(jsonPath)) return null;
   try { return JSON.parse(fs.readFileSync(jsonPath, 'utf8')) as VoiceProfile; }
   catch { return null; }
 }
 
-export function deleteVoiceProfile(id: string): void {
-  shutdownVcDaemon(id);
-  const dir = path.join(VOICE_PROFILES_DIR, id);
+export function deleteVoiceProfile(username: string, id: string): void {
+  shutdownVcDaemon(username, id);
+  const dir = path.join(voiceProfilesDir(username), id);
   if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
 }
 
@@ -1109,6 +1377,7 @@ function resolveVoiceConvertScript(): string {
 // ── createVoiceProfile ────────────────────────────────────────────────────────
 
 export interface CreateVoiceProfileOptions {
+  username:        string;
   refAudioPath:    string;
   refText?:        string;
   name:            string;
@@ -1120,8 +1389,8 @@ export interface CreateVoiceProfileOptions {
 export async function createVoiceProfile(
   opts: CreateVoiceProfileOptions,
 ): Promise<VoiceProfile> {
-  const id       = crypto.randomUUID();
-  const outDir   = path.join(VOICE_PROFILES_DIR, id);
+  const id     = crypto.randomUUID();
+  const outDir = path.join(voiceProfilesDir(opts.username), id);
   fs.mkdirSync(outDir, { recursive: true });
 
   const device   = await resolvePythonDevice();
@@ -1172,7 +1441,7 @@ export async function createVoiceProfile(
         reject(new Error(`phobos-voice-extract.py failed: ${msg}`));
         return;
       }
-      const profile = getVoiceProfile(id);
+      const profile = getVoiceProfile(opts.username, id);
       if (!profile) {
         reject(new Error('profile.json not found after extraction completed'));
         return;
@@ -1199,8 +1468,9 @@ interface VoiceConvertDaemon {
 
 const _vcDaemons = new Map<string, VoiceConvertDaemon>();
 
-function _startVcDaemon(profileId: string): VoiceConvertDaemon {
-  const profileDir = path.join(VOICE_PROFILES_DIR, profileId);
+function _startVcDaemon(username: string, profileId: string): VoiceConvertDaemon {
+  const daemonKey  = `${username}:${profileId}`;
+  const profileDir = path.join(voiceProfilesDir(username), profileId);
   const script     = resolveVoiceConvertScript();
 
   // Use the already-imported getPythonPath — same resolution order as the
@@ -1249,44 +1519,67 @@ function _startVcDaemon(profileId: string): VoiceConvertDaemon {
       p.reject(new Error('VoiceConvertDaemon exited unexpectedly'));
     }
     daemon.pending.clear();
-    _vcDaemons.delete(profileId);
+    _vcDaemons.delete(daemonKey);
   });
 
   proc.on('error', (err: Error) => {
-    console.error(`[AudioServerManager] VoiceConvertDaemon spawn error (${profileId}): ${err.message}`);
+    console.error(`[AudioServerManager] VoiceConvertDaemon spawn error (${daemonKey}): ${err.message}`);
     for (const [, p] of daemon.pending) {
       p.reject(new Error(`VoiceConvertDaemon spawn error: ${err.message}`));
     }
     daemon.pending.clear();
-    _vcDaemons.delete(profileId);
+    _vcDaemons.delete(daemonKey);
   });
 
-  _vcDaemons.set(profileId, daemon);
-  console.log(`[AudioServerManager] VoiceConvertDaemon started for profile ${profileId}`);
+  _vcDaemons.set(daemonKey, daemon);
+  console.log(`[AudioServerManager] VoiceConvertDaemon started for profile ${daemonKey}`);
   return daemon;
 }
 
-function _getOrStartVcDaemon(profileId: string): VoiceConvertDaemon {
-  return _vcDaemons.get(profileId) ?? _startVcDaemon(profileId);
+function _getOrStartVcDaemon(username: string, profileId: string): VoiceConvertDaemon {
+  const daemonKey = `${username}:${profileId}`;
+  return _vcDaemons.get(daemonKey) ?? _startVcDaemon(username, profileId);
 }
 
-export function shutdownVcDaemon(profileId: string): void {
-  const d = _vcDaemons.get(profileId);
+export function shutdownVcDaemon(username: string, profileId: string): void {
+  const daemonKey = `${username}:${profileId}`;
+  const d = _vcDaemons.get(daemonKey);
   if (!d) return;
   try { d.proc.stdin?.end(); d.proc.kill('SIGTERM'); } catch { /**/ }
-  _vcDaemons.delete(profileId);
+  _vcDaemons.delete(daemonKey);
 }
 
 export function shutdownAllVcDaemons(): void {
-  for (const [id] of _vcDaemons) shutdownVcDaemon(id);
+  for (const [key, d] of _vcDaemons) {
+    try { d.proc.stdin?.end(); d.proc.kill('SIGTERM'); } catch { /**/ }
+    _vcDaemons.delete(key);
+  }
+}
+
+// Pre-warm VoiceConvertDaemons for all profiles that have a linked voice profile
+// in the weclone store. Called at server boot — keeps daemons resident so the
+// first TTS call with a voice profile pays only inference cost, not load cost.
+// Non-fatal: any individual daemon spawn failure is logged and skipped.
+export function preWarmVcDaemons(username: string): void {
+  const profiles = listVoiceProfiles(username);
+  if (profiles.length === 0) return;
+  for (const meta of profiles) {
+    try {
+      _getOrStartVcDaemon(username, meta.id);
+      console.log(`[AudioServerManager] VoiceConvertDaemon pre-warm started for ${username}/${meta.id} (${meta.name})`);
+    } catch (err) {
+      console.warn(`[AudioServerManager] VoiceConvertDaemon pre-warm failed for ${username}/${meta.id}: ${(err as Error).message}`);
+    }
+  }
 }
 
 async function convertVoice(opts: {
+  username:   string;
   profileId:  string;
   inputPath:  string;
   outputPath: string;
 }): Promise<string> {
-  const daemon = _getOrStartVcDaemon(opts.profileId);
+  const daemon = _getOrStartVcDaemon(opts.username, opts.profileId);
   const jobId  = crypto.randomUUID();
 
   return new Promise<string>((resolve, reject) => {
@@ -1309,6 +1602,7 @@ async function convertVoice(opts: {
 // Called by /api/audio/tts when voice starts with 'profile:'.
 
 export async function generateKokoroWithProfile(opts: KokoroOptions & {
+  username:  string;
   profileId: string;
 }): Promise<AudioGenerateResult> {
   const startMs = Date.now();
@@ -1323,6 +1617,7 @@ export async function generateKokoroWithProfile(opts: KokoroOptions & {
   );
 
   await convertVoice({
+    username:   opts.username,
     profileId:  opts.profileId,
     inputPath:  kokoroResult.outputPath,
     outputPath: vcOutputPath,

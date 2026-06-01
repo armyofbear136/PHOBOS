@@ -481,7 +481,7 @@ zoom   : ${data.zoom}
 scroll : ${data.scrollX}, ${data.scrollY}
 rect   : ${data.camX ?? '?'}, ${data.camY ?? '?'}
 cam.xy : ${data.vpX ?? '?'}, ${data.vpY ?? '?'}
-shop19 : ${data.shopX ?? '?'}, ${data.shopY ?? '?'}\nblocked: ${data.isBlocked ? '\u25a0 YES' : '\u25a1 no'}\nwalk   : ${data.walkable  ? '\u2713 yes' : '\u2717 NO'}`}
+shop19 : ${data.shopX ?? '?'}, ${data.shopY ?? '?'}\nblocked: ${data.isBlocked ? '\u25a0 YES' : '\u25a1 no'}\nwalk   : ${data.walkable  ? '\u2713 yes' : '\u2717 NO'}\n───────────────\nchar.w : ${data.playerWorldX ?? '?'}, ${data.playerWorldY ?? '?'}\nchar.t : ${data.playerTileX ?? '?'}, ${data.playerTileY ?? '?'}\nch.blk : ${data.playerBlocked ? '\u25a0 YES' : '\u25a1 no'}\nch.wlk : ${data.playerWalkable ? '\u2713 yes' : '\u2717 NO'}`}
     </div>
   );
 }

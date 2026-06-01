@@ -80,6 +80,21 @@ export class MeridianDB {
     this._syncDb = syncDb ?? db;
   }
 
+  get mediaDb(): DatabaseManager { return this.db; }
+
+  setSyncDb(db: DatabaseManager): void { this._syncDb = db; }
+
+  getSyncDb(): DatabaseManager { return this._syncDb; }
+
+  /** Delete all Meridian media DB rows for a user.
+   *  Called by deprovision before evicting the user DB.
+   *  The user-scoped DB (phobos_sync_* tables) is deleted wholesale by evictUser + rmSync. */
+  async deleteUserData(userId: string): Promise<void> {
+    await this.db.run('DELETE FROM meridian_files WHERE user_id = ?',     [userId]);
+    await this.db.run('DELETE FROM meridian_albums WHERE user_id = ?',    [userId]);
+    await this.db.run('DELETE FROM meridian_libraries WHERE user_id = ?', [userId]);
+  }
+
   async ensureSchema(): Promise<void> {
     for (const stmt of TABLES) await this.db.run(stmt);
   }

@@ -83,22 +83,22 @@ export function UserAuthGate({ passwordSet, onAuth }: Props) {
     if (e.key === 'Enter') passwordSet ? handleVerify() : handleSetup();
   };
 
-  const inputCls = 'w-full bg-background border border-border rounded px-3 py-2 text-sm ' +
-                   'text-foreground focus:outline-none focus:border-phobos-green/60 transition-colors';
+  const inputCls = 'w-full bg-phob-white/4 border border-phob-orange/25 px-3 py-2 text-sm text-phob-white ' +
+                   'text-foreground focus:outline-none focus:border-phob-green/60 transition-colors';
 
   return (
-    <div className="fixed inset-0 z-[9000] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-card border border-border rounded-lg shadow-2xl w-full max-w-sm mx-4 p-6">
+    <div className="fixed inset-0 z-[9000] flex items-center justify-center bg-phob-white/6 backdrop-blur-sm">
+      <div className="bg-[#0f0f0a] border border-phob-orange/30 shadow-[0_0_24px_rgba(232,66,10,0.10)] w-full max-w-sm mx-4 p-6 phob-corners">
         {/* Header */}
         <div className="flex items-center gap-3 mb-5">
-          <div className="p-2 rounded-md bg-phobos-green/10 text-phobos-green">
+          <div className="p-2  bg-phob-orange/10 text-phob-orange">
             <Lock className="w-4 h-4" />
           </div>
           <div>
             <h2 className="text-sm font-semibold text-foreground font-terminal tracking-wider">
               {passwordSet ? 'USER MANAGEMENT' : 'SET MANAGEMENT PASSWORD'}
             </h2>
-            <p className="text-xs text-muted-foreground mt-0.5">
+            <p className="text-xs text-phob-steel/50 mt-0.5">
               {passwordSet
                 ? 'Enter your management password to continue.'
                 : 'Create a password to protect user management.'}
@@ -110,7 +110,7 @@ export function UserAuthGate({ passwordSet, onAuth }: Props) {
         <div className="space-y-3">
           {!passwordSet && (
             <div>
-              <label className="block text-xs text-muted-foreground mb-1">New password</label>
+              <label className="block text-xs text-phob-steel/50 mb-1">New password</label>
               <div className="relative">
                 <input
                   ref={inputRef}
@@ -124,7 +124,7 @@ export function UserAuthGate({ passwordSet, onAuth }: Props) {
                 <button
                   type="button"
                   onClick={() => setShowPw(v => !v)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-phob-steel/50 hover:text-phob-white transition-colors"
                   tabIndex={-1}
                 >
                   {showPw ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
@@ -135,7 +135,7 @@ export function UserAuthGate({ passwordSet, onAuth }: Props) {
 
           {!passwordSet && (
             <div>
-              <label className="block text-xs text-muted-foreground mb-1">Confirm password</label>
+              <label className="block text-xs text-phob-steel/50 mb-1">Confirm password</label>
               <input
                 type={showPw ? 'text' : 'password'}
                 value={confirm}
@@ -149,7 +149,7 @@ export function UserAuthGate({ passwordSet, onAuth }: Props) {
 
           {passwordSet && (
             <div>
-              <label className="block text-xs text-muted-foreground mb-1">Password</label>
+              <label className="block text-xs text-phob-steel/50 mb-1">Password</label>
               <div className="relative">
                 <input
                   ref={inputRef}
@@ -163,7 +163,7 @@ export function UserAuthGate({ passwordSet, onAuth }: Props) {
                 <button
                   type="button"
                   onClick={() => setShowPw(v => !v)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-phob-steel/50 hover:text-phob-white transition-colors"
                   tabIndex={-1}
                 >
                   {showPw ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
@@ -173,15 +173,15 @@ export function UserAuthGate({ passwordSet, onAuth }: Props) {
           )}
 
           {error && (
-            <p className="text-xs text-red-400 mt-1">{error}</p>
+            <p className="text-xs text-phob-red mt-1">{error}</p>
           )}
 
           <button
             onClick={passwordSet ? handleVerify : handleSetup}
             disabled={submitting || !password || (!passwordSet && !confirm)}
             className="w-full mt-1 py-2 px-4 rounded text-xs font-terminal tracking-wider
-                       bg-phobos-green/10 border border-phobos-green/30 text-phobos-green
-                       hover:bg-phobos-green/20 hover:border-phobos-green/50
+                       bg-phob-green/10 border border-phob-green/30 text-phob-green
+                       hover:bg-phob-green/20 hover:border-phob-green/50
                        disabled:opacity-40 disabled:cursor-not-allowed transition-all
                        flex items-center justify-center gap-2"
           >

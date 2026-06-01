@@ -42,7 +42,7 @@ function CodeBlock({ language, children }: CodeBlockProps) {
           {copied ? 'copied' : 'copy'}
         </button>
       </div>
-      <pre className="overflow-x-auto scrollbar-thin p-0 m-0 bg-black/60">
+      <pre className="overflow-x-auto scrollbar-thin p-0 m-0 bg-phob-white/4">
         <code
           ref={ref}
           className={`hljs language-${language || 'plaintext'} text-[11px] leading-relaxed block p-3`}
@@ -73,7 +73,7 @@ export function MarkdownRenderer({ content }: Props) {
             return <CodeBlock language={lang}>{text}</CodeBlock>;
           }
           return (
-            <code className="px-1 py-0.5 rounded bg-muted/60 text-[11px] font-mono text-phobos-green/80 border border-border/30">
+            <code className="px-1 py-0.5 rounded bg-muted/60 text-[11px] font-mono text-phob-green/80 border border-phob-green/20">
               {children}
             </code>
           );
@@ -99,14 +99,14 @@ export function MarkdownRenderer({ content }: Props) {
         li({ children }) {
           return (
             <li className="text-sm flex gap-2 items-start">
-              <span className="text-phobos-green/40 mt-0.5 shrink-0">▸</span>
+              <span className="text-phob-orange/40 mt-0.5 shrink-0">▸</span>
               <span>{children}</span>
             </li>
           );
         },
         blockquote({ children }) {
           return (
-            <blockquote className="border-l-2 border-phobos-green/30 pl-3 my-2 text-muted-foreground/70 italic">
+            <blockquote className="border-l-2 border-phob-orange/30 pl-3 my-2 text-phob-steel/70 italic">
               {children}
             </blockquote>
           );
@@ -134,7 +134,7 @@ export function MarkdownRenderer({ content }: Props) {
           return <td className="border border-border/30 px-2 py-1">{children}</td>;
         },
         a({ href, children }) {
-          return <a href={href} target="_blank" rel="noopener noreferrer" className="text-phobos-green/70 underline underline-offset-2 hover:text-phobos-green transition-colors">{children}</a>;
+          return <a href={href} target="_blank" rel="noopener noreferrer" className="text-phob-orange/70 underline underline-offset-2 hover:text-phob-orange transition-colors">{children}</a>;
         },
       }}
     >

@@ -711,6 +711,11 @@ export async function buildForPlatform({
   const pyScripts = [
     ['phobos-diffusers.py', 'phobos-diffusers.py', 'PyTorch generation script'],
     ['phobos-lm-trainer.py', 'phobos-lm-trainer.py', 'LLM LoRA training script'],
+    ['phobos-tts-f5.py', 'phobos-tts-f5.py', 'F5-TTS voice cloning subprocess'],
+    ['phobos-music-acestep.py', 'phobos-music-acestep.py', 'ACE-Step GPU music generation subprocess'],
+    ['phobos-trainer.py', 'phobos-trainer.py', 'PluginTrainer training subprocess'],
+    ['phobos-convert.py', 'phobos-convert.py', 'ImageServerManager model conversion subprocess'],
+    ['phobos-caption.py', 'phobos-caption.py', 'CaptionProcessor captioning subprocess'],
     ['_torchcodec.py', '_torchcodec.py', 'torchaudio soundfile fallback patch'],
     ['unsloth_zoo_utils.py', 'unsloth_zoo_utils.py', 'unsloth_zoo ROCm torch.distributed patch'],
     ['phobos_rocm_patch.py', 'phobos_rocm_patch.py', 'ROCm Windows unsloth device_type startup patch'],
@@ -737,6 +742,18 @@ export async function buildForPlatform({
     log('  ✅ phobos-kokoro.mjs (Kokoro TTS subprocess script)');
   } else {
     log('  ⚠️  phobos-kokoro.mjs not found — Kokoro TTS will be unavailable');
+  }
+
+  // ── phobos-supertonic.mjs — Supertonic 3 TTS subprocess script ────────────
+  // Spawned by AudioServerManager as a standalone Node process. Uses
+  // onnxruntime-node directly (already staged to dist/node_modules/).
+  // ONNX model files are downloaded to dist/supertonic/ by DepPrep at boot.
+  const supertonicScriptSrc = path.join(__dirname, 'phobos', 'phobos-supertonic.mjs');
+  if (fs.existsSync(supertonicScriptSrc)) {
+    fs.copyFileSync(supertonicScriptSrc, path.join(distDir, 'phobos-supertonic.mjs'));
+    log('  ✅ phobos-supertonic.mjs (Supertonic 3 TTS subprocess script)');
+  } else {
+    log('  ⚠️  phobos-supertonic.mjs not found — Supertonic TTS will be unavailable');
   }
 
   // ── kokoro-js + @huggingface/transformers — staged to dist/node_modules/ ──

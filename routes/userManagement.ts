@@ -34,11 +34,12 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as crypto from 'node:crypto';
 import bcrypt      from 'bcryptjs';
 import { DatabaseManager, getActiveUser, writeActiveUser } from '../db/DatabaseManager.js';
+import { performUserSwitch } from '../server.js';
 import { encodeAccessCode, generateNonce, decodeAccessCode, isStructuredCode } from '../webrtc/AccessCodeEncoder.js';
 import { SecurityStore }                           from '../db/SecurityStore.js';
 import { UserStore, type UserRole }               from '../db/UserStore.js';
 import { UserServiceTokenStore }                   from '../db/UserServiceTokenStore.js';
-import { provisionSystemUser, deprovisionSystemUser, type ProvisionResult } from '../db/UserProvisioner.js';
+import { provisionSystemUser, deprovisionSystemUser, queryDeprovisionInventory, type ProvisionResult } from '../db/UserProvisioner.js';
 import {
   provisionUser  as jellyfinProvisionUser,
   deprovisionUser as jellyfinDeprovisionUser,
@@ -53,7 +54,9 @@ import {
 const SALT_ROUNDS    = 12;
 const SESSION_TTL_MS = 30 * 60 * 1000;   // 30 minutes
 
-const VALID_ROLES = new Set<UserRole>(['admin', 'full', 'guest', 'read']);
+// Roles the management panel can assign. 'admin' is excluded — only the
+// owner account holds admin, and it cannot be granted from the panel.
+const VALID_ROLES = new Set<UserRole>(['full', 'guest', 'read']);
 
 // ── In-memory session store ────────────────────────────────────────────────────
 
@@ -107,22 +110,26 @@ interface UserMgmtContext {
   systemDb:   ReturnType<typeof DatabaseManager.getInstance> | null;
   instanceId: string;
   relayUrl:   string;
+  port:       number;
 }
 
 let _ctx: UserMgmtContext = {
   systemDb:   null,
   instanceId: '',
   relayUrl:   '',
+  port:       3001,
 };
 
 export function setUserManagementContext(
   systemDb:   ReturnType<typeof DatabaseManager.getInstance>,
   instanceId: string,
   relayUrl:   string,
+  port:       number,
 ): void {
   _ctx.systemDb   = systemDb;
   _ctx.instanceId = instanceId;
   _ctx.relayUrl   = relayUrl;
+  _ctx.port       = port;
 }
 
 export async function registerUserManagementRoutes(
@@ -282,13 +289,9 @@ export async function registerUserManagementRoutes(
     if (role !== undefined && !VALID_ROLES.has(role as UserRole)) {
       return reply.status(400).send({ error: `role must be one of: ${[...VALID_ROLES].join(', ')}` });
     }
-    // Prevent demoting the last admin.
-    if (role && role !== 'admin' && username === 'owner') {
-      const allUsers = await userStore.list();
-      const adminCount = allUsers.filter(u => u.role === 'admin').length;
-      if (adminCount <= 1) {
-        return reply.status(409).send({ error: 'Cannot demote the last admin user' });
-      }
+    // Owner's role is permanent — cannot be changed from the panel.
+    if (role !== undefined && username === 'owner') {
+      return reply.status(403).send({ error: 'Cannot change the owner role' });
     }
     if (display_name !== undefined && (display_name.trim().length === 0 || display_name.length > 64)) {
       return reply.status(400).send({ error: 'display_name must be 1–64 characters' });
@@ -303,7 +306,37 @@ export async function registerUserManagementRoutes(
     return reply.send({ user: updated });
   });
 
+  // ── GET /api/admin/users/:username/deprovision-inventory — pre-flight query ─
+  // Returns what the user owns before any deletion so the UI can show a
+  // summary and present the preservation choice.
+
+  fastify.get('/api/admin/users/:username/deprovision-inventory', { preHandler: requireToken }, async (req, reply) => {
+    const { username } = req.params as { username: string };
+
+    if (username === 'owner') {
+      return reply.status(403).send({ error: 'The owner account cannot be deleted' });
+    }
+
+    const existing = await userStore.getByUsername(username);
+    if (!existing) return reply.status(404).send({ error: `User '${username}' not found` });
+
+    try {
+      const inventory = await queryDeprovisionInventory(username, systemDb);
+      return reply.send({ username, inventory });
+    } catch (err) {
+      return reply.status(500).send({ error: (err as Error).message });
+    }
+  });
+
   // ── DELETE /api/admin/users/:username — delete user [token required] ──────
+  // Body (optional): { preserveAll?: boolean }
+  //   preserveAll = true  → workspaces + library moved to lost-and-found
+  //   preserveAll = false → workspaces + library deleted (default)
+  // Plugins, cartridges, and weclone are always moved to lost-and-found
+  // regardless of preserveAll — they may be in use by other users.
+  //
+  // Response includes lostAndFoundPath and rescuedItems so the UI can show
+  // the persistent "Collect your protected user data here" banner.
 
   fastify.delete('/api/admin/users/:username', { preHandler: requireToken }, async (req, reply) => {
     const { username } = req.params as { username: string };
@@ -315,18 +348,23 @@ export async function registerUserManagementRoutes(
     const existing = await userStore.getByUsername(username);
     if (!existing) return reply.status(404).send({ error: `User '${username}' not found` });
 
-    // Block deleting the currently active user.
     if (username === getActiveUser()) {
       return reply.status(409).send({ error: 'Cannot delete the currently active user. Switch user first.' });
     }
 
-    await deprovisionSystemUser(username, systemDb, userStore);
+    const { preserveAll = false } = (req.body ?? {}) as { preserveAll?: boolean };
 
-    return reply.send({ ok: true, note: `User removed. Data dir at ~/.phobos/users/${username}/ was preserved.` });
+    const result = await deprovisionSystemUser(username, systemDb, userStore, preserveAll);
+
+    return reply.send({
+      ok:               true,
+      lostAndFoundPath: result.lostAndFoundPath,
+      rescuedItems:     result.rescuedItems,
+      message:          result.message,
+    });
   });
 
   // ── POST /api/admin/switch-user — switch active user [token required] ─────
-
   fastify.post('/api/admin/switch-user', { preHandler: requireToken }, async (req, reply) => {
     const { username } = req.body as { username?: string };
     if (!username) return reply.status(400).send({ error: 'username required' });
@@ -334,16 +372,19 @@ export async function registerUserManagementRoutes(
     const existing = await userStore.getByUsername(username);
     if (!existing) return reply.status(404).send({ error: `User '${username}' not found` });
 
-    // Write atomically before signalling restart so the new process reads it.
-    writeActiveUser(username);
-
     await userStore.stampLastActive(username);
 
-    // Signal the Electron shell to relaunch. process.exit(0) is the agreed
-    // restart contract — the Electron main process watches for clean exit and
-    // relaunches. Reply first so the frontend receives the 200 before teardown.
+    // Reply before switching so the frontend receives 200 before any teardown.
     reply.send({ ok: true, switchingTo: username });
-    setImmediate(() => process.exit(0));
+
+    setImmediate(async () => {
+      try {
+        const switchSecurityStore = new SecurityStore(_ctx.systemDb ?? DatabaseManager.getInstance());
+        await performUserSwitch(username, switchSecurityStore, _ctx.port);
+      } catch (err) {
+        console.error('[UserSwitch] Failed to switch user in-process:', err);
+      }
+    });
 
     return reply;
   });
@@ -369,12 +410,14 @@ export async function registerUserManagementRoutes(
     }
 
     try {
-      const kv = await kavitaProvisionUser(username);
+      const existingKavita = await tokenStore.getKavita().catch(() => null);
+      const kv = await kavitaProvisionUser(username, existingKavita?.password);
       await tokenStore.setKavita({
         user_id:       kv.userId,
         jwt:           kv.jwt,
         refresh_token: kv.refreshToken,
         api_key:       kv.apiKey,
+        password:      kv.password,
       });
       result.kavitaOk = true;
     } catch (err) {
@@ -486,5 +529,57 @@ export async function registerUserManagementRoutes(
       [nonce],
     );
     return reply.send({ ok: true });
+  });
+
+  // ── POST /api/user/invite — generate a guest invite code [full/admin/owner] ──
+  // Accessible to full and admin users without the admin panel password.
+  // guest and read roles are blocked by the server-level RBAC preHandler.
+
+  fastify.post('/api/user/invite', async (req, reply) => {
+    const role = (req.headers['x-webrtc-role'] as string | undefined)?.trim() ?? 'owner';
+    if (role === 'guest' || role === 'read') {
+      return reply.status(403).send({ error: 'Forbidden: insufficient role' });
+    }
+
+    const issuingUser = (req.headers['x-webrtc-user'] as string | undefined)?.trim() ?? getActiveUser();
+
+    const {
+      code_type        = 'guest',
+      expires_in_hours = 72,
+    } = (req.body ?? {}) as {
+      code_type?:        'guest' | 'self';
+      expires_in_hours?: number;
+    };
+
+    // full users may only issue guest codes — not self codes.
+    if (role === 'full' && code_type !== 'guest') {
+      return reply.status(403).send({ error: 'full users may only issue guest invite codes' });
+    }
+    if (!['guest', 'self'].includes(code_type)) {
+      return reply.status(400).send({ error: 'code_type must be guest or self' });
+    }
+
+    const nonce       = generateNonce();
+    const expiresAt   = new Date(Date.now() + expires_in_hours * 3_600_000);
+    const encoderType = code_type === 'self' ? 'OWN' : 'GST';
+    const encodedCode = encodeAccessCode(encoderType, _ctx.instanceId, _ctx.relayUrl, expiresAt, nonce);
+
+    await systemDb.execWithParams(
+      `INSERT INTO access_codes
+         (code, issuing_username, target_username, code_type, single_use, consumed, created_at, expires_at)
+       VALUES (?, ?, NULL, ?, true, false, now(), ?)`,
+      [nonce, issuingUser, code_type, expiresAt.toISOString()],
+    );
+
+    return reply.status(201).send({
+      code: {
+        nonce,
+        encoded_code:     encodedCode,
+        code_type,
+        issuing_username: issuingUser,
+        consumed:         false,
+        expires_at:       expiresAt.toISOString(),
+      },
+    });
   });
 }

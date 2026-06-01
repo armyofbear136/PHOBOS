@@ -130,6 +130,7 @@ import { playSourceOnPhobosSynth, stopAldaSequence } from '../phobos/AldaPlayer.
 import { playPolarisFile, getActiveSession, clearActiveSession } from '../phobos/PolarisHostPlayer.js';
 import {
   generateKokoro,
+  generateSupertonic,
   generateAceStep,
   generateF5Tts,
   transcribe,
@@ -176,9 +177,9 @@ const SESSION_EXTENSION = '.phobos-session';
  * for tests/CI. Lazy-creates the folder on first call so the user doesn't see
  * an error before they've ever saved.
  */
-function sessionsDir(): string {
+function sessionsDir(username: string): string {
   const root = process.env.PHOBOS_DATA_DIR ?? path.join(os.homedir(), '.phobos');
-  const dir  = path.join(root, 'media', 'efflux');
+  const dir  = path.join(root, 'media', 'efflux', username);
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -221,14 +222,16 @@ async function readSessionMeta(filePath: string): Promise<{ title: string; modif
 // ── Route registration ────────────────────────────────────────────────────────
 
 export async function registerAudioRoutes(fastify: FastifyInstance): Promise<void> {
-  const userDb         = DatabaseManager.getUserDb();
-  const systemDb       = DatabaseManager.getInstance();
-  const effectRack     = new EffectRackStore(userDb);
-  const dawProjects    = new DawProjectStore(userDb);
-  const pluginScanner  = new PluginScanner(systemDb);
-  await effectRack.ensureTable();
-  await dawProjects.ensureTable();
+  const systemDb      = DatabaseManager.getInstance();
+  const pluginScanner = new PluginScanner(systemDb);
   await pluginScanner.ensureTable();
+  // EffectRackStore and DawProjectStore schema init is deferred to
+  // resumeBootAfterSetup in server.ts, after the first-run gate, so
+  // getUserDb('owner') is never called before the owner account exists.
+  const getAudioStores = (req: import('fastify').FastifyRequest) => {
+    const userDb = DatabaseManager.getUserDb(req.phobosUser);
+    return { effectRack: new EffectRackStore(userDb), dawProjects: new DawProjectStore(userDb) };
+  };
 
   // Deep-probe hook — promotes shallow rows (moduleinfo missing) to deep
   // by asking PhobosHost to load the .vst3 factory and read PClassInfo.
@@ -748,6 +751,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
   fastify.get<{
     Querystring: { context?: string };
   }>('/api/audio/effect-rack/presets', async (req, reply) => {
+    const { effectRack } = getAudioStores(req);
     const context = req.query.context as EffectContext | undefined;
     const rows    = await effectRack.list(context);
     return reply.send({ presets: rows });
@@ -757,6 +761,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     Body: Omit<EffectPreset, 'created_at' | 'updated_at'>;
   }>('/api/audio/effect-rack/presets', async (req, reply) => {
     try {
+      const { effectRack } = getAudioStores(req);
       const saved = await effectRack.upsert(req.body);
       return reply.send({ ok: true, preset: saved });
     } catch (err) {
@@ -786,6 +791,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     }
 
     try {
+      const { effectRack } = getAudioStores(req);
       const preset = await effectRack.get(id);
       if (!preset) {
         return reply.status(404).send({ error: `preset '${id}' not found` });
@@ -812,6 +818,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
   fastify.delete<{
     Params: { id: string };
   }>('/api/audio/effect-rack/presets/:id', async (req, reply) => {
+    const { effectRack } = getAudioStores(req);
     const ok = await effectRack.delete(req.params.id);
     if (!ok) return reply.status(409).send({ error: 'Preset not found or is a factory preset' });
     return reply.send({ ok: true });
@@ -822,6 +829,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
   fastify.get<{
     Querystring: { thread_id?: string };
   }>('/api/audio/daw/projects', async (req, reply) => {
+    const { dawProjects } = getAudioStores(req);
     const threadId = req.query.thread_id ?? undefined;
     const rows = await dawProjects.list(threadId);
     return reply.send({ projects: rows });
@@ -830,6 +838,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
   fastify.get<{
     Params: { id: string };
   }>('/api/audio/daw/projects/:id', async (req, reply) => {
+    const { dawProjects } = getAudioStores(req);
     const p = await dawProjects.get(req.params.id);
     if (!p) return reply.status(404).send({ error: 'Project not found' });
     return reply.send(p);
@@ -838,6 +847,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
   fastify.post<{
     Body: { id: string; name: string; xtk: unknown; thread_id?: string | null };
   }>('/api/audio/daw/projects', async (req, reply) => {
+    const { dawProjects } = getAudioStores(req);
     const { id, name, xtk } = req.body;
     const threadId = req.body.thread_id ?? null;
     if (!id || !name || xtk == null) {
@@ -876,7 +886,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
         return reply.status(400).send({ error: 'content is required' });
       }
 
-      const targetPath = path.join(sessionsDir(), safeName);
+      const targetPath = path.join(sessionsDir(req.phobosUser), safeName);
       if (fs.existsSync(targetPath) && !allowOverwrite) {
         return reply.status(409).send({ error: 'exists' });
       }
@@ -894,9 +904,9 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
    * `meta.title`, and the file's mtime. Files that fail to parse are
    * silently skipped — a single corrupt file shouldn't break the picker.
    */
-  fastify.get('/api/audio/daw/sessions', async (_req, reply) => {
+  fastify.get('/api/audio/daw/sessions', async (req, reply) => {
     try {
-      const dir   = sessionsDir();
+      const dir   = sessionsDir(req.phobosUser);
       const names = await fsp.readdir(dir);
 
       const sessionFiles: string[] = [];
@@ -929,7 +939,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
       if (!safeName) {
         return reply.status(400).send({ error: 'invalid filename' });
       }
-      const filePath = path.join(sessionsDir(), safeName);
+      const filePath = path.join(sessionsDir(req.phobosUser), safeName);
       if (!fs.existsSync(filePath)) {
         return reply.status(404).send({ error: 'not found' });
       }
@@ -955,9 +965,9 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
    * routes/kavitaIngestRoutes.ts:260 has the same latent issue but isn't
    * in scope here.)
    */
-  fastify.post('/api/audio/daw/sessions/open-folder', async (_req, reply) => {
+  fastify.post('/api/audio/daw/sessions/open-folder', async (req, reply) => {
     try {
-      const dir = sessionsDir();
+      const dir = sessionsDir(req.phobosUser);
       if (process.platform === 'win32') {
         try {
           await execFileAsync('explorer', [dir]);
@@ -1312,13 +1322,75 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     }
   });
 
+  // ── POST /api/audio/pick-ref ───────────────────────────────────────────────
+  //
+  // Opens the native OS file picker filtered for audio files. The selected file
+  // is copied into audioUploadsDir server-side — no HTTP upload stream needed.
+  // Returns { serverPath } on success, { serverPath: null } if the user cancelled.
+  // This avoids the CORS/header issues of the browser upload path entirely.
+
+  fastify.post('/api/audio/pick-ref', async (_req, reply) => {
+    const AUDIO_FILTER_WIN  = 'Audio files|*.wav;*.mp3;*.flac;*.ogg;*.m4a|All files (*.*)|*.*';
+    let   selectedPath: string | null = null;
+
+    try {
+      if (process.platform === 'win32') {
+        const tmpPs1 = path.join(os.tmpdir(), `phobos-ref-pick-${Date.now()}.ps1`);
+        const ps1 = [
+          'Add-Type -AssemblyName System.Windows.Forms',
+          '[System.Windows.Forms.Application]::EnableVisualStyles()',
+          '$f = New-Object System.Windows.Forms.Form',
+          '$f.TopMost = $true; $f.ShowInTaskbar = $false',
+          '$f.WindowState = [System.Windows.Forms.FormWindowState]::Minimized',
+          '$f.Show(); $f.Hide()',
+          '$d = New-Object System.Windows.Forms.OpenFileDialog',
+          `$d.Filter = "${AUDIO_FILTER_WIN}"`,
+          '$d.Title = "Select a voice recording"',
+          '$d.Multiselect = $false',
+          'if ($d.ShowDialog($f) -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.FileName }',
+          '$f.Dispose()',
+        ].join('\r\n');
+        try {
+          fs.writeFileSync(tmpPs1, ps1, 'utf-8');
+          const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', tmpPs1]);
+          selectedPath = stdout.trim() || null;
+        } finally { try { fs.unlinkSync(tmpPs1); } catch { /* ignore */ } }
+
+      } else if (process.platform === 'darwin') {
+        const { stdout } = await execFileAsync('osascript', [
+          '-e', 'POSIX path of (choose file of type {"wav","mp3","flac","ogg","m4a"} with prompt "Select a voice recording")',
+        ]);
+        selectedPath = stdout.trim() || null;
+
+      } else {
+        const { stdout } = await execFileAsync('zenity', [
+          '--file-selection',
+          '--title=Select a voice recording',
+          '--file-filter=Audio files | *.wav *.mp3 *.flac *.ogg *.m4a',
+        ]);
+        selectedPath = stdout.trim() || null;
+      }
+    } catch { /* user cancelled */ }
+
+    if (!selectedPath) return reply.send({ serverPath: null });
+
+    // Copy into audioUploadsDir so downstream code has a stable server-owned path
+    const ext        = path.extname(selectedPath).toLowerCase() || '.wav';
+    const serverPath = path.join(audioUploadsDir, `ref-${crypto.randomUUID()}${ext}`);
+    fs.mkdirSync(audioUploadsDir, { recursive: true });
+    fs.copyFileSync(selectedPath, serverPath);
+    return reply.send({ serverPath });
+  });
+
   // ── GET /api/audio/voices ──────────────────────────────────────────────────
   //
-  // Lists installed Kokoro voice profiles by scanning dist/kokoro/voices/*.bin.
-  // Returns the stem names (e.g. 'af_heart') — the client passes these back
-  // as the `voice` param on /api/audio/tts.
+  // Lists installed Kokoro voice profiles and bundled Supertonic voice IDs.
+  // Returns:
+  //   kokoro:     string[]          — Kokoro voice stems (e.g. 'af_heart')
+  //   supertonic: string[]          — Supertonic voice IDs (M1–M5, F1–F5)
+  //   profiles:   VoiceProfileMeta[] — user-trained voice profiles (Kokoro + VC)
 
-  fastify.get('/api/audio/voices', async (_req, reply) => {
+  fastify.get('/api/audio/voices', async (req, reply) => {
     const voicesDir = path.join(resolveBinDir(), 'kokoro', 'voices');
     let kokoro: string[] = ['af_heart'];
     try {
@@ -1330,8 +1402,15 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
         if (files.length > 0) kokoro = files;
       }
     } catch { /* use default */ }
-    const profiles = listVoiceProfiles();
-    return reply.send({ kokoro, profiles });
+
+    // Supertonic voices are static — they are bundled as JSON files in
+    // dist/supertonic/voice_styles/. The model file presence indicates the
+    // full set is available. We always return all 10; the client greys them
+    // out when dep-status.supertonic is false.
+    const supertonicVoiceIds = ['M1', 'M2', 'M3', 'M4', 'M5', 'F1', 'F2', 'F3', 'F4', 'F5'];
+
+    const profiles = listVoiceProfiles(req.phobosUser);
+    return reply.send({ kokoro, supertonic: supertonicVoiceIds, profiles });
   });
 
   // ── GET /api/audio/dep-status ──────────────────────────────────────────────
@@ -1356,6 +1435,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     const aceStepGpu    = gpuVenvReady && snapshotReady;
 
     return reply.send({
+      supertonic: fs.existsSync(path.join(binDir, 'supertonic', 'vector_estimator.onnx')),
       kokoro:     fs.existsSync(path.join(binDir, 'kokoro', 'onnx', 'model_quantized.onnx')),
       whisper:    fs.existsSync(path.join(binDir, `whisper-cli${ext}`)),
       aceStep:    aceLmExists || aceStepGpu,  // true if either route is available
@@ -1424,16 +1504,20 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
 
   // ── POST /api/audio/tts ────────────────────────────────────────────────────
   //
-  // Synthesizes speech via Kokoro (in-process ONNX, ~1–2s).
+  // Synthesizes speech via Supertonic (default) or Kokoro (override).
   // Streams SSE progress events; final event carries outputPath.
   //
   // Body:
-  //   text      string   — text to synthesize (required)
-  //   voice     string?  — voice stem, e.g. 'af_heart' (default: 'af_heart')
-  //   speed     number?  — playback speed multiplier (default: 1.0)
-  //   threadId  string   — workspace thread for output path (required)
-  //   playback  string?  — 'browser' (default) | 'host'
-  //                        'host' also plays via PhobosHost player after synthesis
+  //   text        string   — text to synthesize (required)
+  //   ttsBackend  string?  — 'supertonic' (default) | 'kokoro'
+  //   voice       string?  — Supertonic: 'M1'–'M5'/'F1'–'F5' (default 'M1')
+  //                          Kokoro: voice stem e.g. 'af_heart' (default 'af_heart')
+  //                          Kokoro profile: 'profile:<id>'
+  //   lang        string?  — Supertonic language code or 'na' (default 'na')
+  //   speed       number?  — speed multiplier (default: engine-specific)
+  //   steps       number?  — Supertonic denoising steps 5–12 (default 8)
+  //   threadId    string   — workspace thread for output path (required)
+  //   playback    string?  — 'browser' (default) | 'host'
   //
   // SSE events:
   //   { type: 'progress', message: string }
@@ -1442,14 +1526,17 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
 
   fastify.post<{
     Body: {
-      text: string;
-      voice?: string;
-      speed?: number;
-      threadId: string;
-      playback?: 'browser' | 'host';
+      text:        string;
+      ttsBackend?: 'supertonic' | 'kokoro';
+      voice?:      string;
+      lang?:       string;
+      speed?:      number;
+      steps?:      number;
+      threadId:    string;
+      playback?:   'browser' | 'host';
     };
   }>('/api/audio/tts', async (req, reply) => {
-    const { text, voice, speed, threadId, playback } = req.body ?? {};
+    const { text, ttsBackend, voice, lang, speed, steps, threadId, playback } = req.body ?? {};
 
     if (typeof text !== 'string' || text.trim().length === 0) {
       return reply.status(400).send({ error: '"text" is required' });
@@ -1465,33 +1552,53 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     req.raw.socket?.on('close', () => abort.abort());
 
     try {
-      // Route to voice-profile pipeline when voice starts with 'profile:'
+      const backend = ttsBackend ?? 'supertonic';
+
+      // 'profile:' prefix always routes to Kokoro + VC pipeline regardless of backend
       const isProfile = typeof voice === 'string' && voice.startsWith('profile:');
       const profileId = isProfile ? voice.slice('profile:'.length) : undefined;
 
-      const result = isProfile
-        ? await generateKokoroWithProfile({
-            threadId,
-            text:      text.trim(),
-            speed:     typeof speed === 'number' ? speed : 1.0,
-            label:     'copilot-tts',
-            signal:    abort.signal,
-            profileId: profileId!,
-            onProgress: (line) => {
-              if (!abort.signal.aborted) sseWrite(reply, { type: 'progress', message: line });
-            },
-          })
-        : await generateKokoro({
-            threadId,
-            text:  text.trim(),
-            voice: voice ?? 'af_heart',
-            speed: typeof speed === 'number' ? speed : 1.0,
-            label: 'copilot-tts',
-            signal: abort.signal,
-            onProgress: (line) => {
-              if (!abort.signal.aborted) sseWrite(reply, { type: 'progress', message: line });
-            },
-          });
+      let result;
+      if (isProfile) {
+        result = await generateKokoroWithProfile({
+          threadId,
+          text:       text.trim(),
+          speed:      typeof speed === 'number' ? speed : 1.0,
+          label:      'copilot-tts',
+          signal:     abort.signal,
+          username:   req.phobosUser,
+          profileId:  profileId!,
+          onProgress: (line) => {
+            if (!abort.signal.aborted) sseWrite(reply, { type: 'progress', message: line });
+          },
+        });
+      } else if (backend === 'kokoro') {
+        result = await generateKokoro({
+          threadId,
+          text:       text.trim(),
+          voice:      voice ?? 'af_heart',
+          speed:      typeof speed === 'number' ? speed : 1.0,
+          label:      'copilot-tts',
+          signal:     abort.signal,
+          onProgress: (line) => {
+            if (!abort.signal.aborted) sseWrite(reply, { type: 'progress', message: line });
+          },
+        });
+      } else {
+        result = await generateSupertonic({
+          threadId,
+          text:       text.trim(),
+          voice:      voice ?? 'M1',
+          lang:       typeof lang === 'string' ? lang : 'na',
+          speed:      typeof speed === 'number' ? speed : 1.05,
+          steps:      typeof steps === 'number' ? steps : 8,
+          label:      'copilot-tts',
+          signal:     abort.signal,
+          onProgress: (line) => {
+            if (!abort.signal.aborted) sseWrite(reply, { type: 'progress', message: line });
+          },
+        });
+      }
 
       // Optional host playback — route through PhobosHost player so Crystal FX applies
       let audioId: number | undefined;
@@ -1513,6 +1620,47 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     } finally {
       reply.raw.end();
     }
+  });
+
+  // ── GET /api/audio/serve ───────────────────────────────────────────────────
+  //
+  // Streams a synthesized audio file by server-local path.
+  // Used by the mobile app — /api/audio/tts returns a filesystem path that the
+  // mobile WebView can't open directly; this endpoint bridges the gap.
+  //
+  // Query params:
+  //   path  string  — absolute server path to the .wav file (URL-encoded)
+  //
+  // Security: path must be inside the OS temp directory or the phobos audio
+  // workspace directory. Any other path is rejected with 403.
+
+  fastify.get<{ Querystring: { path?: string } }>('/api/audio/serve', async (req, reply) => {
+    const filePath = req.query.path;
+    if (typeof filePath !== 'string' || !filePath) {
+      return reply.status(400).send({ error: '"path" query param is required' });
+    }
+
+    const resolved  = path.resolve(filePath);
+    const tmpDir    = path.resolve(os.tmpdir());
+    const audioDir  = path.resolve(path.join(os.homedir(), '.phobos', 'audio'));
+
+    const allowed = resolved.startsWith(tmpDir) || resolved.startsWith(audioDir);
+    if (!allowed) {
+      return reply.status(403).send({ error: 'Path not in allowed audio directory' });
+    }
+
+    if (!fs.existsSync(resolved)) {
+      return reply.status(404).send({ error: 'Audio file not found' });
+    }
+
+    const stat = fs.statSync(resolved);
+    reply.header('Content-Type', 'audio/wav');
+    reply.header('Content-Length', stat.size.toString());
+    reply.header('Cache-Control', 'no-store');
+    reply.header('Access-Control-Allow-Origin', '*');
+
+    const stream = fs.createReadStream(resolved);
+    return reply.send(stream);
   });
 
   // ── POST /api/audio/transcribe ─────────────────────────────────────────────
@@ -1922,6 +2070,7 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
 
     try {
       const profile = await createVoiceProfile({
+        username: req.phobosUser,
         refAudioPath,
         name:     name.trim(),
         refText:  typeof refText === 'string' ? refText.trim() : undefined,
@@ -1946,8 +2095,8 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
   // Lists all voice profiles in ~/.phobos/voice-profiles/.
   // Returns: { profiles: VoiceProfileMeta[] }
 
-  fastify.get('/api/audio/voice-profiles', async (_req, reply) => {
-    return reply.send({ profiles: listVoiceProfiles() });
+  fastify.get('/api/audio/voice-profiles', async (req, reply) => {
+    return reply.send({ profiles: listVoiceProfiles(req.phobosUser) });
   });
 
   // ── DELETE /api/audio/voice-profiles/:id ──────────────────────────────────
@@ -1958,8 +2107,8 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
     '/api/audio/voice-profiles/:id',
     async (req, reply) => {
       const { id } = req.params;
-      if (!getVoiceProfile(id)) return reply.status(404).send({ error: 'Profile not found' });
-      deleteVoiceProfile(id);
+      if (!getVoiceProfile(req.phobosUser, id)) return reply.status(404).send({ error: 'Profile not found' });
+      deleteVoiceProfile(req.phobosUser, id);
       return reply.send({ ok: true });
     },
   );

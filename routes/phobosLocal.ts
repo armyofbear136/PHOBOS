@@ -19,6 +19,7 @@ import {
   getSpec,
   deleteModel,
   deleteFluxModel,
+  deleteImageModelHfCache,
   GGUF_CATALOGUE,
   MODELS_DIR,
   FLUX_CATALOGUE,
@@ -724,8 +725,29 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
         gpuCompat,
         // Pre-converted diffusers directory exists — from_pretrained path available
         pytorchVariantReady: getPytorchVariantDir(spec.modelId) !== null,
+        pytorchVariantSizeBytes: (() => {
+          const vdir = getPytorchVariantDir(spec.modelId);
+          if (!vdir) return 0;
+          // Walk the variant dir and sum all file sizes.
+          let total = 0;
+          const stack = [vdir];
+          while (stack.length) {
+            const cur = stack.pop()!;
+            try {
+              for (const ent of require('fs').readdirSync(cur, { withFileTypes: true })) {
+                const full = require('path').join(cur, ent.name);
+                if (ent.isDirectory()) { stack.push(full); }
+                else { try { total += require('fs').statSync(full).size; } catch {} }
+              }
+            } catch {}
+          }
+          return total;
+        })(),
         // CivitAI-only models: frontend shows "requires CivitAI token" when no token is set
         ...(spec.civitaiVersionId ? { civitaiVersionId: spec.civitaiVersionId } : {}),
+        // HF-native models (SANA): expose configRepo + pytorchOnly for frontend gating
+        ...(spec.configRepo  ? { configRepo:   spec.configRepo  } : {}),
+        ...(spec.pytorchOnly ? { pytorchOnly:  spec.pytorchOnly } : {}),
       };
     });
 
@@ -874,8 +896,78 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       const fs = await import('fs');
       if (!fs.existsSync(p)) return reply.status(404).send({ error: 'File not found' });
       fs.unlinkSync(p);
+      deleteImageModelHfCache(req.params.modelId);
       return reply.send({ ok: true });
     }
+  );
+
+  // DELETE /api/phobos/image/pytorch/:modelId
+  // Deletes the pre-converted diffusers directory for a model.
+  // Does NOT delete the source GGUF file — those are tracked separately.
+  fastify.delete<{ Params: { modelId: string } }>(
+    '/api/phobos/image/pytorch/:modelId',
+    async (req, reply) => {
+      const { modelId } = req.params;
+      const variantDir = getPytorchVariantDir(modelId);
+      if (!variantDir) return reply.status(404).send({ error: 'No pytorch variant found for this model' });
+      const fs   = await import('fs');
+      const path = await import('path');
+      // Safety: must be inside the pytorch root
+      const root = path.join(require('os').homedir(), '.phobos', 'models', 'image', 'pytorch');
+      if (!variantDir.startsWith(root)) {
+        return reply.status(400).send({ error: 'Variant dir outside expected root' });
+      }
+      fs.rmSync(variantDir, { recursive: true, force: true });
+      // Clean HF cache only if the GGUF is also gone -- if GGUF still
+      // exists the cache is still needed for generation.
+      const _delSpec = getImageModelSpec(modelId);
+      if (_delSpec) {
+        const _ggufPath = fluxModelPath(_delSpec);
+        if (!require('fs').existsSync(_ggufPath)) deleteImageModelHfCache(modelId);
+      }
+      return reply.send({ ok: true });
+    }
+  );
+
+  // POST /api/phobos/image/prefetch — trigger HF snapshot for pytorch-native models (SANA).
+  // Runs huggingface_hub.snapshot_download in the background; SSE progress not needed since
+  // the model loads on first generation anyway. This just pre-warms the cache.
+  fastify.post(
+    '/api/phobos/image/prefetch',
+    async (req, reply) => {
+      const { modelId } = req.body as { modelId: string };
+      const spec = getImageModelSpec(modelId);
+      if (!spec?.configRepo) {
+        return reply.status(400).send({ error: 'Not a prefetchable model' });
+      }
+      const vendor = ((req.body as any).vendor ?? 'cuda') as Parameters<typeof getPythonPath>[0];
+      if (!isVendorReady(vendor)) {
+        return reply.status(503).send({ error: 'PyTorch venv not installed' });
+      }
+      const pythonExe = getPythonPath(vendor);
+      if (!pythonExe) {
+        return reply.status(503).send({ error: 'PyTorch venv not installed' });
+      }
+      // Fire-and-forget — the frontend polls isImageModelDownloaded (HF cache sentinel) for completion.
+      const { spawn } = require('child_process');
+      const child = spawn(pythonExe, [
+        '-c',
+        `import os; os.environ['HF_HOME'] = os.path.join(os.path.expanduser('~'), '.phobos', 'hf-cache'); `
+        + `from huggingface_hub import snapshot_download; `
+        + `snapshot_download('${spec.configRepo}', ignore_patterns=['*.bin', '*.pt', '*.gguf']); `
+        + `print('prefetch_done:${modelId}', flush=True)`,
+      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+      child.stdout?.on('data', (d: Buffer) => {
+        const s = d.toString().trim();
+        if (s.startsWith('prefetch_done:')) {
+          console.log(`[phobosLocal] HF prefetch complete: ${modelId}`);
+        }
+      });
+      child.stderr?.on('data', (d: Buffer) => {
+        console.warn(`[phobosLocal] HF prefetch warning (${modelId}):`, d.toString().trim());
+      });
+      return reply.send({ ok: true, message: 'Prefetch started' });
+    },
   );
 
   // DELETE /api/phobos/image/download/cancel?modelId=<id>
@@ -925,7 +1017,7 @@ export async function phobosLocalRoute(fastify: FastifyInstance): Promise<void> 
       const RUNNER_TO_CONVERT_TYPE: Record<string, ConvertModelType> = {
         'sdxl':       'sdxl',
         'flux':       spec.variant === 'chroma' ? 'chroma' : 'flux',
-        'kontext':    'kontext',
+        'flux1-kontext': 'kontext',
         'wan':        'wan',
         'qwen-image': 'qwen-image',
         'z-image':    'z-image',

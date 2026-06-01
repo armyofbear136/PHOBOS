@@ -385,6 +385,7 @@ export function resolveLatestLmCheckpoint(sessionId: string): string | null {
 export function startLmTraining(
   sessionId: string,
   cartridgeStore: import('../db/CartridgeStore.js').CartridgeStore,
+  owner_username: string = 'owner',
 ): { ok: true } | { ok: false; error: string } {
   if (_activeProc || _activeSessionId) {
     return { ok: false, error: 'Another LM training session is active' };
@@ -672,7 +673,7 @@ export function startLmTraining(
       _lmRunStatus.session = session;
 
       try {
-        const record = await _packageCartridge(session, cartridgeStore);
+        const record = await _packageCartridge(session, cartridgeStore, owner_username);
         session = updateSession(sessionId, {
           status:        'done',
           cartridge_id:  record.id,
@@ -762,6 +763,7 @@ export function abortLmTraining(sessionId: string): void {
 async function _packageCartridge(
   session: LmTrainingSession,
   store: import('../db/CartridgeStore.js').CartridgeStore,
+  owner_username: string,
 ): Promise<import('./CartridgeTypes.js').CartridgeRecord> {
   const spec = getSpec(session.base_model_id);
 
@@ -804,6 +806,8 @@ async function _packageCartridge(
     samplePaths,
     session.password || PHOBOS_DEFAULT_CART_PASSWORD,
     session.add_license,
+    'user',
+    owner_username,
   );
 }
 

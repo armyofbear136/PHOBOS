@@ -138,6 +138,13 @@ export interface GpuDevice {
    */
   wmiPosition?: number;
   /**
+   * PCI vendor and device IDs parsed from WMI PNPDeviceID (Windows) or sysfs (Linux).
+   * Uppercase 4-char hex strings, e.g. '10DE', '1002', '8086'.
+   * Null when not available (virtual adapters, Apple Silicon, pre-PCI-ID builds).
+   */
+  pciVendorId?: string;
+  pciDeviceId?: string;
+  /**
    * Runner profile — computed by detectHardware() after all GPUs are assembled.
    * Contains everything needed to spawn llama-server and sd-cli on this device.
    * Undefined only on cpu-fallback placeholder entries.
@@ -216,7 +223,7 @@ async function detectNonNvidiaGpus(): Promise<GpuDevice[]> {
       `    $qw = (Get-ItemProperty $rk.PSPath -Name 'HardwareInformation.qwMemorySize' -ErrorAction SilentlyContinue).'HardwareInformation.qwMemorySize'; ` +
       `    if ($qw -and [uint64]$qw -gt $qwVram) { $qwVram = [uint64]$qw; $hasQw = $true } ` +
       `  }; ` +
-      `  $results += @{ Name = $a.Name; AdapterRamBytes = $adapterRam; QwVramBytes = $qwVram; HasQwMemory = $hasQw } ` +
+      `  $results += @{ Name = $a.Name; AdapterRamBytes = $adapterRam; QwVramBytes = $qwVram; HasQwMemory = $hasQw; PNPDeviceID = $a.PNPDeviceID } ` +
       `}; ` +
       `$results | ConvertTo-Json -Compress`,
     ], { timeout: 15_000 });
@@ -234,6 +241,12 @@ async function detectNonNvidiaGpus(): Promise<GpuDevice[]> {
     for (let i = 0; i < items.length; i++) {
       const item         = items[i];
       const name         = String(item.Name ?? 'Unknown GPU');
+      // Parse PCI vendor+device ID from PNPDeviceID for later vulkaninfo matching.
+      // Format: PCI\VEN_10DE&DEV_2206&SUBSYS_...
+      const pnpId = String(item.PNPDeviceID ?? '');
+      const pciMatch = pnpId.match(/VEN_([0-9A-Fa-f]{4})&DEV_([0-9A-Fa-f]{4})/i);
+      const pciVendorId = pciMatch ? pciMatch[1].toUpperCase() : undefined;
+      const pciDeviceId = pciMatch ? pciMatch[2].toUpperCase() : undefined;
       const hasQwMemory  = Boolean(item.HasQwMemory);
       const qwVramBytes  = Number(item.QwVramBytes ?? 0);
       const adapterBytes = Number(item.AdapterRamBytes ?? 0);
@@ -325,11 +338,14 @@ async function detectNonNvidiaGpus(): Promise<GpuDevice[]> {
         backend:       'vulkan',
         unifiedMemory: unifiedMemory ?? undefined,
         wmiPosition:   vulkanVisiblePosition,
+        pciVendorId,
+        pciDeviceId,
       });
       nonNvidiaIdx++;
     }
     return gpus;
-  } catch {
+  } catch (err: unknown) {
+    console.error('[HW] detectNonNvidiaGpus WMI query failed:', (err as Error)?.message ?? err);
     return [];
   }
 }
@@ -544,6 +560,106 @@ function _isRocmAvailable(): boolean {
  */
 // Cache the Vulkan enumeration result — spawning the binary is slow and the
 // Vulkan device list doesn't change between model switches within a session.
+// ── PCI ID Vulkan matching via vulkaninfo ─────────────────────────────────────
+
+interface VulkanDeviceInfo {
+  index:    number;   // GPU0=0, GPU1=1, ...
+  vendorId: string;   // uppercase hex e.g. '10DE'
+  deviceId: string;   // uppercase hex e.g. '2206'
+  name:     string;
+}
+
+let _vulkanInfoCache: VulkanDeviceInfo[] | null = null;
+
+/**
+ * Runs `vulkaninfo --summary` and parses the GPU0:/GPU1:/... device blocks.
+ * Returns vendor+device IDs in the same Vulkan enumeration order that
+ * GGML_VK_VISIBLE_DEVICES uses. Result is cached for the session.
+ *
+ * vulkaninfo ships with GPU drivers on Windows (NVIDIA installs it, AMD
+ * installs it via the Vulkan runtime). It's the most reliable source of
+ * vendor+device IDs mapped to Vulkan indices on Windows.
+ *
+ * Example output block:
+ *   GPU0:
+ *     vendorID  = 0x10de
+ *     deviceID  = 0x2206
+ *     deviceName = NVIDIA GeForce RTX 3080
+ */
+async function parseVulkanInfo(): Promise<VulkanDeviceInfo[]> {
+  if (_vulkanInfoCache) return _vulkanInfoCache;
+  const devices: VulkanDeviceInfo[] = [];
+  try {
+    const result = await execFileAsync('vulkaninfo', ['--summary'], {
+      timeout: 5_000,
+      killSignal: 'SIGKILL',
+      env: { ...process.env, GGML_VK_VISIBLE_DEVICES: '' },
+    }).catch((err: any) => ({
+      stdout: (err as any).stdout ?? '',
+      stderr: (err as any).stderr ?? '',
+    }));
+
+    // Combine stdout+stderr — vulkaninfo prints warnings to stderr but data to stdout.
+    const output = (result.stdout ?? '') + '\n' + (result.stderr ?? '');
+
+    // Split into per-GPU blocks: "GPU0:\n  field = value\n  ...\nGPU1:\n ..."
+    const blocks = output.split(/^GPU\d+:/m).slice(1);
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i];
+      const vendorMatch = block.match(/vendorID\s*=\s*0x([0-9a-fA-F]+)/);
+      const deviceMatch = block.match(/deviceID\s*=\s*0x([0-9a-fA-F]+)/);
+      const nameMatch   = block.match(/deviceName\s*=\s*(.+)/);
+      if (!vendorMatch || !deviceMatch) continue;
+      devices.push({
+        index:    i,
+        vendorId: vendorMatch[1].toUpperCase().padStart(4, '0'),
+        deviceId: deviceMatch[1].toUpperCase().padStart(4, '0'),
+        name:     nameMatch ? nameMatch[1].trim() : `GPU${i}`,
+      });
+    }
+    if (devices.length > 0) {
+      console.log(`[HW] vulkaninfo PCI IDs: ${devices.map(d => `${d.index}=${d.vendorId}:${d.deviceId} (${d.name})`).join(', ')}`);
+    }
+  } catch {
+    // vulkaninfo not installed — fall through to name-match fallback.
+  }
+  _vulkanInfoCache = devices;
+  return devices;
+}
+
+/**
+ * Assigns vulkanIndex to non-NVIDIA GPUs using PCI vendor+device ID matching.
+ * Matches each GpuDevice's pciVendorId/pciDeviceId against the vulkaninfo
+ * device list. This is immune to GPU name string changes across driver updates.
+ *
+ * Returns true if all non-NVIDIA Vulkan GPUs were matched by PCI ID.
+ * Returns false if any GPU was unmatched (caller falls back to name-match).
+ */
+function assignVulkanIndexViaPciId(
+  gpus:    GpuDevice[],
+  vulkan:  VulkanDeviceInfo[],
+): boolean {
+  if (vulkan.length === 0) return false;
+
+  let allMatched = true;
+  for (const gpu of gpus) {
+    if (gpu.backend !== 'vulkan') continue;
+    if (!gpu.pciVendorId || !gpu.pciDeviceId) { allMatched = false; continue; }
+
+    const match = vulkan.find(
+      v => v.vendorId === gpu.pciVendorId && v.deviceId === gpu.pciDeviceId,
+    );
+    if (match) {
+      (gpu as any)._pciVulkanIndex = match.index;
+      console.log(`[HW] PCI match: ${gpu.name} VEN=${gpu.pciVendorId} DEV=${gpu.pciDeviceId} -> Vulkan${match.index}`);
+    } else {
+      console.log(`[HW] PCI unmatched: ${gpu.name} VEN=${gpu.pciVendorId} DEV=${gpu.pciDeviceId} -> name-match fallback`);
+      allMatched = false;
+    }
+  }
+  return allMatched;
+}
+
 let _vkMapCache:       Map<string, number> | null = null;
 let _vkMapCacheCudaHidden: Map<string, number> | null = null;
 
@@ -658,6 +774,14 @@ function matchVulkanIndex(gpuName: string, vkMap: Map<string, number>): number |
  * Falls back to computed positional index if enumeration fails.
  */
 async function assignRunnerProfiles(gpus: GpuDevice[]): Promise<void> {
+  // PCI ID match via vulkaninfo — primary, immune to name string changes.
+  // Falls back to name-match then positional if vulkaninfo is unavailable or unmatched.
+  const vulkaninfoDevices = await parseVulkanInfo();
+  const pciMatchComplete  = assignVulkanIndexViaPciId(gpus, vulkaninfoDevices);
+  if (!pciMatchComplete) {
+    console.log('[HW] PCI ID match incomplete — name-match fallback active for unmatched GPUs');
+  }
+
   const vkMap = await enumerateVulkanDevices();
   // Also enumerate with CUDA hidden — this is what non-NVIDIA spawned processes see.
   // Needed when NVIDIA + AMD/Intel coexist: CUDA_VISIBLE_DEVICES=-1 hides CUDA
@@ -725,14 +849,19 @@ async function assignRunnerProfiles(gpus: GpuDevice[]): Promise<void> {
     // Prefer the CUDA-hidden enumeration index — this matches what the spawned
     // process will see when CUDA_VISIBLE_DEVICES=-1 is set. Fall back to full
     // enumeration, then positional.
+    const pciIdx          = (gpu as any)._pciVulkanIndex as number | undefined;
     const cudaHiddenIdx   = hasCudaHiddenEnum ? matchVulkanIndex(gpu.name, vkMapCudaHidden) : undefined;
     const runtimeIdx      = hasRuntimeEnum    ? matchVulkanIndex(gpu.name, vkMap)           : undefined;
-    const vulkanIndex     = cudaHiddenIdx ?? runtimeIdx ?? positionalIndex;
+    const vulkanIndex     = pciIdx ?? cudaHiddenIdx ?? runtimeIdx ?? positionalIndex;
 
-    const src2 = cudaHiddenIdx !== undefined ? 'cuda-hidden enum'
-               : runtimeIdx   !== undefined ? 'runtime enum'
+    const src2 = pciIdx          !== undefined ? 'PCI ID match'
+               : cudaHiddenIdx  !== undefined ? 'cuda-hidden enum'
+               : runtimeIdx     !== undefined ? 'runtime enum'
                : 'positional fallback';
-    console.log(`[HW] ${gpu.name}: Vulkan${vulkanIndex} (${src2})`);
+    if (pciIdx === undefined) {
+      // Only log here for non-PCI-matched GPUs; PCI matches already logged above.
+      console.log(`[HW] ${gpu.name}: Vulkan${vulkanIndex} (${src2})`);
+    }
 
     const isAmd     = /AMD|Radeon|ATI/i.test(gpu.name);
     const isIntel   = /Intel/i.test(gpu.name);
@@ -1652,14 +1781,18 @@ export type ImageRunnerProfile =
   | 'flux2'
   | 'z-image'
   | 'qwen-image'
-  | 'wan';
+  | 'wan'
+  | 'sana'
+  | 'sana-sprint'
+  | 'sana-video'
+  | 'sana-video-i2v';
 
 /**
  * Category tag for UI grouping. nsfw-realistic / nsfw-anime are gated behind
  * a content warning in the UI but use the same download infrastructure.
  * legacy = superseded models (FLUX schnell) — collapsed behind a toggle.
  */
-export type ImageModelCategory = 'realistic' | 'nsfw-artistic' | 'anime' | 'nsfw-realistic' | 'nsfw-anime' | 'civitai' | 'legacy' | 'video' | 'kontext';
+export type ImageModelCategory = 'realistic' | 'nsfw-artistic' | 'anime' | 'nsfw-realistic' | 'nsfw-anime' | 'civitai' | 'legacy' | 'video' | 'kontext' | 'pytorch-native';
 
 export interface ImageModelSpec {
   modelId: string;
@@ -1668,7 +1801,7 @@ export interface ImageModelSpec {
   displayName: string;
   runnerProfile: ImageRunnerProfile;
   category: ImageModelCategory;
-  variant: 'schnell' | 'dev' | 'pony' | 'sdxl' | 'chroma' | 'kontext' | 'flux2' | 'z-image' | 'qwen-image' | 'wan';
+  variant: 'schnell' | 'dev' | 'pony' | 'sdxl' | 'chroma' | 'kontext' | 'flux2' | 'z-image' | 'qwen-image' | 'wan' | 'sana' | 'sana-sprint' | 'sana-video' | 'sana-video-i2v';
   quantization: 'Q4_K_M' | 'Q8_0' | 'Q4_0' | 'Q3_K_M' | 'Q5_K_S' | 'f16';
   hfRepo: string;
   hfFile: string;
@@ -1707,6 +1840,13 @@ export interface ImageModelSpec {
   civitaiVersionId?: number;
   /** Local filename for CivitAI downloads (since the URL doesn't contain the filename). */
   civitaiFilename?: string;
+  /** HF repo ID for HF-native models (SANA, SANA-Video).
+   *  When set, hfFile is empty and the model loads via from_pretrained into HF cache.
+   *  No GGUF download, no conversion step. */
+  configRepo?: string;
+  /** When true, model requires PyTorch venv — no sd-cli fallback.
+   *  Download is blocked in the UI when no PyTorch venv is installed. */
+  pytorchOnly?: boolean;
 }
 
 /**
@@ -2828,8 +2968,127 @@ export const WAN_CATALOGUE: ImageModelSpec[] = [
   },
 ];
 
+// ── SANA Catalogue ────────────────────────────────────────────────────────────
+// HF-native BF16 models. No GGUF, no conversion, no aux files.
+// Downloaded via from_pretrained into ~/.phobos/hf-cache/ on first generation.
+
+const SANA_CATALOGUE: ImageModelSpec[] = [
+  {
+    modelId:        'sana-sprint-600m',
+    label:          'SANA-Sprint 0.6B',
+    displayName:    'SANA-Sprint',
+    runnerProfile:  'sana-sprint',
+    category:       'pytorch-native',
+    variant:        'sana-sprint',
+    quantization:   'f16',
+    hfRepo:         'Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers',
+    hfFile:         '',              // HF-native — no local GGUF
+    sizeBytes:      0,
+    configRepo:     'Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers',
+    pytorchOnly:    true,
+    vramRequiredGb: 6,
+    diffusionMb:    1200,            // transformer ~1.2 GB BF16
+    encoderMb:      4600,            // Gemma-2-2B ~4.5 GB BF16
+    vaeMb:          200,             // DC-AE ~200 MB
+    estSecondsCuda: 3,               // 1-4 steps on RTX 3080
+    estSecondsVulkan: 20,
+    estSecondsCpu:  120,
+    license:        'Apache-2.0',
+    licenseUrl:     'https://huggingface.co/Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers',
+    profile: {
+      defaultSteps:      4,
+      defaultCfgScale:   4.0,
+      defaultWidth:      1024,
+      defaultHeight:     1024,
+      defaultSampler:    'euler',
+      defaultNegative:   '',
+      promptStyle:       'natural',
+      sayonBrief:        'SANA-Sprint generates images in 1-4 steps. Prompts should be clear and descriptive; the model handles natural language well. Avoid over-specifying technical parameters.',
+      supportsNegative:  false,
+      supportsLoRA:      true,
+      maxDimension:      4096,
+      nativeDimension:   1024,
+    },
+  },
+  {
+    modelId:        'sana-1600m',
+    label:          'SANA 1.5 1.6B',
+    displayName:    'SANA 1.5',
+    runnerProfile:  'sana',
+    category:       'pytorch-native',
+    variant:        'sana',
+    quantization:   'f16',
+    hfRepo:         'Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers',
+    hfFile:         '',
+    sizeBytes:      0,
+    configRepo:     'Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers',
+    pytorchOnly:    true,
+    vramRequiredGb: 8,
+    diffusionMb:    3200,            // transformer ~3.2 GB BF16
+    encoderMb:      4600,
+    vaeMb:          200,
+    estSecondsCuda: 25,              // 20 steps on RTX 3080
+    estSecondsVulkan: 180,
+    estSecondsCpu:  600,
+    license:        'Apache-2.0',
+    licenseUrl:     'https://huggingface.co/Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers',
+    profile: {
+      defaultSteps:      20,
+      defaultCfgScale:   4.5,
+      defaultWidth:      1024,
+      defaultHeight:     1024,
+      defaultSampler:    'euler',
+      defaultNegative:   '',
+      promptStyle:       'natural',
+      sayonBrief:        'SANA 1.5 is a high-quality text-to-image model with strong prompt adherence. Write detailed, natural-language descriptions. It excels at complex scenes and fine detail.',
+      supportsNegative:  false,
+      supportsLoRA:      true,
+      maxDimension:      4096,
+      nativeDimension:   1024,
+    },
+  },
+  {
+    modelId:        'sana-video-2b',
+    label:          'SANA-Video 2B',
+    displayName:    'SANA-Video',
+    runnerProfile:  'sana-video',
+    category:       'video',
+    variant:        'sana-video',
+    quantization:   'f16',
+    hfRepo:         'Efficient-Large-Model/SANA-Video_2B_480p_diffusers',
+    hfFile:         '',
+    sizeBytes:      0,
+    configRepo:     'Efficient-Large-Model/SANA-Video_2B_480p_diffusers',
+    pytorchOnly:    true,
+    vramRequiredGb: 8,
+    diffusionMb:    4000,            // video transformer ~4 GB BF16 (estimated)
+    encoderMb:      4600,            // Gemma-2-2B
+    vaeMb:          600,             // video VAE (float32) — larger than image DC-AE
+    estSecondsCuda: 120,             // 50 steps, 81 frames, RTX 3080
+    estSecondsVulkan: 900,
+    estSecondsCpu:  3600,
+    license:        'Apache-2.0',
+    licenseUrl:     'https://huggingface.co/Efficient-Large-Model/SANA-Video_2B_480p_diffusers',
+    profile: {
+      defaultSteps:      50,
+      defaultCfgScale:   6.0,
+      defaultWidth:      832,
+      defaultHeight:     480,
+      defaultSampler:    'euler',
+      defaultNegative:   '',
+      promptStyle:       'natural',
+      sayonBrief:        'SANA-Video generates short video clips at 480p. Describe motion and temporal progression explicitly — what happens over time matters. 81 frames at 16fps ≈ 5 seconds.',
+      supportsNegative:  false,
+      supportsLoRA:      true,
+      maxDimension:      720,
+      nativeDimension:   480,
+    },
+  },
+];
+
 /** Combined catalogue — all image and video models across all runner profiles */
 export const IMAGE_MODEL_CATALOGUE: ImageModelSpec[] = [
+  ...SANA_CATALOGUE,
   ...CHROMA_CATALOGUE,
   ...ZIMAGE_CATALOGUE,
   ...SDXL_CATALOGUE,
@@ -2845,6 +3104,13 @@ export function getImageModelSpec(modelId: string): ImageModelSpec | undefined {
 }
 
 export function isImageModelDownloaded(spec: ImageModelSpec): boolean {
+  // HF-native models (SANA): check for the HF cache sentinel directory
+  if (spec.configRepo) {
+    const cacheKey = spec.configRepo.replaceAll('/', '--');  // replaceAll: repo has multiple '/' e.g. 'Org/Name'
+    const cacheDir = path.join(os.homedir(), '.phobos', 'hf-cache', 'hub', `models--${cacheKey}`);
+    return fs.existsSync(cacheDir);
+  }
+  // Standard local-file check
   const p = fluxModelPath(spec);
   if (!fs.existsSync(p)) return false;
   if (fs.statSync(p).size < spec.sizeBytes * 0.9) return false;
@@ -2869,6 +3135,11 @@ export function getAuxFilesForModel(spec: ImageModelSpec): FluxAuxFile[] {
     case 'wan':
       // I2V models need an extra CLIP Vision encoder; T2V models don't
       return spec.modelId.includes('i2v') ? WAN_I2V_AUX_REQUIRED : WAN_AUX_REQUIRED;
+    case 'sana':
+    case 'sana-sprint':
+    case 'sana-video':
+    case 'sana-video-i2v':
+      return []; // HF-native: no separate aux file downloads
     default:
       // flux profile: VAE + CLIP-L always, T5 selected lazily at download time
       return FLUX_AUX_REQUIRED;
@@ -2891,6 +3162,8 @@ export function getFluxSpec(modelId: string): FluxSpec | undefined {
 export function fluxModelPath(spec: FluxSpec): string {
   const override = ModelPathStore.getOverride('img', spec.modelId);
   if (override) return override;
+  // HF-native models: no local file — return empty string (never checked as a file path)
+  if (spec.pytorchOnly && spec.configRepo) return '';
   if (spec.civitaiVersionId && spec.civitaiFilename) return path.join(IMAGE_SDXL_DIR(), spec.civitaiFilename);
   if (spec.runnerProfile === 'sdxl') return path.join(IMAGE_SDXL_DIR(), spec.hfFile);
   if (spec.runnerProfile === 'wan')  return path.join(IMAGE_WAN_DIR(),  spec.hfFile);
@@ -3089,6 +3362,88 @@ export function recommendT5EncodersForAllGpus(
   }
 
   return result;
+}
+
+/**
+ * Maps model IDs to the HF hub cache directories their Python scripts create.
+ * These are config/tokenizer repos fetched by phobos-diffusers.py and
+ * phobos-convert.py at first run — NOT the GGUF download repos (those go
+ * straight to disk via the download manager, never into HF cache).
+ */
+const HF_CACHE_REPOS: Record<string, string[]> = {
+  'chroma-q4':             ['lodestones/Chroma1-HD'],
+  'flux-schnell-q4':       [],
+  'flux-schnell-q8':       [],
+  'flux-dev-q4':           [],
+  'flux-dev-q8':           [],
+  'kontext-dev-q5':        [],
+  'wan21-t2v-1.3b-q4':    ['Wan-AI/Wan2.1-T2V-1.3B-Diffusers'],
+  'wan21-t2v-14b-q4':     ['Wan-AI/Wan2.1-T2V-14B-Diffusers'],
+  'wan21-i2v-14b-480p-q4':['Wan-AI/Wan2.1-I2V-14B-480P-Diffusers'],
+  'wan22-t2v-14b-hn-q4':  ['Wan-AI/Wan2.2-T2V-A14B-Diffusers'],
+  'wan22-i2v-14b-hn-q4':  ['Wan-AI/Wan2.2-I2V-A14B-Diffusers'],
+  'qwen-image-q4':         ['Qwen/Qwen-Image'],
+  'z-image-turbo-q4':      ['Tongyi-MAI/Z-Image-Turbo'],
+  // SANA: HF-native — the entire model lives in HF cache (delete the whole entry)
+  'sana-sprint-600m':      ['Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers'],
+  'sana-1600m':            ['Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers'],
+  'sana-video-2b':         ['Efficient-Large-Model/SANA-Video_2B_480p_diffusers'],
+};
+
+/**
+ * Repos shared across a model family. Only deleted when the last family
+ * member is removed from disk.
+ */
+const HF_SHARED_REPOS: { repos: string[]; family: string[] }[] = [
+  {
+    // T5-XXL tokenizer shared by all flux / chroma / kontext models
+    repos:  ['google/t5-v1_1-xxl'],
+    family: ['flux-schnell-q4', 'flux-schnell-q8', 'flux-dev-q4', 'flux-dev-q8',
+             'kontext-dev-q5', 'chroma-q4'],
+  },
+  {
+    // Gemma-2-2B text encoder shared by SANA image models (Sprint + 1.5).
+    // SANA-Video uses the same encoder but its repo includes it — no separate entry needed.
+    // Delete shared cache only when the last SANA image model is removed.
+    repos:  ['google/gemma-2-2b'],
+    family: ['sana-sprint-600m', 'sana-1600m'],
+  },
+];
+
+/** HF hub cache dir name from a repo slug: 'owner/repo' → 'models--owner--repo' */
+function hfRepoToCacheDir(repo: string): string {
+  return 'models--' + repo.replace('/', '--');
+}
+
+/**
+ * Deletes HF cache entries for an image model being removed.
+ * Per-model entries are always deleted. Shared entries (e.g. T5 tokenizer)
+ * are only deleted when no other model in the same family remains on disk.
+ * Silent — never throws.
+ */
+export function deleteImageModelHfCache(modelId: string): void {
+  const hfCacheRoot = path.join(os.homedir(), '.phobos', 'hf-cache', 'hub');
+  if (!fs.existsSync(hfCacheRoot)) return;
+
+  for (const repo of (HF_CACHE_REPOS[modelId] ?? [])) {
+    const dir = path.join(hfCacheRoot, hfRepoToCacheDir(repo));
+    try { if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+
+  for (const { repos, family } of HF_SHARED_REPOS) {
+    if (!family.includes(modelId)) continue;
+    const anyRemaining = family
+      .filter(id => id !== modelId)
+      .some(id => {
+        const spec = getFluxSpec(id);
+        return spec ? fs.existsSync(fluxModelPath(spec)) : false;
+      });
+    if (anyRemaining) continue;
+    for (const repo of repos) {
+      const dir = path.join(hfCacheRoot, hfRepoToCacheDir(repo));
+      try { if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  }
 }
 
 export function deleteFluxModel(modelId: string): boolean {

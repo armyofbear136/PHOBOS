@@ -113,11 +113,11 @@ export function LicenseDialog({ onClose, onLicensed }: Props) {
       className="fixed inset-0 z-[350] bg-black/90 flex items-center justify-center"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div style={{ width: 480, maxWidth: '95vw', background: '#000', border: '1px solid rgba(0,255,65,0.2)', boxShadow: '0 0 40px rgba(0,255,65,0.06)', ...mono }}>
+      <div style={{ width: 480, maxWidth: '95vw', background: '#000', border: '1px solid rgba(232,66,10,0.3)', boxShadow: '0 0 24px rgba(232,66,10,0.10)', ...mono }}>
 
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
-          <span style={{ fontSize: 10, color: 'rgba(0,255,65,0.7)', letterSpacing: '0.2em' }}>◈ PHOBOS PATRONS</span>
+          <span style={{ fontSize: 10, color: 'rgba(232,66,10,0.8)', letterSpacing: '0.2em' }}>◈ PHOBOS PATRONS</span>
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.3)', padding: 4, display: 'flex', alignItems: 'center' }}>
             <X size={14} />
           </button>
@@ -129,7 +129,7 @@ export function LicenseDialog({ onClose, onLicensed }: Props) {
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              style={{ flex: 1, padding: '10px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: tab === t.id ? '#00ff41' : 'rgba(255,255,255,0.25)', borderBottom: tab === t.id ? '1px solid rgba(0,255,65,0.4)' : '1px solid transparent', marginBottom: -1, ...mono, transition: 'color 150ms' }}
+              style={{ flex: 1, padding: '10px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: tab === t.id ? '#e8420a' : 'rgba(255,255,255,0.25)', borderBottom: tab === t.id ? '1px solid rgba(232,66,10,0.5)' : '1px solid transparent', marginBottom: -1, ...mono, transition: 'color 150ms' }}
             >
               {t.id === 'patrons' && <Crown size={9} style={{ display: 'inline', marginRight: 5, verticalAlign: 'middle' }} />}
               {t.label}
@@ -151,7 +151,7 @@ export function LicenseDialog({ onClose, onLicensed }: Props) {
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                <p style={{ fontFamily: "'Inter', sans-serif", fontSize: 13, color: 'rgba(255,255,255,0.5)', lineHeight: 1.65 }}>
+                <p style={{ fontFamily: "'Space Mono', monospace", fontSize: 12, color: 'rgba(255,255,255,0.5)', lineHeight: 1.65 }}>
                   One payment of <strong style={{ color: '#fff' }}>$19.99</strong> unlocks a perpetual PHOBOS license — every future update included, no renewal required.
                 </p>
                 <button
@@ -183,9 +183,9 @@ export function LicenseDialog({ onClose, onLicensed }: Props) {
                       value={username}
                       onChange={(e) => setUsername(e.target.value.slice(0, 64))}
                       placeholder="e.g. TwinSunDev"
-                      style={{ width: '100%', background: 'rgba(0,0,0,0.8)', border: '1px solid rgba(0,255,65,0.2)', padding: '9px 12px', ...mono, fontSize: 12, color: '#fff', outline: 'none', boxSizing: 'border-box' }}
-                      onFocus={(e) => (e.target.style.borderColor = 'rgba(0,255,65,0.5)')}
-                      onBlur={(e) => (e.target.style.borderColor = 'rgba(0,255,65,0.2)')}
+                      style={{ width: '100%', background: 'rgba(0,0,0,0.8)', border: '1px solid rgba(232,66,10,0.25)', padding: '9px 12px', ...mono, fontSize: 12, color: '#fff', outline: 'none', boxSizing: 'border-box' }}
+                      onFocus={(e) => (e.target.style.borderColor = 'rgba(232,66,10,0.6)')}
+                      onBlur={(e) => (e.target.style.borderColor = 'rgba(232,66,10,0.25)')}
                     />
                   </div>
 
@@ -196,9 +196,9 @@ export function LicenseDialog({ onClose, onLicensed }: Props) {
                       value={txId}
                       onChange={(e) => { setTxId(e.target.value); if (state === 'error') setState('awaiting_tx'); }}
                       placeholder="e.g. 5TY12345AB678901C"
-                      style={{ width: '100%', background: 'rgba(0,0,0,0.8)', border: '1px solid rgba(0,255,65,0.2)', padding: '9px 12px', ...mono, fontSize: 12, color: '#fff', outline: 'none', boxSizing: 'border-box' }}
-                      onFocus={(e) => (e.target.style.borderColor = 'rgba(0,255,65,0.5)')}
-                      onBlur={(e) => (e.target.style.borderColor = 'rgba(0,255,65,0.2)')}
+                      style={{ width: '100%', background: 'rgba(0,0,0,0.8)', border: '1px solid rgba(232,66,10,0.25)', padding: '9px 12px', ...mono, fontSize: 12, color: '#fff', outline: 'none', boxSizing: 'border-box' }}
+                      onFocus={(e) => (e.target.style.borderColor = 'rgba(232,66,10,0.6)')}
+                      onBlur={(e) => (e.target.style.borderColor = 'rgba(232,66,10,0.25)')}
                       onKeyDown={(e) => { if (e.key === 'Enter' && canActivate) handleActivate(); }}
                     />
                   </div>
@@ -208,9 +208,9 @@ export function LicenseDialog({ onClose, onLicensed }: Props) {
                   <button
                     onClick={handleActivate}
                     disabled={!canActivate}
-                    style={{ background: canActivate ? '#00ff41' : 'rgba(255,255,255,0.05)', color: canActivate ? '#000' : 'rgba(255,255,255,0.2)', border: 'none', padding: '11px', ...mono, fontSize: 11, letterSpacing: '0.15em', cursor: canActivate ? 'pointer' : 'not-allowed', transition: 'all 150ms' }}
-                    onMouseEnter={(e) => { if (canActivate) e.currentTarget.style.background = '#00cc33'; }}
-                    onMouseLeave={(e) => { if (canActivate) e.currentTarget.style.background = '#00ff41'; }}
+                    style={{ background: canActivate ? '#e8420a' : 'rgba(255,255,255,0.05)', color: canActivate ? '#fff' : 'rgba(255,255,255,0.2)', border: 'none', padding: '11px', ...mono, fontSize: 11, letterSpacing: '0.15em', cursor: canActivate ? 'pointer' : 'not-allowed', transition: 'all 150ms' }}
+                    onMouseEnter={(e) => { if (canActivate) e.currentTarget.style.background = '#c43608'; }}
+                    onMouseLeave={(e) => { if (canActivate) e.currentTarget.style.background = '#e8420a'; }}
                   >
                     ACTIVATE LICENSE →
                   </button>
@@ -219,15 +219,15 @@ export function LicenseDialog({ onClose, onLicensed }: Props) {
 
               {state === 'submitting' && (
                 <div style={{ textAlign: 'center', padding: '20px 0' }}>
-                  <p style={{ fontSize: 11, color: 'rgba(0,255,65,0.6)', letterSpacing: '0.2em', marginBottom: 12 }}>◈ ACTIVATING...</p>
-                  <div style={{ height: 1, background: 'linear-gradient(to right, transparent, rgba(0,255,65,0.5), transparent)', animation: 'shimmer 1.2s ease-in-out infinite' }} />
+                  <p style={{ fontSize: 11, color: 'rgba(232,66,10,0.7)', letterSpacing: '0.2em', marginBottom: 12 }}>◈ ACTIVATING...</p>
+                  <div style={{ height: 1, background: 'linear-gradient(to right, transparent, rgba(232,66,10,0.5), transparent)', animation: 'shimmer 1.2s ease-in-out infinite' }} />
                   <style>{`@keyframes shimmer{0%,100%{opacity:0.2}50%{opacity:1}}`}</style>
                 </div>
               )}
 
               {state === 'success' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                  <p style={{ fontSize: 12, color: '#00ff41', letterSpacing: '0.15em' }}>✓ LICENSE ACTIVATED</p>
+                  <p style={{ fontSize: 12, color: '#e8420a', letterSpacing: '0.15em' }}>✓ LICENSE ACTIVATED</p>
                   {wroteToCore ? (
                     <div style={{ background: 'rgba(0,255,65,0.05)', border: '1px solid rgba(0,255,65,0.15)', padding: '14px 16px' }}>
                       <p style={{ fontFamily: "'Inter', sans-serif", fontSize: 13, color: 'rgba(255,255,255,0.65)', lineHeight: 1.65 }}>

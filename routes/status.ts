@@ -11,6 +11,8 @@ import { isConfigOptimal, detectHardware } from '../phobos/PhobosLocalManager.js
 import { getSandboxExecutorEnabled, setSandboxExecutorEnabled } from '../db/ModelPathStore.js';
 import { getCamofoxStatus } from '../phobos/CamofoxManager.js';
 import { snapshot as bootSnapshot } from '../boot/BootState.js';
+import { getActiveUser }            from '../db/DatabaseManager.js';
+import { UserStore }                from '../db/UserStore.js';
 import { CoordinatorBridge } from '../CoordinatorBridge.js';
 
 // ── Config optimal cache — avoids running the scoring engine on every 5s poll ──
@@ -20,10 +22,9 @@ let _optimalCacheTime = 0;
 const OPTIMAL_CACHE_TTL_MS = 60_000;
 
 export async function statusRoute(fastify: FastifyInstance): Promise<void> {
-  const systemDb      = DatabaseManager.getInstance();
-  const userDb        = DatabaseManager.getUserDb();
-  const dispatchStore = new DispatchLogStore(userDb);
-  const configStore   = new ModelConfigStore(systemDb);
+  const systemDb    = DatabaseManager.getInstance();
+  const configStore = new ModelConfigStore(systemDb);
+  // dispatchStore is per-user — derived per-request below.
 
   // GET /api/version
   fastify.get('/api/version', async (_req, reply) => {
@@ -44,8 +45,9 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
     // Falls back to ProcessState.STOPPED (0) if the buffer is not yet initialised
     // (e.g. coordinator has not sent INIT_SHARED_BUFFER yet on first boot).
     const sharedBuf = (globalThis as Record<string, unknown>).__phobosSharedState as Int32Array | undefined;
-    const sayonState = sharedBuf ? Atomics.load(sharedBuf, S.SAYON_STATE)  : ProcessState.STOPPED;
-    const serenState = sharedBuf ? Atomics.load(sharedBuf, S.SEREN_STATE)  : ProcessState.STOPPED;
+    const sayonState      = sharedBuf ? Atomics.load(sharedBuf, S.SAYON_STATE)         : ProcessState.STOPPED;
+    const serenState      = sharedBuf ? Atomics.load(sharedBuf, S.SEREN_STATE)         : ProcessState.STOPPED;
+    const queueActiveTasks = sharedBuf ? Atomics.load(sharedBuf, S.QUEUE_ACTIVE_TASKS) : 0;
 
     // Config optimal check — only for phobos provider, cached 60s
     let configOptimal: boolean | null = null;
@@ -87,6 +89,11 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
       // Server lifecycle — lets the frontend block input during model switches
       coordinatorStarting: sayonState === ProcessState.STARTING,
       engineStarting:      serenState === ProcessState.STARTING,
+      // Inference-busy flags — true while SAYON/SEREN are actively generating tokens.
+      // Polled by the test suite's waitForModelIdle to prevent inter-test interference.
+      sayonBusy:           sayonState === ProcessState.BUSY,
+      serenBusy:           serenState === ProcessState.BUSY,
+      queueActiveTasks,
       // Config optimality — lets the frontend show mismatch indicators
       configOptimal,
       recommendedSayon,
@@ -96,6 +103,8 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
       camofox: getCamofoxStatus(),
       bootPhase:    bootSnapshot().phase,
       bootProgress: bootSnapshot().progress,
+      activeUser:     getActiveUser(),
+      activeUserRole: await new UserStore(systemDb).getByUsername(getActiveUser()).then(u => u?.role ?? 'admin'),
       timestamp: new Date().toISOString(),
     });
   });
@@ -236,7 +245,8 @@ export async function statusRoute(fastify: FastifyInstance): Promise<void> {
   });
 
   // GET /api/stats
-  fastify.get('/api/stats', async (_req, reply) => {
+  fastify.get('/api/stats', async (req, reply) => {
+    const dispatchStore = new DispatchLogStore(DatabaseManager.getUserDb(req.phobosUser));
     const stats = await dispatchStore.getStats();
     const recent = await dispatchStore.getRecent(10);
     return reply.send({ stats, recent });

@@ -287,10 +287,14 @@ export async function startServer(role: 'sayon' | 'seren' | 'sybil', cfg: Server
         vkIdx  = cfg.vulkanIndex;
         vkSrc  = 'cfg';
       } else {
-        vkIdx  = (cfg.deviceIndex !== undefined && cfg.deviceIndex >= 100)
-          ? cfg.deviceIndex - 100
-          : cfg.deviceIndex ?? 0;
-        vkSrc  = 'fallback';
+        // HW cache miss — GPU not detected on this boot (WMI failure, race, etc).
+        // Do NOT fall to positional index 0: on mixed CUDA+Vulkan systems that is
+        // the NVIDIA GPU, which already has a CUDA context from sayon. Attempting
+        // to also load a large model via Vulkan on the same device causes OOM.
+        // Refuse to start and surface the error instead.
+        const missing = cfg.deviceIndex;
+        console.error(`[LlamaServerManager] ${role}: GPU at deviceIndex=${missing} not found in hw cache — refusing Vulkan start to prevent OOM. Re-open PHOBOS to re-detect hardware.`);
+        throw new Error(`GPU deviceIndex=${missing} not detected on this boot. Hardware detection may have failed — restart PHOBOS to retry.`);
       }
 
       console.log(`[LlamaServerManager] ${role}: GGML_VK_VISIBLE_DEVICES=${vkIdx} (vulkanIndex=${vkIdx}, src=${vkSrc}, deviceIndex=${cfg.deviceIndex})`);
@@ -447,14 +451,24 @@ export async function startServer(role: 'sayon' | 'seren' | 'sybil', cfg: Server
 export async function stopServer(role: 'sayon' | 'seren' | 'sybil'): Promise<void> {
   const managed = servers[role];
   if (!managed.process) return;
+  const wasVulkan = managed.config.gpuBackend === 'vulkan';
   managed.process.kill('SIGTERM');
   await new Promise<void>(resolve => {
     const t = setTimeout(() => { managed.process?.kill('SIGKILL'); resolve(); }, 5000);
     managed.process!.once('exit', () => { clearTimeout(t); resolve(); });
   });
-  managed.process      = null;
-  managed.state        = 'stopped';
+  managed.process        = null;
+  managed.state          = 'stopped';
   managed.config.modelId = '';  // clear so getServerStatus() returns '' when stopped
+  // On Windows the AMD iGPU Vulkan driver retains its device-local heap for
+  // several seconds after the process handle closes. A Vulkan restart before
+  // the driver drains hits VK_ERROR_OUT_OF_DEVICE_MEMORY even when VRAM is
+  // nominally free. 4s covers the typical driver cleanup window without adding
+  // significant delay on Linux/macOS where SIGTERM gives the process time to
+  // release Vulkan resources cleanly before exit.
+  if (process.platform === 'win32' && wasVulkan) {
+    await new Promise<void>(resolve => setTimeout(resolve, 4000));
+  }
 }
 
 export function getServerStatus(): Record<'sayon' | 'seren' | 'sybil', {
@@ -843,4 +857,38 @@ export async function reconcilePhobosServers(config: {
   }
 
   await Promise.all(tasks);
+}
+/**
+ * awaitServerReady — polls getServerStatus() until the given slot reaches
+ * state 'running', then resolves.  Rejects if the slot enters 'error' state
+ * or if timeoutMs elapses.
+ *
+ * This is the ready-guard used by every AI call site during a WeClone model
+ * swap.  It relies on startServer() already having flipped state to 'running'
+ * only after waitForPort() confirms the port is accepting connections — so
+ * state === 'running' means the server is genuinely ready for inference.
+ *
+ * Callers must pass 'sayon' or 'seren' only.  Sybil is never swapped by
+ * WeClone and needs no guard.
+ */
+export async function awaitServerReady(
+  role:      'sayon' | 'seren',
+  timeoutMs: number = 90_000,
+): Promise<void> {
+  const POLL_INTERVAL_MS = 200;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const status = getServerStatus()[role];
+    if (status.state === 'running') return;
+    if (status.state === 'error') {
+      throw new Error(`[awaitServerReady] ${role} server entered error state: ${status.error ?? 'unknown'}`);
+    }
+    // 'stopped' is transient during a model swap — the image-gen workflow stops
+    // the server to free VRAM, then restarts it.  Poll through it rather than
+    // bailing so downstream AI calls wait cleanly instead of hitting ECONNREFUSED.
+    await new Promise<void>(res => setTimeout(res, POLL_INTERVAL_MS));
+  }
+
+  throw new Error(`[awaitServerReady] ${role} server did not become ready within ${timeoutMs}ms`);
 }

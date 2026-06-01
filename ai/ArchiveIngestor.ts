@@ -68,6 +68,7 @@ interface ChunkSpec {
 /**
  * Ingest a file path, URL, or paste string into the specified domain.
  *
+ * @param username    Requesting user — archive files land in their user dir
  * @param domain      Target archive domain
  * @param input       Absolute file path, http(s) URL, or raw text for 'paste'
  * @param sourceType  'file' | 'url' | 'paste'
@@ -75,6 +76,7 @@ interface ChunkSpec {
  * @returns           The stable sourceId for this ingestion
  */
 export async function ingestSource(
+  username: string,
   domain: ArchiveDomain,
   input: string,
   sourceType: 'file' | 'url' | 'paste',
@@ -140,7 +142,7 @@ export async function ingestSource(
 
     // ── Step 4: Write ─────────────────────────────────────────────────────────
     await ArchiveStore.writeChunks(
-      domain, sourceId, input, title, sourceType, fileMtime, embedded,
+      username, domain, sourceId, input, title, sourceType, fileMtime, embedded,
     );
 
     onProgress?.({
@@ -166,20 +168,21 @@ export async function ingestSource(
  * Deletes the existing chunks and runs full ingestion.
  */
 export async function reingestIfChanged(
+  username: string,
   domain: ArchiveDomain,
   filePath: string,
   onProgress?: IngestProgressCallback,
 ): Promise<'skipped' | 'reingested'> {
   const mtime   = fs.statSync(filePath).mtimeMs;
-  const existing = await ArchiveStore.getSource(domain, filePath);
+  const existing = await ArchiveStore.getSource(username, domain, filePath);
 
   if (existing && existing.fileMtime === mtime) return 'skipped';
 
   if (existing) {
-    await ArchiveStore.deleteSource(domain, filePath);
+    await ArchiveStore.deleteSource(username, domain, filePath);
   }
 
-  await ingestSource(domain, filePath, 'file', onProgress);
+  await ingestSource(username, domain, filePath, 'file', onProgress);
   return 'reingested';
 }
 

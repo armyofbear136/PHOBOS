@@ -175,6 +175,7 @@ export interface SignalOffer {
   code:       string;
   sdp:        string;
   activeUser: string;
+  candidates?: { candidate: string; sdpMid: string | null; sdpMLineIndex: number | null }[];
 }
 
 /** Core → relay: answer to mobile's offer. */
@@ -199,8 +200,16 @@ export interface SignalConsumed {
   code: string;
 }
 
-export type RelayInbound  = SignalRegistered | SignalOffer | SignalIce | SignalConsumed;
-export type RelayOutbound = SignalRegister   | SignalAnswer | SignalIce;
+/** core → relay: push a sync-dirty notification to the registered background service. */
+export interface SyncNotify {
+  type:       'notify';
+  instanceId: string;
+  event:      'sync_dirty';
+}
+
+export type RelayInbound  = SignalRegistered | SignalOffer | SignalIce | SignalConsumed
+                          | FriendRequestMessage | FriendRequestAck;
+export type RelayOutbound = SignalRegister | SignalAnswer | SignalIce | SyncNotify;
 
 // ── Auth handshake — control channel, immediately after DC open ───────────────
 //
@@ -293,3 +302,94 @@ export type AuthFrame =
   | NeedsUsernameAndPassword
   | DeviceRegistered
   | AuthError;
+// ── Friend handshake — phobos-friend-handshake channel ───────────────────────
+//
+// THIS FILE IS A SHARED CONTRACT — must be identical in phobos-mobile.
+//
+// Flow for inbound FRD code (remote core connects with a PH1.FRD.* code):
+//   remote → local  : FriendHandshake  (remote sends its identity + the nonce)
+//   local  → remote : FriendRecord     (local sends back its identity)
+//   local  → remote : FriendConnected  (local confirms, closes channel)
+//
+// On error at any point:
+//   local  → remote : FriendHandshakeError  (local sends reason, closes channel)
+
+/** remote → local: identity frame sent by the initiating core on channel open. */
+export interface FriendHandshake {
+  kind:         'friend-handshake';
+  instanceId:   string;   // permanent UUID of the remote PHOBOS instance
+  username:     string;   // username on the remote instance
+  displayName:  string;
+  publicKey:    string;   // hex-encoded ed25519 public key
+  relayAddress: string;   // wss:// relay the remote core is reachable on
+  avatarToken?: string;
+}
+
+/** local → remote: local identity sent in response to a valid FriendHandshake. */
+export interface FriendRecord {
+  kind:         'friend-record';
+  instanceId:   string;
+  username:     string;
+  displayName:  string;
+  publicKey:    string;
+  relayAddress: string;
+  avatarToken?: string;
+}
+
+/** local → remote: handshake complete — both sides have written the friendship. */
+export interface FriendConnected {
+  kind:    'friend-connected';
+  success: true;
+}
+
+/** local → remote: handshake failed — channel will be closed immediately after. */
+export interface FriendHandshakeError {
+  kind:   'friend-error';
+  reason: 'unknown_instance' | 'already_friends' | 'internal';
+}
+
+export type FriendHandshakeFrame =
+  | FriendHandshake
+  | FriendRecord
+  | FriendConnected
+  | FriendHandshakeError;
+
+// ── Friend request — relay-brokered, core ↔ core ─────────────────────────────
+//
+// THIS FILE IS A SHARED CONTRACT — must be identical in phobos-mobile.
+//
+// Flow (both cores must have each other in known_instances):
+//
+//   Initiating core → relay → target core : FriendRequestMessage
+//     Target may be offline — initiating core retries via pending_outbound_requests
+//     timer until target acks or TTL expires.
+//
+//   Target core → relay → initiating core : FriendRequestAck (accepted | declined)
+//     On 'accepted': both cores run the phobos-friend-handshake WebRTC channel.
+//     On 'declined': initiating core deletes the pending entry, notifies its UI.
+//
+// These messages travel over the relay WebSocket as JSON strings, not WebRTC
+// data channels. The relay routes them by instanceId.
+
+/** Initiating core → relay → target core: I want to be friends. */
+export interface FriendRequestMessage {
+  type:            'friend-request';
+  fromInstanceId:  string;
+  fromUsername:    string;
+  fromDisplayName: string;
+  fromPublicKey:   string;
+  fromRelayAddress: string;
+  requestId:       string;   // UUID — used to match ack back to pending entry
+  sentAt:          number;   // unix ms
+  expiresAt:       number;   // unix ms — initiating core stops retrying after this
+}
+
+/** Target core → relay → initiating core: accept or decline. */
+export interface FriendRequestAck {
+  type:        'friend-request-ack';
+  requestId:   string;   // matches FriendRequestMessage.requestId
+  decision:    'accepted' | 'declined';
+  fromInstanceId: string;  // target's instanceId — so initiating core knows who acked
+}
+
+export type SocialRelayMessage = FriendRequestMessage | FriendRequestAck;

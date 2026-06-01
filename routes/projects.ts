@@ -10,10 +10,12 @@ interface Project {
 }
 
 export async function projectsRoute(fastify: FastifyInstance): Promise<void> {
-  const db = DatabaseManager.getUserDb();
+  const getDb = (req: import('fastify').FastifyRequest) =>
+    DatabaseManager.getUserDb(req.phobosUser);
 
   // GET /api/projects
   fastify.get('/api/projects', async (_req, reply) => {
+    const db = getDb(_req);
     const projects = await db.query<Project>(
       `SELECT id, name, created_at, updated_at FROM projects ORDER BY name ASC`
     );
@@ -24,6 +26,7 @@ export async function projectsRoute(fastify: FastifyInstance): Promise<void> {
   fastify.post<{ Body: { name: string } }>(
     '/api/projects',
     async (req, reply) => {
+      const db = getDb(req);
       const name = req.body.name?.trim();
       if (!name) return reply.status(400).send({ error: 'name is required' });
 
@@ -45,6 +48,7 @@ export async function projectsRoute(fastify: FastifyInstance): Promise<void> {
   fastify.delete<{ Params: { id: string } }>(
     '/api/projects/:id',
     async (req, reply) => {
+      const db = getDb(req);
       await db.run(`DELETE FROM projects WHERE id = ?`, [req.params.id]);
       return reply.status(204).send();
     }

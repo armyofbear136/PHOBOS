@@ -10,10 +10,11 @@ export type IntentType =
   | 'NEEDS_CLARIFICATION';
 
 export interface ClassifiedIntent {
-  type: IntentType;
-  confidence: number;
-  routing: 'ANSWER_DIRECTLY' | 'NEEDS_SEREN' | 'NEEDS_CLARIFICATION';
-  reasoning?: string;
+  type:               IntentType;
+  confidence:         number;
+  routing:            'ANSWER_DIRECTLY' | 'NEEDS_SEREN' | 'NEEDS_CLARIFICATION';
+  requiresWebSearch?: boolean;  // true when question needs live/current data from the web
+  reasoning?:         string;
 }
 
 export interface ClassificationContext {
@@ -29,8 +30,6 @@ SEREN capabilities (always available — never assume a capability is missing):
 - Write, create, modify, refactor, delete, or debug any file type
 - Run code, execute scripts, run tests, build projects
 - Scan files for security vulnerabilities using the AST audit engine
-- Browse the internet and fetch live web content
-- Search the web for current information, news, prices, weather, anything
 - Generate images using the built-in image synthesis engine
 - Analyse, summarise, or explain any file or codebase
 - Perform multi-step plans across any number of tasks
@@ -60,17 +59,29 @@ Routing rules (in priority order):
 - simple Q&A, explain, summarise (no file target) -> QUESTION + ANSWER_DIRECTLY
 - NEEDS_CLARIFICATION only when the message could map to multiple incompatible operations with no context clue
 
-Examples:
-"what is a closure" -> QUESTION + ANSWER_DIRECTLY
-"search for the latest React release" -> QUESTION + ANSWER_DIRECTLY
-"what's the weather in Tokyo" -> QUESTION + ANSWER_DIRECTLY
-"scan vulnerable.ts for security issues" -> CODE_REQUEST + NEEDS_SEREN
-"audit my code" -> CODE_REQUEST + NEEDS_SEREN
-"run the tests" -> CODE_REQUEST + NEEDS_SEREN
-"create a login component" -> CODE_REQUEST + NEEDS_SEREN
-"draw a sunset" -> IMAGE_REQUEST + ANSWER_DIRECTLY
+requiresWebSearch: true when the correct answer depends on current or recent information that changes faster than training data.
+False for timeless knowledge, math, code help, or general concepts.
+- "what's the weather in Tokyo" -> true
+- "latest React release" -> true
+- "who won last night's game" -> true
+- "current price of AAPL" -> true
+- "recent JavaScript framework trends" -> true
+- "what is a closure in JavaScript" -> false
+- "explain the water cycle" -> false
+- "write a regex for email validation" -> false
+requiresWebSearch is independent of routing — a QUESTION routed ANSWER_DIRECTLY may have it true or false.
 
-Respond ONLY with JSON on one line: {"type":"TYPE","confidence":0.0,"routing":"ROUTING"}`;
+Examples:
+"what is a closure" -> QUESTION + ANSWER_DIRECTLY + requiresWebSearch:false
+"search for the latest React release" -> QUESTION + ANSWER_DIRECTLY + requiresWebSearch:true
+"what's the weather in Tokyo" -> QUESTION + ANSWER_DIRECTLY + requiresWebSearch:true
+"scan vulnerable.ts for security issues" -> CODE_REQUEST + NEEDS_SEREN + requiresWebSearch:false
+"audit my code" -> CODE_REQUEST + NEEDS_SEREN + requiresWebSearch:false
+"run the tests" -> CODE_REQUEST + NEEDS_SEREN + requiresWebSearch:false
+"create a login component" -> CODE_REQUEST + NEEDS_SEREN + requiresWebSearch:false
+"draw a sunset" -> IMAGE_REQUEST + ANSWER_DIRECTLY + requiresWebSearch:false
+
+Respond ONLY with JSON on one line: {"type":"TYPE","confidence":0.0,"routing":"ROUTING","requiresWebSearch":false}`;
 
 export class IntentClassifier {
   async classify(
@@ -150,7 +161,7 @@ export class IntentClassifier {
         return null;
       };
 
-      let parsed: { type: IntentType; confidence: number; routing?: string } | null = tryParseJSON(raw);
+      let parsed: { type: IntentType; confidence: number; routing?: string; requiresWebSearch?: boolean } | null = tryParseJSON(raw);
       if (!parsed) {
         // JSON not found or malformed — keyword extraction from raw text
         const upper = raw.toUpperCase();
@@ -184,28 +195,28 @@ export class IntentClassifier {
           : this.deriveRouting(parsed.type));
 
       console.log(
-        `[IntentClassifier] ${parsed.type} routing=${routing} (${latency}ms, confidence=${parsed.confidence})`
+        `[IntentClassifier] ${parsed.type} routing=${routing} requiresWebSearch=${!!parsed.requiresWebSearch} (${latency}ms, confidence=${parsed.confidence})`
       );
-      return { type: parsed.type, confidence: parsed.confidence, routing };
+      return { type: parsed.type, confidence: parsed.confidence, routing, requiresWebSearch: parsed.requiresWebSearch ?? false };
     } catch (err) {
       console.error('[IntentClassifier] Coordinator unreachable, using heuristic fallback:', err);
       const lower = userMessage.toLowerCase();
       if (lower.includes('plan') || lower.includes('approach') || lower.includes('architecture')) {
-        return { type: 'PLAN_REQUEST', confidence: 0.6, routing: 'NEEDS_SEREN' };
+        return { type: 'PLAN_REQUEST', confidence: 0.6, routing: 'NEEDS_SEREN', requiresWebSearch: false };
       }
       if (/write|create|modify|refactor|implement|add.*file|edit.*file|fix.*file|delete.*file/.test(lower)) {
-        return { type: 'CODE_REQUEST', confidence: 0.6, routing: 'NEEDS_SEREN' };
+        return { type: 'CODE_REQUEST', confidence: 0.6, routing: 'NEEDS_SEREN', requiresWebSearch: false };
       }
       if (/scan|audit|run.*test|execute|run.*script|build|compile/.test(lower)) {
-        return { type: 'CODE_REQUEST', confidence: 0.6, routing: 'NEEDS_SEREN' };
+        return { type: 'CODE_REQUEST', confidence: 0.6, routing: 'NEEDS_SEREN', requiresWebSearch: false };
       }
       if (/generate.*image|draw|create.*image|make.*image|create.*picture|generate.*picture|show.*picture/.test(lower)) {
-        return { type: 'IMAGE_REQUEST', confidence: 0.6, routing: 'ANSWER_DIRECTLY' };
+        return { type: 'IMAGE_REQUEST', confidence: 0.6, routing: 'ANSWER_DIRECTLY', requiresWebSearch: false };
       }
       if (/search|look up|find.*online|browse|weather|news|price|stock|current/.test(lower)) {
-        return { type: 'QUESTION', confidence: 0.6, routing: 'ANSWER_DIRECTLY' };
+        return { type: 'QUESTION', confidence: 0.6, routing: 'ANSWER_DIRECTLY', requiresWebSearch: true };
       }
-      return { type: 'QUESTION', confidence: 0.6, routing: 'ANSWER_DIRECTLY' };
+      return { type: 'QUESTION', confidence: 0.6, routing: 'ANSWER_DIRECTLY', requiresWebSearch: false };
     }
   }
 

@@ -97,23 +97,23 @@ export function MonacoPanel() {
         { token: 'identifier',  foreground: 'e2e8f0' },
       ],
       colors: {
-        'editor.background':              '#0d0f12',
-        'editor.foreground':              '#e2e8f0',
-        'editorCursor.foreground':        '#4ade80',
-        'editor.lineHighlightBackground': '#131720',
-        'editor.selectionBackground':     '#1e3a5f',
-        'editorLineNumber.foreground':    '#2d3748',
-        'editorLineNumber.activeForeground': '#4a5568',
-        'editor.inactiveSelectionBackground': '#172035',
-        'editorIndentGuide.background1': '#1a1d23',
-        'editorWidget.background':        '#0d0f12',
-        'editorWidget.border':            '#1a1d23',
-        'input.background':               '#0a0c0f',
-        'input.foreground':               '#e2e8f0',
+        'editor.background':              '#080808',
+        'editor.foreground':              '#e8e8d8',
+        'editorCursor.foreground':        '#e8420a',
+        'editor.lineHighlightBackground': '#0f0f0a',
+        'editor.selectionBackground':     '#2a1008',
+        'editorLineNumber.foreground':    '#333328',
+        'editorLineNumber.activeForeground': '#555548',
+        'editor.inactiveSelectionBackground': '#1a0d06',
+        'editorIndentGuide.background1': '#1a1a12',
+        'editorWidget.background':        '#0f0f0a',
+        'editorWidget.border':            '#2a1a08',
+        'input.background':               '#080808',
+        'input.foreground':               '#e8e8d8',
         'scrollbar.shadow':               '#00000000',
         'scrollbarSlider.background':     '#ffffff10',
         'scrollbarSlider.hoverBackground':'#ffffff18',
-        'scrollbarSlider.activeBackground':'#4ade8030',
+        'scrollbarSlider.activeBackground':'#e8420a30',
         'minimap.background':             '#0a0c0f',
       },
     });
@@ -262,21 +262,21 @@ export function MonacoPanel() {
   }, [monacoPanelOpen]);
 
   return (
-    <div className={`fixed inset-x-0 bottom-0 top-10 z-40 flex flex-col bg-[#0d0f12] ${monacoPanelOpen ? 'flex' : 'hidden'}`}>
+    <div className={`fixed inset-x-0 bottom-0 top-10 z-40 flex flex-col bg-[#080808] ${monacoPanelOpen ? 'flex' : 'hidden'}`}>
 
       {/* ── Toolbar ─────────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-2 px-3 h-9 border-b border-border/40 bg-background shrink-0">
+      <div className="flex items-center gap-2 px-3 h-9 border-b border-phob-orange/20 bg-[#080808] shrink-0">
 
         {/* Filename */}
         <input
           value={filename}
           onChange={(e) => { setFilename(e.target.value); setDirty(true); }}
-          className="flex-1 min-w-0 bg-transparent text-xs font-mono text-foreground/80 focus:outline-none focus:text-foreground transition-colors"
+          className="flex-1 min-w-0 bg-transparent text-xs font-mono text-phob-white/75 focus:outline-none focus:text-phob-white transition-colors"
           spellCheck={false}
         />
 
         {dirty && (
-          <span className="text-[10px] font-mono text-phobos-amber/60 shrink-0">unsaved</span>
+          <span className="text-[10px] font-mono text-phob-amber/60 shrink-0">unsaved</span>
         )}
 
         {saveErr && (
@@ -287,13 +287,13 @@ export function MonacoPanel() {
         <div className="relative shrink-0">
           <button
             onClick={() => setLangOpen((v) => !v)}
-            className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono text-phobos-green/60 hover:text-phobos-green border border-phobos-green/15 hover:border-phobos-green/30 rounded-sm transition-all"
+            className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono text-phob-orange/55 hover:text-phob-orange border border-phob-orange/15 hover:border-phob-orange/30 transition-all"
           >
             {language}
             <ChevronDown className={`w-2.5 h-2.5 transition-transform ${langOpen ? 'rotate-180' : ''}`} />
           </button>
           {langOpen && (
-            <div className="absolute right-0 top-full mt-1 z-50 bg-background border border-phobos-green/20 rounded-sm shadow-xl max-h-64 overflow-y-auto min-w-[130px]">
+            <div className="absolute right-0 top-full mt-1 z-50 bg-[#0f0f0a] border border-phob-orange/20 shadow-xl max-h-64 overflow-y-auto min-w-[130px]">
               {LANG_OPTIONS.map((opt) => (
                 <button
                   key={opt.lang}
@@ -306,13 +306,13 @@ export function MonacoPanel() {
                     }
                     setLangOpen(false);
                   }}
-                  className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[10px] font-mono hover:bg-phobos-green/5 transition-colors"
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[10px] font-mono hover:bg-phob-orange/8 transition-colors"
                 >
                   {opt.lang === language
-                    ? <Check className="w-2.5 h-2.5 text-phobos-green shrink-0" />
+                    ? <Check className="w-2.5 h-2.5 text-phob-orange shrink-0" />
                     : <span className="w-2.5 shrink-0" />
                   }
-                  <span className={opt.lang === language ? 'text-phobos-green' : 'text-muted-foreground'}>
+                  <span className={opt.lang === language ? 'text-phob-orange' : 'text-phob-steel/60'}>
                     {opt.label}
                   </span>
                 </button>
@@ -325,7 +325,7 @@ export function MonacoPanel() {
         <button
           onClick={newFile}
           title="New file"
-          className="p-1 text-muted-foreground/50 hover:text-phobos-green transition-colors"
+          className="p-1 text-phob-steel/45 hover:text-phob-orange transition-colors"
         >
           <FilePlus className="w-3.5 h-3.5" />
         </button>
@@ -336,7 +336,7 @@ export function MonacoPanel() {
           disabled={saving || !activeThreadId}
           title="Save (Ctrl+S)"
           className="flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-mono border rounded-sm transition-all disabled:opacity-40
-            border-phobos-green/30 text-phobos-green/70 hover:text-phobos-green hover:border-phobos-green/50"
+            border-phob-orange/30 text-phob-orange/70 hover:text-phob-orange hover:border-phob-orange/50"
         >
           <Save className="w-3 h-3" />
           {saving ? 'saving…' : 'save'}
@@ -346,7 +346,7 @@ export function MonacoPanel() {
         <button
           onClick={toggleMonacoPanel}
           title="Close (Esc)"
-          className="p-1 text-muted-foreground/40 hover:text-foreground transition-colors"
+          className="p-1 text-phob-steel/40 hover:text-phob-white transition-colors"
         >
           <X className="w-4 h-4" />
         </button>

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Cpu, PanelLeft, PanelRight, ChevronDown, Download, Puzzle, CalendarClock, X as XIcon, Music2, Film, Crown, Tv, Key, BookMarked, Shield, DollarSign, Users } from 'lucide-react';
+import { Cpu, PanelRight, ChevronDown, Download, Puzzle, CalendarClock, X as XIcon, Music2, Film, Crown, Tv, Key, BookMarked, Shield, DollarSign, Users, Wifi, WifiOff } from 'lucide-react';
 import PolarisPlayer from '@/components/media/PolarisPlayer';
 import { MediaHubPanel } from '@/components/media/MediaHubPanel';
 import { lazy, Suspense } from 'react';
@@ -86,9 +86,9 @@ function ModelPicker({ role, roleLabel, config, currentModel, connected, onSelec
       <div className="relative" ref={providerRef}>
         <button
           onClick={() => { setProviderOpen(!providerOpen); setModelOpen(false); }}
-          className="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-accent transition-all group"
+          className="flex items-center gap-1.5 px-2 py-1 hover:bg-phob-orange/8 transition-all group"
         >
-          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${connected ? 'bg-phobos-green animate-pulse-dot' : 'bg-destructive'}`} />
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${connected ? 'bg-phob-green phob-dot-static' : 'bg-phob-red'}`} />
           <img
             src={roleLabel === 'SAYON' ? `${import.meta.env.BASE_URL}sayon.png` : `${import.meta.env.BASE_URL}seren.png`}
             alt={roleLabel}
@@ -99,12 +99,12 @@ function ModelPicker({ role, roleLabel, config, currentModel, connected, onSelec
           }`}>
             {roleLabel}
           </span>
-          <ChevronDown className="w-2.5 h-2.5 text-muted-foreground/40" />
+          <ChevronDown className="w-2.5 h-2.5 text-phob-orange/30" />
         </button>
 
         {providerOpen && (
-          <div className="absolute top-full left-0 mt-1 w-44 bg-popover border border-border rounded-md shadow-xl z-50 overflow-hidden">
-            <div className="px-3 py-1.5 border-b border-border/50">
+          <div className="absolute top-full left-0 mt-1 w-44 bg-[#0f0f0a] border border-phob-orange/25 shadow-xl z-50 overflow-hidden">
+            <div className="px-3 py-1.5 border-b border-phob-orange/15">
               <span className="text-[10px] font-mono text-muted-foreground/50 uppercase tracking-wider">
                 {roleLabel} Provider
               </span>
@@ -116,9 +116,9 @@ function ModelPicker({ role, roleLabel, config, currentModel, connected, onSelec
                   onSelectProvider(p.id, p.defaultEndpoint);
                   setProviderOpen(false);
                 }}
-                className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs font-mono transition-all hover:bg-accent ${
+                className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs font-mono transition-all hover:bg-phob-orange/8 ${
                   p.id === currentProvider
-                    ? `${roleTintClass} bg-phobos-green/5`
+                    ? `${roleTintClass} bg-phob-orange/5`
                     : 'text-muted-foreground hover:text-foreground'
                 }`}
               >
@@ -138,14 +138,14 @@ function ModelPicker({ role, roleLabel, config, currentModel, connected, onSelec
           onClick={() => { setModelOpen(!modelOpen); setProviderOpen(false); }}
           className="flex items-center gap-1 px-1.5 py-1 rounded-md hover:bg-accent transition-all group"
         >
-          <span className="text-xs font-mono text-ui-glow-bright group-hover:text-foreground transition-colors">
+          <span className="text-xs font-mono text-phob-orange/70 group-hover:text-phob-orange transition-colors">
             {currentModelLabel}
           </span>
-          <ChevronDown className="w-2.5 h-2.5 text-muted-foreground/30 group-hover:text-muted-foreground transition-colors" />
+          <ChevronDown className="w-2.5 h-2.5 text-phob-orange/25 group-hover:text-phob-orange/50 transition-colors" />
         </button>
 
         {modelOpen && (
-          <div className="absolute top-full right-0 mt-1 w-48 bg-popover border border-border rounded-md shadow-xl z-50 overflow-hidden">
+          <div className="absolute top-full right-0 mt-1 w-48 bg-[#0f0f0a] border border-phob-orange/25 shadow-xl z-50 overflow-hidden">
             <div className="px-3 py-1.5 border-b border-border/50">
               <span className="text-[10px] font-mono text-muted-foreground/50 uppercase tracking-wider">
                 {currentProviderLabel} Models
@@ -166,7 +166,7 @@ function ModelPicker({ role, roleLabel, config, currentModel, connected, onSelec
                   onClick={() => { onSelectModel(opt.id); setModelOpen(false); }}
                   className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs font-mono transition-all hover:bg-accent ${
                     isSelected
-                      ? `${roleTintClass} bg-phobos-green/5`
+                      ? `${roleTintClass} bg-phob-orange/5`
                       : modelTint || 'text-muted-foreground hover:text-foreground'
                   }`}
                 >
@@ -206,19 +206,19 @@ function HalcyonButton() {
         onClick={() => setPopoverOpen(!popoverOpen)}
         className={`px-4 py-1 text-[10px] font-terminal uppercase tracking-[0.15em] rounded-sm border transition-all flex items-center gap-1.5 ${
           halcyonOptIn
-            ? 'border-phobos-green/30 text-phobos-green/60 hover:text-phobos-green hover:border-phobos-green/50'
-            : 'border-border/20 text-muted-foreground/30 hover:text-muted-foreground/50'
+            ? 'border-phob-amber/30 text-phob-amber/60 hover:text-phob-amber hover:border-phob-amber/50'
+            : 'border-phob-orange/15 text-phob-steel/30 hover:text-phob-steel/50'
         }`}
       >
         HALCYON
         {halcyonOptIn && (
-          <span className="w-1.5 h-1.5 rounded-full bg-phobos-green animate-pulse" />
+          <span className="phob-dot text-phob-amber" />
         )}
       </button>
 
       {popoverOpen && (
-        <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 bg-background border border-phobos-green/20 rounded-sm p-3 z-50 shadow-[0_0_20px_rgba(0,255,65,0.06)]">
-          <div className="text-[10px] font-terminal text-phobos-green/70 tracking-[0.15em] uppercase mb-2">
+        <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 bg-[#0f0f0a] border border-phob-amber/25 p-3 z-50 shadow-[0_0_16px_rgba(200,160,0,0.08)]">
+          <div className="text-[10px] font-terminal text-phob-amber/70 tracking-[0.15em] uppercase mb-2">
             CONTRIBUTE TO HALCYON
           </div>
           <p className="text-[11px] font-mono text-muted-foreground/40 leading-relaxed mb-3">
@@ -241,7 +241,7 @@ function HalcyonButton() {
             ) : (
               <button
                 onClick={() => { setHalcyonOptIn(true); setPopoverOpen(false); }}
-                className="px-3 py-1 text-[10px] font-terminal uppercase tracking-[0.1em] rounded-sm border border-phobos-green/30 text-phobos-green/60 hover:text-phobos-green hover:border-phobos-green/50 transition-all"
+                className="px-3 py-1 text-[10px] font-terminal uppercase tracking-[0.1em] rounded-sm border border-phob-amber/30 text-phob-amber/60 hover:text-phob-amber hover:border-phob-amber/50 transition-all"
               >
                 OPT IN
               </button>
@@ -254,8 +254,9 @@ function HalcyonButton() {
 }
 
 export function HeaderBar() {
-  const { connectionStatus, toggleSidebar, cycleCopilot } = useAppStore();
+  const { connectionStatus, cycleCopilot } = useAppStore();
   const copilotMode = useAppStore((s) => s.copilotMode);
+
   const modelConfig  = useAppStore((s) => s.modelConfig);
   const modelNames   = useAppStore((s) => s.modelNames);
   const documents    = useAppStore((s) => s.documents);
@@ -299,7 +300,35 @@ export function HeaderBar() {
   const { pending, cancelPending } = useSchedulerPending();
   const activeThreadId = useAppStore((s) => s.activeThreadId);
 
-  // Check license once on mount — sets username in store for the header display
+  // ── Relay toggle state ────────────────────────────────────────────────────
+  const [relayEnabled, setRelayEnabled]   = useState(true);
+  const [relayConnected, setRelayConnected] = useState(false);
+  const [relayToggling, setRelayToggling] = useState(false);
+
+  useEffect(() => {
+    fetch(`${ENGINE_URL}/api/webrtc/status`)
+      .then(r => r.ok ? r.json() : null)
+      .then((data: { relayEnabled?: boolean; relayConnected?: boolean } | null) => {
+        if (data) {
+          setRelayEnabled(data.relayEnabled ?? true);
+          setRelayConnected(data.relayConnected ?? false);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  async function toggleRelay() {
+    if (relayToggling) return;
+    setRelayToggling(true);
+    const next = !relayEnabled;
+    try {
+      const r = await fetch(`${ENGINE_URL}/api/webrtc/relay/${next ? 'enable' : 'disable'}`, { method: 'POST' });
+      if (r.ok) { setRelayEnabled(next); setRelayConnected(next); }
+    } catch {}
+    setRelayToggling(false);
+  }
+
+    // Check license once on mount — sets username in store for the header display
   useEffect(() => {
     if (licenseChecked) return;
     fetch(`${ENGINE_URL}/api/license`)
@@ -313,25 +342,38 @@ export function HeaderBar() {
 
   return (
     <>
-      <header className="phobos-header phobos-chrome-zone h-10 flex items-center justify-between px-3 border-b border-border/50 bg-background shrink-0 relative z-50 overflow-visible">
+      <header className="phobos-header phob-chrome-zone phob-scan-line h-11 flex items-center justify-between px-3 border-b-2 border-phob-orange/40 bg-[#080808] shrink-0 relative z-50 overflow-visible">
         <div className="flex items-center gap-2">
-          <button onClick={toggleSidebar} className="p-1.5 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground transition-colors">
-            <PanelLeft className="w-4 h-4" />
+          {/* ── Relay toggle — leftmost control ── */}
+          <button
+            onClick={() => void toggleRelay()}
+            disabled={relayToggling}
+            title={relayEnabled ? (relayConnected ? 'Relay connected — click to go offline' : 'Relay enabled but disconnected') : 'Relay disabled — click to connect'}
+            className="p-1.5 transition-all border"
+            style={{
+              borderColor: relayEnabled ? (relayConnected ? 'rgba(80,220,120,0.45)' : 'rgba(232,66,10,0.3)') : 'rgba(136,136,128,0.2)',
+              color: relayEnabled ? (relayConnected ? 'rgba(80,220,120,0.85)' : 'rgba(232,66,10,0.5)') : 'rgba(136,136,128,0.35)',
+              background: relayEnabled && relayConnected ? 'rgba(80,220,120,0.06)' : 'transparent',
+              opacity: relayToggling ? 0.5 : 1,
+            }}
+          >
+            {relayEnabled ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
           </button>
+
           {/* Autarch icon — opens autarch.net in browser */}
           <button
             onClick={() => window.open('https://autarch.net', '_blank')}
-            className="p-1 rounded hover:bg-accent transition-colors"
+            className="p-1 hover:bg-phob-orange/8 transition-colors"
             title="Back to Autarch Industries"
           >
             <img src={`${import.meta.env.BASE_URL}autarch-icon.svg`} alt="Autarch" className="w-5 h-5" />
           </button>
-          <Cpu className="w-4 h-4 text-phobos-green/60" />
-          <span className="text-sm font-terminal font-semibold text-phobos-green/80 tracking-wider">PHOBOS | {licenseUsername ? licenseUsername.toUpperCase() : 'TWIN SUN'}</span>
+          <Cpu className="w-4 h-4 text-phob-orange/50" />
+          <span className="text-[11px] font-terminal font-semibold text-phob-orange tracking-[0.2em]">PHOBOS | {licenseUsername ? licenseUsername.toUpperCase() : 'TWIN SUN'}</span>
 
           {/* ── Phobos coin counter ── */}
           <span
-            className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-terminal rounded-sm border border-yellow-600/20 text-yellow-500/80"
+            className="flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono border border-phob-amber/20 text-phob-amber/70"
             title="Phobos coins"
           >
             ◈ {phobosCoins}
@@ -342,8 +384,8 @@ export function HeaderBar() {
             onClick={() => setGameFocused(!gameFocused)}
             className={`px-2 py-0.5 text-[10px] font-terminal uppercase tracking-wider rounded-sm border transition-all ${
               gameFocused
-                ? 'border-phobos-green/50 text-phobos-green bg-phobos-green/10'
-                : 'border-phobos-green/20 text-phobos-green/50 hover:border-phobos-green/40 hover:text-phobos-green/80'
+                ? 'border-phob-orange/50 text-phob-orange bg-phob-orange/10 skew-x-[-4deg]'
+                : 'border-phob-orange/20 text-phob-orange/50 hover:border-phob-orange/40 hover:text-phob-orange/80 skew-x-[-4deg]'
             }`}
             title="Toggle game focus (` key)"
           >
@@ -354,17 +396,17 @@ export function HeaderBar() {
         <HalcyonButton />
         <button
           onClick={togglePhobosLLMPanel}
-          className="relative flex items-center gap-1.5 px-4 py-1 text-[10px] font-terminal uppercase tracking-[0.15em] rounded-sm border border-phobos-green/30 text-phobos-green/70 hover:text-phobos-green hover:border-phobos-green/50 hover:shadow-[0_0_10px_hsl(120_100%_50%/0.12)] transition-all"
+          className="relative flex items-center gap-1.5 px-4 py-1 text-[10px] font-terminal uppercase tracking-[0.15em] border border-phob-orange/25 text-phob-orange/60 hover:text-phob-orange hover:border-phob-orange/50 hover:bg-phob-orange/5 skew-x-[-4deg] transition-all"
         >
           <Download className="w-3 h-3" />
           CONFIGURE
           {configOptimal === false && (
-            <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-amber-500/80 animate-pulse" title="Better config available" />
+            <span className="absolute -top-1 -right-1 phob-dot text-phob-amber" title="Better config available" />
           )}
         </button>
         <button
           onClick={() => setEditingUserDirectives(true)}
-          className="px-4 py-1 text-[10px] font-terminal uppercase tracking-[0.15em] rounded-sm border border-phobos-green/20 text-phobos-green/60 hover:text-phobos-green hover:border-phobos-green/40 hover:shadow-[0_0_8px_hsl(120_100%_50%/0.1)] transition-all"
+          className="px-4 py-1 text-[10px] font-terminal uppercase tracking-[0.15em] border border-phob-orange/20 text-phob-orange/55 hover:text-phob-orange hover:border-phob-orange/40 hover:bg-phob-orange/5 skew-x-[-4deg] transition-all"
         >
           DIRECTIVES
         </button>
@@ -373,7 +415,7 @@ export function HeaderBar() {
         <CreateDropdown />
         <button
           onClick={() => setMediaHubOpen(true)}
-          className="flex items-center gap-1.5 px-4 py-1 text-[10px] font-terminal uppercase tracking-[0.15em] rounded-sm border border-phobos-green/20 text-phobos-green/60 hover:text-phobos-green hover:border-phobos-green/40 hover:shadow-[0_0_8px_hsl(120_100%_50%/0.1)] transition-all"
+          className="flex items-center gap-1.5 px-4 py-1 text-[10px] font-terminal uppercase tracking-[0.15em] border border-phob-orange/20 text-phob-orange/55 hover:text-phob-orange hover:border-phob-orange/40 hover:bg-phob-orange/5 skew-x-[-4deg] transition-all"
           title="Media Hub"
         >
           <Film className="w-3 h-3" />
@@ -381,7 +423,7 @@ export function HeaderBar() {
         </button>
         <button
           onClick={toggleIptvPlayer}
-          className="flex items-center gap-1.5 px-4 py-1 text-[10px] font-terminal uppercase tracking-[0.15em] rounded-sm border border-phobos-green/20 text-phobos-green/60 hover:text-phobos-green hover:border-phobos-green/40 hover:shadow-[0_0_8px_hsl(120_100%_50%/0.1)] transition-all"
+          className="flex items-center gap-1.5 px-4 py-1 text-[10px] font-terminal uppercase tracking-[0.15em] border border-phob-orange/20 text-phob-orange/55 hover:text-phob-orange hover:border-phob-orange/40 hover:bg-phob-orange/5 skew-x-[-4deg] transition-all"
           title="IPTV"
         >
           <Tv className="w-3 h-3" />
@@ -389,14 +431,14 @@ export function HeaderBar() {
         <button
           onClick={() => setVaultOpen(true)}
           title="Vault"
-          className="p-1.5 rounded-md border border-phobos-green/20 text-phobos-green/60 hover:text-phobos-green hover:border-phobos-green/40 transition-all"
+          className="p-1.5 border border-phob-orange/20 text-phob-orange/50 hover:text-phob-orange hover:border-phob-orange/40 hover:bg-phob-orange/5 transition-all"
         >
           <Key className="w-3.5 h-3.5" />
         </button>
         <button
           onClick={() => setUserMgmtOpen(true)}
           title="Users"
-          className="p-1.5 rounded-md border border-phobos-green/20 text-phobos-green/60 hover:text-phobos-green hover:border-phobos-green/40 transition-all"
+          className="p-1.5 border border-phob-orange/20 text-phob-orange/50 hover:text-phob-orange hover:border-phob-orange/40 hover:bg-phob-orange/5 transition-all"
         >
           <Users className="w-3.5 h-3.5" />
         </button>
@@ -404,7 +446,7 @@ export function HeaderBar() {
         <button
           onClick={toggleFinancePanel}
           title="Markets"
-          className="p-1.5 rounded-md border border-phobos-green/20 text-phobos-green/60 hover:text-phobos-green hover:border-phobos-green/40 transition-all"
+          className="p-1.5 border border-phob-orange/20 text-phob-orange/50 hover:text-phob-orange hover:border-phob-orange/40 hover:bg-phob-orange/5 transition-all"
         >
           <DollarSign className="w-3.5 h-3.5" />
         </button>
@@ -412,7 +454,7 @@ export function HeaderBar() {
         <button
           onClick={() => setLicenseOpen(true)}
           title="Patrons"
-          className="p-1.5 rounded-md border border-phobos-green/20 text-phobos-green/60 hover:text-phobos-green hover:border-phobos-green/40 transition-all"
+          className="p-1.5 border border-phob-orange/20 text-phob-orange/50 hover:text-phob-orange hover:border-phob-orange/40 hover:bg-phob-orange/5 transition-all"
         >
           <Crown className="w-3.5 h-3.5" />
         </button>
@@ -447,12 +489,12 @@ export function HeaderBar() {
           <button
             onClick={cycleCopilot}
             title={copilotMode === 'hidden' ? 'Open copilot' : copilotMode === 'compact' ? 'Expand copilot' : 'Hide copilot'}
-            className={`p-1.5 rounded-md hover:bg-accent transition-colors ml-1 ${
+            className={`p-1.5 hover:bg-phob-orange/8 transition-colors ml-1 ${
               copilotMode === 'expanded'
-                ? 'text-phobos-amber bg-phobos-amber/10'
+                ? 'text-phob-orange bg-phob-orange/10'
                 : copilotMode === 'compact'
-                  ? 'text-muted-foreground/70'
-                  : 'text-muted-foreground/40'
+                  ? 'text-phob-orange/50'
+                  : 'text-phob-orange/30'
             }`}
           >
             <PanelRight className="w-4 h-4" />

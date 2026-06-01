@@ -235,11 +235,13 @@ export function useThreadMessages(threadId: string) {
 
 export function useStatus() {
   const setConnectionStatus = useAppStore((s) => s.setConnectionStatus);
-  const setModelNames = useAppStore((s) => s.setModelNames);
-  const setBackendAlive = useAppStore((s) => s.setBackendAlive);
-  const setVersionMismatch = useAppStore((s) => s.setVersionMismatch);
-  const setConfigOptimal = useAppStore((s) => s.setConfigOptimal);
+  const setModelNames       = useAppStore((s) => s.setModelNames);
+  const setBackendAlive     = useAppStore((s) => s.setBackendAlive);
+  const setVersionMismatch  = useAppStore((s) => s.setVersionMismatch);
+  const setConfigOptimal    = useAppStore((s) => s.setConfigOptimal);
   const setVisionCapability = useAppStore((s) => s.setVisionCapability);
+  const setActiveUser       = useAppStore((s) => s.setActiveUser);
+  const setActiveUserRole   = useAppStore((s) => s.setActiveUserRole);
   return useQuery({
     queryKey: ['status'],
     queryFn: async () => {
@@ -290,6 +292,9 @@ export function useStatus() {
         setConfigOptimal(data.configOptimal ?? null);
         // Sync vision capability for attachment pre-flight guard
         setVisionCapability(data.visionCapability ?? null);
+        // Sync active user identity and role — drives UI gating
+        if (data.activeUser)     setActiveUser(data.activeUser);
+        if (data.activeUserRole) setActiveUserRole(data.activeUserRole);
         // Version check — runs after confirming backend is alive
         try {
           const vRes = await fetch(`${ENGINE_URL}/api/version`);

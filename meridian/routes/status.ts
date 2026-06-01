@@ -11,9 +11,9 @@ export async function statusRoutes(
   fastify: FastifyInstance,
   opts: { scanner: Scanner; db: MeridianDB; config: MeridianConfig },
 ): Promise<void> {
-  fastify.get('/api/status', async (_req, reply) => {
+  fastify.get('/api/status', async (req, reply) => {
     const scan   = opts.scanner.getState();
-    const libs   = await opts.db.listLibraries(opts.config.userId);
+    const libs   = await opts.db.listLibraries((req as import('fastify').FastifyRequest & { meridianUser: string }).meridianUser);
     const counts = libs.reduce((sum, l) => sum + l.fileCount, 0);
 
     return reply.send({

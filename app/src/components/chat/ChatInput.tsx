@@ -232,14 +232,14 @@ export function ChatInput({
   const showLengthWarning = value.length > 8000;
   const tokenCount = Math.ceil(value.length / 4);
   const tokenColorClass = tokenCount > 3000
-    ? 'text-phobos-amber/60'
+    ? 'text-phob-amber/70'
     : tokenCount >= 1000
-      ? 'text-phobos-green/40'
-      : 'text-muted-foreground/25';
+      ? 'text-phob-amber/50'
+      : 'text-phob-orange/25';
 
   return (
     <>
-      <div className="border-t border-border p-3 bg-card">
+      <div className="border-t border-phob-orange/20 p-3 bg-[#080808]">
 
         {/* ── Queued file chips ── */}
         {queuedFiles.length > 0 && (
@@ -251,8 +251,8 @@ export function ChatInput({
                   key={`${file.name}-${i}`}
                   className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-mono rounded border ${
                     isImg
-                      ? 'bg-phobos-blue/10 border-phobos-blue/30 text-phobos-blue'
-                      : 'bg-accent border-border text-accent-foreground'
+                      ? 'bg-phob-teal/8 border-phob-teal/30 text-phob-teal'
+                      : 'bg-phob-white/5 border-phob-orange/20 text-phob-white/70'
                   }`}
                   title={isImg ? 'Image — filename will be injected into query' : 'Text file — contents will be inlined into query'}
                 >
@@ -278,12 +278,12 @@ export function ChatInput({
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          className={`flex items-end gap-2 bg-background/60 rounded-md border px-3 py-2 transition-colors ${
+          className={`flex items-end gap-2 bg-phob-orange/4 border px-3 py-2 transition-colors ${
             dragOver
-              ? 'border-primary/60 bg-primary/5'
+              ? 'border-phob-orange/60 bg-phob-orange/10'
               : isLocked
-                ? 'border-primary/40'
-                : 'border-border'
+                ? 'border-phob-orange/35'
+                : 'border-phob-orange/20'
           }`}
         >
           <input
@@ -297,7 +297,7 @@ export function ChatInput({
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={isLocked}
-            className="p-1 text-muted-foreground hover:text-foreground disabled:opacity-30 transition-colors shrink-0 mb-0.5"
+            className="p-1 text-phob-steel/40 hover:text-phob-white disabled:opacity-30 transition-colors shrink-0 mb-0.5"
             title="Attach file to query"
           >
             <Paperclip className="w-4 h-4" />
@@ -317,7 +317,7 @@ export function ChatInput({
             }
             disabled={isLocked}
             rows={1}
-            className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground resize-none focus:outline-none leading-5 disabled:opacity-50"
+            className="flex-1 bg-transparent text-sm text-phob-white/90 placeholder:text-phob-orange/25 resize-none focus:outline-none leading-5 disabled:opacity-50"
             style={{ maxHeight: '120px' }}
           />
 
@@ -330,7 +330,7 @@ export function ChatInput({
           <button
             onClick={() => setShowChatMd(true)}
             disabled={isLocked}
-            className="p-1 text-muted-foreground hover:text-foreground disabled:opacity-30 transition-colors shrink-0 mb-0.5"
+            className="p-1 text-phob-steel/40 hover:text-phob-white disabled:opacity-30 transition-colors shrink-0 mb-0.5"
             title="chat.md rules"
           >
             <FileText className="w-4 h-4" />
@@ -340,7 +340,7 @@ export function ChatInput({
             stopping ? (
               <button
                 disabled
-                className="flex items-center gap-1 px-2 py-1.5 rounded-md bg-destructive/40 text-destructive/60 text-[10px] font-terminal tracking-wider shrink-0 mb-0.5 cursor-not-allowed"
+                className="flex items-center gap-1 px-2 py-1.5 bg-phob-red/40 text-phob-red/60 text-[10px] font-terminal tracking-wider shrink-0 mb-0.5 cursor-not-allowed"
               >
                 <Square className="w-3 h-3 animate-pulse" />
                 STOPPING
@@ -352,7 +352,7 @@ export function ChatInput({
                   onStop?.();
                   setTimeout(() => setStopping(false), 2000);
                 }}
-                className="p-1.5 rounded-md bg-destructive/80 text-white hover:bg-destructive transition-colors shrink-0 mb-0.5"
+                className="p-1.5 bg-phob-red/80 text-phob-white hover:bg-phob-red transition-colors shrink-0 mb-0.5"
                 title="Stop generation"
               >
                 <Square className="w-3.5 h-3.5" />
@@ -361,7 +361,7 @@ export function ChatInput({
           ) : (
             <>
               {imageGenerating && !hideStatus && (
-                <span className="flex items-center gap-1 px-2 py-1.5 rounded-md bg-primary/20 text-primary/50 text-[10px] font-terminal tracking-wider shrink-0 mb-0.5 select-none">
+                <span className="flex items-center gap-1 px-2 py-1.5 bg-phob-orange/20 text-phob-orange/50 text-[10px] font-terminal tracking-wider shrink-0 mb-0.5 select-none">
                   <Square className="w-3 h-3 animate-pulse" />
                   RENDER
                 </span>
@@ -385,7 +385,7 @@ export function ChatInput({
                       : sttListening
                         ? 'bg-destructive/20 text-destructive animate-pulse'
                         : sttTranscribing
-                          ? 'bg-phobos-amber/10 text-phobos-amber/70'
+                          ? 'bg-phob-amber/10 text-phob-amber/70'
                           : 'bg-muted/50 text-muted-foreground/60 hover:text-foreground hover:bg-muted'
                   }`}
                 >
@@ -400,9 +400,9 @@ export function ChatInput({
               <button
                 onClick={handleSend}
                 disabled={!canSend}
-                className="p-1.5 rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-30 transition-opacity shrink-0 mb-0.5"
+                className="p-1.5 bg-phob-orange/20 border border-phob-orange/50 text-phob-orange font-terminal text-[9px] uppercase tracking-[0.15em] skew-x-[-4deg] hover:bg-phob-orange/30 disabled:opacity-30 transition-all shrink-0 mb-0.5"
               >
-                <Send className="w-3.5 h-3.5" />
+                SEND
               </button>
             </>
           )}
@@ -410,10 +410,10 @@ export function ChatInput({
 
         {/* ── Hints and warnings ── */}
         {pasteHint && (
-          <p className="text-[11px] text-phobos-amber mt-1.5 px-1">{pasteHint}</p>
+          <p className="text-[11px] text-phob-amber/70 mt-1.5 px-1 font-mono">{pasteHint}</p>
         )}
         {!hideStatus && isPartialOffline && !isOffline && (
-          <p className="text-[10px] font-mono text-phobos-amber/70 mt-1 px-1">
+          <p className="text-[10px] font-mono text-phob-amber/60 mt-1 px-1">
             Partial backend offline — some features may be unavailable
           </p>
         )}
@@ -423,7 +423,7 @@ export function ChatInput({
           </p>
         )}
         {showLengthWarning && !pasteHint && (
-          <p className="text-[11px] text-phobos-amber mt-1.5 px-1">
+          <p className="text-[11px] text-phob-amber/70 mt-1.5 px-1 font-mono">
             Message is very long ({value.length.toLocaleString()} chars) — consider attaching as a file instead
           </p>
         )}

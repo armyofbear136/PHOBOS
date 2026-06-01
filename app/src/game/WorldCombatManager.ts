@@ -31,10 +31,17 @@ import { CLASS_DEFINITIONS } from './PlayerClasses';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const MAX_ENEMIES      = 32;
 const MELEE_HIT_RANGE  = 56;   // px — player melee arc radius
 const RANGED_HIT_RANGE = 380;  // px — ranged shot max reach
 const MELEE_ARC_HALF   = 0.57; // cos(55°) — ±55° forward arc threshold
+
+// Proximity spawn/despawn distances (world px).
+// SPAWN_RANGE  — enemy activates when player comes within this distance of its home position.
+// DESPAWN_RANGE — idle enemy beyond this distance is eligible for despawn after IDLE_DESPAWN_MS.
+// Both are measured home→player so zone layout doesn't matter.
+const SPAWN_RANGE_PX    = 2880; // ~2 screen-lengths at zoom 1
+const DESPAWN_RANGE_PX  = 2880;
+const IDLE_DESPAWN_MS   = 300_000; // 5 minutes idle beyond DESPAWN_RANGE_PX → despawn
 
 // Enemy separation — prevents stacking
 const SEPARATION_RADIUS = 18;  // px — push apart when closer than this
@@ -147,10 +154,24 @@ function weightedSample(pool: FlavourPool, rng: () => number): string {
 
 // ── WorldCombatManager ────────────────────────────────────────────────────────
 
+// Pending spawn descriptor — stored at seedZoneGraph time, activated on proximity.
+interface PendingSpawn {
+  templateKey: string;
+  template:    EnemyTemplate;
+  homeX:       number;
+  homeY:       number;
+  bounds:      { minX: number; minY: number; maxX: number; maxY: number };
+  overrides:   EnemySpawnOverrides | undefined;
+}
+
 export class WorldCombatManager {
-  // Fixed-size enemy slots — allocated once, reused across zone visits
-  private readonly _slots: Array<EnemyWorldSprite | null>;
-  private _liveCount = 0;
+  // Live enemies — dynamic, no cap. Key = monotonic id assigned at activation.
+  private _live    = new Map<number, EnemyWorldSprite>();
+  private _nextId  = 0;
+
+  // Pending spawns — populated by seedZoneGraph, drained by proximity check in update().
+  // Pre-allocated as a plain array; grows only at seedZoneGraph call (once per zone entry).
+  private _pending: PendingSpawn[] = [];
 
   // Callbacks
   onEnemyKilled:  ((enemy: EnemyWorldSprite) => void) | null                             = null;
@@ -174,7 +195,6 @@ export class WorldCombatManager {
 
   constructor(scene: Phaser.Scene) {
     this._scene = scene;
-    this._slots = new Array(MAX_ENEMIES).fill(null);
   }
 
   // ── Wiring ────────────────────────────────────────────────────────────────
@@ -210,7 +230,7 @@ export class WorldCombatManager {
       if (!template) continue;
 
       const spawnPos = this._randomZoneTilePos(rng, TileWorld.getInstance());
-      this._spawnEnemy(key, template, spawnPos.x, spawnPos.y, bounds, overrides);
+      this._activatePending({ templateKey: key, template, homeX: spawnPos.x, homeY: spawnPos.y, bounds, overrides });
     }
   }
 
@@ -239,29 +259,24 @@ export class WorldCombatManager {
       ? this._computeZoneBounds(tiles, tw)
       : { minX: -9999, minY: -9999, maxX: 9999, maxY: 9999 };
 
-    const flavour  = ExplorationZoneManager.getInstance().getDailyFlavour();
-    const pool     = FLAVOUR_POOLS[flavour] ?? FLAVOUR_POOLS['default'];
+    const flavour   = ExplorationZoneManager.getInstance().getDailyFlavour();
+    const pool      = FLAVOUR_POOLS[flavour] ?? FLAVOUR_POOLS['default'];
     const overrides = toSpawnOverrides(difficulty, flavour);
 
-    // Track mineral node index across all rooms for unique nodeId generation
     let mineralIdx = 0;
 
     for (const region of graph.regions) {
       for (const room of region.rooms) {
-        // Per-room seed: mix daily seed with room world position
         let s = (dailySeed ^ ((room.worldOffsetTx * 73856093) ^ (room.worldOffsetTy * 19349663))) >>> 0;
         const rng = (): number => {
           s = (s * 16807) % 2147483647;
           return s / 2147483647;
         };
 
-        const isBossRoom = room.def.type === 'boss';
-
-        // Enemy markers
+        const isBossRoom   = room.def.type === 'boss';
         const enemyMarkers = room.def.spawn_markers.filter((m: SpawnMarker) => m.type === 'enemy');
 
         if (isBossRoom && enemyMarkers.length > 0) {
-          // Boss room: spawn one boss-archetype at the first marker, fill rest with elites
           const bossKeys: string[] = [];
           for (const [k, t] of Object.entries(ENEMY_TEMPLATES)) {
             if (t.archetype === 'boss') bossKeys.push(k);
@@ -272,29 +287,27 @@ export class WorldCombatManager {
             if (bossTmpl) {
               const m     = enemyMarkers[0];
               const world = tw.tileToWorld(room.worldOffsetTx + m.tx, room.worldOffsetTy + m.ty);
-              this._spawnEnemy(bossKey, bossTmpl, world.x, world.y, bounds, overrides);
+              this._pending.push({ templateKey: bossKey, template: bossTmpl, homeX: world.x, homeY: world.y, bounds, overrides });
             }
           }
-          // Fill remaining enemy markers with elite/warrior pool
           for (let i = 1; i < enemyMarkers.length; i++) {
-            const key = weightedSample(pool, rng);
+            const key  = weightedSample(pool, rng);
             const tmpl = ENEMY_TEMPLATES[key];
             if (!tmpl) continue;
             const m     = enemyMarkers[i];
             const world = tw.tileToWorld(room.worldOffsetTx + m.tx, room.worldOffsetTy + m.ty);
-            this._spawnEnemy(key, tmpl, world.x, world.y, bounds, overrides);
+            this._pending.push({ templateKey: key, template: tmpl, homeX: world.x, homeY: world.y, bounds, overrides });
           }
         } else {
           for (const m of enemyMarkers) {
-            const key = weightedSample(pool, rng);
+            const key  = weightedSample(pool, rng);
             const tmpl = ENEMY_TEMPLATES[key];
             if (!tmpl) continue;
             const world = tw.tileToWorld(room.worldOffsetTx + m.tx, room.worldOffsetTy + m.ty);
-            this._spawnEnemy(key, tmpl, world.x, world.y, bounds, overrides);
+            this._pending.push({ templateKey: key, template: tmpl, homeX: world.x, homeY: world.y, bounds, overrides });
           }
         }
 
-        // Mineral markers
         if (this.onMineralMarker) {
           for (const m of room.def.spawn_markers.filter((mk: SpawnMarker) => mk.type === 'mineral')) {
             const mineralType = m.tag ?? 'lumite';
@@ -315,15 +328,12 @@ export class WorldCombatManager {
     }
   }
 
-  /** Destroy all live enemies and reset the pool. Called on zone exit. */
+  /** Destroy all live enemies and discard pending spawns. Called on zone exit. */
   clearZone(): void {
-    for (let i = 0; i < MAX_ENEMIES; i++) {
-      if (this._slots[i]) {
-        this._slots[i]!.destroy();
-        this._slots[i] = null;
-      }
-    }
-    this._liveCount = 0;
+    for (const e of this._live.values()) e.destroy();
+    this._live.clear();
+    this._pending.length = 0;
+    this._nextId = 0;
   }
 
   /**
@@ -381,7 +391,7 @@ export class WorldCombatManager {
         const template = ENEMY_TEMPLATES[key];
         if (!template) continue;
         const spawnPos = this._randomZoneTilePos(rng, TileWorld.getInstance());
-        this._spawnEnemy(key, template, spawnPos.x, spawnPos.y, bounds, overrides);
+        this._activatePending({ templateKey: key, template, homeX: spawnPos.x, homeY: spawnPos.y, bounds, overrides });
       }
       this._spawnExtraEnemies(pool, bounds, rng, difficulty, overrides);
       return;
@@ -393,7 +403,7 @@ export class WorldCombatManager {
       const template = ENEMY_TEMPLATES[key];
       if (!template) continue;
       const spawnPos = this._randomZoneTilePos(rng, TileWorld.getInstance());
-      this._spawnEnemy(key, template, spawnPos.x, spawnPos.y, bounds, overrides);
+      this._activatePending({ templateKey: key, template, homeX: spawnPos.x, homeY: spawnPos.y, bounds, overrides });
     }
     this._spawnExtraEnemies(pool, bounds, rng, difficulty, overrides);
   }
@@ -430,39 +440,67 @@ export class WorldCombatManager {
       spawnY = (bounds.minY + bounds.maxY) / 2;
     }
 
-    this._spawnEnemy(bossKey, bossTemplate, spawnX, spawnY, bounds, overrides);
+    this._activatePending({ templateKey: bossKey, template: bossTemplate, homeX: spawnX, homeY: spawnY, bounds, overrides });
   }
 
   // ── Per-frame update ──────────────────────────────────────────────────────
 
   update(delta: number, playerX: number, playerY: number): void {
-    if (this._liveCount === 0) return;
-
-    this._nearestEnemyIdx    = null;
-    this._nearestEnemyDist   = Infinity;
+    this._nearestEnemyIdx         = null;
+    this._nearestEnemyDist        = Infinity;
     this._enemyHitPlayerThisFrame = false;
 
-    // Compute player tile once — passed to every enemy to avoid 32 redundant worldToTile calls.
     const tw = TileWorld.getInstance();
     const { tx: playerTx, ty: playerTy } = tw.worldToTile(playerX, playerY);
 
+    // Proximity activation — drain pending spawns within SPAWN_RANGE_PX of their home.
+    // Iterate backward so splice(i,1) is safe; entries are zone-ordered so nearby
+    // spawns cluster toward the front after the player has advanced into the zone.
+    for (let i = this._pending.length - 1; i >= 0; i--) {
+      const p  = this._pending[i];
+      const dx = p.homeX - playerX;
+      const dy = p.homeY - playerY;
+      if (dx * dx + dy * dy <= SPAWN_RANGE_PX * SPAWN_RANGE_PX) {
+        this._activatePending(p);
+        this._pending.splice(i, 1);
+      }
+    }
+
+    if (this._live.size === 0) return;
+
+    const spawnRangeSq   = SPAWN_RANGE_PX   * SPAWN_RANGE_PX;
+    const despawnRangeSq = DESPAWN_RANGE_PX * DESPAWN_RANGE_PX;
+
     let justDied = false;
+    const toRemove: number[] = [];
 
-    for (let i = 0; i < MAX_ENEMIES; i++) {
-      const e = this._slots[i];
-      if (!e) continue;
-
+    for (const [id, e] of this._live) {
       const prevDead = e.isDead;
-      const dmg = e.update(delta, playerX, playerY, playerTx, playerTy);
+      const dmg      = e.update(delta, playerX, playerY, playerTx, playerTy);
 
-      // Track nearest live enemy for ally AI
       if (!e.isDead) {
         this._dx = e.x - playerX;
         this._dy = e.y - playerY;
-        const d = this._dx * this._dx + this._dy * this._dy;
+        const d  = this._dx * this._dx + this._dy * this._dy;
         if (d < this._nearestEnemyDist) {
           this._nearestEnemyDist = d;
-          this._nearestEnemyIdx  = i;
+          this._nearestEnemyIdx  = id;
+        }
+
+        // Reset idle timer when player is within spawn range of home
+        const hx = e.homeX - playerX;
+        const hy = e.homeY - playerY;
+        if (hx * hx + hy * hy <= spawnRangeSq) {
+          e.resetIdle();
+        }
+
+        // Idle despawn — patrol state, home far from player, timer expired
+        if (
+          e.aiState === 'patrol' &&
+          e._idleTimer >= IDLE_DESPAWN_MS &&
+          hx * hx + hy * hy > despawnRangeSq
+        ) {
+          toRemove.push(id);
         }
       }
 
@@ -472,29 +510,32 @@ export class WorldCombatManager {
       }
 
       if (!prevDead && e.isDead) {
-        this._liveCount--;
         this.onEnemyKilled?.(e);
         justDied = true;
+        toRemove.push(id);
       }
     }
 
-    if (justDied && this._liveCount === 0) {
+    for (const id of toRemove) {
+      this._live.get(id)?.destroy();
+      this._live.delete(id);
+    }
+
+    if (justDied && this._live.size === 0 && this._pending.length === 0) {
       this.onZoneClear?.();
     }
 
-    // Separation pass — push overlapping enemies apart so they don't stack.
-    // O(n²) over MAX_ENEMIES slots but n is small (≤32) so ~512 pair checks max.
-    for (let i = 0; i < MAX_ENEMIES - 1; i++) {
-      const a = this._slots[i];
-      if (!a || a.isDead) continue;
-      for (let j = i + 1; j < MAX_ENEMIES; j++) {
-        const b = this._slots[j];
-        if (!b || b.isDead) continue;
-        const dx   = b.x - a.x;
-        const dy   = b.y - a.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        // Separation radius scaled by the average of both enemies' profile multipliers.
-        // aggressive/berserk enemies swarm tighter; wary enemies spread wider.
+    // Separation pass — O(n²) over live enemies only; no fixed cap
+    const liveArr = Array.from(this._live.values());
+    for (let i = 0; i < liveArr.length - 1; i++) {
+      const a = liveArr[i];
+      if (a.isDead) continue;
+      for (let j = i + 1; j < liveArr.length; j++) {
+        const b = liveArr[j];
+        if (b.isDead) continue;
+        const dx     = b.x - a.x;
+        const dy     = b.y - a.y;
+        const dist   = Math.sqrt(dx * dx + dy * dy);
         const radius = SEPARATION_RADIUS * (a.separationMult + b.separationMult) * 0.5;
         if (dist < radius && dist > 0) {
           const overlap = (radius - dist) * SEPARATION_FORCE;
@@ -507,7 +548,20 @@ export class WorldCombatManager {
     }
   }
 
-  // ── Hit resolution (called from WorldScene.onHit) ─────────────────────────
+  /** Activate a pending spawn descriptor — create EnemyWorldSprite and register in _live. */
+  private _activatePending(p: PendingSpawn): void {
+    const cfg: EnemyWorldSpriteConfig = {
+      templateId: p.templateKey,
+      template:   p.template,
+      spawnX:     p.homeX,
+      spawnY:     p.homeY,
+      zoneBounds: p.bounds,
+      overrides:  p.overrides,
+    };
+    this._live.set(this._nextId++, new EnemyWorldSprite(this._scene, cfg));
+  }
+
+    // ── Hit resolution (called from WorldScene.onHit) ─────────────────────────
 
   /**
    * Resolve a HitEvent from the player against all nearby enemies.
@@ -515,11 +569,8 @@ export class WorldCombatManager {
    * Returns total damage dealt across all targets (for HUD feedback).
    */
   resolveHit(event: HitEvent): number {
-    if (this._liveCount === 0) return 0;
+    if (this._live.size === 0) return 0;
 
-    // ── Player ability dispatch ───────────────────────────────────────────────
-    // Abilities with special world effects are handled here before the generic
-    // arc sweep. Returns early for self-effects (heals, buffs, zero-damage).
     if (event.type === 'ability' && event.abilityIndex !== undefined) {
       return this._resolvePlayerAbility(event);
     }
@@ -530,73 +581,45 @@ export class WorldCombatManager {
     let justDied = false;
 
     if (event.type === 'melee') {
-      // Arc sweep — all enemies within radius and ±55° of aim angle
-      for (let i = 0; i < MAX_ENEMIES; i++) {
-        const e = this._slots[i];
-        if (!e || e.isDead) continue;
-
+      for (const e of this._live.values()) {
+        if (e.isDead) continue;
         this._dx = e.x - event.originX;
         this._dy = e.y - event.originY;
         const dist = Math.sqrt(this._dx * this._dx + this._dy * this._dy);
         if (dist > MELEE_HIT_RANGE) continue;
-
-        // Arc check via dot product
         const dot = (this._dx / dist) * fx + (this._dy / dist) * fy;
         if (dot < MELEE_ARC_HALF) continue;
-
         e.receiveHit(event.damage);
         EffectsManager.getInstance().spawnHitEffect(e.x, e.y, 'slash', 0xffffff);
         this.onHitLanded?.(e.x, e.y, event.damage, event.isCrit);
         totalDmg += event.damage;
-        if (e.isDead) {
-          this._liveCount--;
-          this.onEnemyKilled?.(e);
-          justDied = true;
-        }
+        if (e.isDead) { this.onEnemyKilled?.(e); justDied = true; }
       }
     } else {
-      // Ranged — find closest enemy intersecting the aim ray
       let bestDist = RANGED_HIT_RANGE;
-      let bestIdx  = -1;
-
-      for (let i = 0; i < MAX_ENEMIES; i++) {
-        const e = this._slots[i];
-        if (!e || e.isDead) continue;
-
+      let bestEnemy: EnemyWorldSprite | null = null;
+      for (const e of this._live.values()) {
+        if (e.isDead) continue;
         this._dx = e.x - event.originX;
         this._dy = e.y - event.originY;
-
-        // Project onto aim ray; reject enemies behind the shot
         const along = this._dx * fx + this._dy * fy;
         if (along < 0 || along > RANGED_HIT_RANGE) continue;
-
-        // Perpendicular distance to ray
         const perpX = this._dx - along * fx;
         const perpY = this._dy - along * fy;
         const perp  = Math.sqrt(perpX * perpX + perpY * perpY);
-        if (perp > 24) continue; // px radius — matches enemy visual size (~24px wide)
-
-        if (along < bestDist) {
-          bestDist = along;
-          bestIdx  = i;
-        }
+        if (perp > 24) continue;
+        if (along < bestDist) { bestDist = along; bestEnemy = e; }
       }
-
-      if (bestIdx >= 0) {
-        const e = this._slots[bestIdx]!;
-        e.receiveHit(event.damage);
-        EffectsManager.getInstance().spawnHitEffect(e.x, e.y, 'energy', 0xffffff);
-        this.onHitLanded?.(e.x, e.y, event.damage, event.isCrit);
+      if (bestEnemy) {
+        bestEnemy.receiveHit(event.damage);
+        EffectsManager.getInstance().spawnHitEffect(bestEnemy.x, bestEnemy.y, 'energy', 0xffffff);
+        this.onHitLanded?.(bestEnemy.x, bestEnemy.y, event.damage, event.isCrit);
         totalDmg += event.damage;
-        if (e.isDead) {
-          this._liveCount--;
-          this.onEnemyKilled?.(e);
-          justDied = true;
-        }
+        if (bestEnemy.isDead) { this.onEnemyKilled?.(bestEnemy); justDied = true; }
       }
     }
 
-    if (justDied && this._liveCount === 0) {
+    if (justDied && this._live.size === 0 && this._pending.length === 0) {
       this.onZoneClear?.();
     }
 
@@ -605,7 +628,7 @@ export class WorldCombatManager {
 
   // ── Accessors ─────────────────────────────────────────────────────────────
 
-  get liveCount(): number { return this._liveCount; }
+  get liveCount(): number { return this._live.size; }
 
   /**
    * Returns position + slot index of the nearest live enemy to (px, py).
@@ -613,28 +636,24 @@ export class WorldCombatManager {
    */
   getNearestLiveEnemy(px: number, py: number): { x: number; y: number; idx: number } | null {
     if (this._nearestEnemyIdx === null) return null;
-    // Nearest is already tracked in _nearestEnemyIdx from this frame's update()
-    // If called before update() runs (shouldn't happen), fall back to linear scan
-    const e = this._slots[this._nearestEnemyIdx];
+    const e = this._live.get(this._nearestEnemyIdx);
     if (e && !e.isDead) return { x: e.x, y: e.y, idx: this._nearestEnemyIdx };
-
-    // Fallback linear scan (first-frame edge case only)
+    // Fallback linear scan
     let bestDistSq = Infinity;
-    let bestIdx    = -1;
-    for (let i = 0; i < MAX_ENEMIES; i++) {
-      const s = this._slots[i];
-      if (!s || s.isDead) continue;
-      const dx = s.x - px;
-      const dy = s.y - py;
+    let bestId     = -1;
+    for (const [id, s] of this._live) {
+      if (s.isDead) continue;
+      const dx = s.x - px; const dy = s.y - py;
       const dsq = dx * dx + dy * dy;
-      if (dsq < bestDistSq) { bestDistSq = dsq; bestIdx = i; }
+      if (dsq < bestDistSq) { bestDistSq = dsq; bestId = id; }
     }
-    if (bestIdx < 0) return null;
-    return { x: this._slots[bestIdx]!.x, y: this._slots[bestIdx]!.y, idx: bestIdx };
+    if (bestId < 0) return null;
+    const best = this._live.get(bestId)!;
+    return { x: best.x, y: best.y, idx: bestId };
   }
 
   /** Current live enemy count — read by ArenaScene HUD and zone HUD. */
-  get liveEnemyCount(): number { return this._liveCount; }
+  get liveEnemyCount(): number { return this._live.size; }
 
   /**
    * Returns true if any live enemy occupies a circle of `radius` px around (px, py).
@@ -642,11 +661,9 @@ export class WorldCombatManager {
    */
   isEnemyAtPosition(px: number, py: number, radius: number): boolean {
     const rSq = radius * radius;
-    for (let i = 0; i < MAX_ENEMIES; i++) {
-      const s = this._slots[i];
-      if (!s || s.isDead) continue;
-      const dx = s.x - px;
-      const dy = s.y - py;
+    for (const s of this._live.values()) {
+      if (s.isDead) continue;
+      const dx = s.x - px; const dy = s.y - py;
       if (dx * dx + dy * dy <= rSq) return true;
     }
     return false;
@@ -661,13 +678,12 @@ export class WorldCombatManager {
    * is empty or enemy already dead.
    */
   applyAllyHit(slotIdx: number, damage: number): boolean {
-    const e = this._slots[slotIdx];
+    const e = this._live.get(slotIdx);
     if (!e || e.isDead) return false;
     e.receiveHit(damage);
     if (e.isDead) {
-      this._liveCount--;
       this.onEnemyKilled?.(e);
-      if (this._liveCount === 0) this.onZoneClear?.();
+      if (this._live.size === 0 && this._pending.length === 0) this.onZoneClear?.();
     }
     return e.isDead;
   }
@@ -685,17 +701,14 @@ export class WorldCombatManager {
     statusMagnitude: number,
   ): boolean {
     let anyDied = false;
-    for (let i = 0; i < MAX_ENEMIES; i++) {
-      const e = this._slots[i];
-      if (!e || e.isDead) continue;
-      // Status adds a flat damage bonus (magnitude × 2) for world mode
+    for (const e of this._live.values()) {
+      if (e.isDead) continue;
       const bonusDmg = statusName ? statusMagnitude * 2 : 0;
       e.receiveHit(damage + bonusDmg);
       this.onHitLanded?.(e.x, e.y, damage + bonusDmg, false);
       if (e.isDead) {
-        this._liveCount--;
         this.onEnemyKilled?.(e);
-        if (this._liveCount === 0) this.onZoneClear?.();
+        if (this._live.size === 0 && this._pending.length === 0) this.onZoneClear?.();
         anyDied = true;
       }
     }
@@ -716,7 +729,7 @@ export class WorldCombatManager {
     _turns:     number,
     magnitude:  number,
   ): void {
-    const e = this._slots[slotIdx];
+    const e = this._live.get(slotIdx);
     if (!e || e.isDead) return;
     const multiplier: Record<string, number> = {
       stun: 4, entropy: 3, burn: 3, freeze: 3, slow: 2, exposure: 2,
@@ -725,9 +738,8 @@ export class WorldCombatManager {
     e.receiveHit(bonus);
     this.onHitLanded?.(e.x, e.y, bonus, false);
     if (e.isDead) {
-      this._liveCount--;
       this.onEnemyKilled?.(e);
-      if (this._liveCount === 0) this.onZoneClear?.();
+      if (this._live.size === 0 && this._pending.length === 0) this.onZoneClear?.();
     }
   }
 
@@ -737,9 +749,8 @@ export class WorldCombatManager {
    * Called each frame of a player roll to physically displace enemies.
    */
   pushEnemiesFromPoint(cx: number, cy: number): void {
-    for (let i = 0; i < MAX_ENEMIES; i++) {
-      const e = this._slots[i];
-      if (!e || e.isDead) continue;
+    for (const e of this._live.values()) {
+      if (e.isDead) continue;
       const dx   = e.x - cx;
       const dy   = e.y - cy;
       const dist = Math.sqrt(dx * dx + dy * dy);
@@ -761,7 +772,7 @@ export class WorldCombatManager {
     bounds:    { minX: number; minY: number; maxX: number; maxY: number },
     overrides: EnemySpawnOverrides | undefined = undefined,
   ): void {
-    this._spawnEnemy(key, template, x, y, bounds, overrides);
+    this._activatePending({ templateKey: key, template, homeX: x, homeY: y, bounds, overrides });
   }
 
   // ── Private ───────────────────────────────────────────────────────────────
@@ -884,9 +895,8 @@ export class WorldCombatManager {
     const fy = Math.sin(event.aimAngle);
     let total = 0;
     let justDied = false;
-    for (let i = 0; i < MAX_ENEMIES; i++) {
-      const e = this._slots[i];
-      if (!e || e.isDead) continue;
+    for (const e of this._live.values()) {
+      if (e.isDead) continue;
       this._dx = e.x - event.originX;
       this._dy = e.y - event.originY;
       const dist = Math.sqrt(this._dx * this._dx + this._dy * this._dy);
@@ -898,13 +908,9 @@ export class WorldCombatManager {
       EffectsManager.getInstance().spawnHitEffect(e.x, e.y, 'slash', 0xffffff);
       this.onHitLanded?.(e.x, e.y, dmg + bonusDmg, event.isCrit);
       total += dmg + bonusDmg;
-      if (e.isDead) {
-        this._liveCount--;
-        this.onEnemyKilled?.(e);
-        justDied = true;
-      }
+      if (e.isDead) { this.onEnemyKilled?.(e); justDied = true; }
     }
-    if (justDied && this._liveCount === 0) this.onZoneClear?.();
+    if (justDied && this._live.size === 0 && this._pending.length === 0) this.onZoneClear?.();
     return total;
   }
 
@@ -916,9 +922,8 @@ export class WorldCombatManager {
   ): number {
     let total = 0;
     let justDied = false;
-    for (let i = 0; i < MAX_ENEMIES; i++) {
-      const e = this._slots[i];
-      if (!e || e.isDead) continue;
+    for (const e of this._live.values()) {
+      if (e.isDead) continue;
       this._dx = e.x - event.originX;
       this._dy = e.y - event.originY;
       const dist = Math.sqrt(this._dx * this._dx + this._dy * this._dy);
@@ -928,13 +933,9 @@ export class WorldCombatManager {
       EffectsManager.getInstance().spawnHitEffect(e.x, e.y, 'energy', 0xcc88ff);
       this.onHitLanded?.(e.x, e.y, dmg + bonusDmg, event.isCrit);
       total += dmg + bonusDmg;
-      if (e.isDead) {
-        this._liveCount--;
-        this.onEnemyKilled?.(e);
-        justDied = true;
-      }
+      if (e.isDead) { this.onEnemyKilled?.(e); justDied = true; }
     }
-    if (justDied && this._liveCount === 0) this.onZoneClear?.();
+    if (justDied && this._live.size === 0 && this._pending.length === 0) this.onZoneClear?.();
     return total;
   }
 
@@ -946,11 +947,10 @@ export class WorldCombatManager {
   ): number {
     const fx = Math.cos(event.aimAngle);
     const fy = Math.sin(event.aimAngle);
-    let bestDist = maxRange;
-    let bestIdx  = -1;
-    for (let i = 0; i < MAX_ENEMIES; i++) {
-      const e = this._slots[i];
-      if (!e || e.isDead) continue;
+    let bestDist  = maxRange;
+    let bestEnemy: EnemyWorldSprite | null = null;
+    for (const e of this._live.values()) {
+      if (e.isDead) continue;
       this._dx = e.x - event.originX;
       this._dy = e.y - event.originY;
       const along = this._dx * fx + this._dy * fy;
@@ -958,43 +958,21 @@ export class WorldCombatManager {
       const perpX = this._dx - along * fx;
       const perpY = this._dy - along * fy;
       if (Math.sqrt(perpX * perpX + perpY * perpY) > 24) continue;
-      if (along < bestDist) { bestDist = along; bestIdx = i; }
+      if (along < bestDist) { bestDist = along; bestEnemy = e; }
     }
-    if (bestIdx < 0) return 0;
-    const e = this._slots[bestIdx]!;
+    if (!bestEnemy) return 0;
     const bonusDmg = status ? statusMag * 2 : 0;
-    e.receiveHit(dmg + bonusDmg);
-    EffectsManager.getInstance().spawnHitEffect(e.x, e.y, 'energy', 0x88ccff);
-    this.onHitLanded?.(e.x, e.y, dmg + bonusDmg, event.isCrit);
-    if (e.isDead) {
-      this._liveCount--;
-      this.onEnemyKilled?.(e);
-      if (this._liveCount === 0) this.onZoneClear?.();
+    bestEnemy.receiveHit(dmg + bonusDmg);
+    EffectsManager.getInstance().spawnHitEffect(bestEnemy.x, bestEnemy.y, 'energy', 0x88ccff);
+    this.onHitLanded?.(bestEnemy.x, bestEnemy.y, dmg + bonusDmg, event.isCrit);
+    if (bestEnemy.isDead) {
+      this.onEnemyKilled?.(bestEnemy);
+      if (this._live.size === 0 && this._pending.length === 0) this.onZoneClear?.();
     }
     return dmg + bonusDmg;
   }
 
-  private _spawnEnemy(
-    key:       string,
-    template:  EnemyTemplate,
-    x:         number,
-    y:         number,
-    bounds:    { minX: number; minY: number; maxX: number; maxY: number },
-    overrides: EnemySpawnOverrides | undefined = undefined,
-  ): void {
-    // Find a free slot
-    for (let i = 0; i < MAX_ENEMIES; i++) {
-      if (this._slots[i] !== null) continue;
 
-      const cfg: EnemyWorldSpriteConfig = {
-        templateId: key, template, spawnX: x, spawnY: y, zoneBounds: bounds, overrides,
-      };
-      this._slots[i] = new EnemyWorldSprite(this._scene, cfg);
-      this._liveCount++;
-      return;
-    }
-    // Pool exhausted — silently skip (MAX_ENEMIES cap is the design limit)
-  }
 
   /**
    * Spawn the fractional extra enemies granted by party difficulty scaling.
@@ -1037,7 +1015,7 @@ export class WorldCombatManager {
       const template = ENEMY_TEMPLATES[key];
       if (!template) continue;
       const pos = this._randomZoneTilePos(rng, TileWorld.getInstance());
-      this._spawnEnemy(key, template, pos.x, pos.y, bounds, overrides);
+      this._activatePending({ templateKey: key, template, homeX: pos.x, homeY: pos.y, bounds, overrides });
     }
   }
 

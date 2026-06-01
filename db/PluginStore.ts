@@ -4,6 +4,8 @@ import * as path from 'path';
 import * as os from 'os';
 import AdmZip from 'adm-zip';
 import { DatabaseManager, userDir, getActiveUser } from './DatabaseManager.js';
+import { UserStore }                                from './UserStore.js';
+import { OwnershipError, NotFoundError }            from './errors.js';
 import {
   type PluginManifest,
   type PluginRecord,
@@ -110,7 +112,8 @@ const REQUIRED_MANIFEST_FIELDS: (keyof PluginManifest)[] = [
 ];
 
 const VALID_BASE_MODELS: PluginBaseModel[] = [
-  'flux-dev', 'flux-schnell', 'flux2-klein', 'sdxl', 'chroma', '*',
+  'flux-dev', 'flux-schnell', 'flux-kontext', 'flux2-klein', 'sdxl', 'chroma',
+  'wan', 'qwen-image', 'sana', 'sana-sprint', '*',
 ];
 
 const VALID_CATEGORIES = new Set(['style', 'subject', 'lighting', 'texture', 'concept', 'generic']);
@@ -201,6 +204,7 @@ export class PluginStore {
         archive_path       VARCHAR NOT NULL,
         is_local_author    BOOLEAN NOT NULL DEFAULT false,
         has_license_unlock BOOLEAN NOT NULL DEFAULT false,
+        owner_username     VARCHAR,
         installed_at       TIMESTAMP NOT NULL DEFAULT now()
       )
     `);
@@ -214,8 +218,49 @@ export class PluginStore {
     return this.db.queryOne<PluginRecord>(`SELECT * FROM plugins WHERE id = ?`, [id]);
   }
 
-  remove(id: string): Promise<void> {
-    return this.db.run(`DELETE FROM plugins WHERE id = ?`, [id]);
+  /**
+   * Delete a plugin record and its archive file.
+   *
+   * Only the owning user or an admin-role user may delete a plugin that has
+   * an assigned owner_username. Unowned plugins (owner_username IS NULL) may
+   * be deleted by anyone.
+   *
+   * Throws NotFoundError if the record does not exist.
+   * Throws OwnershipError if the requestingUser is not the owner and not admin.
+   */
+  async remove(id: string, requestingUser: string): Promise<void> {
+    const record = await this.get(id);
+    if (!record) throw new NotFoundError(`Plugin not found: ${id}`);
+
+    if (record.owner_username && record.owner_username !== requestingUser) {
+      const systemDb   = DatabaseManager.getInstance();
+      const userStore  = new UserStore(systemDb);
+      const requester  = await userStore.getByUsername(requestingUser);
+      if (requester?.role !== 'admin') {
+        throw new OwnershipError(
+          `Plugin '${record.name}' is owned by ${record.owner_username}. ` +
+          `Only the owner or an admin may delete it.`,
+        );
+      }
+    }
+
+    try {
+      if (fs.existsSync(record.archive_path)) fs.unlinkSync(record.archive_path);
+    } catch (e) {
+      console.warn(`[PluginStore] Could not delete archive ${record.archive_path}:`, e);
+    }
+    await this.db.run(`DELETE FROM plugins WHERE id = ?`, [id]);
+  }
+
+  /**
+   * Return all plugins owned by the given username.
+   * Used by deprovisionSystemUser to enumerate what to rescue before deletion.
+   */
+  queryOwnedByUser(username: string): Promise<PluginRecord[]> {
+    return this.db.query<PluginRecord>(
+      `SELECT * FROM plugins WHERE owner_username = ?`,
+      [username],
+    );
   }
 
   // ── Auth ──────────────────────────────────────────────────────────────────
@@ -384,6 +429,7 @@ export class PluginStore {
       archive_path:       destPath,
       is_local_author:    isLocalAuthor,
       has_license_unlock: hasLicenseUnlock,
+      owner_username:     getActiveUser(),
     });
   }
 
@@ -428,6 +474,7 @@ export class PluginStore {
       archive_path:       finalDest,
       is_local_author:    false,
       has_license_unlock: false,
+      owner_username:     getActiveUser(),
     });
   }
 
@@ -501,6 +548,7 @@ export class PluginStore {
       archive_path:       archivePath,
       is_local_author:    true,
       has_license_unlock: !!fp,
+      owner_username:     getActiveUser(),
     });
   }
 
@@ -547,13 +595,15 @@ export class PluginStore {
         id, kind, name, author, author_url, version, description,
         base_model, compatible_models, trigger_words, category, tags,
         recommended_weight, weight_min, weight_max, rank,
-        training_images, training_steps, archive_path, is_local_author, has_license_unlock
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        training_images, training_steps, archive_path,
+        is_local_author, has_license_unlock, owner_username
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       r.id, r.kind, r.name, r.author, r.author_url, r.version, r.description,
       r.base_model, r.compatible_models, r.trigger_words, r.category, r.tags,
       r.recommended_weight, r.weight_min, r.weight_max, r.rank,
-      r.training_images, r.training_steps, r.archive_path, r.is_local_author, r.has_license_unlock,
+      r.training_images, r.training_steps, r.archive_path,
+      r.is_local_author, r.has_license_unlock, r.owner_username ?? null,
     ]);
     return (await this.get(r.id))!;
   }

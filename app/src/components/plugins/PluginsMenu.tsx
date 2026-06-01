@@ -14,6 +14,7 @@ import {
   BASE_MODEL_LABELS,
 } from './PluginTypes';
 import { TrainingPanel } from './TrainingPanel';
+import { useAppStore }   from '@/store/useAppStore';
 
 const ENGINE_URL = (import.meta.env.VITE_ENGINE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
 
@@ -22,17 +23,17 @@ interface PluginsMenuProps { onClose: () => void; }
 // ── Badges ────────────────────────────────────────────────────────────────────
 
 const CATEGORY_COLORS: Record<PluginCategory, string> = {
-  style:   'text-phobos-blue border-phobos-blue/30 bg-phobos-blue/5',
-  subject: 'text-phobos-blue border-phobos-blue/30 bg-phobos-blue/5',
-  lighting:'text-phobos-amber border-phobos-amber/30 bg-phobos-amber/5',
-  texture: 'text-phobos-amber border-phobos-amber/30 bg-phobos-amber/5',
+  style:   'text-phob-teal border-phob-teal/30 bg-phob-teal/5',
+  subject: 'text-phob-teal border-phob-teal/30 bg-phob-teal/5',
+  lighting:'text-phob-amber border-phob-amber/30 bg-phob-amber/5',
+  texture: 'text-phob-amber border-phob-amber/30 bg-phob-amber/5',
   concept: 'text-sayon border-sayon/30 bg-sayon/5',
   generic: 'text-muted-foreground border-border bg-transparent',
 };
 
 function CategoryBadge({ category }: { category: PluginCategory }) {
   return (
-    <span className={`text-[8px] font-terminal uppercase tracking-[0.1em] px-1.5 py-0.5 rounded-sm border ${CATEGORY_COLORS[category]}`}>
+    <span className={`text-[8px] font-terminal uppercase tracking-[0.1em] px-1.5 py-0.5  border ${CATEGORY_COLORS[category]}`}>
       {CATEGORY_LABELS[category]}
     </span>
   );
@@ -40,7 +41,7 @@ function CategoryBadge({ category }: { category: PluginCategory }) {
 
 function BaseModelBadge({ model }: { model: PluginBaseModel }) {
   return (
-    <span className="text-[8px] font-mono text-phobos-green/50 border border-phobos-green/20 px-1.5 py-0.5 rounded-sm bg-phobos-green/5">
+    <span className="text-[8px] font-mono text-phob-amber/50 border border-phob-amber/20 px-1.5 py-0.5  bg-phob-amber/5">
       {BASE_MODEL_LABELS[model]}
     </span>
   );
@@ -77,10 +78,10 @@ function AuthGate({ plugin, licenseAvail, onAuth, onCancel }: AuthGateProps) {
 
   return (
     <div className="flex flex-col items-center justify-center h-full gap-4 px-8">
-      <Lock className="w-6 h-6 text-muted-foreground/30" />
+      <Lock className="w-6 h-6 text-phob-steel/30" />
       <div className="text-center">
-        <p className="text-xs font-terminal text-foreground/60 mb-0.5">{plugin.name}</p>
-        <p className="text-[10px] font-mono text-muted-foreground/40">Enter your plugin password to edit</p>
+        <p className="text-xs font-terminal text-phob-white/60 mb-0.5">{plugin.name}</p>
+        <p className="text-[10px] font-mono text-phob-steel/40">Enter your plugin password to edit</p>
       </div>
 
       <div className="w-full max-w-[260px] space-y-2">
@@ -91,15 +92,15 @@ function AuthGate({ plugin, licenseAvail, onAuth, onCancel }: AuthGateProps) {
           onKeyDown={e => e.key === 'Enter' && password && submit({ password })}
           placeholder="Plugin password"
           autoFocus
-          className="w-full text-[11px] font-mono bg-background border border-border/50 rounded-sm px-3 py-2 text-foreground/80 focus:outline-none focus:border-phobos-green/40 placeholder:text-muted-foreground/30"
+          className="w-full text-[11px] font-mono bg-phob-white/4 border border-phob-amber/20 px-3 py-2 text-phob-white/80 focus:outline-none focus:border-phob-amber/45 placeholder:text-phob-steel/25"
         />
         {error && (
-          <p className="text-[10px] font-mono text-red-400/70">{error}</p>
+          <p className="text-[10px] font-mono text-phob-red/70">{error}</p>
         )}
         <button
           disabled={busy || !password}
           onClick={() => submit({ password })}
-          className="w-full flex items-center justify-center gap-1.5 py-1.5 text-[9px] font-terminal uppercase tracking-widest text-phobos-green border border-phobos-green/30 rounded-sm hover:border-phobos-green/50 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+          className="w-full flex items-center justify-center gap-1.5 py-1.5 text-[9px] font-terminal uppercase tracking-widest text-phob-amber border border-phob-amber/30  hover:border-phob-amber/50 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <KeyRound className="w-3 h-3" />}
           Unlock with Password
@@ -112,7 +113,7 @@ function AuthGate({ plugin, licenseAvail, onAuth, onCancel }: AuthGateProps) {
           <button
             disabled={busy}
             onClick={() => submit({ useLicense: true })}
-            className="w-full flex items-center justify-center gap-1.5 py-1.5 text-[9px] font-terminal uppercase tracking-widest text-phobos-blue/70 border border-phobos-blue/20 rounded-sm hover:border-phobos-blue/40 transition-all disabled:opacity-40"
+            className="w-full flex items-center justify-center gap-1.5 py-1.5 text-[9px] font-terminal uppercase tracking-widest text-phob-teal/70 border border-phob-teal/20  hover:border-phob-teal/40 transition-all disabled:opacity-40"
           >
             {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />}
             Unlock with License
@@ -122,7 +123,7 @@ function AuthGate({ plugin, licenseAvail, onAuth, onCancel }: AuthGateProps) {
 
       <button
         onClick={onCancel}
-        className="text-[9px] font-terminal uppercase tracking-widest text-muted-foreground/40 hover:text-muted-foreground/70 transition-colors"
+        className="text-[9px] font-terminal uppercase tracking-widest text-phob-steel/40 hover:text-muted-foreground/70 transition-colors"
       >
         Cancel
       </button>
@@ -138,23 +139,23 @@ function PluginCard({ plugin, selected, onSelect }: {
   return (
     <button
       onClick={onSelect}
-      className={`w-full text-left px-3 py-2.5 rounded-sm border transition-all hover:border-phobos-green/30 ${
+      className={`w-full text-left px-3 py-2.5  border transition-all hover:border-phob-amber/30 ${
         selected
-          ? 'border-phobos-green/40 bg-phobos-green/5 shadow-[0_0_8px_hsl(120_100%_50%/0.06)]'
-          : 'border-border/40 bg-background hover:bg-phobos-green/[0.02]'
+          ? 'border-phob-amber/40 bg-phob-amber/5 shadow-[0_0_8px_hsl(120_100%_50%/0.06)]'
+          : 'border-phob-amber/15 bg-phob-white/3 hover:bg-phob-amber/[0.02]'
       }`}
     >
       <div className="flex items-start justify-between gap-2 mb-1">
-        <span className="text-[11px] font-terminal text-foreground/90 leading-tight">{plugin.name}</span>
+        <span className="text-[11px] font-terminal text-phob-white/85 leading-tight">{plugin.name}</span>
         <div className="flex items-center gap-1 shrink-0 mt-0.5">
           {plugin.has_license_unlock && (
             <span title="License unlock enabled">
-              <ShieldCheck className="w-2.5 h-2.5 text-phobos-blue/50" />
+              <ShieldCheck className="w-2.5 h-2.5 text-phob-teal/50" />
             </span>
           )}
           {plugin.kind === 'raw_lora' && (
             <span title="Raw LoRA — unverified compatibility">
-              <AlertTriangle className="w-2.5 h-2.5 text-phobos-amber/60" />
+              <AlertTriangle className="w-2.5 h-2.5 text-phob-amber/60" />
             </span>
           )}
         </div>
@@ -163,7 +164,7 @@ function PluginCard({ plugin, selected, onSelect }: {
         <CategoryBadge category={plugin.category} />
         <BaseModelBadge model={plugin.base_model} />
       </div>
-      <div className="mt-1.5 text-[9px] font-mono text-muted-foreground/50 truncate">{plugin.author}</div>
+      <div className="mt-1.5 text-[9px] font-mono text-phob-steel/45 truncate">{plugin.author}</div>
     </button>
   );
 }
@@ -185,6 +186,7 @@ let _sessionCredential: ({ password: string } | { useLicense: true }) | null = n
 function DetailPanel({
   plugin,
   mode,
+  currentUser,
   onRequestEdit,
   onEditUnlocked,
   onSaveDraft,
@@ -194,6 +196,7 @@ function DetailPanel({
 }: {
   plugin:         PluginRecord | null;
   mode:           PanelMode;
+  currentUser:    string;
   onRequestEdit:  () => void;
   onEditUnlocked: (credential: { password: string } | { useLicense: true }) => void;
   onSaveDraft:    (draft: EditDraft, credential: { password: string } | { useLicense: true }) => Promise<void>;
@@ -220,8 +223,8 @@ function DetailPanel({
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="text-center">
-          <Puzzle className="w-8 h-8 text-muted-foreground/10 mx-auto mb-3" />
-          <p className="text-xs font-mono text-muted-foreground/30">Select a plugin or drop files to install</p>
+          <Puzzle className="w-8 h-8 text-phob-steel/15 mx-auto mb-3" />
+          <p className="text-xs font-mono text-phob-steel/30">Select a plugin or drop files to install</p>
         </div>
       </div>
     );
@@ -277,17 +280,17 @@ function DetailPanel({
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs font-terminal text-foreground/80">{plugin.name}</span>
           {plugin.kind === 'raw_lora' && (
-            <span className="text-[8px] font-terminal text-phobos-amber/70 border border-phobos-amber/20 px-1.5 py-0.5 rounded-sm">
+            <span className="text-[8px] font-terminal text-phob-amber/70 border border-phob-amber/20 px-1.5 py-0.5 ">
               Raw LoRA
             </span>
           )}
           {plugin.is_local_author && (
-            <span className="text-[8px] font-terminal text-phobos-green/60 border border-phobos-green/20 px-1.5 py-0.5 rounded-sm">
+            <span className="text-[8px] font-terminal text-phob-amber/60 border border-phob-amber/20 px-1.5 py-0.5 ">
               YOUR PLUGIN
             </span>
           )}
           {plugin.has_license_unlock && (
-            <span className="flex items-center gap-1 text-[8px] font-terminal text-phobos-blue/60 border border-phobos-blue/20 px-1.5 py-0.5 rounded-sm">
+            <span className="flex items-center gap-1 text-[8px] font-terminal text-phob-teal/60 border border-phob-teal/20 px-1.5 py-0.5 ">
               <ShieldCheck className="w-2 h-2" /> LICENSE KEY
             </span>
           )}
@@ -296,7 +299,7 @@ function DetailPanel({
           {plugin.is_local_author && !isEditing && (
             <button
               onClick={onRequestEdit}
-              className="flex items-center gap-1 px-2 py-1 text-[9px] font-terminal uppercase tracking-widest text-muted-foreground hover:text-foreground border border-border/40 rounded-sm hover:border-border/60 transition-all"
+              className="flex items-center gap-1 px-2 py-1 text-[9px] font-terminal uppercase tracking-widest text-muted-foreground hover:text-foreground border border-border/40  hover:border-border/60 transition-all"
             >
               <Pencil className="w-2.5 h-2.5" /> Edit
             </button>
@@ -304,7 +307,7 @@ function DetailPanel({
           {isEditing && (
             <button
               onClick={onCancelEdit}
-              className="px-2 py-1 text-[9px] font-terminal uppercase tracking-widest text-muted-foreground border border-border/40 rounded-sm hover:border-border/60 transition-all"
+              className="px-2 py-1 text-[9px] font-terminal uppercase tracking-widest text-muted-foreground border border-border/40  hover:border-border/60 transition-all"
             >
               Cancel
             </button>
@@ -316,13 +319,13 @@ function DetailPanel({
       <div className="flex-1 overflow-y-auto scrollbar-thin p-4 space-y-4">
 
         <div>
-          <label className="block text-[9px] font-terminal uppercase tracking-widest text-muted-foreground/50 mb-1">Description</label>
+          <label className="block text-[9px] font-terminal uppercase tracking-widest text-phob-steel/45 mb-1">Description</label>
           {isEditing ? (
             <textarea
               value={draft.description}
               onChange={e => setDraft(d => ({ ...d, description: e.target.value }))}
               rows={3}
-              className="w-full text-[11px] font-mono bg-background border border-border/50 rounded-sm px-2 py-1.5 text-foreground/80 focus:outline-none focus:border-phobos-green/40 resize-none"
+              className="w-full text-[11px] font-mono bg-background border border-border/50  px-2 py-1.5 text-foreground/80 focus:outline-none focus:border-phob-amber/40 resize-none"
             />
           ) : (
             <p className="text-[11px] font-mono text-muted-foreground/70 leading-relaxed">{plugin.description || '—'}</p>
@@ -341,27 +344,27 @@ function DetailPanel({
 
         {plugin.trigger_words.length > 0 && (
           <div>
-            <label className="block text-[9px] font-terminal uppercase tracking-widest text-muted-foreground/50 mb-1">Trigger Words</label>
+            <label className="block text-[9px] font-terminal uppercase tracking-widest text-phob-steel/45 mb-1">Trigger Words</label>
             <div className="flex flex-wrap gap-1">
               {plugin.trigger_words.map(tw => (
-                <span key={tw} className="text-[9px] font-mono text-phobos-green/70 bg-phobos-green/5 border border-phobos-green/20 px-1.5 py-0.5 rounded-sm">{tw}</span>
+                <span key={tw} className="text-[9px] font-mono text-phob-amber/70 bg-phob-amber/5 border border-phob-amber/20 px-1.5 py-0.5 ">{tw}</span>
               ))}
             </div>
           </div>
         )}
 
         <div>
-          <label className="block text-[9px] font-terminal uppercase tracking-widest text-muted-foreground/50 mb-1">Recommended Weight</label>
+          <label className="block text-[9px] font-terminal uppercase tracking-widest text-phob-steel/45 mb-1">Recommended Weight</label>
           {isEditing ? (
             <input type="number" min={plugin.weight_min} max={plugin.weight_max} step={0.05}
               value={draft.recommendedWeight}
               onChange={e => setDraft(d => ({ ...d, recommendedWeight: Number(e.target.value) }))}
-              className="w-24 text-[11px] font-mono bg-background border border-border/50 rounded-sm px-2 py-1 text-foreground/80 focus:outline-none focus:border-phobos-green/40"
+              className="w-24 text-[11px] font-mono bg-background border border-border/50  px-2 py-1 text-foreground/80 focus:outline-none focus:border-phob-amber/40"
             />
           ) : (
             <div className="flex items-center gap-2">
               <div className="flex-1 max-w-[160px] h-1.5 bg-border/30 rounded-full overflow-hidden">
-                <div className="h-full bg-phobos-green/60 rounded-full"
+                <div className="h-full bg-phob-amber/60 rounded-full"
                   style={{ width: `${(plugin.recommended_weight / plugin.weight_max) * 100}%` }} />
               </div>
               <span className="text-[11px] font-mono text-muted-foreground/60">
@@ -372,17 +375,17 @@ function DetailPanel({
         </div>
 
         <div>
-          <label className="block text-[9px] font-terminal uppercase tracking-widest text-muted-foreground/50 mb-1">Tags</label>
+          <label className="block text-[9px] font-terminal uppercase tracking-widest text-phob-steel/45 mb-1">Tags</label>
           {isEditing ? (
             <input type="text" value={draft.tags} placeholder="painterly, oil, portrait..."
               onChange={e => setDraft(d => ({ ...d, tags: e.target.value }))}
-              className="w-full text-[11px] font-mono bg-background border border-border/50 rounded-sm px-2 py-1.5 text-foreground/80 focus:outline-none focus:border-phobos-green/40"
+              className="w-full text-[11px] font-mono bg-background border border-border/50  px-2 py-1.5 text-foreground/80 focus:outline-none focus:border-phob-amber/40"
             />
           ) : (
             <div className="flex flex-wrap gap-1">
               {plugin.tags.length > 0
                 ? plugin.tags.map(t => (
-                    <span key={t} className="text-[9px] font-mono text-muted-foreground/50 border border-border/30 px-1.5 py-0.5 rounded-sm">{t}</span>
+                    <span key={t} className="text-[9px] font-mono text-phob-steel/45 border border-phob-amber/20 px-1.5 py-0.5 ">{t}</span>
                   ))
                 : <span className="text-[10px] font-mono text-muted-foreground/30">none</span>
               }
@@ -392,17 +395,17 @@ function DetailPanel({
 
         {/* Add license unlock — shown in edit mode when not already set */}
         {isEditing && !plugin.has_license_unlock && (
-          <div className="px-3 py-2.5 bg-phobos-blue/[0.03] border border-phobos-blue/15 rounded-sm flex items-center justify-between gap-3">
+          <div className="px-3 py-2.5 bg-phob-teal/[0.03] border border-phob-teal/15  flex items-center justify-between gap-3">
             <div className="flex items-start gap-2">
-              <ShieldCheck className="w-3.5 h-3.5 text-phobos-blue/50 shrink-0 mt-0.5" />
-              <p className="text-[10px] font-mono text-muted-foreground/50 leading-relaxed">
+              <ShieldCheck className="w-3.5 h-3.5 text-phob-teal/50 shrink-0 mt-0.5" />
+              <p className="text-[10px] font-mono text-phob-steel/45 leading-relaxed">
                 Add your license as a second unlock key. Anyone with your license can edit this plugin without the password.
               </p>
             </div>
             <button
               disabled={addingLicense}
               onClick={handleAddLicense}
-              className="shrink-0 flex items-center gap-1 px-2 py-1 text-[9px] font-terminal uppercase tracking-widest text-phobos-blue/60 border border-phobos-blue/20 rounded-sm hover:border-phobos-blue/40 transition-all disabled:opacity-40"
+              className="shrink-0 flex items-center gap-1 px-2 py-1 text-[9px] font-terminal uppercase tracking-widest text-phob-teal/60 border border-phob-teal/20  hover:border-phob-teal/40 transition-all disabled:opacity-40"
             >
               {addingLicense ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Plus className="w-2.5 h-2.5" />}
               Add
@@ -411,9 +414,9 @@ function DetailPanel({
         )}
 
         {plugin.kind === 'raw_lora' && (
-          <div className="flex items-start gap-2 px-3 py-2.5 bg-phobos-amber/5 border border-phobos-amber/20 rounded-sm">
-            <AlertTriangle className="w-3.5 h-3.5 text-phobos-amber/70 shrink-0 mt-0.5" />
-            <p className="text-[10px] font-mono text-phobos-amber/70 leading-relaxed">
+          <div className="flex items-start gap-2 px-3 py-2.5 bg-phob-amber/5 border border-phob-amber/20 ">
+            <AlertTriangle className="w-3.5 h-3.5 text-phob-amber/70 shrink-0 mt-0.5" />
+            <p className="text-[10px] font-mono text-phob-amber/70 leading-relaxed">
               Raw LoRA — compatibility unverified. Works with any image model but may produce unexpected results. No trigger words required.
             </p>
           </div>
@@ -422,12 +425,18 @@ function DetailPanel({
 
       {/* Footer */}
       <div className="px-4 py-3 border-t border-border/50 flex items-center justify-between shrink-0">
-        <button
-          onClick={onDelete}
-          className="text-[9px] font-terminal uppercase tracking-widest text-red-500/50 hover:text-red-500/80 transition-colors"
-        >
-          Remove Plugin
-        </button>
+        {plugin.owner_username && plugin.owner_username !== currentUser ? (
+          <span className="text-[9px] font-terminal uppercase tracking-widest text-phob-steel/30">
+            owned by {plugin.owner_username}
+          </span>
+        ) : (
+          <button
+            onClick={onDelete}
+            className="text-[9px] font-terminal uppercase tracking-widest text-red-500/50 hover:text-red-500/80 transition-colors"
+          >
+            Remove Plugin
+          </button>
+        )}
         {isEditing && _sessionCredential && (
           <button
             disabled={saving}
@@ -436,7 +445,7 @@ function DetailPanel({
               try { await onSaveDraft(draft, _sessionCredential!); }
               finally { setSaving(false); }
             }}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-[9px] font-terminal uppercase tracking-widest text-phobos-green border border-phobos-green/30 rounded-sm hover:border-phobos-green/50 transition-all disabled:opacity-40"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-[9px] font-terminal uppercase tracking-widest text-phob-amber border border-phob-amber/30  hover:border-phob-amber/50 transition-all disabled:opacity-40"
           >
             {saving ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Check className="w-2.5 h-2.5" />}
             Save Changes
@@ -450,7 +459,7 @@ function DetailPanel({
 function MetaField({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-[9px] font-terminal uppercase tracking-widest text-muted-foreground/40 mb-0.5">{label}</div>
+      <div className="text-[9px] font-terminal uppercase tracking-widest text-phob-steel/40 mb-0.5">{label}</div>
       <div className="text-[11px] font-mono text-muted-foreground/70">{value}</div>
     </div>
   );
@@ -483,12 +492,12 @@ interface CreateDraft {
 function imageCountTier(count: number): {
   color: string; dotColor: string; label: string; sublabel: string;
 } {
-  if (count === 0)        return { color: 'text-muted-foreground/40', dotColor: 'bg-muted-foreground/20', label: 'No images yet', sublabel: 'Drop in your artwork to get started' };
+  if (count === 0)        return { color: 'text-phob-steel/40', dotColor: 'bg-muted-foreground/20', label: 'No images yet', sublabel: 'Drop in your artwork to get started' };
   if (count < 15)        return { color: 'text-red-400',             dotColor: 'bg-red-400',             label: `${count} images`,  sublabel: 'Need at least 15 to train — add more' };
   if (count < 75)        return { color: 'text-red-400/80',          dotColor: 'bg-red-400/80',          label: `${count} images`,  sublabel: 'More images = better results. Aim for 100+' };
-  if (count < 100)       return { color: 'text-phobos-amber',        dotColor: 'bg-phobos-amber',        label: `${count} images`,  sublabel: 'Getting there — 100 is the sweet spot' };
-  if (count < 136)       return { color: 'text-phobos-green',        dotColor: 'bg-phobos-green',        label: `${count} images`,  sublabel: 'Great set — ready to train a high-quality plugin' };
-  return                        { color: 'text-phobos-blue',            dotColor: 'bg-phobos-blue',            label: `${count} images`,  sublabel: 'Going the extra mile — this will be exceptional' };
+  if (count < 100)       return { color: 'text-phob-amber',        dotColor: 'bg-phob-amber',        label: `${count} images`,  sublabel: 'Getting there — 100 is the sweet spot' };
+  if (count < 136)       return { color: 'text-phob-amber',        dotColor: 'bg-phob-amber',        label: `${count} images`,  sublabel: 'Great set — ready to train a high-quality plugin' };
+  return                        { color: 'text-phob-teal',            dotColor: 'bg-phob-teal',            label: `${count} images`,  sublabel: 'Going the extra mile — this will be exceptional' };
 }
 
 // ── VRAM check result ─────────────────────────────────────────────────────────
@@ -620,15 +629,15 @@ function CreateWizard({ onCancel, licenseAvail, onTrainingStarted }: {
               className={`flex items-center gap-2 transition-colors ${n === step ? 'cursor-default' : n < step ? 'cursor-pointer hover:opacity-80' : 'cursor-default opacity-30'}`}
             >
               <span className={`w-5 h-5 rounded-full text-[9px] font-terminal flex items-center justify-center border transition-colors ${
-                n === step   ? 'bg-phobos-green/20 border-phobos-green/60 text-phobos-green' :
-                n < step     ? 'bg-phobos-green/10 border-phobos-green/30 text-phobos-green/60' :
+                n === step   ? 'bg-phob-amber/20 border-phob-amber/60 text-phob-amber' :
+                n < step     ? 'bg-phob-amber/10 border-phob-amber/30 text-phob-amber/60' :
                                'border-border/40 text-muted-foreground/30'
               }`}>{n < step ? '✓' : n}</span>
-              <span className={`text-[10px] font-terminal uppercase tracking-widest ${n === step ? 'text-foreground/80' : 'text-muted-foreground/40'}`}>{label}</span>
+              <span className={`text-[10px] font-terminal uppercase tracking-widest ${n === step ? 'text-foreground/80' : 'text-phob-steel/40'}`}>{label}</span>
             </button>
           ))}
         </div>
-        <button onClick={onCancel} className="p-1 hover:bg-accent rounded transition-colors">
+        <button onClick={onCancel} className="p-1 hover:bg-phob-amber/8 rounded transition-colors">
           <X className="w-3.5 h-3.5 text-muted-foreground" />
         </button>
       </div>
@@ -640,8 +649,8 @@ function CreateWizard({ onCancel, licenseAvail, onTrainingStarted }: {
 
             <div className="text-center space-y-2 max-w-[520px]">
               <h2 className="text-xl font-terminal text-foreground/90">Drop in your artwork</h2>
-              <p className="text-sm font-mono text-muted-foreground/50 leading-relaxed">
-                These are the images PHOBOS will learn from. The more variety and quality you provide, the better your plugin will capture your style. Aim for <span className="text-phobos-green/70">100 images</span> for best results.
+              <p className="text-sm font-mono text-phob-steel/45 leading-relaxed">
+                These are the images PHOBOS will learn from. The more variety and quality you provide, the better your plugin will capture your style. Aim for <span className="text-phob-amber/70">100 images</span> for best results.
               </p>
             </div>
 
@@ -658,7 +667,7 @@ function CreateWizard({ onCancel, licenseAvail, onTrainingStarted }: {
               <div className={`w-2.5 h-2.5 rounded-full ${tier.dotColor} transition-colors`} />
               <div>
                 <span className={`text-sm font-terminal ${tier.color} transition-colors`}>{tier.label}</span>
-                <span className="text-[11px] font-mono text-muted-foreground/40 ml-3">{tier.sublabel}</span>
+                <span className="text-[11px] font-mono text-phob-steel/40 ml-3">{tier.sublabel}</span>
               </div>
             </div>
 
@@ -671,9 +680,9 @@ function CreateWizard({ onCancel, licenseAvail, onTrainingStarted }: {
                 {/* Track: red at 15, amber at 75, green at 100, blue at 136 */}
                 <div
                   className={`h-full rounded-full transition-all duration-500 ${
-                    draft.stagedCount >= 136 ? 'bg-phobos-blue' :
-                    draft.stagedCount >= 100 ? 'bg-phobos-green' :
-                    draft.stagedCount >= 75  ? 'bg-phobos-amber' :
+                    draft.stagedCount >= 136 ? 'bg-phob-teal' :
+                    draft.stagedCount >= 100 ? 'bg-phob-amber' :
+                    draft.stagedCount >= 75  ? 'bg-phob-amber' :
                     draft.stagedCount >= 15  ? 'bg-red-400/80' :
                                               'bg-red-400/40'
                   }`}
@@ -689,14 +698,14 @@ function CreateWizard({ onCancel, licenseAvail, onTrainingStarted }: {
             )}
           </div>
 
-          <div className="px-6 py-4 border-t border-border/30 flex items-center justify-between shrink-0">
-            <button onClick={onCancel} className="text-[9px] font-terminal uppercase tracking-widest text-muted-foreground/40 hover:text-muted-foreground/60 transition-colors">
+          <div className="px-6 py-4 border-t border-phob-amber/20 flex items-center justify-between shrink-0">
+            <button onClick={onCancel} className="text-[9px] font-terminal uppercase tracking-widest text-phob-steel/40 hover:text-muted-foreground/60 transition-colors">
               Cancel
             </button>
             <button
               disabled={draft.stagedCount < 15}
               onClick={handleNext}
-              className="flex items-center gap-1.5 px-5 py-2 text-[10px] font-terminal uppercase tracking-widest text-phobos-green border border-phobos-green/30 rounded-sm hover:border-phobos-green/60 hover:shadow-[0_0_16px_hsl(120_100%_50%/0.1)] transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 px-5 py-2 text-[10px] font-terminal uppercase tracking-widest text-phob-amber border border-phob-amber/30  hover:border-phob-amber/60 hover:shadow-[0_0_16px_hsl(120_100%_50%/0.1)] transition-all disabled:opacity-30 disabled:cursor-not-allowed"
             >
               Next — Plugin Details <ChevronRight className="w-3.5 h-3.5" />
             </button>
@@ -711,7 +720,7 @@ function CreateWizard({ onCancel, licenseAvail, onTrainingStarted }: {
 
             <div className="space-y-1">
               <h2 className="text-lg font-terminal text-foreground/90">Describe your plugin</h2>
-              <p className="text-[11px] font-mono text-muted-foreground/40 leading-relaxed">
+              <p className="text-[11px] font-mono text-phob-steel/40 leading-relaxed">
                 This is what people will see when they find your plugin on Auvera. Be clear and specific.
               </p>
             </div>
@@ -736,7 +745,7 @@ function CreateWizard({ onCancel, licenseAvail, onTrainingStarted }: {
                     onChange={e => setDraft(d => ({ ...d, description: e.target.value }))}
                     placeholder="Painterly oil-textured style with warm midtones, expressive brushwork, and a sense of light coming from the upper left..."
                     rows={4}
-                    className="w-full text-[11px] font-mono bg-background border border-border/50 rounded-sm px-3 py-2 text-foreground/80 focus:outline-none focus:border-phobos-green/40 resize-none placeholder:text-muted-foreground/25 leading-relaxed"
+                    className="w-full text-[11px] font-mono bg-background border border-border/50  px-3 py-2 text-foreground/80 focus:outline-none focus:border-phob-amber/40 resize-none placeholder:text-muted-foreground/25 leading-relaxed"
                   />
                 </Field>
               </div>
@@ -774,7 +783,7 @@ function CreateWizard({ onCancel, licenseAvail, onTrainingStarted }: {
                       type="range" min={0.1} max={1.0} step={0.05}
                       value={draft.recommendedWeight}
                       onChange={e => setDraft(d => ({ ...d, recommendedWeight: Number(e.target.value) }))}
-                      className="flex-1 accent-phobos-green"
+                      className="flex-1 accent-phob-green"
                     />
                     <span className="text-[12px] font-mono text-foreground/70 w-8 text-right">{draft.recommendedWeight.toFixed(2)}</span>
                   </div>
@@ -783,13 +792,13 @@ function CreateWizard({ onCancel, licenseAvail, onTrainingStarted }: {
             </div>
           </div>
 
-          <div className="px-6 py-4 border-t border-border/30 flex items-center justify-between shrink-0">
-            <button onClick={() => setStep(1)} className="text-[9px] font-terminal uppercase tracking-widest text-muted-foreground/40 hover:text-muted-foreground/60 transition-colors flex items-center gap-1">
+          <div className="px-6 py-4 border-t border-phob-amber/20 flex items-center justify-between shrink-0">
+            <button onClick={() => setStep(1)} className="text-[9px] font-terminal uppercase tracking-widest text-phob-steel/40 hover:text-muted-foreground/60 transition-colors flex items-center gap-1">
               ← Back
             </button>
             <button
               onClick={handleNext}
-              className="flex items-center gap-1.5 px-5 py-2 text-[10px] font-terminal uppercase tracking-widest text-phobos-green border border-phobos-green/30 rounded-sm hover:border-phobos-green/60 hover:shadow-[0_0_16px_hsl(120_100%_50%/0.1)] transition-all"
+              className="flex items-center gap-1.5 px-5 py-2 text-[10px] font-terminal uppercase tracking-widest text-phob-amber border border-phob-amber/30  hover:border-phob-amber/60 hover:shadow-[0_0_16px_hsl(120_100%_50%/0.1)] transition-all"
             >
               Next — Protect & Launch <ChevronRight className="w-3.5 h-3.5" />
             </button>
@@ -805,7 +814,7 @@ function CreateWizard({ onCancel, licenseAvail, onTrainingStarted }: {
 
               <div className="space-y-1">
                 <h2 className="text-lg font-terminal text-foreground/90">Protect your plugin</h2>
-                <p className="text-[11px] font-mono text-muted-foreground/40 leading-relaxed">
+                <p className="text-[11px] font-mono text-phob-steel/40 leading-relaxed">
                   Set a password to protect your plugin from unauthorized edits. Only you will be able to change its metadata or delete it from the library.
                 </p>
               </div>
@@ -815,14 +824,14 @@ function CreateWizard({ onCancel, licenseAvail, onTrainingStarted }: {
                   <input type="password" value={draft.password}
                     onChange={e => setDraft(d => ({ ...d, password: e.target.value }))}
                     placeholder="Set a password"
-                    className="w-full text-[11px] font-mono bg-background border border-border/50 rounded-sm px-3 py-2 text-foreground/80 focus:outline-none focus:border-phobos-green/40 placeholder:text-muted-foreground/25"
+                    className="w-full text-[11px] font-mono bg-background border border-border/50  px-3 py-2 text-foreground/80 focus:outline-none focus:border-phob-amber/40 placeholder:text-muted-foreground/25"
                   />
                 </Field>
                 <Field label="Confirm Password" error={errors.confirmPassword}>
                   <input type="password" value={draft.confirmPassword}
                     onChange={e => setDraft(d => ({ ...d, confirmPassword: e.target.value }))}
                     placeholder="Confirm password"
-                    className="w-full text-[11px] font-mono bg-background border border-border/50 rounded-sm px-3 py-2 text-foreground/80 focus:outline-none focus:border-phobos-green/40 placeholder:text-muted-foreground/25"
+                    className="w-full text-[11px] font-mono bg-background border border-border/50  px-3 py-2 text-foreground/80 focus:outline-none focus:border-phob-amber/40 placeholder:text-muted-foreground/25"
                   />
                 </Field>
               </div>
@@ -831,11 +840,11 @@ function CreateWizard({ onCancel, licenseAvail, onTrainingStarted }: {
                 <label className="flex items-center gap-3 cursor-pointer group">
                   <input type="checkbox" checked={draft.addLicense}
                     onChange={e => setDraft(d => ({ ...d, addLicense: e.target.checked }))}
-                    className="accent-phobos-blue w-4 h-4"
+                    className="accent-phob-teal w-4 h-4"
                   />
                   <div>
                     <div className="flex items-center gap-1.5 text-[11px] font-mono text-muted-foreground/70 group-hover:text-muted-foreground/90 transition-colors">
-                      <ShieldCheck className="w-3.5 h-3.5 text-phobos-blue/60" />
+                      <ShieldCheck className="w-3.5 h-3.5 text-phob-teal/60" />
                       Also unlock with my Auvera license key <span className="text-muted-foreground/30">(recommended)</span>
                     </div>
                     <p className="text-[10px] font-mono text-muted-foreground/30 mt-0.5">Lets you unlock this plugin on any machine where your license is active — no need to remember the password.</p>
@@ -845,11 +854,11 @@ function CreateWizard({ onCancel, licenseAvail, onTrainingStarted }: {
 
               {/* Advanced settings — collapsible */}
               <details className="group">
-                <summary className="cursor-pointer text-[9px] font-terminal uppercase tracking-widest text-muted-foreground/30 hover:text-muted-foreground/50 transition-colors select-none list-none flex items-center gap-1.5">
+                <summary className="cursor-pointer text-[9px] font-terminal uppercase tracking-widest text-muted-foreground/30 hover:text-phob-steel/45 transition-colors select-none list-none flex items-center gap-1.5">
                   <ChevronRight className="w-3 h-3 group-open:rotate-90 transition-transform" />
                   Advanced Training Settings
                 </summary>
-                <div className="mt-4 grid grid-cols-2 gap-5 pl-4 border-l border-border/20">
+                <div className="mt-4 grid grid-cols-2 gap-5 pl-4 border-l border-phob-amber/15">
                   <Field label="LoRA Rank" hint="Higher rank = more detail captured, more VRAM needed. 16 is ideal for most styles.">
                     <Select value={String(draft.rank)} onChange={v => setDraft(d => ({ ...d, rank: Number(v) }))}>
                       {[4, 8, 16, 32, 64].map(r => (
@@ -863,16 +872,16 @@ function CreateWizard({ onCancel, licenseAvail, onTrainingStarted }: {
               </details>
 
               {/* VRAM check */}
-              <div className={`flex items-start gap-3 p-4 rounded-sm border transition-colors ${
-                vramBusy          ? 'border-border/30 bg-black/20' :
-                vram?.ok          ? 'border-phobos-green/30 bg-phobos-green/5' :
+              <div className={`flex items-start gap-3 p-4  border transition-colors ${
+                vramBusy          ? 'border-phob-amber/20 bg-phob-white/3' :
+                vram?.ok          ? 'border-phob-amber/30 bg-phob-amber/5' :
                 vram              ? 'border-red-400/30 bg-red-400/5' :
-                                    'border-border/20 bg-black/10'
+                                    'border-phob-amber/15 bg-black/10'
               }`}>
                 {vramBusy ? (
-                  <Loader2 className="w-4 h-4 text-muted-foreground/40 animate-spin shrink-0 mt-0.5" />
+                  <Loader2 className="w-4 h-4 text-phob-steel/40 animate-spin shrink-0 mt-0.5" />
                 ) : vram?.ok ? (
-                  <CheckCircle2 className="w-4 h-4 text-phobos-green/60 shrink-0 mt-0.5" />
+                  <CheckCircle2 className="w-4 h-4 text-phob-amber/60 shrink-0 mt-0.5" />
                 ) : vram ? (
                   <AlertTriangle className="w-4 h-4 text-red-400/60 shrink-0 mt-0.5" />
                 ) : (
@@ -883,7 +892,7 @@ function CreateWizard({ onCancel, licenseAvail, onTrainingStarted }: {
                     {vramBusy ? 'Checking available GPU memory…' : vram?.message ?? 'Checking system…'}
                   </p>
                   {vram && !vram.ok && (
-                    <p className="text-[10px] font-mono text-muted-foreground/40 mt-1">
+                    <p className="text-[10px] font-mono text-phob-steel/40 mt-1">
                       Try closing other applications, stopping the PHOBOS LLM servers, or using a lower LoRA rank.
                     </p>
                   )}
@@ -893,14 +902,14 @@ function CreateWizard({ onCancel, licenseAvail, onTrainingStarted }: {
             </div>
           </div>
 
-          <div className="px-6 py-4 border-t border-border/30 flex items-center justify-between shrink-0">
-            <button onClick={() => setStep(2)} className="text-[9px] font-terminal uppercase tracking-widest text-muted-foreground/40 hover:text-muted-foreground/60 transition-colors flex items-center gap-1">
+          <div className="px-6 py-4 border-t border-phob-amber/20 flex items-center justify-between shrink-0">
+            <button onClick={() => setStep(2)} className="text-[9px] font-terminal uppercase tracking-widest text-phob-steel/40 hover:text-muted-foreground/60 transition-colors flex items-center gap-1">
               ← Back
             </button>
             <button
               disabled={starting || vramBusy || (vram !== null && !vram.ok)}
               onClick={handleStart}
-              className="flex items-center gap-2 px-6 py-2.5 text-[10px] font-terminal uppercase tracking-widest text-phobos-green border border-phobos-green/30 rounded-sm hover:border-phobos-green/60 hover:shadow-[0_0_20px_hsl(120_100%_50%/0.15)] transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+              className="flex items-center gap-2 px-6 py-2.5 text-[10px] font-terminal uppercase tracking-widest text-phob-amber border border-phob-amber/30  hover:border-phob-amber/60 hover:shadow-[0_0_20px_hsl(120_100%_50%/0.15)] transition-all disabled:opacity-30 disabled:cursor-not-allowed"
             >
               {starting ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Starting…</> : <><Zap className="w-3.5 h-3.5" /> Start Training</>}
             </button>
@@ -924,7 +933,7 @@ const CATEGORY_HINTS: Record<PluginCategory, string> = {
 function Field({ label, error, hint, children }: { label: string; error?: string; hint?: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="block text-[9px] font-terminal uppercase tracking-widest text-muted-foreground/50 mb-1">{label}</label>
+      <label className="block text-[9px] font-terminal uppercase tracking-widest text-phob-steel/45 mb-1">{label}</label>
       {children}
       {hint && !error && <p className="text-[9px] font-mono text-muted-foreground/30 mt-0.5 leading-relaxed">{hint}</p>}
       {error && <p className="text-[9px] font-mono text-red-400/70 mt-0.5">{error}</p>}
@@ -935,7 +944,7 @@ function Field({ label, error, hint, children }: { label: string; error?: string
 function Input({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
   return (
     <input type="text" value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
-      className="w-full text-[11px] font-mono bg-background border border-border/50 rounded-sm px-2 py-1.5 text-foreground/80 focus:outline-none focus:border-phobos-green/40 placeholder:text-muted-foreground/30"
+      className="w-full text-[11px] font-mono bg-background border border-border/50  px-2 py-1.5 text-foreground/80 focus:outline-none focus:border-phob-amber/40 placeholder:text-muted-foreground/30"
     />
   );
 }
@@ -943,7 +952,7 @@ function Input({ value, onChange, placeholder }: { value: string; onChange: (v: 
 function Select({ value, onChange, children }: { value: string; onChange: (v: string) => void; children: React.ReactNode }) {
   return (
     <select value={value} onChange={e => onChange(e.target.value)}
-      className="w-full text-[11px] font-mono bg-background border border-border/50 rounded-sm px-2 py-1.5 text-foreground/80 focus:outline-none focus:border-phobos-green/40"
+      className="w-full text-[11px] font-mono bg-background border border-border/50  px-2 py-1.5 text-foreground/80 focus:outline-none focus:border-phob-amber/40"
     >
       {children}
     </select>
@@ -958,13 +967,13 @@ function DropZone({ onFilesDropped }: { onFilesDropped: (files: FileList) => voi
       onDragOver={e => { e.preventDefault(); setDragging(true); }}
       onDragLeave={() => setDragging(false)}
       onDrop={e => { e.preventDefault(); setDragging(false); if (e.dataTransfer.files.length > 0) onFilesDropped(e.dataTransfer.files); }}
-      className={`border border-dashed rounded-sm px-3 py-3 text-center cursor-pointer transition-all ${
-        dragging ? 'border-phobos-green/50 bg-phobos-green/5' : 'border-border/30 hover:border-phobos-green/30 hover:bg-phobos-green/[0.02]'
+      className={`border border-dashed  px-3 py-3 text-center cursor-pointer transition-all ${
+        dragging ? 'border-phob-amber/50 bg-phob-amber/5' : 'border-phob-amber/20 hover:border-phob-amber/30 hover:bg-phob-amber/[0.02]'
       }`}
       onClick={() => inputRef.current?.click()}
     >
       <Upload className="w-4 h-4 text-muted-foreground/30 mx-auto mb-1" />
-      <p className="text-[9px] font-mono text-muted-foreground/40 leading-relaxed">
+      <p className="text-[9px] font-mono text-phob-steel/40 leading-relaxed">
         Drop to install<br />.phobos · .safetensors · .gguf
       </p>
       <input ref={inputRef} type="file" className="hidden" multiple
@@ -1016,21 +1025,21 @@ function TrainingDropZone({
       onDragOver={e => { e.preventDefault(); setDragging(true); }}
       onDragLeave={() => setDragging(false)}
       onDrop={e => { e.preventDefault(); setDragging(false); if (e.dataTransfer.files.length > 0) handleFiles(e.dataTransfer.files); }}
-      className={`border border-dashed rounded-sm text-center cursor-pointer transition-all ${
+      className={`border border-dashed  text-center cursor-pointer transition-all ${
         large ? 'px-8 py-16' : 'px-3 py-3'
       } ${
-        dragging ? 'border-phobos-green/60 bg-phobos-green/5' : 'border-border/30 hover:border-phobos-green/30 hover:bg-phobos-green/[0.02]'
+        dragging ? 'border-phob-amber/60 bg-phob-amber/5' : 'border-phob-amber/20 hover:border-phob-amber/30 hover:bg-phob-amber/[0.02]'
       }`}
       onClick={() => !uploading && inputRef.current?.click()}
     >
       {uploading ? (
-        <Loader2 className={`text-phobos-green/40 animate-spin mx-auto mb-2 ${large ? 'w-8 h-8' : 'w-4 h-4 mb-1'}`} />
+        <Loader2 className={`text-phob-amber/40 animate-spin mx-auto mb-2 ${large ? 'w-8 h-8' : 'w-4 h-4 mb-1'}`} />
       ) : (
         <Upload className={`text-muted-foreground/30 mx-auto mb-2 ${large ? 'w-10 h-10' : 'w-4 h-4 mb-1'}`} />
       )}
-      <p className={`font-mono text-muted-foreground/40 leading-relaxed ${large ? 'text-sm' : 'text-[9px]'}`}>
+      <p className={`font-mono text-phob-steel/40 leading-relaxed ${large ? 'text-sm' : 'text-[9px]'}`}>
         {stagedCount > 0
-          ? <><span className="text-phobos-green/60">{stagedCount} images staged</span><br />Drop more to add</>
+          ? <><span className="text-phob-amber/60">{stagedCount} images staged</span><br />Drop more to add</>
           : large
             ? <>Drop your artwork here, or click to browse<br /><span className="text-[11px] text-muted-foreground/25">.png · .jpg · .webp · .tiff · zip archives accepted</span></>
             : <>Drop training images or zips<br />.png · .jpg · .webp · .tiff</>
@@ -1047,6 +1056,7 @@ function TrainingDropZone({
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export function PluginsMenu({ onClose }: PluginsMenuProps) {
+  const currentUser  = useAppStore(s => s.activeUser);
   const [plugins,    setPlugins]    = useState<PluginRecord[]>([]);
   const [loading,    setLoading]    = useState(true);
   const [uploading,  setUploading]  = useState(false);
@@ -1152,7 +1162,17 @@ export function PluginsMenu({ onClose }: PluginsMenuProps) {
   const handleDelete = async () => {
     if (!selected) return;
     if (!window.confirm(`Remove "${selected.name}"?`)) return;
-    await fetch(`${ENGINE_URL}/api/phobos/plugins/${encodeURIComponent(selected.id)}`, { method: 'DELETE' });
+    const res = await fetch(`${ENGINE_URL}/api/phobos/plugins/${encodeURIComponent(selected.id)}`, { method: 'DELETE' });
+    if (res.status === 403) {
+      const data = await res.json() as { error: string };
+      toast.error(data.error ?? 'You do not own this plugin — only the owner can remove it.');
+      return;
+    }
+    if (!res.ok) {
+      const data = await res.json() as { error?: string };
+      toast.error(data.error ?? 'Failed to remove plugin');
+      return;
+    }
     setPlugins(ps => ps.filter(p => p.id !== selected.id));
     setSelectedId(null);
     setMode('view');
@@ -1162,17 +1182,17 @@ export function PluginsMenu({ onClose }: PluginsMenuProps) {
   const visible = filterKind === 'all' ? plugins : plugins.filter(p => p.kind === filterKind);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
-      <div className="w-[1280px] max-w-[98vw] h-[820px] max-h-[94vh] bg-card border border-border rounded-sm flex flex-col overflow-hidden shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-phob-void/85 backdrop-blur-sm">
+      <div className="w-[1280px] max-w-[98vw] h-[820px] max-h-[94vh] bg-card border border-border  flex flex-col overflow-hidden shadow-2xl">
 
         <div className="h-10 flex items-center justify-between px-3 border-b border-border/50 bg-background shrink-0">
           <div className="flex items-center gap-2">
-            <Puzzle className="w-3.5 h-3.5 text-phobos-green/50" />
-            <span className="text-[10px] font-terminal uppercase tracking-[0.15em] text-phobos-green/70">Art Plugins</span>
+            <Puzzle className="w-3.5 h-3.5 text-phob-amber/50" />
+            <span className="text-[10px] font-terminal uppercase tracking-[0.15em] text-phob-amber/70">Art Plugins</span>
           </div>
           <div className="flex items-center gap-2">
-            {uploading && <Loader2 className="w-3 h-3 text-phobos-green/40 animate-spin" />}
-            <button onClick={onClose} className="p-1 hover:bg-accent rounded transition-colors">
+            {uploading && <Loader2 className="w-3 h-3 text-phob-amber/40 animate-spin" />}
+            <button onClick={onClose} className="p-1 hover:bg-phob-amber/8 rounded transition-colors">
               <X className="w-3.5 h-3.5 text-muted-foreground" />
             </button>
           </div>
@@ -1186,8 +1206,8 @@ export function PluginsMenu({ onClose }: PluginsMenuProps) {
                 <button key={k} onClick={() => setFilterKind(k)}
                   className={`flex-1 py-1.5 text-[8px] font-terminal uppercase tracking-widest transition-colors ${
                     filterKind === k
-                      ? 'text-phobos-green/80 border-b border-phobos-green/40 bg-phobos-green/5'
-                      : 'text-muted-foreground/40 hover:text-muted-foreground/60'
+                      ? 'text-phob-amber/80 border-b border-phob-amber/40 bg-phob-amber/5'
+                      : 'text-phob-steel/40 hover:text-muted-foreground/60'
                   }`}
                 >
                   {k === 'all' ? 'All' : k === 'raw_lora' ? 'Raw' : 'Plugin'}
@@ -1195,12 +1215,12 @@ export function PluginsMenu({ onClose }: PluginsMenuProps) {
               ))}
             </div>
 
-            <div className="p-2 border-b border-border/30 shrink-0">
+            <div className="p-2 border-b border-phob-amber/20 shrink-0">
               <DropZone onFilesDropped={handleFilesDropped} />
             </div>
 
             <div className="flex-1 overflow-y-auto scrollbar-thin p-2 space-y-1.5">
-              {loading && <div className="flex items-center justify-center py-8"><Loader2 className="w-4 h-4 text-phobos-green/40 animate-spin" /></div>}
+              {loading && <div className="flex items-center justify-center py-8"><Loader2 className="w-4 h-4 text-phob-amber/40 animate-spin" /></div>}
               {!loading && visible.length === 0 && <p className="text-center py-8 text-[10px] font-mono text-muted-foreground/30">No plugins installed</p>}
               {!loading && visible.map(p => (
                 <PluginCard key={p.id} plugin={p} selected={p.id === selectedId}
@@ -1209,10 +1229,10 @@ export function PluginsMenu({ onClose }: PluginsMenuProps) {
               ))}
             </div>
 
-            <div className="p-2 border-t border-border/30 shrink-0">
+            <div className="p-2 border-t border-phob-amber/20 shrink-0">
               <button
                 onClick={() => { setSelectedId(null); setMode('create'); }}
-                className="w-full flex items-center justify-center gap-1.5 py-2 text-[9px] font-terminal uppercase tracking-widest text-phobos-green/60 border border-phobos-green/20 rounded-sm hover:text-phobos-green hover:border-phobos-green/40 hover:shadow-[0_0_8px_hsl(120_100%_50%/0.08)] transition-all"
+                className="w-full flex items-center justify-center gap-1.5 py-2 text-[9px] font-terminal uppercase tracking-widest text-phob-amber/60 border border-phob-amber/20  hover:text-phob-amber hover:border-phob-amber/40 hover:shadow-[0_0_8px_hsl(120_100%_50%/0.08)] transition-all"
               >
                 <Plus className="w-3 h-3" /> Create Plugin
               </button>
@@ -1245,6 +1265,7 @@ export function PluginsMenu({ onClose }: PluginsMenuProps) {
               <DetailPanel
                 plugin={selected}
                 mode={mode}
+                currentUser={currentUser}
                 onRequestEdit={handleRequestEdit}
                 onEditUnlocked={() => setMode('edit')}
                 onSaveDraft={handleSaveDraft}

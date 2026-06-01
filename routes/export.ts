@@ -15,16 +15,22 @@ import { PromptLogStore } from '../db/PromptLogStore.js';
  * in the order it happened.
  */
 export async function exportRoute(fastify: FastifyInstance): Promise<void> {
-  const db             = DatabaseManager.getUserDb();
-  const messageStore   = new MessageStore(db);
-  const eventStore     = new MessageEventStore(db);
-  const segmentStore   = new ThinkingSegmentStore(db);
-  const threadStore    = new ThreadStore(db);
-  const promptLogStore = new PromptLogStore(db);
+  const getStores = (req: import('fastify').FastifyRequest) => {
+    const db = DatabaseManager.getUserDb(req.phobosUser);
+    return {
+      messageStore:   new MessageStore(db),
+      eventStore:     new MessageEventStore(db),
+      segmentStore:   new ThinkingSegmentStore(db),
+      threadStore:    new ThreadStore(db),
+      promptLogStore: new PromptLogStore(db),
+    };
+  };
 
   fastify.get<{ Params: { id: string } }>(
     '/api/threads/:id/export',
     async (req, reply) => {
+     const { messageStore, eventStore, segmentStore, threadStore, promptLogStore } = getStores(req);
+     const db = DatabaseManager.getUserDb(req.phobosUser);
       const { id: threadId } = req.params;
 
       const thread = await threadStore.getById(threadId);

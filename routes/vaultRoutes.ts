@@ -62,11 +62,13 @@ function isNotFound(err: unknown): boolean {
 }
 
 export async function registerVaultRoutes(fastify: FastifyInstance): Promise<void> {
-  const store = new VaultStore(DatabaseManager.getUserDb());
+  const getStore = (req: import('fastify').FastifyRequest) =>
+    new VaultStore(DatabaseManager.getUserDb(req.phobosUser));
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   fastify.post('/api/vault/create', async (req, reply) => {
+    const store = getStore(req);
     const { password } = req.body as { password?: string };
     if (!password) return reply.status(400).send({ error: 'password required' });
     if (vaultExists()) return reply.status(409).send({ error: 'Vault already exists' });
@@ -81,6 +83,7 @@ export async function registerVaultRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   fastify.post('/api/vault/unlock', async (req, reply) => {
+    const store = getStore(req);
     const { password } = req.body as { password?: string };
     if (!password) return reply.status(400).send({ error: 'password required' });
     try {
@@ -95,11 +98,13 @@ export async function registerVaultRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   fastify.post('/api/vault/lock', async (_req, reply) => {
+    const store = getStore(_req);
     lockVault();
     return reply.send({ ok: true });
   });
 
   fastify.get('/api/vault/status', async (_req, reply) => {
+    const store = getStore(_req);
     const status = getVaultStatus();
     const cfg    = await store.getAll();
     status.lastOpenedAt = cfg.last_opened_at;
@@ -107,6 +112,7 @@ export async function registerVaultRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   fastify.post('/api/vault/change-password', async (req, reply) => {
+    const store = getStore(req);
     const { newPassword } = req.body as { newPassword?: string };
     if (!newPassword) return reply.status(400).send({ error: 'newPassword required' });
     try {
@@ -122,6 +128,7 @@ export async function registerVaultRoutes(fastify: FastifyInstance): Promise<voi
   // ── Config ─────────────────────────────────────────────────────────────────
 
   fastify.get('/api/vault/config', async (_req, reply) => {
+    const store = getStore(_req);
     const cfg = await store.getAll();
     return reply.send({
       db_path:              cfg.db_path,
@@ -130,6 +137,7 @@ export async function registerVaultRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   fastify.put('/api/vault/config', async (req, reply) => {
+    const store = getStore(req);
     const body = req.body as { db_path?: string; lock_timeout_seconds?: number };
     await store.patch({
       db_path:              body.db_path,
@@ -149,6 +157,7 @@ export async function registerVaultRoutes(fastify: FastifyInstance): Promise<voi
   // ── Entries ────────────────────────────────────────────────────────────────
 
   fastify.get('/api/vault/entries', async (req, reply) => {
+    const store = getStore(req);
     const { q, group } = req.query as { q?: string; group?: string };
     try {
       let entries = q ? searchEntries(q) : listEntries();
@@ -161,6 +170,7 @@ export async function registerVaultRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   fastify.get<{ Params: { uuid: string } }>('/api/vault/entries/:uuid', async (req, reply) => {
+    const store = getStore(req);
     try {
       const entry = getEntry(req.params.uuid);
       if (!entry) return reply.status(404).send({ error: 'Entry not found' });
@@ -172,6 +182,7 @@ export async function registerVaultRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   fastify.get<{ Params: { uuid: string } }>('/api/vault/entries/:uuid/secret', async (req, reply) => {
+    const store = getStore(req);
     try {
       const secret = getEntrySecret(req.params.uuid);
       if (secret === null) return reply.status(404).send({ error: 'Entry not found' });
@@ -183,6 +194,7 @@ export async function registerVaultRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   fastify.post('/api/vault/entries', async (req, reply) => {
+    const store = getStore(req);
     const body = req.body as Partial<VaultEntryInput>;
     if (!body.title) return reply.status(400).send({ error: 'title required' });
     try {
@@ -204,6 +216,7 @@ export async function registerVaultRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   fastify.put<{ Params: { uuid: string } }>('/api/vault/entries/:uuid', async (req, reply) => {
+    const store = getStore(req);
     const body = req.body as Partial<VaultEntryInput>;
     try {
       await updateEntry(req.params.uuid, body);
@@ -216,6 +229,7 @@ export async function registerVaultRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   fastify.delete<{ Params: { uuid: string } }>('/api/vault/entries/:uuid', async (req, reply) => {
+    const store = getStore(req);
     try {
       await deleteEntry(req.params.uuid);
       return reply.send({ ok: true });
@@ -229,6 +243,7 @@ export async function registerVaultRoutes(fastify: FastifyInstance): Promise<voi
   // ── Groups ─────────────────────────────────────────────────────────────────
 
   fastify.get('/api/vault/groups', async (_req, reply) => {
+    const store = getStore(_req);
     try {
       return reply.send({ groups: listGroups() });
     } catch (err) {
@@ -238,6 +253,7 @@ export async function registerVaultRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   fastify.post('/api/vault/groups', async (req, reply) => {
+    const store = getStore(req);
     const { name, parentUuid } = req.body as { name?: string; parentUuid?: string };
     if (!name) return reply.status(400).send({ error: 'name required' });
     try {
@@ -250,6 +266,7 @@ export async function registerVaultRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   fastify.put<{ Params: { uuid: string } }>('/api/vault/groups/:uuid', async (req, reply) => {
+    const store = getStore(req);
     const { name } = req.body as { name?: string };
     if (!name) return reply.status(400).send({ error: 'name required' });
     try {
@@ -263,6 +280,7 @@ export async function registerVaultRoutes(fastify: FastifyInstance): Promise<voi
   });
 
   fastify.delete<{ Params: { uuid: string } }>('/api/vault/groups/:uuid', async (req, reply) => {
+    const store = getStore(req);
     try {
       await deleteGroup(req.params.uuid);
       return reply.send({ ok: true });

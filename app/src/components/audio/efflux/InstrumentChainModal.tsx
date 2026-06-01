@@ -395,16 +395,16 @@ function InstrumentChainModalImpl() {
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/75"
+      className="fixed inset-0 z-40 flex items-center justify-center bg-phob-void/85"
       onClick={close}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="bg-background border border-phobos-green/30 rounded-sm shadow-2xl flex flex-col"
+        className="bg-[#0f0f0a] border border-phob-orange/30 shadow-2xl flex flex-col phob-corners"
         style={{ width: '72vw', height: '76vh', minWidth: 1080, minHeight: 820 }}
       >
         {/* ── ROW 1 — Header ─────────────────────────────────────────────── */}
-        <div className="flex items-start justify-between gap-4 px-6 py-4 border-b border-border/30 shrink-0">
+        <div className="flex items-start justify-between gap-4 px-6 py-4 border-b border-phob-orange/20 shrink-0">
           <div className="flex-1 min-w-0">
             <input
               value={titleValue}
@@ -414,10 +414,10 @@ function InstrumentChainModalImpl() {
                   useSongStore.getState().bumpSongVersion();
                 }
               }}
-              className="w-full bg-transparent text-2xl font-terminal uppercase tracking-tight text-phobos-green/95 border-none focus:outline-none focus:bg-black/40 focus:ring-1 focus:ring-phobos-green/30 rounded-sm px-1"
+              className="w-full bg-transparent text-2xl font-terminal uppercase tracking-tight text-phob-orange/90 border-none focus:outline-none focus:bg-phob-white/4 focus:ring-1 focus:ring-phob-orange/30 px-1"
               placeholder={`Instrument ${channelIdx}`}
             />
-            <p className="mt-1.5 text-[11px] font-mono text-muted-foreground/60 leading-snug">
+            <p className="mt-1.5 text-[11px] font-mono text-phob-steel/50 leading-snug">
               The instrument chain is what drives this channel. Pick a synth (green) on the left, then add effects (amber) in order from left to right — signal flows down the chain into your mix. Drag plugins from the browser below to add. Drag a slot out of the chain to remove. Bypass keeps a slot in place but skips its processing.
             </p>
           </div>
@@ -425,7 +425,7 @@ function InstrumentChainModalImpl() {
             <button
               onClick={() => { void refreshPlugins(); }}
               disabled={pluginsLoading}
-              className="flex items-center gap-1.5 px-2 py-1 text-[10px] font-terminal uppercase tracking-widest border border-phobos-blue/40 rounded-sm text-phobos-blue/80 hover:border-phobos-blue/70 hover:text-phobos-blue/95 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="flex items-center gap-1.5 px-2 py-1 text-[10px] font-terminal uppercase tracking-widest border border-phob-teal/40 text-phob-teal/80 hover:border-phob-teal/70 hover:text-phob-teal/95 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               title="Rescan plugins — re-walk filesystem, deep-probe new VST3s"
             >
               <RefreshCw className={`w-3 h-3 ${pluginsLoading ? 'animate-spin' : ''}`} />
@@ -433,7 +433,7 @@ function InstrumentChainModalImpl() {
             </button>
             <button
               onClick={close}
-              className="p-1 text-muted-foreground/50 hover:text-foreground transition-colors"
+              className="p-1 text-phob-steel/50 hover:text-phob-white transition-colors"
               title="Close"
             >
               <X className="w-5 h-5" />
@@ -442,7 +442,7 @@ function InstrumentChainModalImpl() {
         </div>
 
         {/* ── ROW 2 — Chain ───────────────────────────────────────────────── */}
-        <div className="flex gap-3 px-6 py-5 border-b border-border/30 shrink-0">
+        <div className="flex gap-3 px-6 py-5 border-b border-phob-orange/15 shrink-0">
 
           {/* Instrument half — clickable region that switches browser mode.
               Frosted-glass styling: a higher-tint background and inner blur
@@ -457,8 +457,8 @@ function InstrumentChainModalImpl() {
             onDrop={onDropOnInstrument}
             className={`shrink-0 rounded-sm border-2 transition-all cursor-pointer backdrop-blur-sm ${
               browserMode === 'instrument'
-                ? 'border-phobos-green/80 bg-phobos-green/[0.10] shadow-[0_0_24px_rgba(0,255,0,0.08)_inset]'
-                : 'border-phobos-green/40 bg-phobos-green/[0.05] hover:border-phobos-green/65 hover:bg-phobos-green/[0.08]'
+                ? 'border-phob-orange/70 bg-phob-orange/[0.10] shadow-[0_0_16px_rgba(232,66,10,0.08)_inset]'
+                : 'border-phob-orange/35 bg-phob-orange/[0.04] hover:border-phob-orange/60 hover:bg-phob-orange/[0.07]'
             }`}
             style={{ padding: 14 }}
             title="Click to browse instruments below"
@@ -481,8 +481,8 @@ function InstrumentChainModalImpl() {
             onClick={() => setBrowser('fx')}
             className={`flex-1 min-w-0 rounded-sm border-2 transition-all cursor-pointer backdrop-blur-sm ${
               browserMode === 'fx'
-                ? 'border-phobos-amber/70 bg-phobos-amber/[0.08] shadow-[0_0_24px_rgba(255,176,46,0.06)_inset]'
-                : 'border-phobos-amber/35 bg-phobos-amber/[0.04] hover:border-phobos-amber/55 hover:bg-phobos-amber/[0.06]'
+                ? 'border-phob-amber/60 bg-phob-amber/[0.07] shadow-[0_0_16px_rgba(200,160,0,0.06)_inset]'
+                : 'border-phob-amber/30 bg-phob-amber/[0.03] hover:border-phob-amber/50 hover:bg-phob-amber/[0.06]'
             }`}
             style={{ padding: 14 }}
             title="Click to browse effects below"
@@ -538,7 +538,7 @@ function InstrumentChainModalImpl() {
                     }
                   }}
                   onDrop={onDropAtChainEnd}
-                  className="relative flex flex-col items-center justify-center text-center border border-dashed border-phobos-amber/40 rounded-sm hover:border-phobos-amber/70 hover:text-phobos-amber/90 text-phobos-amber/50 cursor-pointer transition-colors"
+                  className="relative flex flex-col items-center justify-center text-center border border-dashed border-phob-amber/35 hover:border-phob-amber/65 hover:text-phob-amber/85 text-phob-amber/45 cursor-pointer transition-colors"
                   style={{
                     width:  SQUARE_PX,
                     height: SQUARE_PX,
@@ -550,8 +550,8 @@ function InstrumentChainModalImpl() {
                     Add FX
                   </span>
                   {(pending?.kind === 'fx-add' || pending?.kind === 'fx-insert') && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-[1px] rounded-sm pointer-events-none">
-                      <Loader2 className="w-8 h-8 animate-spin text-phobos-amber/80" />
+                    <div className="absolute inset-0 flex items-center justify-center bg-phob-void/60 backdrop-blur-[1px] pointer-events-none">
+                      <Loader2 className="w-8 h-8 animate-spin text-phob-amber/80" />
                     </div>
                   )}
                 </div>
@@ -566,13 +566,13 @@ function InstrumentChainModalImpl() {
         {/* ── ROW 3 — Browser ────────────────────────────────────────────── */}
         <div className="flex-1 min-h-0 px-6 py-5 flex flex-col">
           <div className="flex items-center gap-3 mb-3 shrink-0">
-            <span className="text-[10px] font-terminal text-phobos-blue/70 uppercase tracking-widest">
+            <span className="text-[10px] font-terminal text-phob-teal/60 uppercase tracking-widest">
               Browser —{' '}
-              <span className={browserMode === 'instrument' ? 'text-phobos-green/80' : 'text-phobos-amber/80'}>
+              <span className={browserMode === 'instrument' ? 'text-phob-green/80' : 'text-phob-amber/80'}>
                 {browserMode === 'instrument' ? 'Instruments' : 'Effects'}
               </span>
             </span>
-            <span className="text-[10px] font-mono text-muted-foreground/40">
+            <span className="text-[10px] font-mono text-phob-steel/40">
               {filteredPlugins.length} available · click {browserMode === 'instrument' ? 'instrument' : 'effect'} half above to switch
             </span>
           </div>
@@ -581,7 +581,7 @@ function InstrumentChainModalImpl() {
               container padding + a little breathing room so the second row is
               never visually squeezed against the bottom border. */}
           <div
-            className="flex-1 rounded-sm border-2 border-phobos-blue/40 bg-phobos-blue/[0.05] backdrop-blur-sm p-3 overflow-hidden"
+            className="flex-1 border-2 border-phob-teal/30 bg-phob-teal/[0.04] p-3 overflow-hidden"
             style={{ minHeight: BROWSER_SQUARE_PX * 2 + 60 }}
           >
             {pluginsError && (
@@ -591,13 +591,13 @@ function InstrumentChainModalImpl() {
             )}
 
             {!pluginsLoaded && !pluginsError && (
-              <div className="px-3 py-2 text-[10px] font-terminal text-muted-foreground/50 uppercase tracking-widest">
+              <div className="px-3 py-2 text-[10px] font-terminal text-phob-steel/45 uppercase tracking-widest">
                 Scanning plugins…
               </div>
             )}
 
             {pluginsLoaded && filteredPlugins.length === 0 && (
-              <div className="px-3 py-2 text-[10px] font-mono text-muted-foreground/40 italic">
+              <div className="px-3 py-2 text-[10px] font-mono text-phob-steel/40 italic">
                 {browserMode === 'instrument'
                   ? 'No instrument plugins discovered. Run fetch scripts or check your VST3 path.'
                   : 'No effect plugins discovered.'}
@@ -650,11 +650,11 @@ function SquareCard(props: SquareCardProps) {
   const { accent, label, bypassed, isHostBacked, size, loading, onEdit, onBypass, onClear } = props;
 
   const borderClass = accent === 'green'
-    ? 'border-phobos-green/70 bg-phobos-green/[0.18]'
-    : 'border-phobos-amber/70 bg-phobos-amber/[0.16]';
+    ? 'border-phob-orange/60 bg-phob-orange/[0.12]'
+    : 'border-phob-amber/60 bg-phob-amber/[0.12]';
   const textClass = accent === 'green'
-    ? 'text-phobos-green/90'
-    : 'text-phobos-amber/90';
+    ? 'text-phob-orange/90'
+    : 'text-phob-amber/90';
 
   return (
     <div className="flex flex-col items-center" style={{ width: size }}>
@@ -675,7 +675,7 @@ function SquareCard(props: SquareCardProps) {
         {onClear && !loading && (
           <button
             onClick={(e) => { e.stopPropagation(); onClear(); }}
-            className="absolute top-1 right-1 p-0.5 rounded-sm bg-black/60 text-muted-foreground/50 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+            className="absolute top-1 right-1 p-0.5 bg-phob-void/70 text-phob-steel/50 hover:text-phob-red opacity-0 group-hover:opacity-100 transition-opacity"
             title={accent === 'green' ? 'Clear (revert to Efflux Engine)' : 'Remove'}
           >
             <X className="w-3 h-3" />
@@ -686,8 +686,8 @@ function SquareCard(props: SquareCardProps) {
             flight. Click-blocking via pointer-events-none on the parent
             isn't necessary because the buttons are also disabled. */}
         {loading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-[1px] rounded-sm pointer-events-none">
-            <Loader2 className={`w-8 h-8 animate-spin ${accent === 'green' ? 'text-phobos-green/80' : 'text-phobos-amber/80'}`} />
+          <div className="absolute inset-0 flex items-center justify-center bg-phob-void/60 backdrop-blur-[1px] pointer-events-none">
+            <Loader2 className={`w-8 h-8 animate-spin ${accent === 'green' ? 'text-phob-green/80' : 'text-phob-amber/80'}`} />
           </div>
         )}
       </div>
@@ -702,7 +702,7 @@ function SquareCard(props: SquareCardProps) {
             className={`w-full px-2 py-1 text-[9px] font-terminal uppercase tracking-widest border rounded-sm transition-colors flex items-center justify-center gap-1 disabled:opacity-30 disabled:cursor-not-allowed ${
               bypassed
                 ? 'border-destructive/60 text-destructive bg-destructive/10'
-                : 'border-phobos-amber/40 text-phobos-amber/70 hover:border-phobos-amber/70'
+                : 'border-phob-amber/35 text-phob-amber/70 hover:border-phob-amber/65'
             }`}
             title={bypassed ? 'Click to engage' : 'Click to bypass (signal passes through unchanged)'}
           >
@@ -716,8 +716,8 @@ function SquareCard(props: SquareCardProps) {
           disabled={!onEdit || loading}
           className={`w-full px-2 py-1 text-[9px] font-terminal uppercase tracking-widest border rounded-sm transition-colors flex items-center justify-center gap-1 ${
             accent === 'green'
-              ? 'border-phobos-green/40 text-phobos-green/80 hover:border-phobos-green/70'
-              : 'border-phobos-amber/40 text-phobos-amber/80 hover:border-phobos-amber/70'
+              ? 'border-phob-orange/35 text-phob-orange/80 hover:border-phob-orange/65'
+              : 'border-phob-amber/35 text-phob-amber/80 hover:border-phob-amber/65'
           } disabled:opacity-30 disabled:cursor-not-allowed`}
           title={isHostBacked ? 'Open native plugin UI' : 'Open Efflux Engine editor'}
         >
@@ -758,7 +758,7 @@ function DropGap({ onDrop }: DropGapProps) {
       }}
     >
       <div
-        className={`w-full rounded-sm transition-colors ${hot ? 'bg-phobos-amber/40' : 'bg-phobos-amber/20'}`}
+        className={`w-full rounded-sm transition-colors ${hot ? 'bg-phob-amber/40' : 'bg-phob-amber/20'}`}
         style={{ height: 2 }}
       />
     </div>
@@ -782,14 +782,14 @@ function BrowserCard({ entry, size, onDoubleClick }: BrowserCardProps) {
         e.dataTransfer.effectAllowed = 'copy';
       }}
       onDoubleClick={onDoubleClick}
-      className="rounded-sm border border-phobos-blue/50 bg-phobos-blue/[0.12] hover:border-phobos-blue/80 hover:bg-phobos-blue/[0.20] cursor-grab active:cursor-grabbing flex flex-col items-center justify-center px-2 py-2 transition-colors"
+      className="rounded-sm border border-phob-teal/40 bg-phob-teal/[0.08] hover:border-phob-teal/70 hover:bg-phob-teal/[0.14] cursor-grab active:cursor-grabbing flex flex-col items-center justify-center px-2 py-2 transition-colors"
       style={{ width: size, height: size }}
       title={`${entry.name} — ${entry.path} · double-click or drag to add`}
     >
-      <span className="text-[10px] font-terminal text-phobos-blue/80 uppercase tracking-tight leading-tight text-center break-words">
+      <span className="text-[10px] font-terminal text-phob-teal/75 uppercase tracking-tight leading-tight text-center break-words">
         {entry.name}
       </span>
-      <span className="mt-1 text-[8px] font-mono text-muted-foreground/40 uppercase">
+      <span className="mt-1 text-[8px] font-mono text-phob-steel/35 uppercase">
         {entry.source}
       </span>
     </div>

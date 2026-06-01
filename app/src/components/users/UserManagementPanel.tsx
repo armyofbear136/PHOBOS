@@ -14,7 +14,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Users, X, Plus, Trash2, RefreshCw, Loader2, CheckCircle2,
-  Lock, AlertTriangle, Copy, Key, QrCode,
+  Lock, AlertTriangle, Copy, Key, QrCode, FolderOpen,
 } from 'lucide-react';
 import { useAppStore }   from '@/store/useAppStore';
 import { UserAuthGate }  from './UserAuthGate';
@@ -26,7 +26,6 @@ const ENGINE_URL = (import.meta.env.VITE_ENGINE_URL ?? 'http://localhost:3001').
 
 type UserRole = 'admin' | 'full' | 'guest' | 'read';
 type Tab      = 'users' | 'switch' | 'codes' | 'settings';
-
 interface UserRecord {
   username:     string;
   display_name: string;
@@ -59,14 +58,32 @@ const ROLE_LABELS: Record<UserRole, string> = {
   read:  'Read-only',
 };
 
-const ROLE_OPTIONS: UserRole[] = ['admin', 'full', 'guest', 'read'];
+// admin is intentionally excluded — cannot be assigned from the panel.
+const ROLE_OPTIONS: UserRole[] = ['full', 'guest', 'read'];
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'users',    label: 'Users'    },
-  { id: 'switch',   label: 'Switch'   },
-  { id: 'codes',    label: 'Codes'    },
-  { id: 'settings', label: 'Settings' },
-];
+// TABS is built dynamically inside the component based on currentRole.
+
+// ── Deprovision types ─────────────────────────────────────────────────────────
+
+interface DeprovisionInventory {
+  plugins:    Array<{ pluginId: string; name: string }>;
+  cartridges: Array<{ cartridgeId: string; name: string }>;
+  hasWeclone: boolean;
+  hasAssets:  boolean;
+}
+
+interface DeprovisionDialog {
+  username:    string;
+  inventory:   DeprovisionInventory;
+  loading:     false;
+}
+
+interface DeprovisionDialogLoading {
+  username:  string;
+  loading:   true;
+}
+
+type DeprovisionState = DeprovisionDialog | DeprovisionDialogLoading | null;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -82,6 +99,18 @@ function fmtDate(iso: string | null): string {
 
 export function UserManagementPanel() {
   const setUserMgmtOpen = useAppStore(s => s.setUserMgmtOpen);
+  const currentRole     = useAppStore(s => s.activeUserRole);
+
+  const isAdmin = currentRole === 'admin';
+  const isFull  = currentRole === 'full';
+  const isGuest = currentRole === 'guest' || currentRole === 'read';
+
+  const TABS: { id: Tab; label: string }[] = [
+    ...(isAdmin || isFull ? [{ id: 'users'    as Tab, label: 'Users'    }] : []),
+    ...(isAdmin            ? [{ id: 'switch'   as Tab, label: 'Switch'   }] : []),
+    { id: 'codes' as Tab, label: 'Codes' },
+    ...(isAdmin || isFull ? [{ id: 'settings' as Tab, label: 'Settings' }] : []),
+  ];
 
   // ── Drag state ─────────────────────────────────────────────────────────────
   const [pos, setPos] = useState(() => ({
@@ -124,7 +153,9 @@ export function UserManagementPanel() {
   }, []);
 
   // ── Panel state ────────────────────────────────────────────────────────────
-  const [tab,     setTab]     = useState<Tab>('users');
+  const [tab, setTab] = useState<Tab>(() =>
+    (currentRole === 'guest' || currentRole === 'read') ? 'codes' : 'users'
+  );
   const [users,   setUsers]   = useState<UserRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState<string | null>(null);
@@ -140,6 +171,10 @@ export function UserManagementPanel() {
   // ── Switch-user state ──────────────────────────────────────────────────────
   const [switching,     setSwitching]     = useState(false);
   const [switchTarget,  setSwitchTarget]  = useState<string | null>(null);
+
+  // ── Deprovision dialog state ───────────────────────────────────────────────
+  const [deprovision,    setDeprovision]    = useState<DeprovisionState>(null);
+  const [lostAndFound,   setLostAndFound]   = useState<{ path: string; username: string } | null>(null);
 
   // ── Access codes state ─────────────────────────────────────────────────────
   const [codes,          setCodes]          = useState<AccessCode[]>([]);
@@ -244,26 +279,61 @@ export function UserManagementPanel() {
     }
   }, [token, loadUsers]);
 
-  // ── Delete user ────────────────────────────────────────────────────────────
+  // ── Delete user — phase 1: load inventory ─────────────────────────────────
 
-  const handleDelete = useCallback(async (username: string) => {
+  const handleDeleteClick = useCallback(async (username: string) => {
     if (!token) return;
-    if (!window.confirm(`Delete user '${username}'? Their data directory will be preserved.`)) return;
+    // Show loading state immediately so the button gives feedback.
+    setDeprovision({ username, loading: true });
+    try {
+      const res = await fetch(
+        `${ENGINE_URL}/api/admin/users/${username}/deprovision-inventory`,
+        { headers: { 'Authorization': `Bearer ${token}` } },
+      );
+      if (!res.ok) {
+        const data = await res.json() as { error?: string };
+        setDeprovision(null);
+        setError(data.error ?? 'Could not load user inventory');
+        return;
+      }
+      const data = await res.json() as { inventory: DeprovisionInventory };
+      setDeprovision({ username, inventory: data.inventory, loading: false });
+    } catch {
+      setDeprovision(null);
+      setError('Could not reach server.');
+    }
+  }, [token]);
+
+  // ── Delete user — phase 2: confirm and execute ─────────────────────────────
+
+  const handleDeleteConfirm = useCallback(async (preserveAll: boolean) => {
+    if (!token || !deprovision || deprovision.loading) return;
+    const { username } = deprovision;
+    setDeprovision(null);
     try {
       const res = await fetch(`${ENGINE_URL}/api/admin/users/${username}`, {
         method:  'DELETE',
-        headers: { 'Authorization': `Bearer ${token}` },
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ preserveAll }),
       });
-      if (res.ok) {
-        setUsers(prev => prev.filter(u => u.username !== username));
-      } else {
-        const data = await res.json() as { error?: string };
+      const data = await res.json() as {
+        ok?: boolean;
+        error?: string;
+        lostAndFoundPath?: string;
+        message?: string;
+      };
+      if (!res.ok) {
         setError(data.error ?? 'Delete failed');
+        return;
+      }
+      setUsers(prev => prev.filter(u => u.username !== username));
+      if (data.lostAndFoundPath) {
+        setLostAndFound({ path: data.lostAndFoundPath, username });
       }
     } catch {
       setError('Could not reach server.');
     }
-  }, [token]);
+  }, [token, deprovision]);
 
   // ── Switch user ────────────────────────────────────────────────────────────
 
@@ -272,15 +342,41 @@ export function UserManagementPanel() {
     setSwitching(true);
     setSwitchTarget(username);
     try {
-      await fetch(`${ENGINE_URL}/api/admin/switch-user`, {
+      const res = await fetch(`${ENGINE_URL}/api/admin/switch-user`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body:    JSON.stringify({ username }),
       });
-      // Server exits — app will reconnect automatically via the existing
-      // ConnectionSplash / reconnect logic in the frontend.
+      if (!res.ok) {
+        const d = await res.json() as { error?: string };
+        setError(d.error ?? 'Switch failed');
+        setSwitching(false);
+        setSwitchTarget(null);
+        return;
+      }
+      // Poll /api/admin/status until activeUser matches, then close the overlay.
+      const poll = setInterval(async () => {
+        try {
+          const s = await fetch(`${ENGINE_URL}/api/admin/status`).then(r => r.json()) as AdminStatus;
+          if (s.activeUser === username) {
+            clearInterval(poll);
+            setAdminStatus(s);
+            setSwitching(false);
+            setSwitchTarget(null);
+            setToken(null); // force re-auth since session context changed
+          }
+        } catch { /* keep polling */ }
+      }, 500);
+      // Safety timeout — stop polling after 10s regardless.
+      setTimeout(() => {
+        clearInterval(poll);
+        setSwitching(false);
+        setSwitchTarget(null);
+      }, 10_000);
     } catch {
-      // Expected: server goes down during restart.
+      setError('Could not reach server.');
+      setSwitching(false);
+      setSwitchTarget(null);
     }
   }, [token]);
 
@@ -339,15 +435,21 @@ export function UserManagementPanel() {
   }, [token, tab, loadCodes]);
 
   const handleGenerateCode = useCallback(async () => {
-    if (!token) return;
     setCodeGenBusy(true);
     setCodesError(null);
     try {
-      const res = await fetch(`${ENGINE_URL}/api/admin/access-codes`, {
+      // Guests and full users use the tokenless /api/user/invite endpoint.
+      // Admin uses the panel-authenticated /api/admin/access-codes endpoint.
+      const endpoint = isAdmin
+        ? `${ENGINE_URL}/api/admin/access-codes`
+        : `${ENGINE_URL}/api/user/invite`;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (isAdmin && token) headers['Authorization'] = `Bearer ${token}`;
+      const res = await fetch(endpoint, {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        headers,
         body:    JSON.stringify({
-          code_type:        codeGenType,
+          code_type:        isGuest ? 'self' : codeGenType,
           expires_in_hours: codeGenExpiry,
         }),
       });
@@ -356,13 +458,14 @@ export function UserManagementPanel() {
         setCodesError(d.error ?? 'Generate failed');
         return;
       }
-      await loadCodes(token);
+      const d = await res.json() as { code: AccessCode };
+      setCodes(prev => [d.code, ...prev]);
     } catch {
       setCodesError('Could not reach server.');
     } finally {
       setCodeGenBusy(false);
     }
-  }, [token, codeGenType, codeGenExpiry, loadCodes]);
+  }, [token, isAdmin, isGuest, codeGenType, codeGenExpiry]);
 
   const handleRevokeCode = useCallback(async (code: string) => {
     if (!token) return;
@@ -392,7 +495,9 @@ export function UserManagementPanel() {
 
   if (!statusLoaded) return null;
 
-  if (!token) {
+  // Guests and read-only users bypass the admin password gate — they only
+  // access the Codes tab which uses the tokenless POST /api/user/invite endpoint.
+  if (!token && !isGuest) {
     return (
       <UserAuthGate
         passwordSet={adminStatus?.passwordSet ?? false}
@@ -405,13 +510,13 @@ export function UserManagementPanel() {
 
   if (switching) {
     return (
-      <div className="fixed inset-0 z-[9000] flex items-center justify-center bg-black/70 backdrop-blur-sm">
-        <div className="bg-card border border-border rounded-lg p-8 flex flex-col items-center gap-4">
-          <Loader2 className="w-8 h-8 text-phobos-green animate-spin" />
-          <p className="text-sm font-terminal tracking-wider text-phobos-green">
+      <div className="fixed inset-0 z-[9000] flex items-center justify-center bg-phob-void/92 backdrop-blur-sm">
+        <div className="bg-[#0f0f0a] border border-phob-teal/30 phob-corners phob-corners-full  p-8 flex flex-col items-center gap-4">
+          <Loader2 className="w-8 h-8 text-phob-teal animate-spin" />
+          <p className="text-sm font-terminal tracking-wider text-phob-teal">
             SWITCHING TO {switchTarget?.toUpperCase()}…
           </p>
-          <p className="text-xs text-muted-foreground">The app will reconnect automatically.</p>
+          <p className="text-xs text-phob-steel/60">The app will reconnect automatically.</p>
         </div>
       </div>
     );
@@ -419,9 +524,9 @@ export function UserManagementPanel() {
 
   const activeUser = adminStatus?.activeUser ?? 'owner';
 
-  const inputCls = 'w-full bg-background border border-border rounded px-3 py-2 text-sm ' +
-                   'text-foreground focus:outline-none focus:border-phobos-green/60 transition-colors';
-  const labelCls = 'block text-xs text-muted-foreground mb-1';
+  const inputCls = 'w-full bg-phob-white/4 border border-phob-teal/20 px-3 py-2 text-sm text-phob-white ' +
+                   'text-foreground focus:outline-none focus:border-phob-teal/60 transition-colors';
+  const labelCls = 'block text-[9px] font-terminal text-phob-teal/50 uppercase tracking-[0.12em] mb-1';
 
   // ── Render: panel ──────────────────────────────────────────────────────────
 
@@ -432,42 +537,42 @@ export function UserManagementPanel() {
       filter: 'drop-shadow(0 12px 48px rgba(0,0,0,.85))',
     }}>
       <div style={{ width: 800, maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}
-           className="phobos-panel bg-card border border-border rounded-sm overflow-hidden">
+           className="phobos-panel bg-[#0f0f0a] border border-phob-teal/30 phob-corners phob-corners-full  overflow-hidden">
 
         {/* Header */}
         <div
           onMouseDown={onMouseDown}
           style={{ cursor: 'grab' }}
-          className="phobos-chrome-zone h-10 flex items-center justify-between px-3 border-b border-border/50 bg-background shrink-0"
+          className="phob-chrome-zone phob-header h-10 flex items-center justify-between px-3 border-b border-phob-teal/25 bg-[#080808] shrink-0"
         >
           <div className="flex items-center gap-2" data-nodrag>
-            <Users className="w-4 h-4 text-phobos-green/70" />
-            <span className="text-sm font-terminal uppercase tracking-[0.15em] text-phobos-green">
+            <Users className="w-4 h-4 text-phob-teal/70" />
+            <span className="text-sm font-terminal uppercase tracking-[0.15em] text-phob-teal">
               User Management
             </span>
-            <span className="text-xs font-terminal text-muted-foreground/60 uppercase tracking-widest ml-1">
+            <span className="text-xs font-terminal text-phob-steel/50 uppercase tracking-widest ml-1">
               {activeUser}
             </span>
           </div>
           <button
             onClick={() => setUserMgmtOpen(false)}
-            className="p-1 hover:bg-accent rounded transition-colors"
+            className="p-1 hover:bg-phob-teal/8 transition-colors"
             data-nodrag
           >
-            <X className="w-4 h-4 text-foreground/60" />
+            <X className="w-4 h-4 text-phob-steel/50" />
           </button>
         </div>
 
         {/* Tab bar */}
-        <div className="flex border-b border-border/30 bg-black/30 shrink-0">
+        <div className="flex border-b border-phob-teal/20 bg-phob-white/4 shrink-0">
           {TABS.map(t => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
               className={`px-4 py-3 text-sm font-terminal uppercase tracking-widest transition-colors border-b-2 ${
                 tab === t.id
-                  ? 'text-phobos-green border-phobos-green bg-phobos-green/5'
-                  : 'text-foreground/50 border-transparent hover:text-foreground/80'
+                  ? 'text-phob-teal border-phob-teal bg-phob-teal/5'
+                  : 'text-phob-steel/50 border-transparent hover:text-phob-white/80'
               }`}
             >
               {t.label}
@@ -480,7 +585,7 @@ export function UserManagementPanel() {
 
           {/* Global error banner */}
           {error && (
-            <div className="mb-4 flex items-center gap-2 px-3 py-2 rounded bg-red-950/40 border border-red-800/40 text-red-400 text-xs">
+            <div className="mb-4 flex items-center gap-2 px-3 py-2 rounded bg-phob-red/8 border border-phob-red/30 text-phob-red text-xs">
               <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
               <span>{error}</span>
               <button onClick={() => setError(null)} className="ml-auto hover:text-red-300">
@@ -493,14 +598,14 @@ export function UserManagementPanel() {
           {tab === 'users' && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <p className="text-xs text-muted-foreground">
+                <p className="text-xs text-phob-steel/50">
                   {users.length} user{users.length !== 1 ? 's' : ''} on this instance
                 </p>
                 <div className="flex gap-2">
                   <button
                     onClick={() => token && loadUsers(token)}
                     disabled={loading}
-                    className="p-1.5 rounded border border-border text-muted-foreground hover:text-foreground hover:border-border/80 transition-all"
+                    className="p-1.5 border border-phob-teal/20 text-phob-steel/50 hover:text-phob-white hover:border-phob-teal/35 transition-all"
                     title="Refresh"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
@@ -508,8 +613,8 @@ export function UserManagementPanel() {
                   <button
                     onClick={() => setAddOpen(v => !v)}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-terminal tracking-wider
-                               bg-phobos-green/10 border border-phobos-green/30 text-phobos-green
-                               hover:bg-phobos-green/20 hover:border-phobos-green/50 transition-all"
+                               bg-phob-teal/10 border border-phob-teal/30 text-phob-teal
+                               hover:bg-phob-teal/20 hover:border-phob-teal/50 transition-all"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     Add User
@@ -519,8 +624,8 @@ export function UserManagementPanel() {
 
               {/* Add-user form */}
               {addOpen && (
-                <div className="rounded border border-phobos-green/20 bg-phobos-green/5 p-4 space-y-3">
-                  <p className="text-xs font-terminal tracking-wider text-phobos-green/80 uppercase">New User</p>
+                <div className="rounded border border-phob-teal/20 bg-phob-teal/5 p-4 space-y-3">
+                  <p className="text-xs font-terminal tracking-wider text-phob-teal/80 uppercase">New User</p>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className={labelCls}>Username</label>
@@ -531,7 +636,7 @@ export function UserManagementPanel() {
                         placeholder="e.g. alice"
                         className={inputCls}
                       />
-                      <p className="mt-0.5 text-[10px] text-muted-foreground/60">Lowercase, hyphens allowed</p>
+                      <p className="mt-0.5 text-[10px] text-phob-steel/50">Lowercase, hyphens allowed</p>
                     </div>
                     <div>
                       <label className={labelCls}>Display name</label>
@@ -556,14 +661,14 @@ export function UserManagementPanel() {
                       ))}
                     </select>
                   </div>
-                  {addError && <p className="text-xs text-red-400">{addError}</p>}
+                  {addError && <p className="text-xs text-phob-red">{addError}</p>}
                   <div className="flex gap-2">
                     <button
                       onClick={handleAddUser}
                       disabled={addSubmitting || !newUsername || !newDisplayName}
                       className="px-4 py-1.5 rounded text-xs font-terminal tracking-wider
-                                 bg-phobos-green/10 border border-phobos-green/30 text-phobos-green
-                                 hover:bg-phobos-green/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all
+                                 bg-phob-teal/10 border border-phob-teal/30 text-phob-teal
+                                 hover:bg-phob-teal/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all
                                  flex items-center gap-1.5"
                     >
                       {addSubmitting && <Loader2 className="w-3 h-3 animate-spin" />}
@@ -571,7 +676,7 @@ export function UserManagementPanel() {
                     </button>
                     <button
                       onClick={() => { setAddOpen(false); setAddError(null); }}
-                      className="px-4 py-1.5 rounded text-xs text-muted-foreground hover:text-foreground border border-border hover:border-border/80 transition-all"
+                      className="px-4 py-1.5 text-xs text-phob-steel/50 hover:text-phob-white border border-phob-teal/15 hover:border-phob-teal/30 transition-all"
                     >
                       Cancel
                     </button>
@@ -582,13 +687,13 @@ export function UserManagementPanel() {
               {/* User table */}
               {loading ? (
                 <div className="flex items-center justify-center py-12">
-                  <Loader2 className="w-5 h-5 text-phobos-green/50 animate-spin" />
+                  <Loader2 className="w-5 h-5 text-phob-teal/50 animate-spin" />
                 </div>
               ) : (
                 <div className="rounded border border-border overflow-hidden">
                   <table className="w-full text-xs">
                     <thead>
-                      <tr className="bg-black/40 text-muted-foreground font-terminal uppercase tracking-widest text-[10px]">
+                      <tr className="bg-phob-white/4 text-phob-teal/50 font-terminal uppercase tracking-widest text-[10px]">
                         <th className="text-left px-3 py-2.5">Username</th>
                         <th className="text-left px-3 py-2.5">Display name</th>
                         <th className="text-left px-3 py-2.5">Role</th>
@@ -601,15 +706,15 @@ export function UserManagementPanel() {
                       {users.map((u, i) => (
                         <tr
                           key={u.username}
-                          className={`border-t border-border/30 ${
-                            u.username === activeUser ? 'bg-phobos-green/5' : i % 2 === 0 ? '' : 'bg-black/10'
+                          className={`border-t border-phob-teal/20 ${
+                            u.username === activeUser ? 'bg-phob-teal/5' : i % 2 === 0 ? '' : 'bg-black/10'
                           }`}
                         >
                           <td className="px-3 py-2.5">
                             <div className="flex items-center gap-1.5">
-                              <span className="font-terminal text-foreground/90">{u.username}</span>
+                              <span className="font-terminal text-phob-white/90">{u.username}</span>
                               {u.username === activeUser && (
-                                <span className="text-[9px] font-terminal tracking-widest text-phobos-green bg-phobos-green/10 px-1 py-0.5 rounded-sm">
+                                <span className="text-[9px] font-terminal tracking-widest text-phob-teal bg-phob-teal/10 px-1 py-0.5 ">
                                   ACTIVE
                                 </span>
                               )}
@@ -622,7 +727,7 @@ export function UserManagementPanel() {
                               onChange={e => handleRoleChange(u.username, e.target.value as UserRole)}
                               disabled={u.username === 'owner' && users.filter(x => x.role === 'admin').length <= 1}
                               className="bg-background border border-border rounded px-2 py-1 text-xs text-foreground
-                                         focus:outline-none focus:border-phobos-green/60 disabled:opacity-50
+                                         focus:outline-none focus:border-phob-teal/60 disabled:opacity-50
                                          disabled:cursor-not-allowed transition-colors"
                             >
                               {ROLE_OPTIONS.map(r => (
@@ -633,10 +738,10 @@ export function UserManagementPanel() {
                           <td className="px-3 py-2.5 text-muted-foreground">{fmtDate(u.created_at)}</td>
                           <td className="px-3 py-2.5 text-muted-foreground">{fmtDate(u.last_active)}</td>
                           <td className="px-3 py-2.5">
-                            {u.username !== 'owner' && (
+                            {isAdmin && u.username !== 'owner' && (
                               <button
-                                onClick={() => handleDelete(u.username)}
-                                className="p-1 rounded text-muted-foreground/50 hover:text-red-400 hover:bg-red-950/30 transition-all"
+                                onClick={() => handleDeleteClick(u.username)}
+                                className="p-1 rounded text-muted-foreground/50 hover:text-phob-red hover:bg-red-950/30 transition-all"
                                 title={`Delete ${u.username}`}
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
@@ -670,22 +775,22 @@ export function UserManagementPanel() {
           {/* ── Switch tab ────────────────────────────────────────────────── */}
           {tab === 'switch' && (
             <div className="space-y-3">
-              <p className="text-xs text-muted-foreground">
-                Switching user writes the selection to disk and restarts the engine.
-                The app reconnects automatically.
+              <p className="text-xs text-phob-steel/50">
+                Switching user reinitialises the active session in-process.
+                The app will reflect the new user immediately.
               </p>
               <div className="rounded border border-border overflow-hidden">
                 {users.map((u, i) => (
                   <div
                     key={u.username}
-                    className={`flex items-center justify-between px-4 py-3 border-b border-border/30 last:border-0 ${
-                      u.username === activeUser ? 'bg-phobos-green/5' : i % 2 === 0 ? '' : 'bg-black/10'
+                    className={`flex items-center justify-between px-4 py-3 border-b border-phob-teal/20 last:border-0 ${
+                      u.username === activeUser ? 'bg-phob-teal/5' : i % 2 === 0 ? '' : 'bg-black/10'
                     }`}
                   >
                     <div className="flex items-center gap-3">
-                      <div className={`w-2 h-2 rounded-full ${u.username === activeUser ? 'bg-phobos-green' : 'bg-border'}`} />
+                      <div className={`w-2 h-2 rounded-full ${u.username === activeUser ? 'bg-phob-teal' : 'bg-border'}`} />
                       <div>
-                        <p className="text-sm font-terminal text-foreground/90">{u.username}</p>
+                        <p className="text-sm font-terminal text-phob-white/90">{u.username}</p>
                         <p className="text-[10px] text-muted-foreground">{u.display_name} · {ROLE_LABELS[u.role]}</p>
                       </div>
                     </div>
@@ -693,13 +798,13 @@ export function UserManagementPanel() {
                       <button
                         onClick={() => handleSwitch(u.username)}
                         className="px-3 py-1.5 rounded text-xs font-terminal tracking-wider
-                                   border border-phobos-green/30 text-phobos-green/80
-                                   hover:bg-phobos-green/10 hover:border-phobos-green/50 transition-all"
+                                   border border-phob-teal/30 text-phob-teal/80
+                                   hover:bg-phob-teal/10 hover:border-phob-teal/50 transition-all"
                       >
                         Switch
                       </button>
                     ) : (
-                      <span className="text-[10px] font-terminal tracking-widest text-phobos-green">ACTIVE</span>
+                      <span className="text-[10px] font-terminal tracking-widest text-phob-teal">ACTIVE</span>
                     )}
                   </div>
                 ))}
@@ -714,7 +819,7 @@ export function UserManagementPanel() {
             return (
               <div className="space-y-4">
                 {codesError && (
-                  <div className="flex items-center gap-2 px-3 py-2 rounded bg-red-950/40 border border-red-800/40 text-red-400 text-xs">
+                  <div className="flex items-center gap-2 px-3 py-2 rounded bg-phob-red/8 border border-phob-red/30 text-phob-red text-xs">
                     <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
                     <span>{codesError}</span>
                     <button onClick={() => setCodesError(null)} className="ml-auto hover:text-red-300">
@@ -724,26 +829,37 @@ export function UserManagementPanel() {
                 )}
 
                 {/* Generate form */}
-                <div className="rounded border border-phobos-green/20 bg-phobos-green/5 p-4 space-y-3">
-                  <p className="text-xs font-terminal tracking-wider text-phobos-green/80 uppercase">Generate Access Code</p>
+                <div className="rounded border border-phob-teal/20 bg-phob-teal/5 p-4 space-y-3">
+                  <p className="text-xs font-terminal tracking-wider text-phob-teal/80 uppercase">Generate Access Code</p>
                   <div className="flex flex-wrap gap-4 items-end">
-                    <div>
-                      <label className={labelCls}>Type</label>
-                      <select
-                        value={codeGenType}
-                        onChange={e => setCodeGenType(e.target.value as 'guest' | 'self')}
-                        className="bg-background border border-border rounded px-2 py-1.5 text-xs text-foreground focus:outline-none focus:border-phobos-green/60 transition-colors"
-                      >
-                        <option value="guest">Guest — provisioned account</option>
-                        <option value="self">Self — your own remote session</option>
-                      </select>
-                    </div>
+                    {/* Type selector — guests are locked to self; full users can only do guest */}
+                    {!isGuest && (
+                      <div>
+                        <label className={labelCls}>Type</label>
+                        <select
+                          value={isGuest ? 'self' : codeGenType}
+                          onChange={e => setCodeGenType(e.target.value as 'guest' | 'self')}
+                          disabled={isGuest}
+                          className="bg-background border border-border rounded px-2 py-1.5 text-xs text-foreground focus:outline-none focus:border-phob-teal/60 transition-colors"
+                        >
+                          {isAdmin && <option value="guest">Guest — provisioned account</option>}
+                          {isAdmin && <option value="self">Self — your own remote session</option>}
+                          {isFull  && <option value="guest">Guest — provisioned account</option>}
+                        </select>
+                      </div>
+                    )}
+                    {isGuest && (
+                      <div>
+                        <label className={labelCls}>Type</label>
+                        <p className="text-xs text-phob-white/60 py-1.5">Self — remote session</p>
+                      </div>
+                    )}
                     <div>
                       <label className={labelCls}>Expires in</label>
                       <select
                         value={codeGenExpiry}
                         onChange={e => setCodeGenExpiry(Number(e.target.value))}
-                        className="bg-background border border-border rounded px-2 py-1.5 text-xs text-foreground focus:outline-none focus:border-phobos-green/60 transition-colors"
+                        className="bg-background border border-border rounded px-2 py-1.5 text-xs text-foreground focus:outline-none focus:border-phob-teal/60 transition-colors"
                       >
                         <option value={1}>1 hour</option>
                         <option value={24}>24 hours</option>
@@ -756,35 +872,39 @@ export function UserManagementPanel() {
                       onClick={handleGenerateCode}
                       disabled={codeGenBusy}
                       className="flex items-center gap-1.5 px-4 py-1.5 rounded text-xs font-terminal tracking-wider
-                                 bg-phobos-green/10 border border-phobos-green/30 text-phobos-green
-                                 hover:bg-phobos-green/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                                 bg-phob-teal/10 border border-phob-teal/30 text-phob-teal
+                                 hover:bg-phob-teal/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                     >
                       {codeGenBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Key className="w-3 h-3" />}
                       Generate
                     </button>
-                    <button
-                      onClick={() => token && loadCodes(token)}
-                      disabled={codesLoading}
-                      className="p-1.5 rounded border border-border text-muted-foreground hover:text-foreground transition-all"
-                      title="Refresh"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${codesLoading ? 'animate-spin' : ''}`} />
-                    </button>
+                    {!isGuest && token && (
+                      <button
+                        onClick={() => token && loadCodes(token)}
+                        disabled={codesLoading}
+                        className="p-1.5 rounded border border-border text-muted-foreground hover:text-foreground transition-all"
+                        title="Refresh"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${codesLoading ? 'animate-spin' : ''}`} />
+                      </button>
+                    )}
                   </div>
-                  <p className="text-[10px] text-muted-foreground/60">
-                    Share this code with the person connecting. They enter it in the PHOBOS mobile app.
+                  <p className="text-[10px] text-phob-steel/50">
+                    {isGuest
+                      ? 'Generate a code to connect to your own account from another device.'
+                      : 'Share this code with the person connecting. They enter it in the PHOBOS mobile app.'}
                   </p>
                 </div>
 
                 {/* Active codes */}
                 {codesLoading ? (
                   <div className="flex items-center justify-center py-10">
-                    <Loader2 className="w-5 h-5 text-phobos-green/50 animate-spin" />
+                    <Loader2 className="w-5 h-5 text-phob-teal/50 animate-spin" />
                   </div>
                 ) : (
                   <>
                     <div>
-                      <p className="text-[10px] font-terminal tracking-widest text-muted-foreground/60 uppercase mb-2">
+                      <p className="text-[10px] font-terminal tracking-widest text-phob-steel/50 uppercase mb-2">
                         Active — {activeCodes.length}
                       </p>
                       {activeCodes.length === 0 ? (
@@ -793,7 +913,7 @@ export function UserManagementPanel() {
                         <div className="rounded border border-border overflow-hidden">
                           <table className="w-full text-xs">
                             <thead>
-                              <tr className="bg-black/40 text-muted-foreground font-terminal uppercase tracking-widest text-[10px]">
+                              <tr className="bg-phob-white/4 text-phob-teal/50 font-terminal uppercase tracking-widest text-[10px]">
                                 <th className="text-left px-3 py-2.5">Code</th>
                                 <th className="text-left px-3 py-2.5">Type</th>
                                 <th className="text-left px-3 py-2.5">Bound to</th>
@@ -803,24 +923,24 @@ export function UserManagementPanel() {
                             </thead>
                             <tbody>
                               {activeCodes.map((c, i) => (
-                                <tr key={c.code} className={`border-t border-border/30 ${i % 2 === 0 ? '' : 'bg-black/10'}`}>
+                                <tr key={c.code} className={`border-t border-phob-teal/20 ${i % 2 === 0 ? '' : 'bg-black/10'}`}>
                                   <td className="px-3 py-2.5">
                                     <div className="flex items-center gap-2">
-                                      <span className="font-terminal text-phobos-green tracking-[0.05em] text-[10px] break-all max-w-[180px]">
+                                      <span className="font-terminal text-phob-teal tracking-[0.05em] text-[10px] break-all max-w-[180px]">
                                         {c.encoded_code ?? c.code}
                                       </span>
                                       <button
                                         onClick={() => handleCopyCode(c.encoded_code ?? c.code)}
-                                        className="text-muted-foreground/50 hover:text-phobos-green transition-colors flex-shrink-0"
+                                        className="text-muted-foreground/50 hover:text-phob-teal transition-colors flex-shrink-0"
                                         title="Copy code"
                                       >
                                         {copiedCode === (c.encoded_code ?? c.code)
-                                          ? <CheckCircle2 className="w-3 h-3 text-phobos-green" />
+                                          ? <CheckCircle2 className="w-3 h-3 text-phob-teal" />
                                           : <Copy className="w-3 h-3" />}
                                       </button>
                                       <button
                                         onClick={() => setQrCode(q => q === (c.encoded_code ?? c.code) ? null : (c.encoded_code ?? c.code))}
-                                        className="text-muted-foreground/50 hover:text-phobos-green transition-colors flex-shrink-0"
+                                        className="text-muted-foreground/50 hover:text-phob-teal transition-colors flex-shrink-0"
                                         title="Show QR code"
                                       >
                                         <QrCode className="w-3 h-3" />
@@ -829,14 +949,14 @@ export function UserManagementPanel() {
                                   </td>
                                   <td className="px-3 py-2.5 text-muted-foreground capitalize">{c.code_type}</td>
                                   <td className="px-3 py-2.5 text-muted-foreground font-terminal">
-                                    {c.target_username ?? <span className="text-muted-foreground/40">unbound</span>}
+                                    {c.target_username ?? <span className="text-phob-steel/40">unbound</span>}
                                   </td>
                                   <td className="px-3 py-2.5 text-muted-foreground">{fmtDate(c.expires_at)}</td>
                                   <td className="px-3 py-2.5">
                                     <button
                                       onClick={() => handleRevokeCode(c.code)}
                                       className="px-2 py-1 rounded text-[10px] font-terminal tracking-wider
-                                                 text-muted-foreground/60 hover:text-red-400 hover:bg-red-950/30
+                                                 text-phob-steel/50 hover:text-phob-red hover:bg-red-950/30
                                                  border border-transparent hover:border-red-800/30 transition-all"
                                     >
                                       Revoke
@@ -852,7 +972,7 @@ export function UserManagementPanel() {
 
                     {/* Consumed codes — collapsed summary */}
                     {consumedCodes.length > 0 && (
-                      <p className="text-[10px] text-muted-foreground/40 font-terminal">
+                      <p className="text-[10px] text-phob-steel/40 font-terminal">
                         + {consumedCodes.length} consumed / expired code{consumedCodes.length !== 1 ? 's' : ''} (hidden)
                       </p>
                     )}
@@ -861,9 +981,9 @@ export function UserManagementPanel() {
 
                 {/* QR code panel — inline below the table */}
                 {qrCode && (
-                  <div className="rounded border border-phobos-green/30 bg-black/60 p-4">
+                  <div className="rounded border border-phob-teal/30 bg-phob-white/6 p-4">
                     <div className="flex items-center justify-between mb-3">
-                      <p className="text-[10px] font-terminal tracking-widest text-phobos-green/80 uppercase">
+                      <p className="text-[10px] font-terminal tracking-widest text-phob-teal/80 uppercase">
                         Scan to connect · PHOBOS Mobile
                       </p>
                       <button
@@ -929,9 +1049,9 @@ export function UserManagementPanel() {
                     />
                   </div>
 
-                  {pwError && <p className="text-xs text-red-400">{pwError}</p>}
+                  {pwError && <p className="text-xs text-phob-red">{pwError}</p>}
                   {pwOk    && (
-                    <div className="flex items-center gap-1.5 text-xs text-phobos-green">
+                    <div className="flex items-center gap-1.5 text-xs text-phob-teal">
                       <CheckCircle2 className="w-3.5 h-3.5" /> Password changed.
                     </div>
                   )}
@@ -940,8 +1060,8 @@ export function UserManagementPanel() {
                     onClick={handleChangePw}
                     disabled={pwSaving || !curPw || !newPw || !confirmPw}
                     className="px-4 py-2 rounded text-xs font-terminal tracking-wider
-                               bg-phobos-green/10 border border-phobos-green/30 text-phobos-green
-                               hover:bg-phobos-green/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all
+                               bg-phob-teal/10 border border-phob-teal/30 text-phob-teal
+                               hover:bg-phob-teal/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all
                                flex items-center gap-1.5"
                   >
                     {pwSaving && <Loader2 className="w-3 h-3 animate-spin" />}
@@ -950,8 +1070,8 @@ export function UserManagementPanel() {
                 </div>
               </div>
 
-              <div className="pt-2 border-t border-border/30">
-                <div className="flex items-center gap-2 text-[10px] text-muted-foreground/60">
+              <div className="pt-2 border-t border-phob-teal/20">
+                <div className="flex items-center gap-2 text-[10px] text-phob-steel/50">
                   <Lock className="w-3 h-3" />
                   <span>Session expires after 30 minutes of inactivity.</span>
                 </div>
@@ -960,6 +1080,119 @@ export function UserManagementPanel() {
           )}
         </div>
       </div>
+
+      {/* ── Deprovision dialog ─────────────────────────────────────────────── */}
+      {deprovision && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-phob-void/80 backdrop-blur-sm">
+          <div className="w-[440px] bg-card border border-phob-red/30 shadow-2xl p-5 space-y-4">
+
+            {deprovision.loading ? (
+              <div className="flex items-center gap-3 py-4">
+                <Loader2 className="w-4 h-4 text-phob-steel/40 animate-spin" />
+                <span className="text-[11px] font-mono text-phob-steel/50">Loading user inventory…</span>
+              </div>
+            ) : (() => {
+              const loaded = deprovision as { username: string; inventory: DeprovisionInventory; loading: false };
+              return (
+                <>
+                  <div>
+                    <p className="text-xs font-terminal text-phob-red/80 mb-1">
+                      Delete user <span className="text-phob-red">'{loaded.username}'</span>?
+                    </p>
+                    <p className="text-[10px] font-mono text-phob-steel/50 leading-relaxed">
+                      Their account, service access, and media directories will be removed.
+                    </p>
+                  </div>
+
+                  {/* Inventory summary */}
+                  {loaded.inventory.hasAssets && (
+                    <div className="bg-phob-amber/5 border border-phob-amber/20 p-3 space-y-1.5">
+                      <p className="text-[9px] font-terminal uppercase tracking-widest text-phob-amber/60 mb-2">
+                        Protected assets — always moved to Lost &amp; Found
+                      </p>
+                      {loaded.inventory.plugins.length > 0 && (
+                        <p className="text-[10px] font-mono text-phob-steel/60">
+                          {loaded.inventory.plugins.length} plugin{loaded.inventory.plugins.length > 1 ? 's' : ''}{' '}
+                          <span className="text-phob-steel/35">({loaded.inventory.plugins.map(p => p.name).join(', ')})</span>
+                        </p>
+                      )}
+                      {loaded.inventory.cartridges.length > 0 && (
+                        <p className="text-[10px] font-mono text-phob-steel/60">
+                          {loaded.inventory.cartridges.length} cartridge{loaded.inventory.cartridges.length > 1 ? 's' : ''}{' '}
+                          <span className="text-phob-steel/35">({loaded.inventory.cartridges.map(c => c.name).join(', ')})</span>
+                        </p>
+                      )}
+                      {loaded.inventory.hasWeclone && (
+                        <p className="text-[10px] font-mono text-phob-steel/60">Weclone profile + voice data</p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Preservation choice */}
+                  <div className="space-y-2">
+                    <p className="text-[9px] font-terminal uppercase tracking-widest text-phob-steel/40">
+                      Personal data (workspaces, media library)
+                    </p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => handleDeleteConfirm(true)}
+                        className="flex flex-col items-start px-3 py-2.5 border border-phob-amber/25 bg-phob-amber/5 hover:border-phob-amber/50 transition-all text-left"
+                      >
+                        <span className="text-[9px] font-terminal text-phob-amber/80 uppercase tracking-widest">Preserve all</span>
+                        <span className="text-[9px] font-mono text-phob-steel/40 mt-0.5 leading-relaxed">
+                          Move workspaces &amp; library to Lost &amp; Found
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => handleDeleteConfirm(false)}
+                        className="flex flex-col items-start px-3 py-2.5 border border-phob-red/20 hover:border-phob-red/40 transition-all text-left"
+                      >
+                        <span className="text-[9px] font-terminal text-phob-red/70 uppercase tracking-widest">Delete data</span>
+                        <span className="text-[9px] font-mono text-phob-steel/40 mt-0.5 leading-relaxed">
+                          Permanently delete workspaces &amp; library
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => setDeprovision(null)}
+                    className="text-[9px] font-terminal uppercase tracking-widest text-phob-steel/35 hover:text-phob-steel/60 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* ── Lost & Found banner ────────────────────────────────────────────── */}
+      {lostAndFound && (
+        <div className="fixed bottom-4 right-4 z-[60] w-[380px] bg-card border border-phob-amber/30 shadow-2xl p-4">
+          <div className="flex items-start gap-3">
+            <FolderOpen className="w-4 h-4 text-phob-amber/60 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-[10px] font-terminal text-phob-amber/80 mb-0.5">
+                Protected data preserved
+              </p>
+              <p className="text-[9px] font-mono text-phob-steel/50 leading-relaxed mb-2">
+                Collect your protected user data here:
+              </p>
+              <p className="text-[9px] font-mono text-phob-amber/50 break-all leading-relaxed">
+                {lostAndFound.path}
+              </p>
+            </div>
+            <button
+              onClick={() => setLostAndFound(null)}
+              className="shrink-0 p-0.5 text-phob-steel/30 hover:text-phob-steel/60 transition-colors"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

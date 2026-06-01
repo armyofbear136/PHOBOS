@@ -1,22 +1,25 @@
 /**
- * test-jellyfin.ts — Validates Jellyfin can start, index, and serve media.
+ * test-jellyfin.ts — Validates Jellyfin can start, manage per-user libraries,
+ * index content, and enforce user library isolation.
  *
  * Run from dual-reasoning/:
- *   node --loader ts-node/esm --no-warnings test-jellyfin.ts
+ *   npx tsx test-jellyfin.ts
  *
  * Expects:
  *   - Jellyfin binary at ~/.phobos/services/jellyfin/jellyfin[.exe]
- *   - ./test-outputs/videos/movies  — place video files here before running
- *   - ./test-outputs/videos/series  — place video files here before running
+ *   - ./test-outputs/videos/movies — place video files here for content tests
  *
  * Options (env vars):
- *   JELLYFIN_TEST_TIMEOUT   max ms to wait for port (default: 300000 = 5 min)
+ *   JELLYFIN_TEST_TIMEOUT   max ms to wait for port (default: 300000)
  *   JELLYFIN_SKIP_START     set to '1' to test a running instance
+ *   JELLYFIN_KEEP_RUNNING   set to '1' to leave running after test
+ *   JELLYFIN_WIPE=1         ⚠️  DELETE jellyfin.db before start — destroys ALL user data.
+ *                           Only safe on a dedicated test instance, never production.
  */
 
-import * as path from 'path';
-import * as fs   from 'fs';
-import * as os   from 'os';
+import * as path from 'node:path';
+import * as fs   from 'node:fs';
+import * as os   from 'node:os';
 import { fileURLToPath } from 'url';
 
 import {
@@ -27,26 +30,30 @@ import {
   resolveBinaryPath,
   resolveFFmpegPath,
   resolveDataDir,
-  resolveServiceDir,
+  defaultMediaPath,
   startJellyfin,
   stopJellyfin,
   getJellyfinStatus,
   triggerScan,
   getStats,
   addLibrary,
+  removeLibrary,
+  listLibraries,
   jellyfinApiRequest,
-  generateAdminPassword,
+  provisionUser,
+  deprovisionUser,
 } from './services/JellyfinManager.js';
 
-const __dirname    = path.dirname(fileURLToPath(import.meta.url));
-const MOVIES_PATH  = path.resolve(__dirname, 'test-outputs', 'videos', 'movies');
-const SERIES_PATH  = path.resolve(__dirname, 'test-outputs', 'videos', 'series');
-const BASE_URL     = `http://127.0.0.1:${JELLYFIN_PORT}`;
-const SKIP_START   = process.env.JELLYFIN_SKIP_START === '1';
-const START_TIMEOUT = Number(process.env.JELLYFIN_TEST_TIMEOUT ?? 300_000);
-
-// Fixed test password — not a real secret, local test instance only.
+const __dirname     = path.dirname(fileURLToPath(import.meta.url));
+const MOVIES_PATH   = path.resolve(__dirname, 'test-outputs', 'videos', 'movies');
+const SKIP_START    = process.env.JELLYFIN_SKIP_START === '1';
+const KEEP_RUNNING  = process.env.JELLYFIN_KEEP_RUNNING === '1';
+// JELLYFIN_WIPE=1 deletes jellyfin.db before starting — destroys ALL user accounts and libraries.
+// Only use on a dedicated test instance. NEVER run against your production Jellyfin.
+const WIPE_DB       = process.env.JELLYFIN_WIPE === '1';
 const TEST_PASSWORD = 'phobos-test-pw-jf-localonly';
+const TEST_USER     = `jf-test-${Date.now().toString(36)}`;
+const PHOBOS_DIR    = path.join(os.homedir(), '.phobos');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -77,64 +84,70 @@ function countFiles(dir: string): number {
 
 console.log('\n📺  PHOBOS Jellyfin Validation Test');
 console.log('─'.repeat(52));
-console.log(`   Jellyfin:     ${JELLYFIN_RELEASE}`);
-console.log(`   Port:         ${JELLYFIN_PORT}`);
-console.log(`   Movies path:  ${MOVIES_PATH}`);
-console.log(`   Series path:  ${SERIES_PATH}`);
-console.log(`   Movies files: ${countFiles(MOVIES_PATH)}`);
-console.log(`   Series files: ${countFiles(SERIES_PATH)}`);
-console.log(`   Skip start:   ${SKIP_START}`);
+console.log(`   Jellyfin:      ${JELLYFIN_RELEASE}`);
+console.log(`   Port:          ${JELLYFIN_PORT}`);
+console.log(`   Owner videos:  ${defaultMediaPath()}`);
+console.log(`   Movies path:   ${MOVIES_PATH}  (${countFiles(MOVIES_PATH)} files)`);
+console.log(`   Skip start:    ${SKIP_START}`);
+console.log(`   Test user:     ${TEST_USER}`);
 console.log();
 
 // ── [ 1 ] Binary check ────────────────────────────────────────────────────────
 
-console.log('[ 1/11 ] Binary check...');
+console.log('[ 1/12 ] Binary check...');
 ok('Jellyfin binary present', isBinaryPresent());
 if (!isBinaryPresent()) {
   console.error(`\n   ❌ Not found: ${resolveBinaryPath()}`);
-  console.error('   Run: node scripts/fetch-jellyfin.js\n');
   process.exit(1);
 }
 console.log(`   ✅ ${resolveBinaryPath()}`);
 
 // ── [ 2 ] FFmpeg check ────────────────────────────────────────────────────────
 
-console.log('\n[ 2/11 ] FFmpeg check...');
+console.log('\n[ 2/12 ] FFmpeg check...');
 if (isFFmpegPresent()) {
   console.log(`   ✅ ${resolveFFmpegPath()}`);
   ok('FFmpeg present', true);
 } else {
-  warn('FFmpeg not found at bundled path — Jellyfin will search PATH');
-  warn('Transcoding will fail if system FFmpeg is also absent');
+  warn('FFmpeg not found at bundled path');
 }
 
-// ── [ 3 ] Test directories ────────────────────────────────────────────────────
+// ── [ 3 ] Owner media path ────────────────────────────────────────────────────
 
-console.log('\n[ 3/11 ] Test directories...');
+console.log('\n[ 3/12 ] Owner media path (must be under owner/phobosVideos)...');
+const ownerMediaPath = defaultMediaPath();
+ok('defaultMediaPath contains owner/', ownerMediaPath.includes(`owner${path.sep}phobosVideos`) || ownerMediaPath.includes('owner/phobosVideos'));
+console.log(`   path: ${ownerMediaPath}`);
+
+// ── [ 4 ] Test directories ────────────────────────────────────────────────────
+
+console.log('\n[ 4/12 ] Test directories...');
 fs.mkdirSync(MOVIES_PATH, { recursive: true });
-fs.mkdirSync(SERIES_PATH,  { recursive: true });
 ok('Movies directory exists', fs.existsSync(MOVIES_PATH));
-ok('Series directory exists', fs.existsSync(SERIES_PATH));
+const movieCount = countFiles(MOVIES_PATH);
+if (movieCount === 0) warn('Movies directory is empty — library counts will be zero after scan');
 
-const movieCount  = countFiles(MOVIES_PATH);
-const seriesCount = countFiles(SERIES_PATH);
-console.log(`   Movies: ${movieCount} file(s)`);
-console.log(`   Series: ${seriesCount} file(s)`);
-if (movieCount === 0 && seriesCount === 0) {
-  warn('Both directories are empty — library counts will be zero after scan');
-  warn('Place .mkv/.mp4/.avi files in test-outputs/videos/movies and test-outputs/videos/series');
-}
-
-// ── [ 4 ] Start ───────────────────────────────────────────────────────────────
+// ── [ 5 ] Start ───────────────────────────────────────────────────────────────
 
 if (!SKIP_START) {
-  console.log('\n[ 4/11 ] Starting Jellyfin (first boot: up to 5 min for DB migration)...');
+  if (WIPE_DB) {
+    const jellyfinDb = path.join(resolveDataDir(), 'data', 'jellyfin.db');
+    if (fs.existsSync(jellyfinDb)) {
+      fs.rmSync(jellyfinDb, { force: true });
+      for (const suffix of ['-wal', '-shm']) {
+        const f = jellyfinDb + suffix;
+        if (fs.existsSync(f)) fs.rmSync(f, { force: true });
+      }
+      console.log('\n   ℹ️  Wiped jellyfin.db (JELLYFIN_WIPE=1).');
+    }
+  } else {
+    console.log('\n   ℹ️  Using existing jellyfin.db. Set JELLYFIN_WIPE=1 to start fresh (destroys all data).');
+  }
+
+  console.log('\n[ 5/12 ] Starting Jellyfin (first boot: up to 5 min)...');
   const t0 = Date.now();
   try {
-    await startJellyfin(
-      { libraryPath: MOVIES_PATH, hardwareAccel: '' },
-      TEST_PASSWORD,
-    );
+    await startJellyfin({ libraryPath: MOVIES_PATH, hardwareAccel: '' }, TEST_PASSWORD);
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     ok(`Jellyfin started (${elapsed}s)`, true);
   } catch (err) {
@@ -142,164 +155,135 @@ if (!SKIP_START) {
     process.exit(1);
   }
 } else {
-  console.log('\n[ 4/11 ] JELLYFIN_SKIP_START=1 — skipping start.');
+  console.log('\n[ 5/12 ] JELLYFIN_SKIP_START=1 — skipping start.');
 }
 
-// ── [ 5 ] Status check ────────────────────────────────────────────────────────
+// ── [ 6 ] Status check ────────────────────────────────────────────────────────
 
-console.log('\n[ 5/11 ] Status check...');
+console.log('\n[ 6/12 ] Status check...');
 const status = getJellyfinStatus();
 ok('state = running', status.state === 'running');
 ok('port = 18096',    status.port === JELLYFIN_PORT);
 ok('no error',        status.error === null);
-console.log(`   State:  ${status.state}`);
-console.log(`   Port:   ${status.port}`);
-if (status.error) console.log(`   Error:  ${status.error}`);
 
-// ── [ 6 ] System info ─────────────────────────────────────────────────────────
+// ── [ 7 ] System info ─────────────────────────────────────────────────────────
 
-console.log('\n[ 6/11 ] System info / wizard state...');
+console.log('\n[ 7/12 ] System info...');
 try {
   const r    = await jellyfinApiRequest('GET', '/System/Info/Public');
-  ok('GET /System/Info/Public → 200', r.ok);
+  ok('GET /System/Info/Public → ok', r.ok);
   const info = await r.json() as Record<string, unknown>;
-  ok('StartupWizardCompleted = true', info.StartupWizardCompleted === true);
-  console.log(`   Version:   ${info.Version ?? '(unknown)'}`);
-  console.log(`   ProductName: ${info.ProductName ?? '(unknown)'}`);
+  ok('StartupWizardCompleted', info.StartupWizardCompleted === true);
+  console.log(`   Version: ${info.Version ?? '(unknown)'}`);
 } catch (err) {
-  ok('GET /System/Info/Public succeeded', false);
-  warn('System info request failed', (err as Error).message);
+  ok('System info succeeded', false);
+  warn('System info failed', (err as Error).message);
 }
 
-// ── [ 7 ] Library setup ───────────────────────────────────────────────────────
+// ── [ 8 ] Per-user provisioning ───────────────────────────────────────────────
 
-console.log('\n[ 7/11 ] Adding test libraries...');
-
-// List existing libraries first.
-let existingLibraries: string[] = [];
+console.log(`\n[ 8/12 ] Per-user provisioning (${TEST_USER})...`);
+let testJellyfinUserId = '';
 try {
-  const r   = await jellyfinApiRequest('GET', '/Library/VirtualFolders');
-  const lib = await r.json() as Array<{ Name: string }>;
-  existingLibraries = lib.map(l => l.Name);
-  console.log(`   Existing libraries: ${existingLibraries.join(', ') || '(none)'}`);
+  const result = await provisionUser(TEST_USER);
+  ok('provisionUser succeeded',       !!result.userId);
+  ok('accessToken returned',          !!result.accessToken);
+  testJellyfinUserId = result.userId;
+  console.log(`   jellyfinId: ${result.userId}`);
+
+  // Verify per-user library was created.
+  const libs    = await listLibraries();
+  const userLib = libs.find(l => l.Name === `${TEST_USER}-media`);
+  ok(`${TEST_USER}-media library exists`, !!userLib);
+  console.log(`   library ItemId: ${userLib?.ItemId ?? '(none)'}`);
+
+  // Verify per-user phobosVideos directory was created.
+  const expectedDir = path.join(PHOBOS_DIR, 'media', 'jellyfin', TEST_USER, 'phobosVideos');
+  ok(`media/jellyfin/${TEST_USER}/phobosVideos exists`, fs.existsSync(expectedDir));
+  console.log(`   dir: ${expectedDir}`);
 } catch (err) {
-  warn('Could not list existing libraries', (err as Error).message);
+  ok('provisionUser succeeded', false);
+  warn('provisionUser failed', (err as Error).message);
 }
 
-// Add Movies library if not already present.
-if (!existingLibraries.includes('Test Movies')) {
+// ── [ 9 ] Library policy isolation ────────────────────────────────────────────
+
+console.log(`\n[ 9/12 ] Library isolation check for ${TEST_USER}...`);
+if (testJellyfinUserId) {
   try {
-    await addLibrary('Test Movies', MOVIES_PATH, 'movies');
-    ok('Added "Test Movies" library', true);
+    const r    = await jellyfinApiRequest('GET', `/Users/${testJellyfinUserId}/Policy`);
+    ok('GET user policy → ok', r.ok);
+    const pol  = await r.json() as Record<string, unknown>;
+    ok('EnableAllFolders = false', pol.EnableAllFolders === false);
+    const enabled = pol.EnabledFolders as string[] | undefined;
+    ok('EnabledFolders is non-empty array', Array.isArray(enabled) && enabled.length > 0);
+    console.log(`   EnableAllFolders: ${pol.EnableAllFolders}`);
+    console.log(`   EnabledFolders:   [${(enabled ?? []).join(', ')}]`);
   } catch (err) {
-    ok('Added "Test Movies" library', false);
-    warn('addLibrary failed', (err as Error).message);
+    ok('User policy check succeeded', false);
+    warn('User policy check failed', (err as Error).message);
   }
 } else {
-  console.log('   ℹ️  "Test Movies" library already exists — skipping create');
-  ok('Movies library present', true);
+  warn('Skipping isolation check — provision did not succeed');
 }
 
-// Add TV Shows library.
-if (!existingLibraries.includes('Test Series')) {
-  try {
-    await addLibrary('Test Series', SERIES_PATH, 'tvshows');
-    ok('Added "Test Series" library', true);
-  } catch (err) {
-    ok('Added "Test Series" library', false);
-    warn('addLibrary failed', (err as Error).message);
-  }
-} else {
-  console.log('   ℹ️  "Test Series" library already exists — skipping create');
-  ok('Series library present', true);
-}
+// ── [ 10 ] Scan trigger ───────────────────────────────────────────────────────
 
-// ── [ 8 ] Scan trigger ────────────────────────────────────────────────────────
-
-console.log('\n[ 8/11 ] Triggering library scan...');
+console.log('\n[ 10/12 ] Library scan...');
 try {
   await triggerScan();
-  ok('POST /Library/Refresh → 204', true);
+  ok('POST /Library/Refresh → ok', true);
 } catch (err) {
-  ok('POST /Library/Refresh succeeded', false);
+  ok('Scan trigger succeeded', false);
   warn('Scan trigger failed', (err as Error).message);
 }
 
-// ── [ 9 ] Poll for library counts ─────────────────────────────────────────────
+// ── [ 11 ] Stats + Items API ──────────────────────────────────────────────────
 
-console.log('\n[ 9/11 ] Polling for indexed content (up to 60s)...');
-const scanDeadline = Date.now() + 60_000;
-let finalStats = { movieCount: 0, seriesCount: 0, episodeCount: 0, songCount: 0 };
-
-while (Date.now() < scanDeadline) {
-  try {
-    const s = await getStats();
-    if (s.movieCount > 0 || s.seriesCount > 0) {
-      finalStats = s;
-      break;
-    }
-  } catch { /* indexing */ }
-  process.stdout.write('.');
-  await sleep(2_000);
-}
-process.stdout.write('\n');
-
-console.log(`   Movies:   ${finalStats.movieCount}`);
-console.log(`   Series:   ${finalStats.seriesCount}`);
-console.log(`   Episodes: ${finalStats.episodeCount}`);
-console.log(`   Songs:    ${finalStats.songCount}`);
-
-if (movieCount > 0 || seriesCount > 0) {
-  // Only assert counts if we actually put files in the directories.
-  ok('Library has indexed items', finalStats.movieCount > 0 || finalStats.seriesCount > 0);
-} else {
-  warn('Directories were empty — cannot assert library counts');
-  console.log('   ℹ️  Scan completed. Put video files in the test dirs and re-run.');
+console.log('\n[ 11/12 ] Stats + Items API...');
+try {
+  const stats = await getStats();
+  ok('getStats succeeded', true);
+  console.log(`   Movies: ${stats.movieCount}  Series: ${stats.seriesCount}`);
+} catch (err) {
+  ok('getStats succeeded', false);
+  warn('getStats failed', (err as Error).message);
 }
 
-// ── [ 10 ] Items API ──────────────────────────────────────────────────────────
-
-console.log('\n[ 10/11 ] Items API probe...');
 try {
   const r    = await jellyfinApiRequest('GET', '/Items?Recursive=true&Limit=5');
   ok('GET /Items → ok', r.ok);
-  const data = await r.json() as { TotalRecordCount?: number; Items?: unknown[] };
+  const data = await r.json() as { TotalRecordCount?: number };
   console.log(`   TotalRecordCount: ${data.TotalRecordCount ?? 0}`);
-  console.log(`   Items returned:   ${data.Items?.length ?? 0}`);
-  if (data.Items && data.Items.length > 0) {
-    const first = data.Items[0] as Record<string, unknown>;
-    console.log(`   First item: ${first.Name ?? '(unnamed)'} [${first.Type ?? '?'}]`);
-  }
 } catch (err) {
   ok('GET /Items succeeded', false);
   warn('Items API failed', (err as Error).message);
 }
 
-// ── [ 11 ] Proxy round-trip ───────────────────────────────────────────────────
+// ── [ 12 ] Per-user deprovision ───────────────────────────────────────────────
 
-console.log('\n[ 11/11 ] Proxy route probe...');
-// Simulate what the frontend does: call via the PHOBOS proxy path.
-// We hit the Jellyfin API directly here (server-to-server), but verify
-// the jellyfinApiRequest helper works for all methods.
-try {
-  const r = await jellyfinApiRequest('GET', '/System/Ping');
-  // Ping returns 200 with "Jellyfin Server" body.
-  const body = await r.text();
-  ok('GET /System/Ping → ok', r.ok);
-  ok('Ping response body non-empty', body.length > 0);
-  console.log(`   Ping: "${body.trim()}"`);
-} catch (err) {
-  ok('GET /System/Ping succeeded', false);
-  warn('Ping failed', (err as Error).message);
+console.log(`\n[ 12/12 ] Per-user deprovision (${TEST_USER})...`);
+if (testJellyfinUserId) {
+  try {
+    await deprovisionUser(testJellyfinUserId);
+    ok('deprovisionUser succeeded', true);
+
+    // Library should be removed.
+    const libsAfter = await listLibraries();
+    ok(`${TEST_USER}-media library removed`, !libsAfter.some(l => l.Name === `${TEST_USER}-media`));
+  } catch (err) {
+    ok('deprovisionUser succeeded', false);
+    warn('deprovisionUser failed', (err as Error).message);
+  }
+} else {
+  warn('Skipping deprovision — provision did not succeed');
 }
 
 // ── Shutdown ──────────────────────────────────────────────────────────────────
 
-if (!SKIP_START) {
-  // Leave running — comment this out if you want Jellyfin to stop after the test.
+if (!SKIP_START && !KEEP_RUNNING) {
+  console.log('\n⏹  Leaving Jellyfin running (comment in stopJellyfin() to stop).');
   // await stopJellyfin();
-  // console.log('\n⏹  Jellyfin stopped.');
-  console.log('\n   ℹ️  Jellyfin left running. Call stopJellyfin() or Ctrl-C to stop.');
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────

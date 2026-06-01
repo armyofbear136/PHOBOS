@@ -14,8 +14,8 @@ export async function libraryRoutes(
 
   // ── GET /api/libraries ───────────────────────────────────────────────────
 
-  fastify.get('/api/libraries', async (_req, reply) => {
-    const libs = await opts.db.listLibraries(opts.config.userId);
+  fastify.get('/api/libraries', async (req, reply) => {
+    const libs = await opts.db.listLibraries((req as import('fastify').FastifyRequest & { meridianUser: string }).meridianUser);
     return reply.send({ libraries: libs });
   });
 

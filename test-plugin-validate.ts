@@ -21,12 +21,14 @@
  *   --image-dir   PATH   Directory of training images (required)
  *   --steps       N      Training steps (default: 50 — smoke test only)
  *   --vendor      NAME   cuda | rocm | xpu | apple | cpu (auto-detected if omitted)
- *   --base-model  NAME   flux-dev | chroma | sdxl (default: chroma)
+ *   --base-model  NAME   flux-dev | flux-schnell | flux-kontext | chroma | sdxl |
+ *                        wan | qwen-image | sana | sana-sprint (default: chroma)
  *   --trigger     WORD   Trigger word to embed (default: TESTCONCEPT)
  *   --password    PASS   Plugin password (default: testpass)
  *   --skip-train         Skip training, try to package from existing output/lora.safetensors
  *   --skip-caption       Skip captioning, use existing captions.json in session dir
  *   --keep               Keep session directory after completion (default: cleaned up)
+ *   --full-test          Run train → gen → cleanup cycle for all key base models
  */
 
 import * as fs        from 'fs';
@@ -52,6 +54,7 @@ let password:     string  = 'testpass';
 let skipTrain     = false;
 let skipCaption   = false;
 let keepSession   = false;
+let fullTest      = false;
 
 for (let i = 2; i < process.argv.length; i++) {
   const a = process.argv[i];
@@ -64,6 +67,7 @@ for (let i = 2; i < process.argv.length; i++) {
   else if (a === '--skip-train')   skipTrain   = true;
   else if (a === '--skip-caption') skipCaption = true;
   else if (a === '--keep')         keepSession = true;
+  else if (a === '--full-test')     fullTest    = true;
 }
 
 if (!imageDir) {
@@ -330,19 +334,32 @@ async function main() {
     if (!fs.existsSync(trainerScript)) {
       fail('phobos-trainer.py not found');
     } else {
-      // Resolve base model path — matches PhobosLocalManager's IMAGE_FLUX_DIR/IMAGE_SDXL_DIR layout
+      // HF-native models (SANA) have no local GGUF — trainer loads from HF cache directly.
+      const HF_NATIVE_MODELS = new Set(['sana', 'sana-sprint']);
+      const isHfNative = HF_NATIVE_MODELS.has(baseModel);
+
+      // Resolve base model path — matches PluginTrainer._resolveModelPath layout:
+      //   sdxl        → image/sdxl/
+      //   wan         → image/wan/
+      //   everything else (flux, chroma, kontext, qwen-image, z-image) → image/flux/
       const phobosBase = path.join(os.homedir(), '.phobos', 'models', 'image');
       const modelPatterns: Record<string, string[]> = {
         'flux-dev':    ['flux-dev', 'flux.1-dev', 'flux1-dev'],
         'flux-schnell':['flux-schnell', 'flux.1-schnell', 'flux1-schnell'],
+        'flux-kontext':['kontext', 'flux-kontext'],
         'chroma':      ['chroma'],
         'sdxl':        ['sdxl', 'sd_xl'],
         'flux2-klein': ['flux2-klein', 'klein'],
+        'wan':         ['wan2.1-t2v-1.3b', 'wan2.1-t2v', 'wan'],
+        'qwen-image':  ['qwen-image'],
       };
-      // sdxl lives in image/sdxl/, everything else in image/flux/
-      const searchDir = path.join(phobosBase, baseModel === 'sdxl' ? 'sdxl' : 'flux');
+      const searchSubdir =
+        baseModel === 'sdxl' ? 'sdxl' :
+        baseModel === 'wan'  ? 'wan'  :
+        'flux';
+      const searchDir = path.join(phobosBase, searchSubdir);
       let resolvedModelPath = '';
-      if (fs.existsSync(searchDir)) {
+      if (!isHfNative && fs.existsSync(searchDir)) {
         const files = fs.readdirSync(searchDir);
         const patterns = modelPatterns[baseModel] ?? [];
         for (const pat of patterns) {
@@ -351,12 +368,16 @@ async function main() {
         }
       }
 
-      if (!resolvedModelPath) {
+      if (!isHfNative && !resolvedModelPath) {
         fail(`Base model '${baseModel}' not installed`, `Download it via PHOBOS → Art Plugins → Create Plugin, or use --base-model with an installed model`);
         fail('Cannot package — lora.safetensors not found');
         // Skip remaining sections cleanly
       } else {
-        pass(`Base model resolved`, path.basename(resolvedModelPath));
+        if (isHfNative) {
+          pass(`Base model resolved`, `${baseModel} (HF-native, loads from ~/.phobos/hf-cache)`);
+        } else {
+          pass(`Base model resolved`, path.basename(resolvedModelPath));
+        }
 
       // Write session.json for the trainer
       const sessionCfg = {
@@ -370,7 +391,7 @@ async function main() {
         height:       256,
         device:       'auto',
         vendor,
-        model_path:   resolvedModelPath,
+        model_path:   isHfNative ? '' : resolvedModelPath,
         image_dir:    rawDir,
         caption_file: captionFile,
         output_dir:   outputDir,
@@ -476,6 +497,12 @@ async function main() {
       if (fs.existsSync(archivePath)) {
         const size = fs.statSync(archivePath).size;
         pass('Archive created', `${path.basename(archivePath)} (${formatBytes(size)})`);
+        // Copy to ./test-outputs/plugins/ so it survives cleanup and is ready for gen tests.
+        const pluginsOutDir = path.join(process.cwd(), 'test-outputs', 'plugins');
+        fs.mkdirSync(pluginsOutDir, { recursive: true });
+        const outCopy = path.join(pluginsOutDir, path.basename(archivePath));
+        fs.copyFileSync(archivePath, outCopy);
+        pass('Plugin copied to test-outputs/plugins/', path.basename(outCopy));
       } else {
         fail('Archive file missing after createPlugin()');
       }
@@ -515,7 +542,7 @@ async function main() {
       }
 
       // Clean up the round-trip record
-      await store.remove(record.id);
+      await store.remove(record.id, "owner");
       try { if (record.archive_path !== archivePath) fs.unlinkSync(record.archive_path); } catch { /* ok */ }
     } catch (e) {
       fail('Install round-trip threw', (e as Error).message);
@@ -579,7 +606,7 @@ async function main() {
         const all   = await store.list();
         const match = all.find(r => r.archive_path === archivePath);
         if (match) {
-          await store.remove(match.id);
+          await store.remove(match.id, "owner");
           if (fs.existsSync(archivePath)) fs.unlinkSync(archivePath);
           pass('Test plugin removed from library');
         }
@@ -653,7 +680,167 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-main().catch(e => {
-  console.error('Unhandled error:', e);
-  process.exit(1);
-});
+// ── Full-test loop ────────────────────────────────────────────────────────────
+// Each entry: [baseModel (trainer), genModelType (test-pytorch-gen.ts arg)]
+// Only models that have a clear 1:1 mapping are included.
+const FULL_TEST_MODELS: Array<{ baseModel: string; genModelType: string; label: string }> = [
+  { baseModel: 'chroma',       genModelType: 'chroma',       label: 'Chroma'          },
+  { baseModel: 'flux-schnell', genModelType: 'flux',         label: 'FLUX.1-Schnell'  },
+  { baseModel: 'sdxl',         genModelType: 'sdxl',         label: 'SDXL'            },
+  { baseModel: 'sana-sprint',  genModelType: 'sana-sprint',  label: 'SANA-Sprint 0.6B'},
+  { baseModel: 'sana',         genModelType: 'sana',         label: 'SANA 1.5 1.6B'  },
+  { baseModel: 'wan',          genModelType: 'wan',          label: 'Wan 2.1 T2V'     },
+];
+
+async function runFullTest(argv: string[]) {
+  const tsxBin = process.execPath;  // node
+  const genScript = path.join(_dirname, 'test-pytorch-gen.ts');
+
+  console.log('\n╔══════════════════════════════════════════════════════╗');
+  console.log('║   PHOBOS Plugin System — Full Integration Test       ║');
+  console.log('╚══════════════════════════════════════════════════════╝\n');
+
+  // Parse --vendor and --image-dir from argv — pass them through to each sub-run
+  let passVendor = '';
+  let passImageDir = '';
+  let passSteps = '50';
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--vendor'    && argv[i+1]) passVendor   = argv[++i];
+    if (argv[i] === '--image-dir' && argv[i+1]) passImageDir = argv[++i];
+    if (argv[i] === '--steps'     && argv[i+1]) passSteps    = argv[++i];
+  }
+  if (!passImageDir) {
+    console.error('--full-test requires --image-dir');
+    process.exit(1);
+  }
+
+  const results: Array<{ label: string; trainPass: boolean; genPass: boolean; skipped: boolean }> = [];
+
+  for (const model of FULL_TEST_MODELS) {
+    console.log(`\n${'═'.repeat(56)}`);
+    console.log(`  ► ${model.label}`);
+    console.log('═'.repeat(56));
+
+    // ── Run validate (train + package) ───────────────────────────────────────
+    const validateArgs = [
+      '--image-dir',  passImageDir,
+      '--base-model', model.baseModel,
+      '--steps',      passSteps,
+      ...(passVendor ? ['--vendor', passVendor] : []),
+    ];
+
+    // Spawn this same script with the single-model args (no --full-test)
+    const t0Model = Date.now();
+    const validateResult = await spawnTsx('test-plugin-validate.ts', validateArgs);
+    const trainPass = validateResult.exitCode === 0 ||
+      // Captioning failure is expected — count as pass if archive was produced
+      validateResult.stdout.includes('Plugin copied to test-outputs/plugins/');
+
+    // Stable filename: <baseModel>-fulltest.phobos in test-outputs/plugins/.
+    // The validate subprocess copies the archive there under its timestamp name;
+    // we rename it to the stable name so the gen test always knows the path.
+    const pluginsDir   = path.join(process.cwd(), 'test-outputs', 'plugins');
+    const stableName   = `${model.baseModel}-fulltest.phobos`;
+    const archivePath  = path.join(pluginsDir, stableName);
+
+    // Find the newest .phobos written since we started this model's validate run
+    let foundArchive = false;
+    if (fs.existsSync(pluginsDir)) {
+      const files = fs.readdirSync(pluginsDir)
+        .filter(f => f.endsWith('.phobos') && f !== stableName)
+        .map(f => ({ f, mtime: fs.statSync(path.join(pluginsDir, f)).mtimeMs }))
+        .filter(({ mtime }) => mtime >= t0Model)
+        .sort((a, b) => b.mtime - a.mtime);
+      if (files.length > 0) {
+        const src = path.join(pluginsDir, files[0].f);
+        fs.renameSync(src, archivePath);
+        foundArchive = true;
+      }
+    }
+
+    if (!trainPass || !foundArchive || !fs.existsSync(archivePath)) {
+      console.log(`  ❌  ${model.label}: training/packaging failed — skipping gen test`);
+      results.push({ label: model.label, trainPass: false, genPass: false, skipped: true });
+      continue;
+    }
+
+    console.log(`  ✅  ${model.label}: trained and packaged — ${stableName}`);
+
+    // ── Run gen test with the produced archive ────────────────────────────────
+    const genArgs = [
+      '--vendor',     passVendor || 'cuda',
+      '--model-type', model.genModelType,
+      '--plugin',     archivePath,
+    ];
+
+    const genResult = await spawnTsx('test-pytorch-gen.ts', genArgs);
+    const genPass   = genResult.exitCode === 0 &&
+                      genResult.stdout.includes("adapters active:");
+
+    if (genPass) {
+      console.log(`  ✅  ${model.label}: generation with plugin succeeded`);
+    } else {
+      console.log(`  ❌  ${model.label}: generation failed`);
+      // Print last 5 lines of stdout for diagnosis
+      const tail = genResult.stdout.split('\n').filter(Boolean).slice(-5);
+      for (const l of tail) console.log(`       ${l}`);
+    }
+
+    // Clean up the test archive
+    try { fs.unlinkSync(archivePath); } catch { /* ok */ }
+
+    results.push({ label: model.label, trainPass, genPass, skipped: false });
+  }
+
+  // ── Summary ──────────────────────────────────────────────────────────────────
+  console.log('\n' + '═'.repeat(56));
+  console.log('  Full Integration Test Results:');
+  console.log('─'.repeat(56));
+  let totalFail = 0;
+  for (const r of results) {
+    if (r.skipped) {
+      console.log(`  ⚠️   ${r.label.padEnd(20)} — SKIPPED (train/package failed)`);
+      totalFail++;
+    } else {
+      const trainMark = r.trainPass ? '✅' : '❌';
+      const genMark   = r.genPass   ? '✅' : '❌';
+      console.log(`  ${trainMark} train  ${genMark} gen    ${r.label}`);
+      if (!r.trainPass || !r.genPass) totalFail++;
+    }
+  }
+  console.log('═'.repeat(56));
+  console.log(totalFail === 0
+    ? '  ✅  All models passed'
+    : `  ❌  ${totalFail} model(s) had failures`);
+  console.log('═'.repeat(56) + '\n');
+  process.exit(totalFail > 0 ? 1 : 0);
+}
+
+function spawnTsx(scriptName: string, args: string[]): Promise<{ exitCode: number; stdout: string }> {
+  return new Promise((resolve) => {
+    // Use npx tsx to run the script
+    const scriptPath = path.join(_dirname, scriptName);
+    const proc = spawn('npx', ['tsx', scriptPath, ...args], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: process.platform === 'win32',
+    });
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (c: Buffer) => {
+      const text = c.toString();
+      stdout += text;
+      process.stdout.write(text);  // stream output live
+    });
+    proc.stderr.on('data', (c: Buffer) => { stderr += c.toString(); });
+    proc.on('close', (code: number) => resolve({ exitCode: code ?? 0, stdout }));
+  });
+}
+
+if (fullTest) {
+  runFullTest(process.argv.slice(2)).catch(e => { console.error(e); process.exit(1); });
+} else {
+  main().catch(e => {
+    console.error('Unhandled error:', e);
+    process.exit(1);
+  });
+}

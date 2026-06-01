@@ -528,7 +528,10 @@ export async function workflowsRoute(fastify: FastifyInstance): Promise<void> {
       const contentType = ext === '.avi' ? 'video/x-msvideo'
         : ext === '.mp4' ? 'video/mp4'
         : 'image/png';
-      return reply.type(contentType).send(stream);
+      return reply
+        .header('Cross-Origin-Resource-Policy', 'cross-origin')
+        .type(contentType)
+        .send(stream);
     }
   );
 

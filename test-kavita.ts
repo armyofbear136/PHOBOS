@@ -1,25 +1,25 @@
 /**
- * test-kavita.ts — Validates Kavita can start, bootstrap, create libraries,
- * and serve content from the test books directory.
+ * test-kavita.ts — Validates Kavita can start, bootstrap, provision users,
+ * manage per-user libraries, and serve content.
  *
  * Run from dual-reasoning/:
- *   node --loader ts-node/esm --no-warnings test-kavita.ts
+ *   npx tsx test-kavita.ts
  *
  * Expects:
  *   - Kavita binary at ~/.phobos/services/kavita/Kavita[.exe]
- *   - ./test-outputs/testbooks  — drop CBZ/EPUB/PDF files here for content tests
+ *   - ./test-outputs/testbooks — drop CBZ/EPUB/PDF files here for content tests
  *
  * Options (env vars):
- *   KAVITA_SKIP_START     set to '1' to test against an already-running instance
+ *   KAVITA_SKIP_START     set to '1' to test against a running instance
  *   KAVITA_TEST_TIMEOUT   max ms to wait for port (default: 120000)
  *   KAVITA_KEEP_RUNNING   set to '1' to leave Kavita running after the test
+ *   KAVITA_WIPE=1         ⚠️  DELETE kavita.db before start — destroys ALL user data.
+ *                         Only safe on a dedicated test instance, never production.
  */
 
-import * as path from 'path';
-import * as fs   from 'fs';
-import * as os   from 'os';
-import * as net  from 'net';
-import * as crypto from 'crypto';
+import * as path   from 'node:path';
+import * as fs     from 'node:fs';
+import * as crypto from 'node:crypto';
 import { fileURLToPath } from 'url';
 
 import {
@@ -29,9 +29,7 @@ import {
   PHOBOSDOCS_LIB_NAME,
   isBinaryPresent,
   resolveBinaryPath,
-  resolveServiceDir,
   resolveConfigDir,
-  resolveConfigPath,
   defaultDocsPath,
   startKavita,
   stopKavita,
@@ -41,22 +39,22 @@ import {
   createLibrary,
   triggerScan,
   getStats,
+  provisionUser,
+  deprovisionUser,
 } from './services/KavitaManager.js';
 
-const __dirname   = path.dirname(fileURLToPath(import.meta.url));
-const BOOKS_PATH  = path.resolve(__dirname, 'test-outputs', 'testbooks');
-const BASE_URL    = `http://127.0.0.1:${KAVITA_PORT}`;
-const SKIP_START  = process.env.KAVITA_SKIP_START === '1';
+const __dirname    = path.dirname(fileURLToPath(import.meta.url));
+const BOOKS_PATH   = path.resolve(__dirname, 'test-outputs', 'testbooks');
+const BASE_URL     = `http://127.0.0.1:${KAVITA_PORT}`;
+const SKIP_START   = process.env.KAVITA_SKIP_START === '1';
 const KEEP_RUNNING = process.env.KAVITA_KEEP_RUNNING === '1';
-const START_TIMEOUT = Number(process.env.KAVITA_TEST_TIMEOUT ?? 120_000);
+// KAVITA_WIPE=1 deletes kavita.db before starting — destroys ALL user accounts and libraries.
+// Only use on a dedicated test instance. NEVER run against your production Kavita.
+const WIPE_DB      = process.env.KAVITA_WIPE === '1';
 
-// Fixed test credentials — local-only, not a real secret.
-// NOTE: If kavita.db already exists from a previous server.ts run, the account
-// was created with a different password (from ServiceStore). Delete
-// ~/.phobos/services/kavita/config/kavita.db to reset, or run with
-// KAVITA_SKIP_START=1 against the already-running server instance.
-const TEST_PASSWORD = 'phobos-test-kavita-localonly';
+const TEST_PASSWORD  = 'phobos-test-kavita-localonly';
 const TEST_TOKEN_KEY = crypto.randomBytes(256).toString('base64');
+const TEST_USER      = `kavita-test-${Date.now().toString(36)}`;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -93,13 +91,11 @@ async function kavitaApi(
   const jwt = getKavitaJwt();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (jwt) headers['Authorization'] = `Bearer ${jwt}`;
-
   const res = await fetch(`${BASE_URL}/api${endpoint}`, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-
   let data: unknown;
   try { data = await res.json(); } catch { data = null; }
   return { ok: res.ok, status: res.status, data };
@@ -115,65 +111,69 @@ console.log(`   Kavita:       ${KAVITA_RELEASE}`);
 console.log(`   Port:         ${KAVITA_PORT}`);
 console.log(`   Books path:   ${BOOKS_PATH}`);
 console.log(`   Book files:   ${bookCount} (.cbz/.cbr/.epub/.pdf)`);
+console.log(`   Owner docs:   ${defaultDocsPath()}`);
 console.log(`   Skip start:   ${SKIP_START}`);
 console.log(`   Keep running: ${KEEP_RUNNING}`);
+console.log(`   Test user:    ${TEST_USER}`);
 console.log();
 
 // ── [ 1 ] Binary check ────────────────────────────────────────────────────────
 
-console.log('[ 1/10 ] Binary check...');
+console.log('[ 1/11 ] Binary check...');
 ok('Kavita binary present', isBinaryPresent());
 if (!isBinaryPresent()) {
   console.error(`\n   ❌ Not found: ${resolveBinaryPath()}`);
-  console.error('   Run: node scripts/fetch-kavita.js\n');
   process.exit(1);
 }
 console.log(`   ✅ ${resolveBinaryPath()}`);
 
 // ── [ 2 ] Config directory ────────────────────────────────────────────────────
 
-console.log('\n[ 2/10 ] Config directory...');
+console.log('\n[ 2/11 ] Config directory...');
 fs.mkdirSync(resolveConfigDir(), { recursive: true });
 ok('Config dir exists', fs.existsSync(resolveConfigDir()));
 console.log(`   Config dir: ${resolveConfigDir()}`);
 
 // ── [ 3 ] Test directory ──────────────────────────────────────────────────────
 
-console.log('\n[ 3/10 ] Test directory...');
+console.log('\n[ 3/11 ] Test directory...');
 fs.mkdirSync(BOOKS_PATH, { recursive: true });
 ok('testbooks directory created', fs.existsSync(BOOKS_PATH));
-console.log(`   Path:   ${BOOKS_PATH}`);
-console.log(`   Files:  ${bookCount}`);
 if (bookCount === 0) {
-  warn('testbooks is empty — library content tests will be limited');
-  warn('Drop .cbz, .epub, or .pdf files into test-outputs/testbooks and re-run');
+  warn('testbooks is empty — content tests limited');
 }
 
-// ── [ 4 ] Start ───────────────────────────────────────────────────────────────
+// ── [ 4 ] Owner docs path ─────────────────────────────────────────────────────
+
+console.log('\n[ 4/11 ] Owner docs path (must be under owner/phobosDocs)...');
+const ownerDocsPath = defaultDocsPath();
+ok('defaultDocsPath contains owner/', ownerDocsPath.includes(`owner${path.sep}phobosDocs`) || ownerDocsPath.includes('owner/phobosDocs'));
+console.log(`   path: ${ownerDocsPath}`);
+
+// ── [ 5 ] Start ───────────────────────────────────────────────────────────────
 
 if (!SKIP_START) {
-  // Wipe kavita.db before each standalone test run so we always start from a
-  // clean account. Without this, a previous test run leaves an account with
-  // TEST_PASSWORD in the DB, which causes a 401 when the real server next starts
-  // with its ServiceStore-generated password.
-  const kavitaDb = path.join(resolveConfigDir(), 'kavita.db');
-  if (fs.existsSync(kavitaDb)) {
-    fs.rmSync(kavitaDb, { force: true });
-    // Kavita also writes a WAL and SHM file alongside the DB.
-    for (const suffix of ['-wal', '-shm']) {
-      const f = kavitaDb + suffix;
-      if (fs.existsSync(f)) fs.rmSync(f, { force: true });
+  if (WIPE_DB) {
+    const kavitaDb = path.join(resolveConfigDir(), 'kavita.db');
+    if (fs.existsSync(kavitaDb)) {
+      fs.rmSync(kavitaDb, { force: true });
+      for (const suffix of ['-wal', '-shm']) {
+        const f = kavitaDb + suffix;
+        if (fs.existsSync(f)) fs.rmSync(f, { force: true });
+      }
+      console.log('\n   ℹ️  Wiped kavita.db (KAVITA_WIPE=1).');
     }
-    console.log('\n   ℹ️  Wiped kavita.db for clean test run.');
+  } else {
+    console.log('\n   ℹ️  Using existing kavita.db. Set KAVITA_WIPE=1 to start fresh (destroys all data).');
   }
 
-  console.log('\n[ 4/10 ] Starting Kavita (first boot: up to 2 min for DB migration)...');
+  console.log('\n[ 5/11 ] Starting Kavita...');
   const t0 = Date.now();
   try {
     await startKavita({
       tokenKey:      TEST_TOKEN_KEY,
       adminPassword: TEST_PASSWORD,
-      refreshToken:  '',       // empty → triggers bootstrap
+      refreshToken:  '',
       docsPath:      defaultDocsPath(),
       firstBoot:     true,
     });
@@ -184,94 +184,78 @@ if (!SKIP_START) {
     process.exit(1);
   }
 } else {
-  console.log('\n[ 4/10 ] KAVITA_SKIP_START=1 — skipping start.');
+  console.log('\n[ 5/11 ] KAVITA_SKIP_START=1 — skipping start.');
 }
 
-// ── [ 5 ] Status check ────────────────────────────────────────────────────────
+// ── [ 6 ] Status check ────────────────────────────────────────────────────────
 
-console.log('\n[ 5/10 ] Status check...');
+console.log('\n[ 6/11 ] Status check...');
 const status = getKavitaStatus();
 ok('state = running', status.state === 'running');
 ok(`port = ${KAVITA_PORT}`, status.port === KAVITA_PORT);
 ok('no error',        status.error === null);
-ok('JWT present', getKavitaJwt() !== null);
+ok('JWT present',     getKavitaJwt() !== null);
 console.log(`   State:    ${status.state}`);
 console.log(`   Port:     ${status.port}`);
 console.log(`   DocsPath: ${status.docsPath ?? '(not set)'}`);
-if (status.error) console.log(`   Error:    ${status.error}`);
 
-// ── [ 6 ] Server info ─────────────────────────────────────────────────────────
+// ── [ 7 ] phobosDocs library (owner) ─────────────────────────────────────────
 
-console.log('\n[ 6/10 ] Server info...');
-// Server info — admin-only endpoint, path confirmed from Kavita source.
+console.log('\n[ 7/11 ] phobosDocs library (owner)...');
 try {
-  // Try both casing variants — ASP.NET routing is case-insensitive but
-  // some reverse proxies are not.
-  let r = await kavitaApi('GET', '/server/server-info');
-  if (!r.ok) r = await kavitaApi('GET', '/Server/server-info');
-  if (r.ok) {
-    ok('GET /api/server/server-info → ok', true);
-    const info = r.data as Record<string, unknown>;
-    console.log(`   Version:      ${info?.kavitaVersion ?? info?.version ?? '(unknown)'}`);
-    console.log(`   OS:           ${info?.os ?? '(unknown)'}`);
-  } else {
-    warn('Server info returned non-200 (non-fatal, informational endpoint)', `HTTP ${r.status}`);
-  }
-} catch (err) {
-  warn('Server info failed (non-fatal)', (err as Error).message);
-}
-
-// ── [ 7 ] phobosDocs library ──────────────────────────────────────────────────
-
-console.log('\n[ 7/10 ] phobosDocs library...');
-try {
-  const libs = await listLibraries();
-  ok('GET /api/Library → ok', true);
+  const libs      = await listLibraries();
   const phobosDocs = libs.find(l => l.name === PHOBOSDOCS_LIB_NAME);
-  ok('phobosDocs library exists', !!phobosDocs);
+  ok('phobosDocs library exists',         !!phobosDocs);
+  ok('phobosDocs folder exists on disk',  phobosDocs?.folders.some(f => fs.existsSync(f)) ?? false);
+  ok('phobosDocs folder under owner/',    phobosDocs?.folders.some(f => f.includes('owner')) ?? false);
   if (phobosDocs) {
-    console.log(`   ID:      ${phobosDocs.id}`);
-    console.log(`   Type:    ${phobosDocs.type} (books)`);
-    console.log(`   Folders: ${phobosDocs.folders.join(', ')}`);
-    console.log(`   Series:  ${phobosDocs.seriesCount ?? phobosDocs.series ?? 0}`);
-    ok('phobosDocs folder exists on disk', phobosDocs.folders.some(f => fs.existsSync(f)));
-  }
-  console.log(`\n   All libraries (${libs.length} total):`);
-  for (const lib of libs) {
-    console.log(`   · [${lib.id}] ${lib.name} — type ${lib.type} — ${lib.seriesCount ?? lib.series ?? 0} series — ${lib.folders[0] ?? '?'}`);
+    console.log(`   id:      ${phobosDocs.id}`);
+    console.log(`   folders: ${phobosDocs.folders.join(', ')}`);
+    console.log(`   series:  ${phobosDocs.seriesCount ?? 0}`);
   }
 } catch (err) {
   ok('Library list succeeded', false);
   warn('Library list failed', (err as Error).message);
 }
 
-// ── [ 8 ] Create test libraries ───────────────────────────────────────────────
+// ── [ 8 ] Per-user provisioning ───────────────────────────────────────────────
 
-console.log('\n[ 8/10 ] Test library create...');
+console.log(`\n[ 8/11 ] Per-user provisioning (${TEST_USER})...`);
+let testUserKavitaId = '';
+try {
+  const result = await provisionUser(TEST_USER);
+  ok('provisionUser succeeded',     !!result.userId);
+  ok('JWT returned',                !!result.jwt);
+  ok('password returned',           !!result.password);
+  ok('apiKey returned',             !!result.apiKey);
+  testUserKavitaId = result.userId;
+  console.log(`   kavitaId: ${result.userId}`);
 
-// Check which libraries already exist to avoid duplicates.
+  // User should now appear in Kavita's user list.
+  const usersRes = await kavitaApi('GET', '/Users/names');
+  const names    = usersRes.data as string[];
+  ok(`${TEST_USER} in Kavita users`, Array.isArray(names) && names.some(n => n.toLowerCase() === TEST_USER.toLowerCase()));
+
+  // Per-user library should exist and be scoped to that user.
+  const userLibs   = await listLibraries();
+  const userLib    = userLibs.find(l => l.name === `${TEST_USER}-docs`);
+  ok(`${TEST_USER}-docs library exists`, !!userLib);
+  ok('library folder under username/', userLib?.folders.some(f => f.includes(TEST_USER)) ?? false);
+  console.log(`   user library folders: ${userLib?.folders.join(', ') ?? '(none)'}`);
+} catch (err) {
+  ok('provisionUser succeeded', false);
+  warn('provisionUser failed', (err as Error).message);
+}
+
+// ── [ 9 ] Test library create ─────────────────────────────────────────────────
+
+console.log('\n[ 9/11 ] Test library create...');
 let existingNames: string[] = [];
 try {
   const libs = await listLibraries();
   existingNames = libs.map(l => l.name);
 } catch { /* ignore */ }
 
-// Manga test library pointing at testbooks.
-if (!existingNames.includes('Test Manga')) {
-  try {
-    const lib = await createLibrary('Test Manga', KAVITA_LIB_TYPE.manga, [BOOKS_PATH]);
-    ok('Created "Test Manga" library', !!lib.id);
-    console.log(`   Created: id=${lib.id}`);
-  } catch (err) {
-    ok('Created "Test Manga" library', false);
-    warn('createLibrary failed', (err as Error).message);
-  }
-} else {
-  console.log('   ℹ️  "Test Manga" already exists — skipping create');
-  ok('Test Manga library present', true);
-}
-
-// Books test library pointing at testbooks.
 if (!existingNames.includes('Test Books')) {
   try {
     const lib = await createLibrary('Test Books', KAVITA_LIB_TYPE.books, [BOOKS_PATH]);
@@ -286,24 +270,26 @@ if (!existingNames.includes('Test Books')) {
   ok('Test Books library present', true);
 }
 
-// ── [ 9 ] Scan + poll ─────────────────────────────────────────────────────────
+// ── [ 10 ] Scan + stats ───────────────────────────────────────────────────────
 
-console.log('\n[ 9/10 ] Scan trigger + poll for indexed content...');
+console.log('\n[ 10/11 ] Scan + stats...');
 try {
   await triggerScan();
-  ok('POST /api/Library/scan-all → ok', true);
+  ok('triggerScan succeeded', true);
 } catch (err) {
-  ok('Scan trigger succeeded', false);
+  ok('triggerScan succeeded', false);
   warn('Scan trigger failed', (err as Error).message);
 }
 
 if (bookCount > 0) {
-  console.log('   Polling for indexed series (up to 60s)...');
-  const deadline = Date.now() + 60_000;
+  console.log('   Waiting for scan to complete (up to 60s)...');
+  // Give the scan a head start before polling — it was already in progress.
+  await sleep(3_000);
+  const deadline = Date.now() + 57_000;
   let seriesCount = 0;
   while (Date.now() < deadline) {
     try {
-      const libs = await listLibraries();
+      const libs  = await listLibraries();
       seriesCount = libs.reduce((n, l) => n + (l.seriesCount ?? l.series ?? 0), 0);
       if (seriesCount > 0) break;
     } catch { /* still scanning */ }
@@ -311,24 +297,38 @@ if (bookCount > 0) {
     await sleep(2_000);
   }
   process.stdout.write('\n');
-  console.log(`   Series indexed: ${seriesCount}`);
   ok('At least one series indexed', seriesCount > 0);
+  console.log(`   Series indexed: ${seriesCount}`);
 } else {
   warn('testbooks is empty — skipping content poll');
-  console.log('   ℹ️  Drop files in test-outputs/testbooks and re-run to test indexing.');
 }
 
-// ── [ 10 ] Stats API ──────────────────────────────────────────────────────────
+const stats = await getStats();
+ok('getStats succeeded', typeof stats.libraryCount === 'number');
+console.log(`   Libraries: ${stats.libraryCount}  Total series: ${stats.totalSeries}`);
 
-console.log('\n[ 10/10 ] Stats API...');
-try {
-  const stats = await getStats();
-  ok('Stats derived from library list → ok', true);
-  console.log(`   Libraries:    ${stats.libraryCount}`);
-  console.log(`   Total series: ${stats.totalSeries}`);
-} catch (err) {
-  ok('Stats API succeeded', false);
-  warn('Stats failed', (err as Error).message);
+// ── [ 11 ] Per-user deprovision ───────────────────────────────────────────────
+
+console.log(`\n[ 11/11 ] Per-user deprovision (${TEST_USER})...`);
+if (testUserKavitaId) {
+  try {
+    await deprovisionUser(TEST_USER);
+    ok('deprovisionUser succeeded', true);
+
+    // Library should be gone.
+    const libsAfter = await listLibraries();
+    ok(`${TEST_USER}-docs library removed`, !libsAfter.some(l => l.name === `${TEST_USER}-docs`));
+
+    // User should be gone from Kavita.
+    const usersAfter = await kavitaApi('GET', '/Users/names');
+    const namesAfter = usersAfter.data as string[];
+    ok(`${TEST_USER} removed from Kavita`, Array.isArray(namesAfter) && !namesAfter.some(n => n.toLowerCase() === TEST_USER.toLowerCase()));
+  } catch (err) {
+    ok('deprovisionUser succeeded', false);
+    warn('deprovisionUser failed', (err as Error).message);
+  }
+} else {
+  warn('Skipping deprovision — provisionUser did not succeed');
 }
 
 // ── Shutdown ──────────────────────────────────────────────────────────────────
@@ -337,9 +337,8 @@ if (!SKIP_START && !KEEP_RUNNING) {
   console.log('\n⏹  Stopping Kavita...');
   await stopKavita();
   ok('Kavita stopped', getKavitaStatus().state === 'stopped');
-  console.log('   ✅ Stopped');
 } else {
-  console.log('\n   ℹ️  Kavita left running (KAVITA_SKIP_START or KAVITA_KEEP_RUNNING set).');
+  console.log('\n   ℹ️  Kavita left running.');
 }
 
 // ── Summary ───────────────────────────────────────────────────────────────────

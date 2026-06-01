@@ -74,11 +74,13 @@ export type CoordinatorOutbound =
 
   // ── Round-trip requests (worker asks main to do DB work) ─────────────────
   | { type: 'ARCHIVE_SEARCH_REQUEST'; requestId: string;
-      query:   string;
-      domains: ArchiveDomain[];
-      k:       number }
+      query:    string;
+      domains:  ArchiveDomain[];
+      k:        number;
+      username: string }
   | { type: 'MEMORY_SEARCH_REQUEST';  requestId: string;
-      query:   string }
+      query:    string;
+      username: string }
   | { type: 'CODE_AUDIT_REQUEST';     requestId: string;
       target:  string;
       taskIndex: number;
@@ -137,6 +139,7 @@ export interface LoopOptionsWire {
   threadId:      string;
   skipBuild?:    boolean;
   maxAttempts?:  number;
+  username?:     string;
 }
 
 export interface CodeAuditResult {

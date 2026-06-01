@@ -28,17 +28,20 @@ const B64_CHUNK = 8192;
 export type TtsPlaybackMode = 'browser' | 'host';
 
 export interface CopilotAudioState {
-  ttsEnabled:      boolean;
-  ttsPlaying:      boolean;
-  sttListening:    boolean;
-  transcribing:    boolean;
-  selectedVoice:   string;
-  availableVoices: string[];
-  playbackMode:    TtsPlaybackMode;
+  ttsEnabled:               boolean;
+  ttsPlaying:               boolean;
+  sttListening:             boolean;
+  transcribing:             boolean;
+  ttsBackend:               'supertonic' | 'kokoro';
+  selectedVoice:            string;
+  availableVoices:          string[];  // Kokoro stems
+  availableSupertonicVoices: string[]; // M1–M5, F1–F5
+  playbackMode:             TtsPlaybackMode;
 }
 
 export interface CopilotAudioActions {
   setTtsEnabled:    (v: boolean) => void;
+  setTtsBackend:    (v: 'supertonic' | 'kokoro') => void;
   setSelectedVoice: (v: string) => void;
   setPlaybackMode:  (v: TtsPlaybackMode) => void;
   // Speak a complete pre-assembled string (e.g. voice-mode auto-stop response).
@@ -80,9 +83,11 @@ export function useCopilotAudio(): CopilotAudioHook {
     sttListeningRef.current = v;
     setSttListening(v);
   }, []);
-  const [transcribing,    setTranscribing]    = useState(false);
-  const [selectedVoice,   setSelectedVoice]   = useState('af_heart');
-  const [availableVoices, setAvailableVoices] = useState<string[]>(['af_heart']);
+  const [transcribing,              setTranscribing]              = useState(false);
+  const [ttsBackend,                setTtsBackend]                = useState<'supertonic' | 'kokoro'>('supertonic');
+  const [selectedVoice,             setSelectedVoice]             = useState('M1');
+  const [availableVoices,           setAvailableVoices]           = useState<string[]>(['af_heart']);
+  const [availableSupertonicVoices, setAvailableSupertonicVoices] = useState<string[]>(['M1', 'M2', 'M3', 'M4', 'M5', 'F1', 'F2', 'F3', 'F4', 'F5']);
   const [playbackMode,    setPlaybackMode]    = useState<TtsPlaybackMode>('browser');
 
   // ── Refs — never trigger re-renders ───────────────────────────────────────
@@ -119,12 +124,23 @@ export function useCopilotAudio(): CopilotAudioHook {
     let cancelled = false;
     fetch(`${ENGINE_URL}/api/audio/voices`)
       .then(r => r.ok ? r.json() : null)
-      .then((data: { voices: string[] } | null) => {
-        if (cancelled || !data?.voices?.length) return;
-        setAvailableVoices(data.voices);
-        setSelectedVoice(prev => data.voices.includes(prev) ? prev : data.voices[0]);
+      .then((data: { kokoro: string[]; supertonic: string[] } | null) => {
+        if (cancelled) return;
+        if (data?.kokoro?.length)     setAvailableVoices(data.kokoro);
+        if (data?.supertonic?.length) setAvailableSupertonicVoices(data.supertonic);
       })
       .catch(() => { /* keep defaults */ });
+
+    // If a clone with a linked voice profile is active, auto-select it.
+    fetch(`${ENGINE_URL}/api/weclone/active`)
+      .then(r => r.ok ? r.json() : null)
+      .then((data: { sayon: { voiceProfileId: string | null } | null; seren: { voiceProfileId: string | null } | null } | null) => {
+        if (cancelled || !data) return;
+        const profileId = data.sayon?.voiceProfileId ?? data.seren?.voiceProfileId ?? null;
+        if (profileId) setSelectedVoice(`profile:${profileId}`);
+      })
+      .catch(() => { /* non-fatal */ });
+
     return () => { cancelled = true; };
   }, []);
 
@@ -183,6 +199,7 @@ export function useCopilotAudio(): CopilotAudioHook {
       body:    JSON.stringify({
         text,
         threadId,
+        ttsBackend,
         voice:    selectedVoice,
         playback: playbackMode,
       }),
@@ -318,6 +335,7 @@ export function useCopilotAudio(): CopilotAudioHook {
           headers: { 'Content-Type': 'application/json' },
           body:    JSON.stringify({
             text, threadId,
+            ttsBackend,
             voice: selectedVoice,
             label: 'copilot-tts',
           }),
@@ -621,10 +639,13 @@ export function useCopilotAudio(): CopilotAudioHook {
     ttsPlaying,
     sttListening,
     transcribing,
+    ttsBackend,
     selectedVoice,
     availableVoices,
+    availableSupertonicVoices,
     playbackMode,
     setTtsEnabled: handleSetTtsEnabled,
+    setTtsBackend,
     setSelectedVoice,
     setPlaybackMode,
     speak,

@@ -135,6 +135,14 @@ export class EnemyWorldSprite {
   private _hpBar:   Phaser.GameObjects.Rectangle;
   private _hpFill:  Phaser.GameObjects.Rectangle;
 
+  // Home position — spawn point used for leash/despawn distance checks
+  readonly homeX: number;
+  readonly homeY: number;
+
+  // Idle despawn timer — counts up (ms) while in patrol state beyond DESPAWN_RANGE_PX.
+  // Reset to 0 whenever the player enters SPAWN_RANGE_PX or the enemy aggroes.
+  _idleTimer = 0;
+
   // Scratch — reused each update, no allocation
   private _dx = 0;
   private _dy = 0;
@@ -186,6 +194,8 @@ export class EnemyWorldSprite {
     this.hp          = this.maxHp;
     this.x           = cfg.spawnX;
     this.y           = cfg.spawnY;
+    this.homeX       = cfg.spawnX;
+    this.homeY       = cfg.spawnY;
     this._zoneBounds = cfg.zoneBounds;
 
     this._dmgMin     = Math.ceil(cfg.template.meleeDmgMin * dmgMult);
@@ -262,10 +272,12 @@ export class EnemyWorldSprite {
     switch (this.aiState) {
       case 'patrol':
         this._stepPatrol(delta);
+        this._idleTimer += delta;
         if (dist < this._currentAggroRange) {
-          this.aiState = 'aggro';
-          this._waypoints.length = 0;       // clear aggro path
-          this._patrolWaypoints.length = 0; // clear patrol path
+          this.aiState    = 'aggro';
+          this._idleTimer = 0;
+          this._waypoints.length = 0;
+          this._patrolWaypoints.length = 0;
         }
         break;
 
@@ -276,9 +288,10 @@ export class EnemyWorldSprite {
           this.aiState         = 'attacking';
           this._attackCooldown = 0;
         } else if (dist > this._currentAggroRange * LEASH_MULT) {
-          this.aiState = 'patrol';
-          this._waypoints.length = 0;       // clear aggro path
-          this._patrolWaypoints.length = 0; // force patrol replan toward a new target
+          this.aiState    = 'patrol';
+          this._idleTimer = 0;
+          this._waypoints.length = 0;
+          this._patrolWaypoints.length = 0;
           this._pickNewPatrolTarget();
         }
         break;
@@ -342,6 +355,11 @@ export class EnemyWorldSprite {
     this._rect.destroy();
     this._hpBar.destroy();
     this._hpFill.destroy();
+  }
+
+  /** Reset idle despawn timer — called by WorldCombatManager when player re-enters spawn range. */
+  resetIdle(): void {
+    this._idleTimer = 0;
   }
 
   /**

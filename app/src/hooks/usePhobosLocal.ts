@@ -313,6 +313,12 @@ export interface ImageModelStatus {
    * diffusers/transformers version. Only relevant for sdxl runner profile.
    */
   pytorchVariantReady?: boolean;
+  /** On-disk size in bytes of the converted pytorch directory (0 if not converted). */
+  pytorchVariantSizeBytes?: number;
+  /** HF repo for pytorch-native models (SANA). Populated server-side from catalogue. */
+  configRepo?: string;
+  /** When true, model requires PyTorch venv — no GGUF, no sd-cli path. */
+  pytorchOnly?: boolean;
 }
 
 /** Backward-compat alias */
@@ -493,6 +499,33 @@ export async function deleteFluxModel(modelId: string): Promise<void> {
 
 /** Alias */
 export const deleteImageModel = deleteFluxModel;
+
+/** Deletes the pre-converted pytorch variant directory for a model.
+ *  Does NOT delete the source GGUF file. */
+export async function deletePytorchVariant(modelId: string): Promise<void> {
+  const res = await fetch(`${ENGINE_URL}/api/phobos/image/pytorch/${encodeURIComponent(modelId)}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error((body as any).error ?? `Delete failed: ${res.status}`);
+  }
+}
+
+// ── SANA HF prefetch ─────────────────────────────────────────────────────────
+// Triggers huggingface_hub.snapshot_download for pytorch-native models.
+// Fire-and-forget from the frontend's perspective — poll the catalogue
+// to detect completion (isImageModelDownloaded checks the HF cache sentinel).
+
+export async function prefetchSanaModel(modelId: string, vendor: string): Promise<void> {
+  const res = await fetch(`${ENGINE_URL}/api/phobos/image/prefetch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ modelId, vendor }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error((body as any).error ?? `Prefetch failed: ${res.status}`);
+  }
+}
 
 // ── PyTorch variant conversion hook ───────────────────────────────────────────
 // Connects to /api/phobos/image/convert?modelId=<id> via SSE.

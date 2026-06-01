@@ -30,6 +30,7 @@
     "build:llamaarm64": "gh workflow run build-llamaarm64.yml",
     "build:app": "node scripts/build-app.js --unpacked",
     "build:core": "node build.js --no-app",
+    "build:core:nodeps": "node build.js --no-app --no-deps-backup",
     "build:app:win": "node scripts/build-app.js",
     "zip": "node scripts/zip-project.js"
   },

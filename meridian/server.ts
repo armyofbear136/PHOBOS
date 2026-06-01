@@ -32,9 +32,16 @@ import { UploadDispatcher }      from './staging/UploadDispatcher.js';
 import { SyncCleanupJob }        from './staging/SyncCleanupJob.js';
 import type { MeridianConfig }   from './db/config.js';
 
+declare module 'fastify' {
+  interface FastifyRequest { meridianUser: string; }
+}
+
 export interface MeridianStartOpts {
   libraryPath:  string;
   idleEnabled?: boolean;
+  // Resolves a username to its user-scoped DatabaseManager.
+  // Required for multi-user sync routing.
+  getUserDb: (username: string) => DatabaseManager;
 }
 
 export interface MeridianServerStatus {
@@ -55,8 +62,23 @@ let _watcher: InstanceType<typeof LibraryWatcher> | null = null;
 let _classifier:  InstanceType<typeof IdleClassifier> | null  = null;
 let _dispatcher:  UploadDispatcher | null                     = null;
 let _cleanupJob:  SyncCleanupJob   | null                     = null;
+let _signalingClient: { notifySync(): void } | null           = null;
+let _db:      MeridianDB | null                               = null;
+let _scanner: InstanceType<typeof Scanner> | null             = null;
 
 export const MERIDIAN_PORT = 16320;
+
+/**
+ * Wire the relay SignalingClient into the running sync routes.
+ * Called from server.ts after webrtcSignalingClient is constructed —
+ * after startMeridian() returns due to boot-sequence ordering.
+ * Safe to call before or after startMeridianServer; syncRoutes reads
+ * opts.signalingClient at registration time but the module-level ref
+ * is the live one that notifySync() dispatches through.
+ */
+export function setSignalingClient(client: { notifySync(): void } | null): void {
+  _signalingClient = client;
+}
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
@@ -116,17 +138,17 @@ export async function startMeridianServer(
     await db.ensureSchema();
 
     // Bootstrap library rows.
-    async function ensureLibrary(libPath: string, label: string) {
-      let lib = await db.getLibraryByPath(libPath, cfg.userId);
+    async function ensureLibrary(libPath: string, label: string, userId: string) {
+      let lib = await db.getLibraryByPath(libPath, userId);
       if (!lib) {
         lib = {
-          id:         crypto.createHash('sha256').update(libPath + cfg.userId).digest('hex').slice(0, 16),
+          id:         crypto.createHash('sha256').update(libPath + userId).digest('hex').slice(0, 16),
           path:       libPath,
           label,
           enabled:    true,
           lastScanAt: null,
           fileCount:  0,
-          userId:     cfg.userId,
+          userId,
           createdAt:  new Date().toISOString(),
         };
         await db.upsertLibrary(lib);
@@ -134,9 +156,9 @@ export async function startMeridianServer(
       return lib;
     }
 
-    const phobosLib = await ensureLibrary(cfg.phobosLibPath, 'PHOBOS Photos');
+    const phobosLib = await ensureLibrary(cfg.phobosLibPath, 'PHOBOS Photos', 'owner');
     const userLibs  = await Promise.all(
-      cfg.userLibPaths.map((p, i) => ensureLibrary(p, `Library ${i + 1}`))
+      cfg.userLibPaths.map((p, i) => ensureLibrary(p, `Library ${i + 1}`, 'owner'))
     );
     const allLibs = [phobosLib, ...userLibs];
 
@@ -157,6 +179,8 @@ export async function startMeridianServer(
     _classifier      = new IdleClassifier(db, cfg);
     _dispatcher      = new UploadDispatcher(db, cfg, scanner);
     _cleanupJob      = new SyncCleanupJob(db);
+    _db              = db;
+    _scanner         = scanner;
 
     // Build Fastify instance on port 16320.
     _fastify = Fastify({ logger: false });
@@ -179,6 +203,14 @@ export async function startMeridianServer(
       if (req.method === 'OPTIONS') return reply.status(204).send();
     });
 
+    // Resolve the requesting user from x-webrtc-user (stamped by DataChannelHandler
+    // on every proxied request). Falls back to 'owner' for direct LAN HTTP.
+    _fastify.addHook('preHandler', (req: import('fastify').FastifyRequest, _reply: import('fastify').FastifyReply, done: () => void) => {
+      (req as import('fastify').FastifyRequest & { meridianUser: string }).meridianUser =
+        (req.headers['x-webrtc-user'] as string | undefined)?.trim() || 'owner';
+      done();
+    });
+
     // Required for POST /api/sync/upload — Fastify does not parse octet-stream by default.
     _fastify.addContentTypeParser(
       'application/octet-stream',
@@ -191,7 +223,7 @@ export async function startMeridianServer(
     await _fastify.register(albumRoutes,   { db, config: cfg });
     await _fastify.register(libraryRoutes, { db, config: cfg, scanner });
     await _fastify.register(searchRoutes,  { db, config: cfg });
-    await _fastify.register(syncRoutes, { db, config: cfg, scanner, dispatcher: _dispatcher });
+    await _fastify.register(syncRoutes, { db, config: cfg, scanner, dispatcher: _dispatcher, getUserDb: opts.getUserDb, signalingClient: { notifySync: () => _signalingClient?.notifySync() } });
 
     await _fastify.listen({ port: cfg.port, host: '127.0.0.1' });
     console.log(`[Meridian] Listening on :${cfg.port}`);
@@ -245,7 +277,77 @@ export async function stopMeridianServer(): Promise<void> {
     _dispatcher = null;
     _cleanupJob = null;
     _config     = null;
+    _db         = null;
+    _scanner    = null;
   }
+}
+
+// ── Repair ────────────────────────────────────────────────────────────────────
+
+/**
+ * Reconcile Meridian libraries for every PHOBOS system user at boot.
+ *
+ * For each username in the list:
+ *   1. Ensure ~/.phobos/media/meridian/{username}/phobosPhotos/ exists on disk.
+ *   2. Ensure a meridian_libraries row exists for that path and userId.
+ *   3. If the library was just created (or its last scan was never completed),
+ *      kick off a non-blocking scanLibrary() pass.
+ *   4. Add the directory to the file watcher so live changes are picked up.
+ *
+ * Skips the owner — the owner's library is bootstrapped inside
+ * startMeridianServer() and is already scanned and watched at this point.
+ *
+ * Fully non-fatal: one user's failure never blocks others.
+ * Called from server.ts after startMeridian() resolves.
+ */
+export async function repairAllUserLibraries(usernames: string[]): Promise<void> {
+  if (_state !== 'running' || !_db || !_scanner || !_watcher) return;
+
+  const db      = _db;
+  const scanner = _scanner;
+  const watcher = _watcher;
+
+  for (const username of usernames) {
+    if (username === 'owner') continue; // bootstrapped by startMeridianServer
+
+    try {
+      const userPhotosPath = path.join(
+        os.homedir(), '.phobos', 'media', 'meridian', username, 'phobosPhotos',
+      );
+      fs.mkdirSync(userPhotosPath, { recursive: true });
+
+      let lib = await db.getLibraryByPath(userPhotosPath, username);
+      const isNew = !lib;
+
+      if (!lib) {
+        lib = {
+          id:         crypto.createHash('sha256').update(userPhotosPath + username).digest('hex').slice(0, 16),
+          path:       userPhotosPath,
+          label:      `${username} Photos`,
+          enabled:    true,
+          lastScanAt: null,
+          fileCount:  0,
+          userId:     username,
+          createdAt:  new Date().toISOString(),
+        };
+        await db.upsertLibrary(lib);
+        console.log(`[Meridian] repairAllUserLibraries: created library for ${username} at ${userPhotosPath}`);
+      }
+
+      // Scan if new or never completed a scan.
+      if (isNew || !lib.lastScanAt) {
+        scanner.scanLibrary(lib);
+      }
+
+      // Always ensure the directory is watched after startup.
+      watcher.watch(lib);
+
+    } catch (err) {
+      console.warn(`[Meridian] repairAllUserLibraries: ${username} failed (non-fatal):`, (err as Error).message);
+    }
+  }
+
+  console.log(`[Meridian] repairAllUserLibraries: done (${usernames.length} user(s) checked)`);
 }
 
 // ── Status ────────────────────────────────────────────────────────────────────

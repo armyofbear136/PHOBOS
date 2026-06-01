@@ -26,14 +26,24 @@ import time
 import json
 from pathlib import Path
 
+# -- SANA HF repo defaults ----------------------------------------------------
+
+_SANA_DEFAULT_REPOS: dict[str, str] = {
+    "sana":           "Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers",
+    "sana-sprint":    "Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers",
+    "sana-video":     "Efficient-Large-Model/SANA-Video_2B_480p_diffusers",
+    "sana-video-i2v": "Efficient-Large-Model/SANA-Video_2B_480p_diffusers",
+}
+
+
 # -- Argument parsing ---------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="PHOBOS PyTorch image generation")
 
     # Model
-    p.add_argument("--model-path", required=True, help="Path to diffusion model (GGUF or safetensors)")
-    p.add_argument("--model-type", required=True, choices=["flux", "chroma", "sdxl", "flux2", "z-image", "kontext", "qwen-image", "wan"],
+    p.add_argument("--model-path", default=None, help="Path to diffusion model (GGUF or safetensors). Not required for SANA/SANA-Video — model loads from HF cache via --config-repo.")
+    p.add_argument("--model-type", required=True, choices=["flux", "chroma", "sdxl", "flux2", "z-image", "kontext", "qwen-image", "wan", "sana", "sana-sprint", "sana-video", "sana-video-i2v"],
                    help="Model architecture family")
     p.add_argument("--config-repo", default=None, help="HuggingFace repo ID for model config (e.g. black-forest-labs/FLUX.1-dev)")
     p.add_argument("--config-path", default=None, help="Local path to HuggingFace config directory")
@@ -74,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Artist Plugin System -- multi-adapter LoRA
     # Colon-delimited lists for 1-3 plugins per node.
     # --lora-kinds: 'plugin' = read lora.safetensors from .phobos zip; 'raw_lora' = flat file.
-    p.add_argument("--lora-paths",   default=None, help="Colon-delimited LoRA archive/file paths")
+    p.add_argument("--lora-paths",   default=None, help="Pipe-delimited LoRA archive/file paths (| separator avoids Windows drive-letter colon conflict)")
     p.add_argument("--lora-weights", default=None, help="Colon-delimited adapter weights (0.0-1.0)")
     p.add_argument("--lora-names",   default=None, help="Colon-delimited adapter names (plugin_0, ...)")
     p.add_argument("--lora-kinds",   default=None, help="Colon-delimited kinds: 'plugin' or 'raw_lora'")
@@ -444,7 +454,7 @@ def load_wan_pipeline(args, device: str, dtype):
     return pipe
 
 
-def load_qwen_image_pipeline(args, device: str, dtype):
+def load_qwen_image_pipeline(args, device: str, dtype, variant_dir: str | None = None):
     """Load Qwen-Image pipeline.
 
     QwenImagePipeline does NOT support from_single_file(). The pipeline must be
@@ -452,18 +462,44 @@ def load_qwen_image_pipeline(args, device: str, dtype):
     a GGUF file, we load the transformer separately via from_single_file() and
     inject it into the pretrained pipeline.
 
-    On ?12 GB VRAM cards, sequential CPU offload is essential.
+    When variant_dir is provided (pre-converted BF16 safetensors from
+    phobos-convert.py), load the transformer from there instead of re-dequanting
+    the GGUF. The rest of the pipeline still comes from the HF repo.
+
+    On <=12 GB VRAM cards, sequential CPU offload is essential.
     Config repo Qwen/Qwen-Image is not gated.
     """
-    from diffusers import QwenImagePipeline, GGUFQuantizationConfig
+    import glob as _glob
+    import safetensors.torch as _st
+    from diffusers import QwenImagePipeline, QwenImageTransformer2DModel, GGUFQuantizationConfig
 
     config_repo = "Qwen/Qwen-Image"
     log(f"loading Qwen-Image pipeline")
 
-    if is_gguf(args.model_path):
-        # Load transformer from GGUF, inject into pretrained pipeline
+    if variant_dir and os.path.exists(os.path.join(variant_dir, 'transformer', 'config.json')):
+        # Fast path: load pre-converted BF16 transformer via from_config + load_state_dict
+        transformer_dir = os.path.join(variant_dir, "transformer")
+        log(f"loading transformer from pytorch variant ({transformer_dir})")
+        transformer = QwenImageTransformer2DModel.from_config(
+            QwenImageTransformer2DModel.load_config(transformer_dir),
+            torch_dtype=dtype,
+        )
+        shard_files = sorted(_glob.glob(os.path.join(transformer_dir, "*.safetensors")))
+        if not shard_files:
+            raise FileNotFoundError(f"No safetensors shards found in {transformer_dir}")
+        state_dict: dict = {}
+        for shard in shard_files:
+            state_dict.update(_st.load_file(shard, device="cpu"))
+        state_dict = {k: v.to(dtype) for k, v in state_dict.items()}
+        missing, unexpected = transformer.load_state_dict(state_dict, strict=False)
+        if missing:
+            log(f"WARNING: {len(missing)} missing keys in Qwen-Image transformer")
+        del state_dict
+        transformer = transformer.to(dtype)
+        log("loading transformer completed")
+    elif is_gguf(args.model_path):
+        # GGUF path: load transformer from GGUF, inject into pretrained pipeline
         log(f"loading transformer from {Path(args.model_path).name} (GGUF)")
-        from diffusers import QwenImageTransformer2DModel
         quant_config = GGUFQuantizationConfig(compute_dtype=dtype)
         transformer = QwenImageTransformer2DModel.from_single_file(
             args.model_path,
@@ -473,7 +509,10 @@ def load_qwen_image_pipeline(args, device: str, dtype):
             torch_dtype=dtype,
         )
         log("loading transformer completed")
+    else:
+        transformer = None
 
+    if transformer is not None:
         pipe = QwenImagePipeline.from_pretrained(
             config_repo,
             transformer=transformer,
@@ -591,15 +630,19 @@ def load_kontext_pipeline(args, device: str, dtype):
     return pipe
 
 
-def load_zimage_pipeline(args, device: str, dtype):
+def load_zimage_pipeline(args, device: str, dtype, variant_dir: str | None = None):
     """Load Z-Image pipeline by assembling components manually.
 
     ZImagePipeline.from_single_file() has a known bug in diffusers 0.36 where
     cap_pad_token is stored as shape (dim,) in the GGUF but the model expects
     (1, dim). This causes a ValueError on load.
 
-    Fix: load the transformer via GGUFQuantizationConfig + from_pretrained on the
-    GGUF directory (same pattern as Flux/Chroma), manually unsqueeze cap_pad_token
+    When variant_dir is provided, load the pre-converted BF16 transformer from
+    there -- the converter already applied the cap_pad_token unsqueeze fix before
+    saving, so no post-load fix is needed on the fast path.
+
+    Fix for GGUF path: load the transformer via GGUFQuantizationConfig +
+    from_pretrained on the GGUF directory, manually unsqueeze cap_pad_token
     after load, then assemble the pipeline from components.
     """
     try:
@@ -617,6 +660,34 @@ def load_zimage_pipeline(args, device: str, dtype):
     log(f"loading Z-Image pipeline from {Path(args.model_path).name}")
 
     quant_config = GGUFQuantizationConfig(compute_dtype=dtype)
+
+    # -- Diffusion transformer ------------------------------------------------
+    # Fast path: use pre-converted BF16 safetensors when available.
+    # The converter already applied the cap_pad_token unsqueeze fix before saving.
+    if variant_dir and os.path.exists(os.path.join(variant_dir, 'transformer', 'config.json')):
+        import glob as _glob
+        import safetensors.torch as _st
+        transformer_dir = os.path.join(variant_dir, "transformer")
+        log(f"loading transformer from pytorch variant ({transformer_dir})")
+        transformer = ZImageTransformer2DModel.from_config(
+            ZImageTransformer2DModel.load_config(transformer_dir),
+            torch_dtype=dtype,
+        )
+        shard_files = sorted(_glob.glob(os.path.join(transformer_dir, "*.safetensors")))
+        if not shard_files:
+            raise FileNotFoundError(f"No safetensors shards found in {transformer_dir}")
+        state_dict: dict = {}
+        for shard in shard_files:
+            state_dict.update(_st.load_file(shard, device="cpu"))
+        state_dict = {k: v.to(dtype) for k, v in state_dict.items()}
+        missing, _ = transformer.load_state_dict(state_dict, strict=False)
+        if missing:
+            log(f"WARNING: {len(missing)} missing keys in Z-Image transformer")
+        del state_dict
+        transformer = transformer.to(dtype)
+        log("loading transformer completed")
+    else:
+        transformer = None  # built below via GGUF path
 
     # -- Text encoder (Qwen3 GGUF) --------------------------------------------
     if args.llm_path:
@@ -637,27 +708,25 @@ def load_zimage_pipeline(args, device: str, dtype):
     else:
         raise ValueError("Z-Image requires --llm-path (Qwen3 GGUF text encoder)")
 
-    # -- Diffusion transformer (Z-Image GGUF) ---------------------------------
-    # Load via from_single_file with GGUFQuantizationConfig.
+    # -- Diffusion transformer (GGUF fallback) --------------------------------
+    # Only used when no pre-converted variant exists.
     # cap_pad_token is stored as (dim,) in the GGUF but model expects (1, dim).
     # Use ignore_mismatched_sizes=True to bypass the strict shape check, then
-    # unsqueeze the tensor immediately after. The trained value is preserved --
-    # unsqueezing doesn't change the data, only adds a batch dimension.
-    log(f"loading transformer from {Path(args.model_path).name}")
-    transformer = ZImageTransformer2DModel.from_single_file(
-        args.model_path,
-        quantization_config=quant_config,
-        torch_dtype=dtype,
-        low_cpu_mem_usage=False,
-        ignore_mismatched_sizes=True,
-    )
-
-    # Fix cap_pad_token shape: unsqueeze to (1, dim) immediately after load.
-    if hasattr(transformer, 'cap_pad_token') and transformer.cap_pad_token.ndim == 1:
-        import torch
-        with torch.no_grad():
-            transformer.cap_pad_token.data = transformer.cap_pad_token.data.unsqueeze(0)
-        log("fixed cap_pad_token shape: (dim,) -> (1, dim)")
+    # unsqueeze the tensor immediately after.
+    if transformer is None:
+        log(f"loading transformer from {Path(args.model_path).name}")
+        transformer = ZImageTransformer2DModel.from_single_file(
+            args.model_path,
+            quantization_config=quant_config,
+            torch_dtype=dtype,
+            low_cpu_mem_usage=False,
+            ignore_mismatched_sizes=True,
+        )
+        if hasattr(transformer, 'cap_pad_token') and transformer.cap_pad_token.ndim == 1:
+            import torch
+            with torch.no_grad():
+                transformer.cap_pad_token.data = transformer.cap_pad_token.data.unsqueeze(0)
+            log("fixed cap_pad_token shape: (dim,) -> (1, dim)")
 
     # -- VAE ------------------------------------------------------------------
     vae = None
@@ -685,6 +754,86 @@ def load_zimage_pipeline(args, device: str, dtype):
 
     log("loading tensors completed")
     return pipe
+
+def load_wan_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
+    """Load a Wan transformer from a pre-converted diffusers directory.
+
+    phobos-convert.py saves the transformer to
+    ~/.phobos/models/image/pytorch/<modelId>/transformer/.
+    VAE, text encoder, tokenizer, and scheduler still come from the HF repo.
+    This avoids re-dequanting the GGUF on every generation.
+    """
+    import glob as _glob
+    import safetensors.torch as _st
+    from diffusers import WanPipeline, WanTransformer3DModel, AutoencoderKLWan
+    from diffusers.schedulers import UniPCMultistepScheduler
+    import torch
+
+    transformer_dir = os.path.join(variant_dir, "transformer")
+
+    # Recover the original config repo from the saved config.json.
+    # phobos-convert.py writes _phobos_config_repo so we never need to guess.
+    # Fall back to size-based inference for conversions predating that field.
+    import json as _json
+    with open(os.path.join(transformer_dir, "config.json")) as _f:
+        _tcfg = _json.load(_f)
+    _config_repo = (
+        _tcfg.get("_phobos_config_repo")
+        or (
+            "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
+            if os.path.getsize(args.model_path) < 3_000_000_000
+            else "Wan-AI/Wan2.1-T2V-14B-Diffusers"
+        )
+    )
+
+    log(f"loading diffusion model from pytorch variant ({transformer_dir})")
+    transformer = WanTransformer3DModel.from_config(
+        WanTransformer3DModel.load_config(transformer_dir),
+        torch_dtype=dtype,
+    )
+    shard_files = sorted(_glob.glob(os.path.join(transformer_dir, "*.safetensors")))
+    if not shard_files:
+        raise FileNotFoundError(f"No safetensors shards found in {transformer_dir}")
+    state_dict: dict = {}
+    for shard in shard_files:
+        state_dict.update(_st.load_file(shard, device="cpu"))
+    state_dict = {k: v.to(dtype) for k, v in state_dict.items()}
+    missing, unexpected = transformer.load_state_dict(state_dict, strict=False)
+    if missing:
+        log(f"WARNING: {len(missing)} missing keys in Wan transformer")
+    del state_dict
+    transformer = transformer.to(dtype)
+    log("loading diffusion model completed")
+
+    log("loading vae from Wan pretrained")
+    vae = AutoencoderKLWan.from_pretrained(
+        _config_repo,
+        subfolder="vae",
+        torch_dtype=torch.float32,
+    )
+    log("loading vae completed")
+
+    log("loading pipeline components")
+    pipe = WanPipeline.from_pretrained(
+        _config_repo,
+        transformer=transformer,
+        vae=vae,
+        torch_dtype=dtype,
+    )
+    pipe.scheduler = UniPCMultistepScheduler.from_config(
+        pipe.scheduler.config,
+        flow_shift=args.flow_shift,
+    )
+
+    if args.offload_cpu:
+        log("enabling CPU offload")
+        pipe.enable_model_cpu_offload()
+    else:
+        pipe = pipe.to(device)
+
+    log("loading tensors completed")
+    return pipe
+
 
 def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
     """Load a FLUX/Chroma transformer from a pre-converted diffusers directory.
@@ -1047,16 +1196,100 @@ def load_flux_pretrained_pipeline(args, device: str, dtype, variant_dir: str):
     return pipe
 
 
+def load_sana_pipeline(args, device: str, dtype):
+    """Load a SANA or SANA-Sprint pipeline from HF cache.
+
+    No GGUF, no aux files. Transformer, DC-AE VAE, and Gemma-2-2B text encoder
+    all load from the HF repo. VAE and text_encoder default to float32 — cast
+    both explicitly to dtype to halve VRAM footprint.
+    """
+    from diffusers import SanaPipeline, SanaSprintPipeline
+
+    repo = args.config_repo or _SANA_DEFAULT_REPOS.get(args.model_type)
+    if not repo:
+        raise ValueError(f"No HF repo for model type: {args.model_type}")
+
+    Pipeline = SanaSprintPipeline if args.model_type == "sana-sprint" else SanaPipeline
+    log(f"loading SANA pipeline from {repo}")
+    pipe = Pipeline.from_pretrained(repo, torch_dtype=dtype)
+
+    # DC-AE and Gemma-2-2B default to float32 — cast explicitly.
+    pipe.vae.to(dtype)
+    pipe.text_encoder.to(dtype)
+    log("loading tensors completed")
+
+    if args.offload_cpu:
+        log("enabling CPU offload")
+        pipe.enable_model_cpu_offload()
+    else:
+        pipe = pipe.to(device)
+
+    return pipe
+
+
+def load_sana_video_pipeline(args, device: str, dtype):
+    """Load a SanaVideoPipeline or SanaImageToVideoPipeline from HF cache.
+
+    IMPORTANT: the video VAE (AutoencoderKLLTX2Video) must run in float32 for
+    numerical stability. Only transformer and text_encoder are cast to dtype.
+    The pipeline itself is loaded with torch_dtype=dtype; the VAE is then
+    explicitly re-cast to float32.
+    """
+    from diffusers import SanaVideoPipeline, SanaImageToVideoPipeline
+
+    repo = args.config_repo or _SANA_DEFAULT_REPOS.get(args.model_type)
+    if not repo:
+        raise ValueError(f"No HF repo for model type: {args.model_type}")
+
+    Pipeline = SanaImageToVideoPipeline if args.model_type == "sana-video-i2v" else SanaVideoPipeline
+    log(f"loading SANA-Video pipeline from {repo}")
+    pipe = Pipeline.from_pretrained(repo, torch_dtype=dtype)
+
+    # VAE must stay float32 for numerical stability (required by SanaVideoPipeline).
+    import torch as _torch
+    pipe.transformer.to(dtype)
+    pipe.text_encoder.to(dtype)
+    pipe.vae.to(_torch.float32)
+    log("loading tensors completed")
+
+    if args.offload_cpu:
+        log("enabling CPU offload")
+        pipe.enable_model_cpu_offload()
+    else:
+        pipe = pipe.to(device)
+
+    return pipe
+
+
 def load_pipeline(args, device: str, dtype):
     """Load the appropriate pipeline based on model type and format."""
     model_type = args.model_type
 
-    if model_type in ("flux", "chroma"):
-        # Pre-converted path: use transformer/ directory if present and not overridden.
-        # Falls back to inline GGUF de-quantization when no conversion exists.
+    # SANA: always HF-native, no GGUF, no variant dir
+    if model_type in ("sana", "sana-sprint"):
+        return load_sana_pipeline(args, device, dtype)
+    if model_type in ("sana-video", "sana-video-i2v"):
+        return load_sana_video_pipeline(args, device, dtype)
+
+    # All transformer-only types share the same pretrained fast-path sentinel:
+    # <variant_dir>/transformer/config.json written by phobos-convert.py.
+    # Check it first for every type that supports conversion; fall through to
+    # the inline GGUF loader when no conversion exists.
+    _PRETRAINED_TYPES = {"flux", "chroma", "kontext", "wan", "qwen-image", "z-image"}
+    if model_type in _PRETRAINED_TYPES:
         variant_dir = getattr(args, 'pytorch_variant_dir', None)
-        if variant_dir and os.path.isdir(variant_dir) and                 os.path.exists(os.path.join(variant_dir, 'transformer', 'config.json')):
-            return load_flux_pretrained_pipeline(args, device, dtype, variant_dir)
+        if variant_dir and os.path.isdir(variant_dir) and \
+                os.path.exists(os.path.join(variant_dir, 'transformer', 'config.json')):
+            if model_type in ("flux", "chroma", "kontext"):
+                return load_flux_pretrained_pipeline(args, device, dtype, variant_dir)
+            if model_type == "wan":
+                return load_wan_pretrained_pipeline(args, device, dtype, variant_dir)
+            if model_type == "qwen-image":
+                return load_qwen_image_pipeline(args, device, dtype, variant_dir)
+            if model_type == "z-image":
+                return load_zimage_pipeline(args, device, dtype, variant_dir)
+
+    if model_type in ("flux", "chroma"):
         if is_gguf(args.model_path):
             return load_flux_gguf_pipeline(args, device, dtype)
         else:
@@ -1254,12 +1487,12 @@ class ProgressCallback:
         try:
             mt = self.model_type
 
-            if mt == "wan":
+            if mt in ("wan", "sana-video", "sana-video-i2v"):
                 return
 
             t = latents.detach().float().cpu()
 
-            if mt in ("flux", "chroma", "z-image", "kontext", "flux2", "qwen-image"):
+            if mt in ("flux", "chroma", "z-image", "kontext", "flux2", "qwen-image", "sana", "sana-sprint"):
                 # FLUX-family: (B, 16, H, W) after scheduler step
                 if t.ndim != 4 or t.shape[1] < 3:
                     return
@@ -1323,6 +1556,19 @@ def generate_txt2img(pipe, args, device: str, dtype):
         gen_kwargs["guidance_scale"] = args.cfg_scale if args.cfg_scale != 3.5 else 1.0
     elif model_type == "qwen-image":
         gen_kwargs["guidance_scale"] = args.cfg_scale if args.cfg_scale != 3.5 else 2.5
+    elif model_type == "sana":
+        gen_kwargs["guidance_scale"] = args.cfg_scale if args.cfg_scale != 3.5 else 4.5
+    elif model_type == "sana-sprint":
+        # Sprint is flow-distilled — cfg_scale 4.0 is recommended. Below 1.0 produces artifacts.
+        gen_kwargs["num_inference_steps"] = 2
+        gen_kwargs["guidance_scale"] = args.cfg_scale if args.cfg_scale != 3.5 else 4.0
+    elif model_type in ("sana-video", "sana-video-i2v"):
+        gen_kwargs["guidance_scale"] = args.cfg_scale if args.cfg_scale != 3.5 else 6.0
+        gen_kwargs["frames"] = args.num_frames
+        # I2V needs the init image
+        if model_type == "sana-video-i2v" and args.init_image:
+            from PIL import Image as _PILImage
+            gen_kwargs["image"] = _PILImage.open(args.init_image).convert("RGB")
 
     # Progress callback
     callback = ProgressCallback(
@@ -1338,29 +1584,64 @@ def generate_txt2img(pipe, args, device: str, dtype):
         import zipfile
         import io as _io
 
-        raw_paths   = args.lora_paths.split(":")
-        raw_weights = [float(w) for w in args.lora_weights.split(":")] if args.lora_weights else [0.8] * len(raw_paths)
-        raw_names   = args.lora_names.split(":") if args.lora_names else [f"plugin_{i}" for i in range(len(raw_paths))]
-        raw_kinds   = args.lora_kinds.split(":") if args.lora_kinds else ["raw_lora"] * len(raw_paths)
+        # Paths are pipe-delimited ("|") — colon conflicts with Windows drive letters (C:\).
+        # Weights, names, and kinds use pipe too for consistency.
+        raw_paths   = args.lora_paths.split("|")
+        raw_weights = [float(w) for w in args.lora_weights.split("|")] if args.lora_weights else [0.8] * len(raw_paths)
+        raw_names   = args.lora_names.split("|") if args.lora_names else [f"plugin_{i}" for i in range(len(raw_paths))]
+        raw_kinds   = args.lora_kinds.split("|") if args.lora_kinds else ["raw_lora"] * len(raw_paths)
 
         loaded_names   = []
         loaded_weights = []
+
+        # CPU offload hooks interfere with load_lora_weights -- remove them first,
+        # load LoRAs, then re-enable offload after set_adapters.
+        _had_offload = getattr(pipe, "_offload_gpu_id", None) is not None or                        hasattr(getattr(pipe, "transformer", None), "_hf_hook")
+        if _had_offload:
+            from accelerate.hooks import remove_hook_from_module
+            for _comp in pipe.components.values():
+                if hasattr(_comp, "_hf_hook"):
+                    remove_hook_from_module(_comp, recurse=True)
 
         for archive_path, weight, adapter_name, kind in zip(raw_paths, raw_weights, raw_names, raw_kinds):
             log(f"loading plugin '{adapter_name}' from {Path(archive_path).name} (weight={weight})")
             try:
                 if kind == "plugin":
-                    # Read lora.safetensors directly from .phobos zip -- no extraction to disk
+                    # load_lora_weights() requires a file path -- extract to a named tempfile.
+                    import tempfile, os as _os
                     with zipfile.ZipFile(archive_path, "r") as zf:
                         if "lora.safetensors" not in zf.namelist():
                             raise ValueError(f"lora.safetensors not found inside {archive_path}")
                         lora_bytes = zf.read("lora.safetensors")
-                    lora_buf = _io.BytesIO(lora_bytes)
-                    pipe.load_lora_weights(lora_buf, adapter_name=adapter_name)
+                    tmp = tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False)
+                    try:
+                        tmp.write(lora_bytes)
+                        tmp.flush()
+                        tmp.close()
+                        pipe.load_lora_weights(tmp.name, adapter_name=adapter_name)
+                    finally:
+                        _os.unlink(tmp.name)
                 else:
                     # raw_lora -- flat file path
                     pipe.load_lora_weights(archive_path, adapter_name=adapter_name)
 
+                # Verify the adapter actually registered.
+                # peft_config lives on the model component (pipe.transformer for most
+                # models, pipe.unet for SDXL). Check both, fall back to pipe root.
+                _component = (
+                    getattr(pipe, "transformer", None) or
+                    getattr(pipe, "unet", None)
+                )
+                all_adapters = (
+                    getattr(_component, "peft_config", {})
+                    if _component is not None
+                    else getattr(pipe, "peft_config", {})
+                )
+                if adapter_name not in all_adapters:
+                    raise ValueError(
+                        f"load_lora_weights accepted the file but registered no keys for '{adapter_name}'. "
+                        "LoRA key prefix mismatch — check that the .safetensors keys start with 'transformer.'"
+                    )
                 loaded_names.append(adapter_name)
                 loaded_weights.append(weight)
                 log(f"plugin '{adapter_name}' loaded")
@@ -1372,6 +1653,10 @@ def generate_txt2img(pipe, args, device: str, dtype):
             pipe.set_adapters(loaded_names, adapter_weights=loaded_weights)
             log(f"adapters active: {loaded_names} weights={loaded_weights}")
 
+        # Re-enable CPU offload now that LoRA weights are fused into the model.
+        if _had_offload:
+            pipe.enable_model_cpu_offload()
+
     # Kontext reference image
     if args.ref_image and model_type == "kontext":
         from PIL import Image as PILImage
@@ -1382,14 +1667,22 @@ def generate_txt2img(pipe, args, device: str, dtype):
     result = pipe(**gen_kwargs)
     elapsed = time.time() - start
 
-    image = result.images[0]
-
     # Ensure output directory exists
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
-    image.save(args.output)
 
-    log(f"sampling completed, taking {elapsed:.1f}s")
-    log(f"Image saved to {args.output}")
+    if model_type in ("sana-video", "sana-video-i2v"):
+        # Video pipeline returns frames; export to mp4.
+        from diffusers.utils import export_to_video
+        frames = result.frames[0]  # list[PIL.Image]
+        out_path = args.output if args.output.endswith(".mp4") else args.output.rsplit(".", 1)[0] + ".mp4"
+        export_to_video(frames, out_path, fps=args.fps)
+        log(f"sampling completed, taking {elapsed:.1f}s")
+        log(f"Video saved to {out_path}")
+    else:
+        image = result.images[0]
+        image.save(args.output)
+        log(f"sampling completed, taking {elapsed:.1f}s")
+        log(f"Image saved to {args.output}")
 
     return seed, elapsed
 
@@ -1541,6 +1834,11 @@ def main():
     # Suppress the unauthenticated HF Hub warning -- PHOBOS uses cached configs only
     os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 
+    # Validate required args per model type
+    _sana_types = {"sana", "sana-sprint", "sana-video", "sana-video-i2v"}
+    if args.model_type not in _sana_types and not args.model_path:
+        parser.error(f"--model-path is required for model type '{args.model_type}'")
+
     # Resolve device
     import torch
     device = select_device(args.device)
@@ -1571,8 +1869,8 @@ def main():
     apply_optimizations(pipe, args, device)
 
     # Generate
-    if args.model_type == "wan":
-        seed, gen_elapsed = generate_video(pipe, args, device, dtype)
+    if args.model_type in ("wan", "sana-video", "sana-video-i2v"):
+        seed, gen_elapsed = generate_txt2img(pipe, args, device, dtype)
     elif args.init_image:
         seed, gen_elapsed = generate_img2img(pipe, args, device, dtype)
     else:
@@ -1580,7 +1878,7 @@ def main():
 
     # Verify output -- check original path, .mp4 variant, and PNG frame fallback for video
     output_exists = os.path.exists(args.output)
-    if not output_exists and args.model_type == "wan":
+    if not output_exists and args.model_type in ("wan", "sana-video", "sana-video-i2v"):
         mp4_path = os.path.splitext(args.output)[0] + ".mp4"
         png_fallback = os.path.splitext(mp4_path)[0] + "-frame0000.png"
         output_exists = os.path.exists(mp4_path) or os.path.exists(png_fallback)

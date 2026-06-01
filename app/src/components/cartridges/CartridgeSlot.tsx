@@ -11,11 +11,11 @@ import { CATEGORY_LABELS } from './CartridgeTypes';
 const ENGINE_URL = (import.meta.env.VITE_ENGINE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
 
 const CATEGORY_COLORS: Record<CartridgeCategory, string> = {
-  expertise: 'text-phobos-blue   border-phobos-blue/30   bg-phobos-blue/5',
-  persona:   'text-phobos-blue border-phobos-blue/30 bg-phobos-blue/5',
+  expertise: 'text-phob-teal   border-phob-teal/30   bg-phob-teal/5',
+  persona:   'text-phob-teal border-phob-teal/30 bg-phob-teal/5',
   style:     'text-sayon   border-sayon/30   bg-sayon/5',
-  domain:    'text-phobos-amber border-phobos-amber/30 bg-phobos-amber/5',
-  task:      'text-phobos-amber border-phobos-amber/30 bg-phobos-amber/5',
+  domain:    'text-phob-amber border-phob-amber/30 bg-phob-amber/5',
+  task:      'text-phob-amber border-phob-amber/30 bg-phob-amber/5',
   weclone:   'text-seren border-seren/30 bg-seren/5',
 };
 
@@ -27,8 +27,8 @@ interface CartridgeSlotProps {
 
 export function CartridgeSlot({ persona, onSwapRequest, onChanged }: CartridgeSlotProps) {
   const isSayon      = persona === 'sayon';
-  const accentBorder = isSayon ? 'border-phobos-amber/30' : 'border-phobos-blue/30';
-  const accentText   = isSayon ? 'text-phobos-amber'      : 'text-phobos-blue';
+  const accentBorder = isSayon ? 'border-phob-amber/30' : 'border-phob-teal/30';
+  const accentText   = isSayon ? 'text-phob-amber'      : 'text-phob-teal';
   const accentGlow   = isSayon
     ? 'shadow-[0_0_8px_hsl(38_100%_50%/0.1)]'
     : 'shadow-[0_0_8px_hsl(210_100%_60%/0.1)]';
@@ -84,7 +84,7 @@ export function CartridgeSlot({ persona, onSwapRequest, onChanged }: CartridgeSl
   const cartridge = slotData?.cartridge ?? null;
 
   return (
-    <div className={`flex-1 border ${accentBorder} rounded-sm bg-black/30 p-3 ${accentGlow}`}>
+    <div className={`flex-1 border ${accentBorder}  bg-phob-white/4 p-3 ${accentGlow}`}>
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-1.5">
           <Cpu className={`w-3 h-3 ${accentText}`} />
@@ -93,7 +93,7 @@ export function CartridgeSlot({ persona, onSwapRequest, onChanged }: CartridgeSl
           </span>
         </div>
         {restarting && (
-          <div className="flex items-center gap-1 text-muted-foreground/50">
+          <div className="flex items-center gap-1 text-phob-steel/45">
             <Loader2 className="w-3 h-3 animate-spin" />
             <span className="text-[8px] font-terminal uppercase tracking-widest">Restarting…</span>
           </div>
@@ -105,45 +105,45 @@ export function CartridgeSlot({ persona, onSwapRequest, onChanged }: CartridgeSl
           <div className="flex items-start justify-between gap-2">
             <div className="flex-1 min-w-0">
               <p className="text-[11px] font-terminal text-foreground leading-tight truncate">{cartridge.name}</p>
-              <p className="text-[9px] text-muted-foreground/50 truncate mt-0.5">by {cartridge.author} · v{cartridge.version}</p>
+              <p className="text-[9px] text-phob-steel/45 truncate mt-0.5">by {cartridge.author} · v{cartridge.version}</p>
             </div>
             <button
               onClick={handleDeactivate}
               disabled={restarting}
-              className="shrink-0 p-0.5 text-muted-foreground/30 hover:text-red-400 transition-colors disabled:opacity-20"
+              className="shrink-0 p-0.5 text-phob-steel/35 hover:text-phob-red transition-colors disabled:opacity-20"
               title="Remove cartridge from slot"
             >
               <X className="w-3 h-3" />
             </button>
           </div>
           <div className="flex items-center gap-1.5 flex-wrap">
-            <span className={`text-[8px] font-terminal uppercase tracking-[0.1em] px-1.5 py-0.5 rounded-sm border ${CATEGORY_COLORS[cartridge.category]}`}>
+            <span className={`text-[8px] font-terminal uppercase tracking-[0.1em] px-1.5 py-0.5  border ${CATEGORY_COLORS[cartridge.category]}`}>
               {CATEGORY_LABELS[cartridge.category]}
             </span>
-            <span className="text-[8px] font-mono text-muted-foreground/40 border border-border/40 px-1.5 py-0.5 rounded-sm">
+            <span className="text-[8px] font-mono text-phob-steel/40 border border-phob-orange/20 px-1.5 py-0.5 ">
               {cartridge.base_model}
             </span>
             {slotData?.weight != null && (
               <span className={`text-[8px] font-mono ${accentText}/50`}>×{slotData.weight.toFixed(2)}</span>
             )}
             {!cartridge.is_protected && (
-              <span className="text-[8px] font-terminal text-muted-foreground/30 border border-border/20 px-1 py-0.5 rounded-sm">unprotected</span>
+              <span className="text-[8px] font-terminal text-phob-steel/35 border border-phob-orange/15 px-1 py-0.5 ">unprotected</span>
             )}
           </div>
           {cartridge.trigger_context && (
-            <p className="text-[8px] text-muted-foreground/35 font-mono italic truncate">
+            <p className="text-[8px] text-phob-steel/35 font-mono italic truncate">
               "{cartridge.trigger_context.slice(0, 64)}{cartridge.trigger_context.length > 64 ? '…' : ''}"
             </p>
           )}
         </div>
       ) : (
-        <p className="text-[10px] text-muted-foreground/35 font-terminal italic">Base model — no cartridge</p>
+        <p className="text-[10px] text-phob-steel/35 font-terminal italic">Base model — no cartridge</p>
       )}
 
       <button
         onClick={onSwapRequest}
         disabled={restarting}
-        className={`mt-3 w-full flex items-center justify-center gap-1 py-1 text-[9px] font-terminal uppercase tracking-[0.15em] border ${accentBorder} ${accentText}/60 hover:${accentText} rounded-sm transition-all disabled:opacity-30`}
+        className={`mt-3 w-full flex items-center justify-center gap-1 py-1 text-[9px] font-terminal uppercase tracking-[0.15em] border ${accentBorder} ${accentText}/60 hover:${accentText}  transition-all disabled:opacity-30`}
       >
         {cartridge ? 'Swap Cartridge' : 'Load Cartridge'}
         <ChevronRight className="w-3 h-3" />

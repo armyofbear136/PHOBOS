@@ -17,7 +17,7 @@ interface Props {
 }
 
 export function VersionSplash({ platform, coreVersion }: Props) {
-  const mono: React.CSSProperties = { fontFamily: "'Share Tech Mono', monospace" };
+  const mono: React.CSSProperties = { fontFamily: "'Space Mono', 'Share Tech Mono', monospace" };
 
   const getDownloadUrl = (plat: Platform) =>
     `${RELEASE_BASE}/${PLATFORM_CONFIG[plat].file}`;
@@ -92,7 +92,7 @@ export function VersionSplash({ platform, coreVersion }: Props) {
             <p style={{ ...mono, fontSize: 9, color: 'rgba(255,255,255,0.3)', letterSpacing: '0.15em', marginBottom: 6 }}>YOUR VERSION</p>
             <p style={{ ...mono, fontSize: 16, color: '#ff4040' }}>{coreVersion}</p>
           </div>
-          <div style={{ flex: 1, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(0,255,65,0.15)', padding: '12px 16px', textAlign: 'center' }}>
+          <div style={{ flex: 1, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(232,66,10,0.20)', padding: '12px 16px', textAlign: 'center' }}>
             <p style={{ ...mono, fontSize: 9, color: 'rgba(255,255,255,0.3)', letterSpacing: '0.15em', marginBottom: 6 }}>REQUIRED VERSION</p>
             <p style={{ ...mono, fontSize: 16, color: '#00ff41' }}>{CLIENT_VERSION}</p>
           </div>

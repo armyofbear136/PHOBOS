@@ -633,8 +633,8 @@ function ResizeDialog({ currentW, currentH, onApply, onClose }: ResizeDialogProp
                   onClick={() => setAnchor(cell)}
                   style={{
                     ...rdStyles.anchorCell,
-                    background: anchor === cell ? '#4a7fe8' : 'hsl(var(--card))',
-                    border: anchor === cell ? '1px solid #6a9ff8' : '1px solid #444',
+                    background: anchor === cell ? '#e8420a' : '#0f0f0a',
+                    border: anchor === cell ? '1px solid #ff6040' : '1px solid rgba(232,66,10,0.2)',
                   }}
                   title={cell}
                 />
@@ -663,8 +663,8 @@ const rdStyles = {
     zIndex:         1000,
   },
   dialog: {
-    background:    'hsl(var(--secondary))',
-    color:         '#e8e8e8',
+    background:    '#0f0f0a',
+    color:         '#e8e8d8',
     borderRadius:  6,
     width:         280,
     boxShadow:     '0 8px 32px rgba(0,0,0,0.6)',
@@ -678,7 +678,7 @@ const rdStyles = {
     alignItems:     'center',
     justifyContent: 'space-between',
     padding:        '12px 16px',
-    borderBottom:   '1px solid #3a3a3a',
+    borderBottom:   '1px solid rgba(232,66,10,0.2)',
   },
   title: {
     fontWeight: 600,

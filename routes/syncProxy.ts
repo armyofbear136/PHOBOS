@@ -24,7 +24,6 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { getMeridianServerStatus } from '../meridian/server.js';
 import { MERIDIAN_PORT }           from '../services/MeridianManager.js';
 import http                        from 'node:http';
-import { Readable }                from 'node:stream';
 
 // Headers the proxy must NOT forward upstream (hop-by-hop or already set).
 const SKIP_REQ_HEADERS = new Set([
@@ -121,32 +120,50 @@ export async function registerSyncProxyRoutes(fastify: FastifyInstance): Promise
       };
 
       const upstream = http.request(options, (res) => {
-        // Forward response status and headers downstream.
-        // For WebRTC inject() paths, reply.raw is writable synchronously.
-        // For real HTTP connections, hijack() is needed to bypass Fastify.
-        const isRealConnection = !!(req.raw as any).socket;
-        if (isRealConnection) reply.hijack();
-
         const origin = req.headers.origin ?? '*';
-        const resHeaders: Record<string, string | string[]> = {
-          'Access-Control-Allow-Origin': origin,
-        };
-        for (const [key, val] of Object.entries(res.headers)) {
-          if (SKIP_RES_HEADERS.has(key.toLowerCase())) continue;
-          if (val === undefined) continue;
-          resHeaders[key] = val as string | string[];
-        }
 
-        reply.raw.writeHead(res.statusCode ?? 200, resHeaders);
-
+        // Collect response body regardless of connection type.
         const chunks: Buffer[] = [];
         res.on('data', (chunk: Buffer) => chunks.push(chunk));
         res.on('end', () => {
           const body = Buffer.concat(chunks);
-          reply.raw.end(body);
+          const statusCode = res.statusCode ?? 200;
+
+          // Copy safe response headers.
+          for (const [key, val] of Object.entries(res.headers)) {
+            if (SKIP_RES_HEADERS.has(key.toLowerCase())) continue;
+            if (val === undefined) continue;
+            reply.header(key, val as string | string[]);
+          }
+          reply.header('Access-Control-Allow-Origin', origin);
+
+          const isRealConnection = !!(req.raw as any).socket;
+          if (isRealConnection) {
+            // Real HTTP: hijack and write raw so we don't double-encode.
+            reply.hijack();
+            reply.raw.writeHead(statusCode, {
+              ...Object.fromEntries(
+                Object.entries(res.headers).filter(([k]) => !SKIP_RES_HEADERS.has(k.toLowerCase()))
+              ),
+              'Access-Control-Allow-Origin': origin,
+            });
+            reply.raw.end(body);
+          } else {
+            // WebRTC inject() path: use Fastify reply so inject() captures the body.
+            const contentType = (res.headers['content-type'] ?? '').toLowerCase();
+            if (contentType.includes('application/json')) {
+              try {
+                reply.status(statusCode).send(JSON.parse(body.toString('utf8')));
+              } catch {
+                reply.status(statusCode).send(body.toString('utf8'));
+              }
+            } else {
+              reply.status(statusCode).send(body);
+            }
+          }
           resolve();
         });
-        res.on('error', (err) => { reply.raw.end(); reject(err); });
+        res.on('error', (err) => { reject(err); });
       });
 
       upstream.on('error', reject);

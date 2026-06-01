@@ -10,7 +10,6 @@
 //   4. Copilot / simple conversational turns → skip Archive entirely
 
 import type { ArchiveDomain } from '../db/ArchiveStore.js';
-import { ArchiveStore } from '../db/ArchiveStore.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -22,6 +21,8 @@ export interface ArchiveRoutingDecision {
 }
 
 export interface ArchiveRoutingContext {
+  /** Requesting user — used to scope archive dir lookups */
+  username:         string;
   /** Raw user message */
   userMessage:      string;
   /** Whether a project is currently active in this thread */
@@ -137,8 +138,13 @@ export class ArchiveIntentClassifier {
     // Never inject Archive into copilot turns.
     if (ctx.isCopilot) return noMatch;
 
-    // Skip if no Archive content exists at all.
-    if (!ArchiveStore.hasAnyContent()) return noMatch;
+    // Skip if no Archive content exists for this user.
+    const { userDir } = await import('../db/DatabaseManager.js');
+    const fsMod = await import('fs');
+    const pathMod = await import('path');
+    const userArchiveDir = pathMod.join(userDir(ctx.username), 'archive');
+    if (!fsMod.existsSync(userArchiveDir)) return noMatch;
+    if (!fsMod.readdirSync(userArchiveDir).some((f: string) => f.endsWith('.duckdb'))) return noMatch;
 
     const msg = ctx.userMessage;
 
@@ -165,17 +171,10 @@ export class ArchiveIntentClassifier {
       if (ctx.hasActiveProject) domainSet.add('projects');
     }
 
-    // Filter to only domains whose files exist on disk.
-    // We check file existence only (not open the DB) — non-existent domains
-    // simply return zero results at retrieval time, which is correct behaviour.
-    // Filtering here prevents spurious "useArchive=true" when the archive is
-    // entirely empty, but allows queries against built-in domains that haven't
-    // been created yet to pass through (they'll return empty results).
-    const { ARCHIVE_DIR: archiveDir } = await import('../db/ArchiveStore.js');
-    const fsMod = await import('fs');
-    const pathMod = await import('path');
+    // Filter to only domains whose files exist on disk for this user.
+    // fsMod and pathMod already imported above for the hasAnyContent check.
     const domains = Array.from(domainSet).filter(d =>
-      fsMod.existsSync(pathMod.join(archiveDir, `${d}.duckdb`))
+      fsMod.existsSync(pathMod.join(userArchiveDir, `${d}.duckdb`))
     );
 
     // If no matching domain files exist but we detected signals, still report

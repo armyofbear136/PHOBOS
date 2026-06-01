@@ -21,7 +21,7 @@ interface ServiceStatus {
 }
 
 const mono: React.CSSProperties = { fontFamily: '"JetBrains Mono", monospace' };
-const ACCENT = '#10b981';
+const ACCENT = '#e8420a';
 
 export function MeridianPanel({ status, onClose, onRefresh }: {
   status:    ServiceStatus;
@@ -87,8 +87,8 @@ export function MeridianPanel({ status, onClose, onRefresh }: {
   };
 
   const stateColor = isRunning  ? ACCENT
-    : isStarting   ? '#f59e0b'
-    : status.state === 'error' ? '#ef4444'
+    : isStarting   ? '#c8a000'
+    : status.state === 'error' ? '#ff3c3c'
     : 'hsl(var(--secondary))';
 
   const stateLabel = isRunning  ? 'RUNNING'
@@ -105,7 +105,7 @@ export function MeridianPanel({ status, onClose, onRefresh }: {
       onClick={onClose}
     >
       <div style={{
-        width: 400, background: 'hsl(var(--background))', border: '1px solid #1e2430',
+        width: 400, background: 'hsl(var(--background))', border: '1px solid rgba(232,66,10,0.2)',
         borderRadius: 6, overflow: 'hidden',
         boxShadow: '0 24px 64px rgba(0,0,0,.8)',
       }}
@@ -113,9 +113,9 @@ export function MeridianPanel({ status, onClose, onRefresh }: {
       >
         {/* Header */}
         <div style={{
-          padding: '14px 16px', borderBottom: '1px solid #1e2430',
+          padding: '14px 16px', borderBottom: '1px solid rgba(232,66,10,0.15)',
           display: 'flex', alignItems: 'center', gap: 10,
-          background: 'linear-gradient(180deg,#13161b 0%,#0d0f12 100%)',
+          background: 'linear-gradient(180deg,#0f0f0a 0%,#080808 100%)',
         }}>
           <div style={{
             width: 32, height: 32, borderRadius: 6,
@@ -173,7 +173,7 @@ export function MeridianPanel({ status, onClose, onRefresh }: {
                     .catch(() => {});
                 }}
                 style={{
-                  background: 'rgba(255,255,255,.04)', border: '1px solid #1e2430',
+                  background: 'rgba(255,255,255,.04)', border: '1px solid rgba(232,66,10,0.2)',
                   borderRadius: 3, color: 'hsl(var(--muted-foreground))', cursor: isRunning ? 'default' : 'pointer',
                   padding: '0 10px', display: 'flex', alignItems: 'center',
                   opacity: isRunning ? .4 : 1,
@@ -189,9 +189,9 @@ export function MeridianPanel({ status, onClose, onRefresh }: {
           {/* Status / error */}
           {(status.error || error) && (
             <div style={{
-              background: 'rgba(239,68,68,.06)', border: '1px solid rgba(239,68,68,.15)',
+              background: 'rgba(255,60,60,.06)', border: '1px solid rgba(255,60,60,.15)',
               borderRadius: 3, padding: '8px 10px', marginBottom: 12,
-              ...mono, fontSize: 10, color: '#ef4444',
+              ...mono, fontSize: 10, color: '#ff3c3c',
             }}>
               {error || status.error}
             </div>
@@ -223,7 +223,7 @@ export function MeridianPanel({ status, onClose, onRefresh }: {
                   disabled={step === 'saving'}
                   style={{
                     flex: 1, background: 'rgba(59,130,246,.08)',
-                    color: '#3b82f6', border: '1px solid rgba(59,130,246,.2)',
+                    color: '#e8420a', border: '1px solid rgba(59,130,246,.2)',
                     borderRadius: 3, padding: '8px 0', cursor: 'pointer',
                     ...mono, fontSize: 11,
                     opacity: step === 'saving' ? .5 : 1,
@@ -233,7 +233,7 @@ export function MeridianPanel({ status, onClose, onRefresh }: {
                 <button
                   onClick={triggerScan}
                   style={{
-                    background: 'rgba(245,158,11,.06)', color: '#f59e0b',
+                    background: 'rgba(245,158,11,.06)', color: '#c8a000',
                     border: '1px solid rgba(245,158,11,.15)', borderRadius: 3,
                     padding: '8px 12px', cursor: 'pointer',
                     ...mono, fontSize: 11,
@@ -245,7 +245,7 @@ export function MeridianPanel({ status, onClose, onRefresh }: {
                   onClick={stopService}
                   disabled={step === 'stopping'}
                   style={{
-                    background: 'rgba(239,68,68,.06)', color: '#ef4444',
+                    background: 'rgba(239,68,68,.06)', color: '#ff3c3c',
                     border: '1px solid rgba(239,68,68,.15)', borderRadius: 3,
                     padding: '8px 12px', cursor: 'pointer',
                     ...mono, fontSize: 11,
@@ -258,7 +258,7 @@ export function MeridianPanel({ status, onClose, onRefresh }: {
             )}
 
             {isStarting && (
-              <div style={{ ...mono, fontSize: 10, color: '#f59e0b',
+              <div style={{ ...mono, fontSize: 10, color: '#c8a000',
                 display: 'flex', alignItems: 'center', gap: 6, padding: '8px 0' }}>
                 <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>◌</span>
                 Starting Meridian…

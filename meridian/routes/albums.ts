@@ -14,8 +14,8 @@ export async function albumRoutes(
 
   // ── GET /api/albums ──────────────────────────────────────────────────────
 
-  fastify.get('/api/albums', async (_req, reply) => {
-    const albums = await opts.db.listAlbums(opts.config.userId);
+  fastify.get('/api/albums', async (req, reply) => {
+    const albums = await opts.db.listAlbums((req as import('fastify').FastifyRequest & { meridianUser: string }).meridianUser);
     return reply.send({ albums });
   });
 
@@ -34,7 +34,7 @@ export async function albumRoutes(
         coverFileId: null,
         createdAt:   new Date().toISOString(),
         updatedAt:   new Date().toISOString(),
-        userId:      opts.config.userId,
+        userId:      (req as import('fastify').FastifyRequest & { meridianUser: string }).meridianUser,
         libraryId:   libraryId ?? 'default',
         autoRule:    null,
       };
@@ -48,7 +48,7 @@ export async function albumRoutes(
   fastify.get<{ Params: { id: string } }>('/api/albums/:id', async (req, reply) => {
     const album = await opts.db.getAlbum(req.params.id);
     if (!album) return reply.status(404).send({ error: 'Not found' });
-    const files = await opts.db.getAlbumFiles(req.params.id, opts.config.userId);
+    const files = await opts.db.getAlbumFiles(req.params.id, (req as import('fastify').FastifyRequest & { meridianUser: string }).meridianUser);
     return reply.send({ album, files: files.map(f => ({
       id: f.id, filename: f.filename, ext: f.ext, type: f.type,
       width: f.width, height: f.height, takenAt: f.takenAt, thumbReady: f.thumbReady,

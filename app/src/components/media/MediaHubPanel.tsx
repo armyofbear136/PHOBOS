@@ -89,28 +89,28 @@ const SERVICE_META: Record<ServiceName, {
     label:       'Polaris Music',
     description: 'Self-hosted music streaming. FLAC, MP3, OGG and more.',
     icon:        Music2,
-    accent:      '#f59e0b',
+    accent:      '#c8a000',
     implemented: true,
   },
   jellyfin: {
     label:       'Jellyfin',
     description: 'Video, TV and movie library server.',
     icon:        Film,
-    accent:      '#3b82f6',
+    accent:      '#00d4aa',
     implemented: true,
   },
   kavita: {
     label:       'Kavita',
     description: 'Comics, manga and ebook server.',
     icon:        BookOpen,
-    accent:      '#8b5cf6',
+    accent:      '#c87dff',
     implemented: true,
   },
   meridian: {
     label:       'Meridian',
     description: 'Native photo library. Directory-first, zero cloud.',
     icon:        Camera,
-    accent:      '#10b981',
+    accent:      '#00ff41',
     implemented: true,
   },
 };
@@ -154,10 +154,10 @@ const colors = {
   text:      '#4ade80',   // phobos green — primary labels
   muted:     '#e2e8f0',   // bright white — secondary labels (was invisible grey)
   dim:       '#94a3b8',   // visible slate — path text (was near-black)
-  purple:    '#8b5cf6',
-  green:     '#10b981',
-  amber:     '#f59e0b',
-  red:       '#ef4444',
+  violet:    '#c87dff',
+  green:     '#00ff41',
+  amber:     '#c8a000',
+  red:       '#ff3c3c',
 };
 
 function Btn({ onClick, disabled, children, style }: {
@@ -193,7 +193,7 @@ function Input({ value, onChange, placeholder, style }: {
 
 // ── PolarisPanel ─────────────────────────────────────────────────────────────
 
-const POLARIS_AMBER = '#f59e0b';
+const POLARIS_AMBER = '#c8a000';
 
 type PolarisView = 'libraries' | 'add-library' | 'ingest';
 
@@ -297,7 +297,7 @@ function PolarisPanel({ status, onClose, onRefresh }: {
   const panelHeader = (title: string, subtitle: string, back?: () => void) => (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       padding: '20px 28px', borderBottom: `1px solid ${colors.border}`,
-      background: 'linear-gradient(180deg,#13161b 0%,#0d0f12 100%)' }}>
+      background: 'linear-gradient(180deg,#0f0f0a 0%,#080808 100%)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <Music2 size={24} style={{ color: POLARIS_AMBER }} />
         <div>
@@ -315,7 +315,7 @@ function PolarisPanel({ status, onClose, onRefresh }: {
   if (view === 'add-library') {
     return (
       <div style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ width: 920, background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: 6, boxShadow: '0 24px 64px rgba(0,0,0,.8)', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
+        <div style={{ width: 920, background: colors.bg, border: `1px solid ${colors.border}`, boxShadow: '0 24px 64px rgba(0,0,0,.8)', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
           {panelHeader('Move: phobosMusic', 'Change library folder location', () => setView('libraries'))}
           <div style={{ padding: 28 }}>
             <label style={{ ...mono, fontSize: 16, color: colors.muted, display: 'block', marginBottom: 8 }}>CURRENT LOCATION</label>
@@ -355,7 +355,7 @@ function PolarisPanel({ status, onClose, onRefresh }: {
   if (view === 'ingest') {
     return (
       <div style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ width: 1000, maxHeight: '80vh', background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: 6, boxShadow: '0 24px 64px rgba(0,0,0,.8)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
+        <div style={{ width: 1000, maxHeight: '80vh', background: colors.bg, border: `1px solid ${colors.border}`, boxShadow: '0 24px 64px rgba(0,0,0,.8)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
           {panelHeader('Ingest Music', 'Copy audio files into phobosMusic', () => { setView('libraries'); setPendingPaths([]); setIngestNote(''); })}
           <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
             <div style={{ ...mono, fontSize: 16, color: colors.muted, marginBottom: 12 }}>
@@ -413,7 +413,7 @@ function PolarisPanel({ status, onClose, onRefresh }: {
   // ── Libraries view (default) ───────────────────────────────────────────────
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ width: 960, maxHeight: '80vh', background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: 6, boxShadow: '0 24px 64px rgba(0,0,0,.8)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
+      <div style={{ width: 960, maxHeight: '80vh', background: colors.bg, border: `1px solid ${colors.border}`, boxShadow: '0 24px 64px rgba(0,0,0,.8)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
         {panelHeader('Polaris Music', isRunning ? `Running · port ${status.port}` : status.state.toUpperCase())}
         <div style={{ padding: '14px 28px', borderBottom: `1px solid ${colors.borderLo}`, display: 'flex', alignItems: 'center', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -791,9 +791,9 @@ function KavitaPanel({ status, onClose, onRefresh }: {
   const panelHeader = (title: string, subtitle: string, back?: () => void) => (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       padding: '20px 28px', borderBottom: `1px solid ${colors.border}`,
-      background: 'linear-gradient(180deg,#13161b 0%,#0d0f12 100%)' }}>
+      background: 'linear-gradient(180deg,#0f0f0a 0%,#080808 100%)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <BookOpen size={24} style={{ color: colors.purple }} />
+        <BookOpen size={24} style={{ color: colors.violet }} />
         <div>
           <span style={{ ...mono, fontSize: 22, fontWeight: 700, color: colors.text }}>{title}</span>
           {subtitle && <div style={{ ...mono, fontSize: 16, color: colors.muted, marginTop: 1 }}>{subtitle}</div>}
@@ -848,7 +848,7 @@ function KavitaPanel({ status, onClose, onRefresh }: {
 
             <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
               <Btn onClick={commitMove} disabled={moveBusy}
-                style={{ background: colors.purple + '18', borderColor: colors.purple + '40', color: colors.purple }}>
+                style={{ background: colors.violet + '18', borderColor: colors.violet + '40', color: colors.violet }}>
                 {moveBusy
                   ? <><Loader2 size={18} style={{ display: 'inline', marginRight: 4 }} />Moving…</>
                   : <><MoveRight size={18} style={{ display: 'inline', marginRight: 4 }} />Move Library</>}
@@ -879,9 +879,9 @@ function KavitaPanel({ status, onClose, onRefresh }: {
               {(Object.keys(LIB_TYPE_LABELS) as KavitaLibType[]).map(t => (
                 <button key={t} onClick={() => setNewLibType(t)} style={{
                   ...mono, fontSize: 16, padding: '4px 10px', borderRadius: 4, cursor: 'pointer',
-                  border: `1px solid ${newLibType === t ? colors.purple + '80' : colors.border}`,
-                  background: newLibType === t ? colors.purple + '18' : colors.surface,
-                  color: newLibType === t ? colors.purple : colors.muted,
+                  border: `1px solid ${newLibType === t ? colors.violet + '80' : colors.border}`,
+                  background: newLibType === t ? colors.violet + '18' : colors.surface,
+                  color: newLibType === t ? colors.violet : colors.muted,
                 }}>{LIB_TYPE_LABELS[t]}</button>
               ))}
             </div>
@@ -893,7 +893,7 @@ function KavitaPanel({ status, onClose, onRefresh }: {
 
             <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
               <Btn onClick={addLibrary} disabled={addLibBusy || !isRunning}
-                style={{ background: colors.purple + '18', borderColor: colors.purple + '40', color: colors.purple }}>
+                style={{ background: colors.violet + '18', borderColor: colors.violet + '40', color: colors.violet }}>
                 {addLibBusy ? 'Creating…' : 'Create Library'}
               </Btn>
               <Btn onClick={() => setView('libraries')}>Cancel</Btn>
@@ -934,9 +934,9 @@ function KavitaPanel({ status, onClose, onRefresh }: {
                   onDragLeave={() => setDropActive(false)}
                   onDrop={onDropFiles}
                   style={{
-                    border: `2px dashed ${dropActive ? colors.purple : colors.border}`,
+                    border: `2px dashed ${dropActive ? colors.violet : colors.border}`,
                     borderRadius: 6, padding: '32px 28px', textAlign: 'center',
-                    background: dropActive ? colors.purple + '0c' : colors.surface,
+                    background: dropActive ? colors.violet + '0c' : colors.surface,
                     transition: 'border-color .15s, background .15s', marginBottom: 12,
                   }}>
                   <div style={{ ...mono, fontSize: 18, color: colors.muted, marginBottom: 10 }}>
@@ -992,7 +992,7 @@ function KavitaPanel({ status, onClose, onRefresh }: {
                 {classifyErr && <div style={{ ...mono, fontSize: 18, color: colors.red, marginBottom: 8 }}>{classifyErr}</div>}
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <Btn onClick={runClassify} disabled={pendingPaths.length === 0}
-                    style={{ background: colors.purple + '18', borderColor: colors.purple + '40', color: colors.purple }}>
+                    style={{ background: colors.violet + '18', borderColor: colors.violet + '40', color: colors.violet }}>
                     Classify {pendingPaths.length > 0 ? `${pendingPaths.length} ` : ''}File{pendingPaths.length !== 1 ? 's' : ''}
                   </Btn>
                   {pendingPaths.length > 0 && (
@@ -1010,13 +1010,13 @@ function KavitaPanel({ status, onClose, onRefresh }: {
             {classifying && classifyProgress && (
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20 }}>
-                  <Loader2 size={22} style={{ color: colors.purple, animation: 'spin 1s linear infinite' }} />
-                  <span style={{ ...mono, fontSize: 18, color: colors.purple }}>
+                  <Loader2 size={22} style={{ color: colors.violet, animation: 'spin 1s linear infinite' }} />
+                  <span style={{ ...mono, fontSize: 18, color: colors.violet }}>
                     Classifying {classifyProgress.index + 1} / {classifyProgress.total}…
                   </span>
                 </div>
                 <div style={{ background: colors.surfaceHi, borderRadius: 3, height: 3, marginBottom: 12 }}>
-                  <div style={{ background: colors.purple, height: 3, borderRadius: 3,
+                  <div style={{ background: colors.violet, height: 3, borderRadius: 3,
                     width: `${classifyProgress.pct}%`, transition: 'width .2s' }} />
                 </div>
                 {classifyProgress.item && (
@@ -1078,9 +1078,9 @@ function KavitaPanel({ status, onClose, onRefresh }: {
                           {(Object.keys(INGEST_DEST_LABELS) as IngestDest[]).map(t => (
                             <button key={t} onClick={() => setQueueEdits(prev => ({ ...prev, [i]: t }))} style={{
                               ...mono, fontSize: 16, padding: '3px 8px', borderRadius: 3, cursor: 'pointer',
-                              border: `1px solid ${current === t ? colors.purple + '80' : colors.borderLo}`,
-                              background: current === t ? colors.purple + '18' : 'transparent',
-                              color: current === t ? colors.purple : colors.muted,
+                              border: `1px solid ${current === t ? colors.violet + '80' : colors.borderLo}`,
+                              background: current === t ? colors.violet + '18' : 'transparent',
+                              color: current === t ? colors.violet : colors.muted,
                             }}>{INGEST_DEST_LABELS[t]}</button>
                           ))}
                         </div>
@@ -1093,7 +1093,7 @@ function KavitaPanel({ status, onClose, onRefresh }: {
 
                 <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
                   <Btn onClick={commitIngest} disabled={commitBusy}
-                    style={{ background: colors.purple + '18', borderColor: colors.purple + '40', color: colors.purple }}>
+                    style={{ background: colors.violet + '18', borderColor: colors.violet + '40', color: colors.violet }}>
                     {commitBusy
                       ? <><Loader2 size={18} style={{ display: 'inline', marginRight: 4 }} />Copying…</>
                       : <>Copy {queue.length} file{queue.length !== 1 ? 's' : ''} to Libraries</>}
@@ -1166,7 +1166,7 @@ function KavitaPanel({ status, onClose, onRefresh }: {
             {isRunning && (
               <>
                 <Btn onClick={() => setView('ingest')}
-                  style={{ background: colors.purple + '18', borderColor: colors.purple + '40', color: colors.purple }}>
+                  style={{ background: colors.violet + '18', borderColor: colors.violet + '40', color: colors.violet }}>
                   <FileText size={18} style={{ display: 'inline', marginRight: 4 }} />Ingest
                 </Btn>
                 <Btn onClick={() => setView('add-library')}>
@@ -1218,8 +1218,8 @@ function KavitaPanel({ status, onClose, onRefresh }: {
                       {lib.name}
                     </span>
                     {isPhobosDocs && (
-                      <span style={{ ...mono, fontSize: 14, color: colors.purple,
-                        background: colors.purple + '15', border: `1px solid ${colors.purple + '30'}`,
+                      <span style={{ ...mono, fontSize: 14, color: colors.violet,
+                        background: colors.violet + '15', border: `1px solid ${colors.violet + '30'}`,
                         borderRadius: 3, padding: '1px 5px', letterSpacing: '.06em' }}>PHOBOS CORE</span>
                     )}
                     <span style={{ ...mono, fontSize: 16, color: colors.muted }}>
@@ -1310,7 +1310,7 @@ const JF_INGEST_LABELS: Record<JellyfinIngestDest, string> = {
 
 interface JfClassifyProgress { index: number; total: number; pct: number; item: JellyfinIngestItem | null; }
 
-const JF_BLUE = '#3b82f6';
+const JF_BLUE = '#00d4aa';
 
 function JellyfinPanel({ status, onClose, onRefresh }: {
   status:    ServiceStatus;
@@ -1521,7 +1521,7 @@ function JellyfinPanel({ status, onClose, onRefresh }: {
   const panelHeader = (title: string, subtitle: string, back?: () => void) => (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       padding: '20px 28px', borderBottom: `1px solid ${colors.border}`,
-      background: 'linear-gradient(180deg,#13161b 0%,#0d0f12 100%)' }}>
+      background: 'linear-gradient(180deg,#0f0f0a 0%,#080808 100%)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <Film size={24} style={{ color: JF_BLUE }} />
         <div>
@@ -1539,7 +1539,7 @@ function JellyfinPanel({ status, onClose, onRefresh }: {
   if (view === 'move-library' && moveTarget) {
     return (
       <div style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ width: 920, background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: 6, boxShadow: '0 24px 64px rgba(0,0,0,.8)', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
+        <div style={{ width: 920, background: colors.bg, border: `1px solid ${colors.border}`, boxShadow: '0 24px 64px rgba(0,0,0,.8)', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
           {panelHeader(`Move: ${moveTarget.lib.Name}`, 'Change library folder location', () => setView('libraries'))}
           <div style={{ padding: 16 }}>
             <label style={{ ...mono, fontSize: 16, color: colors.muted, display: 'block', marginBottom: 4 }}>CURRENT LOCATION</label>
@@ -1586,7 +1586,7 @@ function JellyfinPanel({ status, onClose, onRefresh }: {
     };
     return (
       <div style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ width: 920, background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: 6, boxShadow: '0 24px 64px rgba(0,0,0,.8)', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
+        <div style={{ width: 920, background: colors.bg, border: `1px solid ${colors.border}`, boxShadow: '0 24px 64px rgba(0,0,0,.8)', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
           {panelHeader('Move: phobosVideos', 'Change library folder location', () => setView('libraries'))}
           <div style={{ padding: 28 }}>
             <label style={{ ...mono, fontSize: 16, color: colors.muted, display: 'block', marginBottom: 8 }}>CURRENT LOCATION</label>
@@ -1626,7 +1626,7 @@ function JellyfinPanel({ status, onClose, onRefresh }: {
   if (view === 'add-library') {
     return (
       <div style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ width: 840, background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: 6, boxShadow: '0 24px 64px rgba(0,0,0,.8)', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
+        <div style={{ width: 840, background: colors.bg, border: `1px solid ${colors.border}`, boxShadow: '0 24px 64px rgba(0,0,0,.8)', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
           {panelHeader('Add Library', 'Create a new Jellyfin library', () => setView('libraries'))}
           <div style={{ padding: 16 }}>
             <label style={{ ...mono, fontSize: 16, color: colors.muted, display: 'block', marginBottom: 4 }}>LIBRARY NAME</label>
@@ -1664,7 +1664,7 @@ function JellyfinPanel({ status, onClose, onRefresh }: {
     const committed   = commitResult !== null;
     return (
       <div style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ width: 1080, maxHeight: '85vh', background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: 6, boxShadow: '0 24px 64px rgba(0,0,0,.8)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
+        <div style={{ width: 1080, maxHeight: '85vh', background: colors.bg, border: `1px solid ${colors.border}`, boxShadow: '0 24px 64px rgba(0,0,0,.8)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
           {panelHeader('Ingest Media', 'SYBIL classifies, you confirm', () => {
             setView('libraries'); setClassifyDone(false); setQueue([]); setQueueEdits({});
             setClassifyProg(null); setCommitResult(null); setPendingPaths([]);
@@ -1815,7 +1815,7 @@ function JellyfinPanel({ status, onClose, onRefresh }: {
   // ── Libraries view (default) ───────────────────────────────────────────────
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ width: 1000, maxHeight: '80vh', background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: 6, boxShadow: '0 24px 64px rgba(0,0,0,.8)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
+      <div style={{ width: 1000, maxHeight: '80vh', background: colors.bg, border: `1px solid ${colors.border}`, boxShadow: '0 24px 64px rgba(0,0,0,.8)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
         {panelHeader('Jellyfin', isRunning ? `Running · port ${status.port}` : status.state.toUpperCase())}
         <div style={{ padding: '14px 28px', borderBottom: `1px solid ${colors.borderLo}`, display: 'flex', alignItems: 'center', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -1897,7 +1897,7 @@ function JellyfinPanel({ status, onClose, onRefresh }: {
 
 // ── MeridianPanel ─────────────────────────────────────────────────────────────
 
-const MERIDIAN_TEAL = '#14b8a6';
+const MERIDIAN_TEAL = '#00ff41';
 
 type MeridianView = 'libraries' | 'edit-path' | 'ingest';
 
@@ -1998,7 +1998,7 @@ function MeridianPanel({ status, onClose, onRefresh }: {
   const panelHeader = (title: string, subtitle: string, back?: () => void) => (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       padding: '20px 28px', borderBottom: `1px solid ${colors.border}`,
-      background: 'linear-gradient(180deg,#13161b 0%,#0d0f12 100%)' }}>
+      background: 'linear-gradient(180deg,#0f0f0a 0%,#080808 100%)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <Camera size={24} style={{ color: MERIDIAN_TEAL }} />
         <div>
@@ -2016,7 +2016,7 @@ function MeridianPanel({ status, onClose, onRefresh }: {
   if (view === 'edit-path') {
     return (
       <div style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ width: 920, background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: 6, boxShadow: '0 24px 64px rgba(0,0,0,.8)', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
+        <div style={{ width: 920, background: colors.bg, border: `1px solid ${colors.border}`, boxShadow: '0 24px 64px rgba(0,0,0,.8)', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
           {panelHeader('Move: phobosPictures', 'Change library folder location', () => setView('libraries'))}
           <div style={{ padding: 28 }}>
             <label style={{ ...mono, fontSize: 16, color: colors.muted, display: 'block', marginBottom: 8 }}>CURRENT LOCATION</label>
@@ -2056,7 +2056,7 @@ function MeridianPanel({ status, onClose, onRefresh }: {
   if (view === 'ingest') {
     return (
       <div style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ width: 1000, maxHeight: '80vh', background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: 6, boxShadow: '0 24px 64px rgba(0,0,0,.8)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
+        <div style={{ width: 1000, maxHeight: '80vh', background: colors.bg, border: `1px solid ${colors.border}`, boxShadow: '0 24px 64px rgba(0,0,0,.8)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
           {panelHeader('Ingest Photos', 'Copy images into phobosPictures', () => { setView('libraries'); setPendingPaths([]); setIngestNote(''); })}
           <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
             {!hasVision && (
@@ -2122,7 +2122,7 @@ function MeridianPanel({ status, onClose, onRefresh }: {
   // ── Libraries view (default) ───────────────────────────────────────────────
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 9500, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ width: 960, maxHeight: '80vh', background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: 6, boxShadow: '0 24px 64px rgba(0,0,0,.8)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
+      <div style={{ width: 960, maxHeight: '80vh', background: colors.bg, border: `1px solid ${colors.border}`, boxShadow: '0 24px 64px rgba(0,0,0,.8)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
         {panelHeader('Meridian', isRunning ? `Running · port ${status.port}` : status.state.toUpperCase())}
         <div style={{ padding: '14px 28px', borderBottom: `1px solid ${colors.borderLo}`, display: 'flex', alignItems: 'center', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -2195,8 +2195,8 @@ function ServiceCard({ status, onConfigure }: {
   const meta  = SERVICE_META[status.name];
   const Icon  = meta.icon;
 
-  const stateColor = status.state === 'running' ? '#10b981'
-    : status.state === 'starting' ? '#f59e0b'
+  const stateColor = status.state === 'running' ? '#e8420a'
+    : status.state === 'starting' ? '#c8a000'
     : status.state === 'error'    ? '#ef4444'
     : 'hsl(var(--secondary))';
 
@@ -2267,7 +2267,7 @@ export function MediaHubPanel({ onClose }: Props) {
           {/* Header */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
             padding: '24px 32px', borderBottom: `1px solid ${colors.border}`,
-            background: 'linear-gradient(180deg,#13161b 0%,#0d0f12 100%)' }}>
+            background: 'linear-gradient(180deg,#0f0f0a 0%,#080808 100%)' }}>
             <div>
               <div style={{ ...mono, fontSize: 22, fontWeight: 700, color: colors.text, letterSpacing: '-.01em' }}>
                 Media Hub

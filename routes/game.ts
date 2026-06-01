@@ -12,19 +12,24 @@
  * DELETE /api/game/decorations/:id  — Remove decoration
  * GET  /api/game/ether/bank         — Read ether_held + ether_banked
  * POST /api/game/ether/bank         — Deposit or withdraw ether
+ * GET  /api/game/skill-tree/:class  — Serialized ClassSkillTree for a class id
  */
 
 import type { FastifyInstance } from 'fastify';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 import { GameStore } from '../db/GameStore.js';
 import { gsm } from '../game/GameStateManager.js';
+import { SKILL_TREES } from '../app/src/game/SkillTreeData.js';
+import { CLASS_DEFINITIONS } from '../app/src/game/PlayerClasses.js';
 
 export async function registerGameRoutes(fastify: FastifyInstance): Promise<void> {
-  const db = DatabaseManager.getUserDb();
-  const store = new GameStore(db);
+  // GameStore is per-user — derived per-request.
+  const getStore = (req: import('fastify').FastifyRequest) =>
+    new GameStore(DatabaseManager.getUserDb(req.phobosUser));
 
   // ── SSE Stream ─────────────────────────────────────────────────────────
   fastify.get('/api/game/stream', async (req, reply) => {
+    const store = getStore(req);
     const origin = req.headers.origin ?? '*';
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -56,7 +61,8 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   });
 
   // ── Player ─────────────────────────────────────────────────────────────
-  fastify.get('/api/game/player', async (_req, reply) => {
+  fastify.get('/api/game/player', async (req, reply) => {
+    const store = getStore(req);
     const player = await store.ensurePlayer();
     return reply.send(player);
   });
@@ -81,6 +87,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
       unlocked_nodes?: string;
     };
   }>('/api/game/player', async (req, reply) => {
+    const store = getStore(req);
     await store.ensurePlayer();
     const { xp, ...rest } = req.body;
     const fields: Record<string, unknown> = { ...rest };
@@ -93,6 +100,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.post<{
     Body: { xp: number };
   }>('/api/game/player/xp', async (req, reply) => {
+    const store = getStore(req);
     const amount = Math.max(0, Math.floor(req.body.xp ?? 0));
     const result = await store.addXp(amount);
     return reply.send(result);
@@ -105,6 +113,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.post<{
     Body: { hp: number | null };
   }>('/api/game/player/hp', async (req, reply) => {
+    const store = getStore(req);
     const { hp } = req.body;
     const value = (hp === null || hp === undefined) ? null : Math.max(0, Number(hp));
     await store.updatePlayer({ current_hp: value });
@@ -115,6 +124,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.post<{
     Body: { amount: number };
   }>('/api/game/collect', async (req, reply) => {
+    const store = getStore(req);
     const amount = Math.max(0, Math.floor(req.body.amount ?? 0));
     if (amount === 0) return reply.send({ ok: true, phobos_coins: 0 });
     const total = await store.addCoins(amount);
@@ -125,11 +135,13 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.get<{
     Querystring: { target?: string };
   }>('/api/game/inventory', async (req, reply) => {
+    const store = getStore(req);
     const items = await store.getInventory(req.query.target);
     return reply.send(items);
   });
 
-  fastify.get('/api/game/inventory/equipped', async (_req, reply) => {
+  fastify.get('/api/game/inventory/equipped', async (req, reply) => {
+    const store = getStore(req);
     const items = await store.getEquippedItems();
     return reply.send(items);
   });
@@ -137,6 +149,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.post<{
     Body: { item_id: string; target: string; slot?: string; rarity?: number; data?: string };
   }>('/api/game/inventory/add', async (req, reply) => {
+    const store = getStore(req);
     const { item_id, target, slot, rarity, data } = req.body;
     const item = await store.addItem(item_id, target, slot ?? '', rarity ?? 0, data ?? '{}');
     return reply.send(item);
@@ -145,6 +158,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.post<{
     Body: { id: string };
   }>('/api/game/inventory/equip', async (req, reply) => {
+    const store = getStore(req);
     await store.equipItem(req.body.id);
     const equipped = await store.getEquippedItems();
     return reply.send({ ok: true, equipped });
@@ -153,6 +167,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.post<{
     Body: { id: string };
   }>('/api/game/inventory/unequip', async (req, reply) => {
+    const store = getStore(req);
     await store.unequipItem(req.body.id);
     return reply.send({ ok: true });
   });
@@ -163,6 +178,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.post<{
     Body: { id: string; durability: number };
   }>('/api/game/inventory/durability', async (req, reply) => {
+    const store = getStore(req);
     const { id, durability } = req.body;
     if (!id || typeof durability !== 'number' || durability < 0) {
       return reply.status(400).send({ error: 'id and non-negative durability required' });
@@ -174,6 +190,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.post<{
     Body: { id: string; sellPrice?: number };
   }>('/api/game/inventory/sell', async (req, reply) => {
+    const store = getStore(req);
     const price = Math.max(0, req.body.sellPrice ?? 0);
     await store.removeItem(req.body.id);
     let coins = 0;
@@ -186,6 +203,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.post<{
     Body: { material_id: string; quantity: number };
   }>('/api/game/inventory/consume', async (req, reply) => {
+    const store = getStore(req);
     const { material_id, quantity } = req.body;
     if (!material_id || !Number.isInteger(quantity) || quantity < 1) {
       return reply.status(400).send({ error: 'material_id and integer quantity >= 1 required' });
@@ -197,12 +215,14 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.post<{
     Body: { amount: number };
   }>('/api/game/coins/spend', async (req, reply) => {
+    const store = getStore(req);
     const result = await store.spendCoins(Math.max(0, req.body.amount ?? 0));
     return reply.send(result);
   });
 
   // ── Ether Bank ─────────────────────────────────────────────────────────
-  fastify.get('/api/game/ether/bank', async (_req, reply) => {
+  fastify.get('/api/game/ether/bank', async (req, reply) => {
+    const store = getStore(req);
     const player = await store.ensurePlayer();
     return reply.send({ ether_held: player.ether_held, ether_banked: player.ether_banked });
   });
@@ -210,6 +230,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.post<{
     Body: { action: 'deposit' | 'withdraw'; amount: number };
   }>('/api/game/ether/bank', async (req, reply) => {
+    const store = getStore(req);
     const amount = Math.max(0, Math.floor(req.body.amount ?? 0));
     if (amount === 0) {
       const player = await store.ensurePlayer();
@@ -222,7 +243,8 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   });
 
   // ── Decorations ────────────────────────────────────────────────────────
-  fastify.get('/api/game/decorations', async (_req, reply) => {
+  fastify.get('/api/game/decorations', async (req, reply) => {
+    const store = getStore(req);
     const decs = await store.getDecorations();
     return reply.send(decs);
   });
@@ -230,6 +252,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.post<{
     Body: { item_id: string; tile_x: number; tile_y: number };
   }>('/api/game/decorations', async (req, reply) => {
+    const store = getStore(req);
     const dec = await store.placeDecoration(req.body.item_id, req.body.tile_x, req.body.tile_y);
     return reply.send(dec);
   });
@@ -237,6 +260,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.delete<{
     Params: { id: string };
   }>('/api/game/decorations/:id', async (req, reply) => {
+    const store = getStore(req);
     await store.removeDecoration(req.params.id);
     return reply.send({ ok: true });
   });
@@ -253,6 +277,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.get<{
     Querystring: { nodes?: string };
   }>('/api/game/minerals/status', async (req, reply) => {
+    const store = getStore(req);
     const ids = (req.query.nodes ?? '').split(',').map(s => s.trim()).filter(Boolean);
     const status = await store.getMineralStatus(ids);
     return reply.send(status);
@@ -261,6 +286,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.post<{
     Body: { node_id: string; bar_item_id: string };
   }>('/api/game/minerals/harvest', async (req, reply) => {
+    const store = getStore(req);
     const { node_id, bar_item_id } = req.body;
     if (!node_id || !bar_item_id) {
       return reply.status(400).send({ error: 'node_id and bar_item_id required' });
@@ -278,7 +304,8 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
 
   // ── Buildings ──────────────────────────────────────────────────────────────
 
-  fastify.get('/api/game/buildings', async (_req, reply) => {
+  fastify.get('/api/game/buildings', async (req, reply) => {
+    const store = getStore(req);
     const buildings = await store.getBuildings();
     return reply.send(buildings);
   });
@@ -286,6 +313,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.post<{
     Body: { building_id: string; tile_x: number; tile_y: number };
   }>('/api/game/buildings', async (req, reply) => {
+    const store = getStore(req);
     const { building_id, tile_x, tile_y } = req.body;
     const building = await store.placeBuilding(building_id, tile_x, tile_y);
     return reply.send(building);
@@ -294,6 +322,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.delete<{
     Params: { id: string };
   }>('/api/game/buildings/:id', async (req, reply) => {
+    const store = getStore(req);
     await store.removeBuilding(req.params.id);
     return reply.send({ ok: true });
   });
@@ -304,6 +333,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
     Params: { id: string };
     Body:   { tile_x: number; tile_y: number };
   }>('/api/game/buildings/:id', async (req, reply) => {
+    const store = getStore(req);
     const { tile_x, tile_y } = req.body;
     if (!Number.isInteger(tile_x) || !Number.isInteger(tile_y)) {
       return reply.status(400).send({ error: 'tile_x and tile_y must be integers' });
@@ -323,6 +353,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
       state:  'blueprint' | 'building' | 'built';
     };
   }>('/api/game/buildings/:id/supply', async (req, reply) => {
+    const store = getStore(req);
     const { config, state } = req.body;
     if (!config || !state) {
       return reply.status(400).send({ error: 'config and state are required' });
@@ -347,6 +378,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
     Params: { id: string };
     Body:   { material_id: string };
   }>('/api/game/buildings/:id/collect', async (req, reply) => {
+    const store = getStore(req);
     const { material_id } = req.body;
     if (!material_id) {
       return reply.status(400).send({ error: 'material_id is required' });
@@ -386,6 +418,7 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.post<{
     Body: { id: string };
   }>('/api/game/house/storage/deposit', async (req, reply) => {
+    const store = getStore(req);
     const { id } = req.body;
     if (!id) return reply.status(400).send({ error: 'id required' });
     const result = await store.depositToHouse(id);
@@ -401,12 +434,39 @@ export async function registerGameRoutes(fastify: FastifyInstance): Promise<void
   fastify.post<{
     Body: { id: string };
   }>('/api/game/house/storage/withdraw', async (req, reply) => {
+    const store = getStore(req);
     const { id } = req.body;
     if (!id) return reply.status(400).send({ error: 'id required' });
     const result = await store.withdrawFromHouse(id);
     if (result === 'not_found')    return reply.status(404).send({ error: 'item not found' });
     if (result === 'wrong_target') return reply.status(409).send({ error: 'item not in house storage' });
     return reply.send({ ok: true });
+  });
+
+
+  // ── Skill Tree ─────────────────────────────────────────────────────────────
+  // GET /api/game/skill-tree/:class
+  // Returns the full serialized ClassSkillTree for the given class id, along
+  // with the class definition (name, title, abilities list) so the mobile can
+  // render the tree without bundling the static data itself.
+  // Valid class ids: fighter | tank | healer | rogue
+
+  fastify.get<{
+    Params: { class: string };
+  }>('/api/game/skill-tree/:class', async (req, reply) => {
+    const cls = req.params.class as keyof typeof SKILL_TREES;
+    const tree = SKILL_TREES[cls];
+    if (!tree) {
+      return reply.status(400).send({ error: `Unknown class: ${cls}` });
+    }
+    const classDef = CLASS_DEFINITIONS[cls];
+    return reply.send({
+      classId:    cls,
+      className:  classDef.name,
+      classTitle: classDef.title,
+      abilities:  classDef.abilities,   // AbilityData[] — names for tree section headers
+      tree,                             // ClassSkillTree — all nodes, passives, aura
+    });
   });
 
 }

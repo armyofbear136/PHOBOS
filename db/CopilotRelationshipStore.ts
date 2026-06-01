@@ -1,7 +1,7 @@
 import { DatabaseManager } from './DatabaseManager.js';
 
 export interface CopilotRelationshipState {
-  persona: 'sayon' | 'seren';
+  persona: string;
   bond_score: number;
   emotional_state: string;
   message_count: number;
@@ -25,7 +25,7 @@ export class CopilotRelationshipStore {
   async ensureTable(): Promise<void> {
     await this.db.run(`
       CREATE TABLE IF NOT EXISTS copilot_relationship (
-        persona               VARCHAR PRIMARY KEY CHECK (persona IN ('sayon', 'seren')),
+        persona               VARCHAR PRIMARY KEY,
         bond_score            DOUBLE  NOT NULL DEFAULT 0.0,
         emotional_state       VARCHAR NOT NULL DEFAULT 'calm',
         message_count         INTEGER NOT NULL DEFAULT 0,
@@ -34,9 +34,38 @@ export class CopilotRelationshipStore {
         last_interaction_at   TIMESTAMP
       )
     `);
+    await this._migrateDropPersonaCheck();
   }
 
-  async getState(persona: 'sayon' | 'seren'): Promise<CopilotRelationshipState> {
+  /**
+   * Same as CopilotMemoryStore migration — drops the CHECK (persona IN ('sayon','seren'))
+   * constraint so clone persona strings can be inserted.
+   */
+  private async _migrateDropPersonaCheck(): Promise<void> {
+    try {
+      await this.db.run(
+        `INSERT INTO copilot_relationship (persona) VALUES ('__probe__')`,
+      );
+      await this.db.run(`DELETE FROM copilot_relationship WHERE persona = '__probe__'`);
+    } catch {
+      await this.db.exec(`
+        ALTER TABLE copilot_relationship RENAME TO copilot_relationship_old;
+        CREATE TABLE copilot_relationship (
+          persona               VARCHAR PRIMARY KEY,
+          bond_score            DOUBLE  NOT NULL DEFAULT 0.0,
+          emotional_state       VARCHAR NOT NULL DEFAULT 'calm',
+          message_count         INTEGER NOT NULL DEFAULT 0,
+          session_count         INTEGER NOT NULL DEFAULT 0,
+          first_interaction_at  TIMESTAMP,
+          last_interaction_at   TIMESTAMP
+        );
+        INSERT INTO copilot_relationship SELECT * FROM copilot_relationship_old;
+        DROP TABLE copilot_relationship_old;
+      `);
+    }
+  }
+
+  async getState(persona: string): Promise<CopilotRelationshipState> {
     const row = await this.db.queryOne<CopilotRelationshipState>(
       `SELECT * FROM copilot_relationship WHERE persona = ?`,
       [persona]
@@ -57,7 +86,7 @@ export class CopilotRelationshipStore {
    * Bond delta: +0.004 per exchange — reaching ~0.4 after 100 exchanges (Mutual Respect).
    * Capped at 1.0. Mirrors AIEngine.gd _apply_relationship_delta().
    */
-  async recordExchange(persona: 'sayon' | 'seren', bondDelta = 0.004): Promise<void> {
+  async recordExchange(persona: string, bondDelta = 0.004): Promise<void> {
     const now = new Date().toISOString();
     const existing = await this.db.queryOne<CopilotRelationshipState>(
       `SELECT * FROM copilot_relationship WHERE persona = ?`,
@@ -83,7 +112,7 @@ export class CopilotRelationshipStore {
     );
   }
 
-  async setEmotionalState(persona: 'sayon' | 'seren', emotion: string): Promise<void> {
+  async setEmotionalState(persona: string, emotion: string): Promise<void> {
     await this.db.run(
       `UPDATE copilot_relationship SET emotional_state = ? WHERE persona = ?`,
       [emotion.toLowerCase().trim(), persona]
@@ -91,7 +120,7 @@ export class CopilotRelationshipStore {
   }
 
   /** Called once per server start per persona to increment session counter. */
-  async recordSession(persona: 'sayon' | 'seren'): Promise<void> {
+  async recordSession(persona: string): Promise<void> {
     const existing = await this.db.queryOne<{ persona: string }>(
       `SELECT persona FROM copilot_relationship WHERE persona = ?`,
       [persona]
@@ -104,7 +133,7 @@ export class CopilotRelationshipStore {
   }
 
   /** Days since first interaction, or 0 if no history. */
-  async getDaysKnown(persona: 'sayon' | 'seren'): Promise<number> {
+  async getDaysKnown(persona: string): Promise<number> {
     const state = await this.getState(persona);
     if (!state.first_interaction_at) return 0;
     const first = new Date(state.first_interaction_at).getTime();

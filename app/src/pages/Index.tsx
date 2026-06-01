@@ -32,6 +32,9 @@ import { VideosPanel } from '@/components/editors/VideosPanel';
 import { BlockbenchPanel } from '@/components/editors/BlockbenchPanel';
 import { SculptGLPanel }   from '@/components/editors/SculptGLPanel';
 import { GodotPanel }      from '@/components/editors/GodotPanel';
+import { FriendsPanel }       from '@/components/social/FriendsPanel';
+import { ChatDockColumn }     from '@/components/social/ChatDockColumn';
+import { FloatingChatWindow } from '@/components/social/FloatingChatWindow';
 
 const ENGINE_URL = (import.meta.env.VITE_ENGINE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
 
@@ -349,6 +352,43 @@ const Index = () => {
 
   const engineOffline = connectionStatus.engine === 'disconnected';
 
+  // ── Friends Panel hover trigger ────────────────────────────────────────────
+  const friendsPanelOpen    = useAppStore((s) => s.friendsPanelOpen);
+  const setFriendsPanelOpen = useAppStore((s) => s.setFriendsPanelOpen);
+  const dockedChats         = useAppStore((s) => s.dockedChats);
+  const dockScrollOffset    = useAppStore((s) => s.dockScrollOffset);
+  const friendsHoverTimer   = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [windowH, setWindowH] = useState(() => window.innerHeight);
+
+  // Measure the sidebar's actual right edge so FloatingChatWindows anchor correctly
+  const sidebarWrapRef   = useRef<HTMLDivElement>(null);
+  const [leftAnchor, setLeftAnchor] = useState(44); // dock width fallback
+
+  useEffect(() => {
+    const measure = () => {
+      if (sidebarWrapRef.current) {
+        const rect = sidebarWrapRef.current.getBoundingClientRect();
+        setLeftAnchor(rect.right);
+      }
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, []);
+
+  useEffect(() => {
+    const onResize = () => setWindowH(window.innerHeight);
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      if (friendsHoverTimer.current) clearTimeout(friendsHoverTimer.current);
+    };
+  }, []);
+
+  // Visible slot count matches ChatDockColumn logic
+  const dockVisibleSlots = windowH - 40 - 34 >= 430 ? 3 : windowH - 40 - 34 >= 215 ? 2 : 1;
+  const dockSlotH = Math.floor((windowH - 40 - 34 - 2 * (dockVisibleSlots - 1)) / dockVisibleSlots);
+
   // Close dropdown on outside click
   useEffect(() => {
     if (!projectDropdownOpen) return;
@@ -457,6 +497,9 @@ const Index = () => {
         <HeaderBar />
       </div>
       <div className="flex-1 flex overflow-hidden phobos-world-content" style={{ backgroundColor: 'transparent' }}>
+        <div ref={sidebarWrapRef} className="shrink-0" style={{ width: 44 }}>
+          <ChatDockColumn />
+        </div>
         <div className="phobos-sidebar">
           <Sidebar />
         </div>
@@ -473,28 +516,28 @@ const Index = () => {
             }`}>
               {/* Ghost PHOBOS background hidden — game world is the background */}
 
-              <div className="phobos-chrome-zone px-4 py-1.5 border-b border-border/30 bg-background/80 relative z-20 flex items-center justify-between">
+              <div className="phob-chrome-zone px-4 py-1.5 border-b border-phob-orange/20 bg-[#080808] relative z-20 flex items-center justify-between">
                 <div className="flex-1 min-w-0">
-                  <h2 className="text-[11px] font-mono font-medium text-foreground/70 truncate">
+                  <h2 className="text-[10px] font-terminal uppercase tracking-[0.2em] text-phob-orange/70 truncate">
                     {activeThread?.title || 'Select a conversation'}
                   </h2>
                   {activeThread && (
                     <div className="relative" ref={dropdownRef}>
                       <button
                         onClick={() => setProjectDropdownOpen(!projectDropdownOpen)}
-                        className="flex items-center gap-1 text-[10px] text-ui-glow text-ui-glow-hover font-mono transition-colors mt-0.5"
+                        className="flex items-center gap-1 text-[9px] font-mono text-phob-orange/35 hover:text-phob-orange/60 transition-colors mt-0.5"
                       >
                         {currentProject?.name || 'No project'}
                         <ChevronDown className="w-3 h-3" />
                       </button>
                       {projectDropdownOpen && (
                         <div
-                          className="absolute top-full left-0 mt-1 bg-secondary border border-phobos-green/20 rounded-sm shadow-lg z-50 min-w-[200px]"
-                          style={{ boxShadow: '0 0 20px rgba(0,255,65,0.06)' }}
+                          className="absolute top-full left-0 mt-1 bg-[#0f0f0a] border border-phob-orange/25 shadow-lg z-50 min-w-[200px]"
+                          style={{ boxShadow: '0 0 16px rgba(232,66,10,0.08)' }}
                         >
                           <button
                             onClick={() => handleProjectSelect(null)}
-                            className="w-full text-left px-3 py-1.5 text-[11px] font-mono text-muted-foreground/60 hover:bg-phobos-green/10 hover:text-phobos-green/80 transition-all"
+                            className="w-full text-left px-3 py-1.5 text-[11px] font-mono text-phob-steel/50 hover:bg-phob-orange/8 hover:text-phob-orange/80 transition-all"
                           >
                             — None —
                           </button>
@@ -502,7 +545,7 @@ const Index = () => {
                             <button
                               key={doc.id}
                               onClick={() => handleProjectSelect(doc.projectId)}
-                              className="w-full text-left px-3 py-1.5 text-[11px] font-mono text-muted-foreground/60 hover:bg-phobos-green/10 hover:text-phobos-green/80 transition-all"
+                              className="w-full text-left px-3 py-1.5 text-[11px] font-mono text-phob-steel/50 hover:bg-phob-orange/8 hover:text-phob-orange/80 transition-all"
                             >
                               {doc.name}
                             </button>
@@ -518,7 +561,7 @@ const Index = () => {
                   <div className="flex items-center shrink-0 ml-3">
                     <button
                       onClick={() => window.open(`${ENGINE_URL}/api/threads/${activeThreadId}/export`, '_blank')}
-                      className="w-4 h-4 flex items-center justify-center rounded text-ui-glow hover:text-phobos-green/70 hover:bg-accent transition-all"
+                      className="w-4 h-4 flex items-center justify-center text-phob-orange/35 hover:text-phob-orange/70 hover:bg-phob-orange/8 transition-all"
                       title="Export conversation transcript"
                     >
                       <Download className="w-3 h-3" />
@@ -532,7 +575,7 @@ const Index = () => {
                     <button
                       onClick={handleNewImageGen}
                       disabled={imageModels.length === 0}
-                      className="flex items-center gap-1 px-2 py-0.5 text-[9px] font-terminal uppercase tracking-[0.1em] rounded-sm border border-phobos-green/25 text-phobos-green/60 hover:text-phobos-green hover:border-phobos-green/50 transition-all disabled:opacity-25"
+                      className="flex items-center gap-1 px-2 py-0.5 text-[9px] font-terminal uppercase tracking-[0.1em] rounded-sm border border-phob-green/25 text-phob-green/60 hover:text-phob-green hover:border-phob-green/50 skew-x-[-4deg] transition-all disabled:opacity-25"
                       title={imageModels.length === 0 ? 'No image models installed' : 'Create new image workflow'}
                     >
                       <Aperture className="w-2.5 h-2.5" />
@@ -556,7 +599,7 @@ const Index = () => {
                               key={m.modelId}
                               onClick={() => { setSelectedImageModel(m.modelId); setImageModelDropdownOpen(false); }}
                               className={`w-full text-left px-3 py-1.5 text-[10px] font-mono transition-all hover:bg-accent ${
-                                m.modelId === selectedImageModel ? 'text-phobos-green bg-phobos-green/5' : 'text-muted-foreground/60'
+                                m.modelId === selectedImageModel ? 'text-phob-green bg-phob-green/5' : 'text-muted-foreground/60'
                               }`}
                             >
                               {m.label}
@@ -574,7 +617,7 @@ const Index = () => {
                     <button
                       onClick={handleNewVideoGen}
                       disabled={videoModels.length === 0}
-                      className="flex items-center gap-1 px-2 py-0.5 text-[9px] font-terminal uppercase tracking-[0.1em] rounded-sm border border-phobos-amber/25 text-phobos-amber/60 hover:text-phobos-amber hover:border-phobos-amber/50 transition-all disabled:opacity-25"
+                      className="flex items-center gap-1 px-2 py-0.5 text-[9px] font-terminal uppercase tracking-[0.1em] rounded-sm border border-phob-amber/25 text-phob-amber/60 hover:text-phob-amber hover:border-phob-amber/50 skew-x-[-4deg] transition-all disabled:opacity-25"
                       title={videoModels.length === 0 ? 'No video models installed' : 'Create new video workflow'}
                     >
                       <Film className="w-2.5 h-2.5" />
@@ -598,7 +641,7 @@ const Index = () => {
                               key={m.modelId}
                               onClick={() => { setSelectedVideoModel(m.modelId); setVideoModelDropdownOpen(false); }}
                               className={`w-full text-left px-3 py-1.5 text-[10px] font-mono transition-all hover:bg-accent ${
-                                m.modelId === selectedVideoModel ? 'text-phobos-amber bg-phobos-amber/5' : 'text-muted-foreground/60'
+                                m.modelId === selectedVideoModel ? 'text-phob-amber bg-phob-amber/5' : 'text-muted-foreground/60'
                               }`}
                             >
                               {m.label}
@@ -616,7 +659,7 @@ const Index = () => {
                     <button
                       onClick={() => handleNewAudioGen(audioModeTab)}
                       disabled={!audDepsReady}
-                      className="flex items-center gap-1 px-2 py-0.5 text-[9px] font-terminal uppercase tracking-[0.1em] rounded-sm border border-cyan-400/25 text-cyan-400/60 hover:text-cyan-400 hover:border-cyan-400/50 transition-all disabled:opacity-25"
+                      className="flex items-center gap-1 px-2 py-0.5 text-[9px] font-terminal uppercase tracking-[0.1em] rounded-sm border border-phob-teal/25 text-phob-teal/60 hover:text-phob-teal hover:border-phob-teal/50 skew-x-[-4deg] transition-all disabled:opacity-25"
                       title={audDepsReady ? 'New audio workflow' : 'Audio gen deps not installed — open System Settings → Audio'}
                     >
                       <Music className="w-2.5 h-2.5" />
@@ -644,7 +687,7 @@ const Index = () => {
                               onClick={() => { setAudioModeDropdownOpen(false); setAudioModeTab(tab); handleNewAudioGen(tab); }}
                               className={`w-full text-left px-3 py-1.5 text-[10px] font-mono transition-all hover:bg-accent ${
                                 audioModeTab === tab
-                                  ? 'text-cyan-400 bg-cyan-400/5'
+                                  ? 'text-phob-teal bg-phob-teal/5'
                                   : 'text-muted-foreground/60'
                               }`}
                             >
@@ -679,8 +722,8 @@ const Index = () => {
                     }}
                     className={`text-[9px] font-mono uppercase tracking-wider transition-colors select-none px-0.5 rounded hover:opacity-80 ${
                       ctxOverrideActive
-                        ? 'text-red-400/90 cursor-pointer'
-                        : 'text-phobos-green/70 cursor-pointer'
+                        ? 'text-phob-red/80 cursor-pointer'
+                        : 'text-phob-green/70 cursor-pointer'
                     }`}
                     title={ctxOverrideActive
                       ? 'Context override active — click to return to AUTO'
@@ -691,7 +734,7 @@ const Index = () => {
                   </button>
                   <span
                     className={`text-[11px] font-mono w-5 text-center tabular-nums select-none transition-colors ${
-                      ctxOverrideActive ? 'text-red-400/80' : 'text-phobos-green/60'
+                      ctxOverrideActive ? 'text-phob-red/80' : 'text-phob-green/60'
                     }`}
                     title={ctxOverrideActive
                       ? `Manual override: ${contextHistoryDepth} message pairs`
@@ -707,7 +750,7 @@ const Index = () => {
                       <button
                         onClick={() => setContextHistoryDepth(contextHistoryDepth - 1)}
                         disabled={contextHistoryDepth <= 1}
-                        className="w-4 h-4 flex items-center justify-center rounded text-red-400/60 hover:text-red-400 hover:bg-red-400/10 transition-all disabled:opacity-20 disabled:cursor-not-allowed text-xs leading-none"
+                        className="w-4 h-4 flex items-center justify-center rounded text-phob-red/60 hover:text-phob-red hover:bg-phob-red/10 transition-all disabled:opacity-20 disabled:cursor-not-allowed text-xs leading-none"
                         title="Fewer context messages"
                       >
                         −
@@ -750,6 +793,48 @@ const Index = () => {
         {/* CopilotPanel hoisted outside isEmpty branch — must never unmount (owns MediaRecorder refs) */}
         <CopilotPanel />
       </div>
+
+      {/* ── Left-edge Friends Panel hover trigger ─────────────────────────── */}
+      <div
+        style={{
+          position:      'fixed',
+          top:           40,
+          left:          0,
+          width:         16,
+          bottom:        0,
+          zIndex:        9997,
+          pointerEvents: friendsPanelOpen ? 'none' : 'auto',
+        }}
+        onMouseEnter={() => {
+          if (friendsPanelOpen) return;
+          friendsHoverTimer.current = setTimeout(() => setFriendsPanelOpen(true), 250);
+        }}
+        onMouseLeave={() => {
+          if (friendsHoverTimer.current) {
+            clearTimeout(friendsHoverTimer.current);
+            friendsHoverTimer.current = null;
+          }
+        }}
+      />
+
+      {/* ── Friends Panel portal ───────────────────────────────────────────── */}
+      <FriendsPanel />
+
+      {/* ── Floating chat windows — one per visible non-minimized docked chat ─ */}
+      {dockedChats
+        .slice(dockScrollOffset, dockScrollOffset + dockVisibleSlots)
+        .map((chat, slotIndex) =>
+          !chat.minimized ? (
+            <FloatingChatWindow
+              key={chat.friendId}
+              chat={chat}
+              slotIndex={slotIndex}
+              slotH={dockSlotH}
+              leftAnchor={leftAnchor}
+            />
+          ) : null
+        )
+      }
     </div>
     </>
   );

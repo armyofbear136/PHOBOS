@@ -39,10 +39,10 @@ interface TaskRun {
 interface Props { onClose: () => void; }
 
 const STATUS_DOT: Record<string, string> = {
-  success: 'bg-phobos-green',
-  error:   'bg-destructive',
-  pending: 'bg-phobos-amber',
-  running: 'bg-phobos-amber animate-pulse',
+  success: 'bg-phob-green',
+  error:   'bg-phob-red',
+  pending: 'bg-phob-amber',
+  running: 'phob-dot text-phob-amber',
 };
 
 function fmtTime(iso: string | null): string {
@@ -143,27 +143,27 @@ export function SchedulerPanel({ onClose }: Props) {
 
   return (
     <>
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
-        <div className="phobos-panel w-[760px] max-w-[96vw] h-[600px] max-h-[88vh] bg-card border border-border rounded-sm flex flex-col overflow-hidden shadow-2xl">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-phob-void/85 backdrop-blur-sm">
+        <div className="w-[760px] max-w-[96vw] h-[600px] max-h-[88vh] bg-[#0f0f0a] border border-phob-amber/30 flex flex-col overflow-hidden shadow-[0_0_24px_rgba(200,160,0,0.10)] phob-corners phob-corners-full">
 
           {/* Header */}
-          <div className="phobos-chrome-zone h-10 flex items-center justify-between px-3 border-b border-border/50 bg-background shrink-0">
+          <div className="phob-chrome-zone phob-header h-10 flex items-center justify-between px-3 border-b border-phob-amber/25 bg-[#080808] shrink-0">
             <div className="flex items-center gap-2">
-              <Clock className="w-3.5 h-3.5 text-phobos-green/50" />
-              <span className="text-[10px] font-terminal uppercase tracking-[0.15em] text-phobos-green/70">
+              <Clock className="w-3.5 h-3.5 text-phob-amber/50" />
+              <span className="text-[10px] font-terminal uppercase tracking-[0.15em] text-phob-amber/70">
                 Scheduler
               </span>
             </div>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setBuilding(true)}
-                className="flex items-center gap-1 px-2.5 py-1 text-[9px] font-terminal uppercase tracking-widest border border-phobos-green/30 text-phobos-green/70 hover:bg-phobos-green/5 hover:border-phobos-green/50 rounded-sm transition-colors"
+                className="flex items-center gap-1 px-2.5 py-1 text-[9px] font-terminal uppercase tracking-widest border border-phob-green/30 text-phob-amber/70 hover:bg-phob-green/5 hover:border-phob-green/50  transition-colors"
               >
                 <Plus className="w-3 h-3" />
                 New Task
               </button>
-              <button onClick={onClose} className="p-1 hover:bg-accent rounded transition-colors">
-                <X className="w-3.5 h-3.5 text-muted-foreground" />
+              <button onClick={onClose} className="p-1 hover:bg-phob-amber/8 rounded transition-colors">
+                <X className="w-3.5 h-3.5 text-phob-steel/50" />
               </button>
             </div>
           </div>
@@ -172,14 +172,14 @@ export function SchedulerPanel({ onClose }: Props) {
           <div className="flex-1 overflow-y-auto">
             {loading ? (
               <div className="flex items-center justify-center h-full">
-                <span className="text-[10px] font-terminal text-muted-foreground/40 uppercase tracking-widest">Loading…</span>
+                <span className="text-[10px] font-terminal text-phob-steel/40 uppercase tracking-widest">Loading…</span>
               </div>
             ) : tasks.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full gap-3">
-                <Clock className="w-8 h-8 text-muted-foreground/20" />
-                <span className="text-xs text-muted-foreground/40">No scheduled tasks</span>
+                <Clock className="w-8 h-8 text-phob-amber/20" />
+                <span className="text-xs text-phob-steel/40">No scheduled tasks</span>
                 <button onClick={() => setBuilding(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-terminal uppercase tracking-widest border border-phobos-green/30 text-phobos-green/70 hover:bg-phobos-green/5 rounded-sm transition-colors">
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-terminal uppercase tracking-widest border border-phob-green/30 text-phob-amber/70 hover:bg-phob-green/5  transition-colors">
                   <Plus className="w-3 h-3" />
                   Create first task
                 </button>
@@ -187,9 +187,9 @@ export function SchedulerPanel({ onClose }: Props) {
             ) : (
               <table className="w-full text-xs border-collapse">
                 <thead>
-                  <tr className="border-b border-border/30">
+                  <tr className="border-b border-phob-amber/15">
                     {['', 'Name', 'Schedule', 'Last Run', 'Next Run', 'Status', ''].map((h, i) => (
-                      <th key={i} className="text-left text-[9px] font-terminal uppercase tracking-widest text-muted-foreground/40 px-3 py-2 font-normal">
+                      <th key={i} className="text-left text-[9px] font-terminal uppercase tracking-widest text-phob-steel/40 px-3 py-2 font-normal">
                         {h}
                       </th>
                     ))}
@@ -199,11 +199,11 @@ export function SchedulerPanel({ onClose }: Props) {
                   {tasks.map(task => (
                     <Fragment key={task.id}>
                       <tr
-                        className={`border-b border-border/20 hover:bg-accent/30 transition-colors ${!task.enabled ? 'opacity-50' : ''}`}
+                        className={`border-b border-phob-amber/15 hover:bg-phob-white/4 transition-colors ${!task.enabled ? 'opacity-50' : ''}`}
                       >
                         {/* Expand toggle */}
                         <td className="px-2 py-2 w-6">
-                          <button onClick={() => toggleExpand(task.id)} className="text-muted-foreground/40 hover:text-muted-foreground/70 transition-colors">
+                          <button onClick={() => toggleExpand(task.id)} className="text-phob-steel/40 hover:text-phob-steel/70 transition-colors">
                             {expandedId === task.id
                               ? <ChevronDown className="w-3 h-3" />
                               : <ChevronRight className="w-3 h-3" />}
@@ -211,27 +211,27 @@ export function SchedulerPanel({ onClose }: Props) {
                         </td>
                         {/* Name */}
                         <td className="px-2 py-2">
-                          <div className="text-[11px] font-medium text-foreground/80">{task.name}</div>
+                          <div className="text-[11px] font-medium text-phob-white/80">{task.name}</div>
                           {task.description && (
-                            <div className="text-[9px] text-muted-foreground/50 mt-0.5">{task.description}</div>
+                            <div className="text-[9px] text-phob-steel/45 mt-0.5">{task.description}</div>
                           )}
                           {task.task_type && task.task_type !== 'conversation' && (
-                            <div className="text-[8px] font-mono text-muted-foreground/30 mt-0.5 uppercase tracking-widest">{task.task_type}</div>
+                            <div className="text-[8px] font-mono text-phob-steel/30 mt-0.5 uppercase tracking-widest">{task.task_type}</div>
                           )}
                           {(task.pinned_sayon_model || task.pinned_seren_model || task.pinned_cartridge_id) && (
-                            <div className="text-[8px] font-mono text-phobos-green/40 mt-0.5">model override active</div>
+                            <div className="text-[8px] font-mono text-phob-amber/40 mt-0.5">model override active</div>
                           )}
                         </td>
                         {/* Schedule */}
-                        <td className="px-2 py-2 text-[10px] font-mono text-muted-foreground/60 whitespace-nowrap">
+                        <td className="px-2 py-2 text-[10px] font-mono text-phob-steel/50 whitespace-nowrap">
                           {humanCron(task.cron_expression)}
                         </td>
                         {/* Last run */}
-                        <td className="px-2 py-2 text-[10px] text-muted-foreground/50 whitespace-nowrap">
+                        <td className="px-2 py-2 text-[10px] text-phob-steel/45 whitespace-nowrap">
                           {fmtTime(task.last_run_at)}
                         </td>
                         {/* Next run */}
-                        <td className="px-2 py-2 text-[10px] text-muted-foreground/50 whitespace-nowrap">
+                        <td className="px-2 py-2 text-[10px] text-phob-steel/45 whitespace-nowrap">
                           {task.enabled ? fmtNextRun(task.next_run_at) : '—'}
                         </td>
                         {/* Status dot */}
@@ -244,21 +244,21 @@ export function SchedulerPanel({ onClose }: Props) {
                         <td className="px-2 py-2">
                           <div className="flex items-center gap-1 justify-end">
                             <button title="Run now" onClick={() => handleRunNow(task)}
-                              className="p-1 text-muted-foreground/40 hover:text-phobos-green/70 transition-colors">
+                              className="p-1 text-phob-steel/40 hover:text-phob-amber/70 transition-colors">
                               <Play className="w-3 h-3" />
                             </button>
                             <button title={task.enabled ? 'Disable' : 'Enable'} onClick={() => handleToggle(task)}
-                              className="p-1 text-muted-foreground/40 hover:text-phobos-green/70 transition-colors">
+                              className="p-1 text-phob-steel/40 hover:text-phob-amber/70 transition-colors">
                               {task.enabled
-                                ? <ToggleRight className="w-3.5 h-3.5 text-phobos-green/60" />
+                                ? <ToggleRight className="w-3.5 h-3.5 text-phob-amber/60" />
                                 : <ToggleLeft className="w-3.5 h-3.5" />}
                             </button>
                             <button title="Edit" onClick={() => setEditing(task)}
-                              className="p-1 text-[9px] font-terminal text-muted-foreground/40 hover:text-muted-foreground/70 transition-colors">
+                              className="p-1 text-[9px] font-terminal text-phob-steel/40 hover:text-phob-steel/70 transition-colors">
                               EDIT
                             </button>
                             <button title="Delete" onClick={() => handleDelete(task)}
-                              className="p-1 text-muted-foreground/40 hover:text-destructive/70 transition-colors">
+                              className="p-1 text-phob-steel/40 hover:text-destructive/70 transition-colors">
                               <Trash2 className="w-3 h-3" />
                             </button>
                           </div>
@@ -267,21 +267,21 @@ export function SchedulerPanel({ onClose }: Props) {
 
                       {/* Run history expand */}
                       {expandedId === task.id && (
-                        <tr key={`${task.id}-runs`} className="border-b border-border/10 bg-black/20">
+                        <tr key={`${task.id}-runs`} className="border-b border-phob-amber/8 bg-phob-white/3">
                           <td colSpan={7} className="px-6 py-2">
                             {!runs[task.id] ? (
-                              <span className="text-[9px] text-muted-foreground/40">Loading history…</span>
+                              <span className="text-[9px] text-phob-steel/40">Loading history…</span>
                             ) : runs[task.id].length === 0 ? (
-                              <span className="text-[9px] text-muted-foreground/40">No runs yet</span>
+                              <span className="text-[9px] text-phob-steel/40">No runs yet</span>
                             ) : (
                               <div className="space-y-1">
                                 {runs[task.id].slice(0, 10).map(run => (
-                                  <div key={run.id} className="flex items-center gap-3 text-[9px] font-mono text-muted-foreground/50">
+                                  <div key={run.id} className="flex items-center gap-3 text-[9px] font-mono text-phob-steel/45">
                                     <span className={`w-1 h-1 rounded-full shrink-0 ${STATUS_DOT[run.status] ?? 'bg-muted-foreground/30'}`} />
-                                    <span className="text-muted-foreground/70">{fmtTime(run.started_at)}</span>
-                                    <span className="text-muted-foreground/40 uppercase">{run.status}</span>
+                                    <span className="text-phob-steel/55">{fmtTime(run.started_at)}</span>
+                                    <span className="text-phob-steel/40 uppercase">{run.status}</span>
                                     {run.output_summary && (
-                                      <span className="truncate max-w-[400px] text-muted-foreground/40">{run.output_summary}</span>
+                                      <span className="truncate max-w-[400px] text-phob-steel/40">{run.output_summary}</span>
                                     )}
                                     {run.error_message && (
                                       <span className="truncate max-w-[400px] text-destructive/60">{run.error_message}</span>
@@ -301,8 +301,8 @@ export function SchedulerPanel({ onClose }: Props) {
           </div>
 
           {/* Footer */}
-          <div className="h-8 flex items-center px-3 border-t border-border/30 bg-black/20 shrink-0">
-            <span className="text-[9px] font-terminal text-muted-foreground/30 uppercase tracking-widest">
+          <div className="h-8 flex items-center px-3 border-t border-border/30 bg-phob-white/3 shrink-0">
+            <span className="text-[9px] font-terminal text-phob-steel/30 uppercase tracking-widest">
               {tasks.length} task{tasks.length !== 1 ? 's' : ''} — tasks fire when PHOBOS is running
             </span>
           </div>

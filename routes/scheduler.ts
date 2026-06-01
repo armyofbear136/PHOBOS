@@ -20,12 +20,13 @@ import { ScheduledTaskStore } from '../db/ScheduledTaskStore.js';
 import { getScheduler, computeNextRun, getPendingFire } from '../scheduling/Scheduler.js';
 
 export async function registerSchedulerRoutes(fastify: FastifyInstance): Promise<void> {
-  const db    = DatabaseManager.getUserDb();
-  const store = new ScheduledTaskStore(db);
+  const getStore = (req: import('fastify').FastifyRequest) =>
+    new ScheduledTaskStore(DatabaseManager.getUserDb(req.phobosUser));
 
   // ── Task CRUD ──────────────────────────────────────────────────────────────
 
   fastify.get('/api/scheduler/tasks', async (_req, reply) => {
+    const store = getStore(_req);
     const tasks = await store.getAll();
     return reply.send(tasks);
   });
@@ -44,6 +45,7 @@ export async function registerSchedulerRoutes(fastify: FastifyInstance): Promise
       pinned_cartridge_id?: string | null;
     };
   }>('/api/scheduler/tasks', async (req, reply) => {
+    const store = getStore(req);
     const {
       name, description, cron_expression, prompt, enabled = true,
       task_type, task_parameters,
@@ -84,6 +86,7 @@ export async function registerSchedulerRoutes(fastify: FastifyInstance): Promise
       pinned_cartridge_id?: string | null;
     };
   }>('/api/scheduler/tasks/:id', async (req, reply) => {
+    const store = getStore(req);
     const task = await store.getById(req.params.id);
     if (!task) return reply.status(404).send({ error: 'Not found' });
 
@@ -97,6 +100,7 @@ export async function registerSchedulerRoutes(fastify: FastifyInstance): Promise
   });
 
   fastify.delete<{ Params: { id: string } }>('/api/scheduler/tasks/:id', async (req, reply) => {
+    const store = getStore(req);
     const task = await store.getById(req.params.id);
     if (!task) return reply.status(404).send({ error: 'Not found' });
     await store.delete(req.params.id);
@@ -104,6 +108,7 @@ export async function registerSchedulerRoutes(fastify: FastifyInstance): Promise
   });
 
   fastify.patch<{ Params: { id: string } }>('/api/scheduler/tasks/:id/toggle', async (req, reply) => {
+    const store = getStore(req);
     const task = await store.getById(req.params.id);
     if (!task) return reply.status(404).send({ error: 'Not found' });
     const enabled = !task.enabled;
@@ -114,11 +119,13 @@ export async function registerSchedulerRoutes(fastify: FastifyInstance): Promise
   });
 
   fastify.get<{ Params: { id: string } }>('/api/scheduler/tasks/:id/runs', async (req, reply) => {
+    const store = getStore(req);
     const runs = await store.getRuns(req.params.id, 20);
     return reply.send(runs);
   });
 
   fastify.post<{ Params: { id: string } }>('/api/scheduler/tasks/:id/run', async (req, reply) => {
+    const store = getStore(req);
     const result = await getScheduler().triggerNow(req.params.id);
     if (!result.ok) return reply.status(404).send({ error: result.error });
     return reply.send({ ok: true });
@@ -127,10 +134,12 @@ export async function registerSchedulerRoutes(fastify: FastifyInstance): Promise
   // ── Pending fire ───────────────────────────────────────────────────────────
 
   fastify.get('/api/scheduler/pending', async (_req, reply) => {
+    const store = getStore(_req);
     return reply.send({ pending: getPendingFire() });
   });
 
   fastify.post('/api/scheduler/pending/cancel', async (_req, reply) => {
+    const store = getStore(_req);
     getScheduler().cancelPending();
     return reply.send({ ok: true });
   });
@@ -138,6 +147,7 @@ export async function registerSchedulerRoutes(fastify: FastifyInstance): Promise
   fastify.post<{
     Body: { taskId: string; threadId: string };
   }>('/api/scheduler/pending/confirm', async (req, reply) => {
+    const store = getStore(req);
     const { taskId, threadId } = req.body;
     if (!taskId || !threadId) return reply.status(400).send({ error: 'taskId and threadId required' });
     await getScheduler().confirmDispatched(taskId, threadId);

@@ -19,9 +19,11 @@
  *   npx tsx test-pytorch-gen.ts --no-offload             — skip offload even on small VRAM cards
  *   npx tsx test-pytorch-gen.ts --sage-attention         — enable SageAttention backend
  *   npx tsx test-pytorch-gen.ts --torch-compile          — enable torch.compile
- *   npx tsx test-pytorch-gen.ts --plugin ./lora.safetensors        — load LoRA at weight 0.8
- *   npx tsx test-pytorch-gen.ts --plugin ./lora.safetensors:0.6    — load LoRA at weight 0.6
- *   npx tsx test-pytorch-gen.ts --plugin ./a.sft --plugin ./b.sft  — up to 3 LoRAs
+ *   npx tsx test-pytorch-gen.ts --plugin ./lora.safetensors          — raw LoRA at weight 0.8
+ *   npx tsx test-pytorch-gen.ts --plugin ./lora.safetensors:0.6      — raw LoRA at weight 0.6
+ *   npx tsx test-pytorch-gen.ts --plugin ./plugin.phobos              — .phobos archive (signed)
+ *   npx tsx test-pytorch-gen.ts --plugin ./a.sft --plugin ./b.phobos  — mixed, up to 3
+ *   npx tsx test-pytorch-gen.ts --plugin-kind plugin ./my.phobos      — force kind=plugin on next --plugin
  */
 
 import * as fs from 'fs';
@@ -69,9 +71,11 @@ let torchCompile = false;
 let refImage: string | null = null;
 let forceDeQuant = false;
 // Up to 3 plugins: --plugin <path>[:weight] (repeatable)
-// weight defaults to 0.8 if omitted. All three use kind=raw_lora (flat file).
-// For .phobos zip archives use kind=plugin — not yet exposed as a CLI flag.
-const pluginEntries: Array<{ path: string; weight: number }> = [];
+// weight defaults to 0.8 if omitted.
+// kind is inferred from extension: .phobos -> plugin, everything else -> raw_lora.
+// Override with --plugin-kind <kind> before the next --plugin flag.
+let _nextPluginKind: 'raw_lora' | 'plugin' | null = null;
+const pluginEntries: Array<{ path: string; weight: number; kind: 'raw_lora' | 'plugin' }> = [];
 
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
@@ -89,6 +93,13 @@ for (let i = 2; i < process.argv.length; i++) {
     torchCompile = true;
   } else if (arg === '--ref-image' && process.argv[i + 1]) {
     refImage = process.argv[++i];
+  } else if (arg === '--plugin-kind' && process.argv[i + 1]) {
+    const k = process.argv[++i];
+    if (k !== 'raw_lora' && k !== 'plugin') {
+      console.error(`FAIL: --plugin-kind must be 'raw_lora' or 'plugin', got '${k}'`);
+      process.exit(1);
+    }
+    _nextPluginKind = k as 'raw_lora' | 'plugin';
   } else if (arg === '--plugin' && process.argv[i + 1]) {
     if (pluginEntries.length >= 3) {
       console.error('FAIL: maximum 3 plugins per run');
@@ -97,9 +108,13 @@ for (let i = 2; i < process.argv.length; i++) {
     const raw = process.argv[++i];           // path or path:weight
     const colonIdx = raw.lastIndexOf(':');
     const hasWeight = colonIdx > 0 && !isNaN(Number(raw.slice(colonIdx + 1)));
-    const plugPath  = hasWeight ? raw.slice(0, colonIdx) : raw;
+    const plugPath   = hasWeight ? raw.slice(0, colonIdx) : raw;
     const plugWeight = hasWeight ? Number(raw.slice(colonIdx + 1)) : 0.8;
-    pluginEntries.push({ path: plugPath, weight: plugWeight });
+    // Infer kind from extension if not overridden by --plugin-kind
+    const inferredKind: 'raw_lora' | 'plugin' = plugPath.toLowerCase().endsWith('.phobos') ? 'plugin' : 'raw_lora';
+    const kind = _nextPluginKind ?? inferredKind;
+    _nextPluginKind = null;  // consume the override
+    pluginEntries.push({ path: plugPath, weight: plugWeight, kind });
   } else if (arg === '--dequant') {
     forceDeQuant = true;
   } else if (!arg.startsWith('--')) {
@@ -211,6 +226,9 @@ let spec = (() => {
         m.runnerProfile === 'wan' && isImageModelDownloaded(m)
       )[0] ?? null;
   }
+  if (modelType === 'sana-sprint') return getImageModelSpec('sana-sprint-600m') ?? null;
+  if (modelType === 'sana')        return getImageModelSpec('sana-1600m') ?? null;
+  if (modelType === 'sana-video')  return getImageModelSpec('sana-video-2b') ?? null;
   // Direct model ID fallback
   return getImageModelSpec(modelType) ?? null;
 })();
@@ -220,21 +238,37 @@ if (!spec) {
   process.exit(1);
 }
 
-if (!isImageModelDownloaded(spec)) {
+// For HF-native models (SANA), check the snapshot directory directly —
+// the built isImageModelDownloaded may predate the HF cache sentinel logic.
+const _hfCacheOk = (() => {
+  if (!(spec as any).pytorchOnly || !(spec as any).configRepo) return false;
+  const cacheKey = (spec as any).configRepo.replace('/', '--');
+  const snapshotDir = path.join(os.homedir(), '.phobos', 'hf-cache', 'hub',
+    `models--${cacheKey}`, 'snapshot');
+  return fs.existsSync(snapshotDir) &&
+    fs.readdirSync(snapshotDir).some(d =>
+      fs.statSync(path.join(snapshotDir, d)).isDirectory());
+})();
+if (!isImageModelDownloaded(spec) && !_hfCacheOk) {
   console.error(`FAIL: ${spec.label} not downloaded`);
   process.exit(1);
 }
 
 const modelPath = fluxModelPath(spec);
+const _sanaProfiles = ['sana', 'sana-sprint', 'sana-video', 'sana-video-i2v'];
+const _isSana = _sanaProfiles.includes(spec.runnerProfile);
 console.log(`  Model:   ${spec.label} (${spec.runnerProfile})`);
-console.log(`  Path:    ${modelPath}`);
+if (modelPath) console.log(`  Path:    ${modelPath}`);
 
 // Step 4: Build CLI args
 console.log('\nStep 4: Building args…');
 
 const timestamp = Date.now();
-const isVideoRunner = spec.runnerProfile === 'wan';
-const outExt = isVideoRunner ? '.avi' : '.png';
+const isVideoRunner = spec.runnerProfile === 'wan' ||
+  spec.runnerProfile === 'sana-video' || spec.runnerProfile === 'sana-video-i2v';
+const outExt = spec.runnerProfile === 'wan' ? '.avi'
+  : (spec.runnerProfile === 'sana-video' || spec.runnerProfile === 'sana-video-i2v') ? '.mp4'
+  : '.png';
 const outPath = path.join(OUT_DIR, `pytorch-${modelType}-${timestamp}${outExt}`);
 fs.mkdirSync(OUT_DIR, { recursive: true });
 
@@ -250,13 +284,17 @@ const diffusersModelType = (() => {
     case 'qwen-image':    return 'qwen-image';
     case 'wan':           return 'wan';
     case 'sdxl':          return 'sdxl';
+    case 'sana':          return 'sana';
+    case 'sana-sprint':   return 'sana-sprint';
+    case 'sana-video':    return 'sana-video';
+    case 'sana-video-i2v':return 'sana-video-i2v';
     default:              return 'flux';
   }
 })();
 
 const args: string[] = [
   SCRIPT,
-  '--model-path', modelPath,
+  ...(_isSana ? [] : ['--model-path', modelPath]),
   '--model-type', diffusersModelType,
   '--prompt', prompt,
   '--steps', String(spec.profile?.defaultSteps ?? 20),
@@ -409,6 +447,18 @@ if (useOffload) {
   args.push('--offload-cpu');
 }
 
+// ── SANA: HF-native — no aux files, just config-repo ────────────────────────
+if (_isSana) {
+  if (spec.configRepo) {
+    args.push('--config-repo', spec.configRepo);
+    console.log(`  Repo:    ${spec.configRepo}`);
+  }
+  if (spec.runnerProfile === 'sana-video' || spec.runnerProfile === 'sana-video-i2v') {
+    args.push('--num-frames', '81', '--fps', '16');
+    console.log('  Frames:  81 @ 16fps');
+  }
+}
+
 // ── Aux files by runner ───────────────────────────────────────────────────────
 
 if (spec.runnerProfile === 'flux' || spec.runnerProfile === 'flux1-kontext') {
@@ -537,19 +587,34 @@ if (spec.runnerProfile === 'flux' || spec.runnerProfile === 'flux1-kontext') {
 console.log(`  Prompt:  "${prompt}"`);
 console.log(`  Output:  ${outPath}`);
 
-// Plugin/LoRA loading — up to 3 raw_lora adapters
+// Plugin/LoRA loading — up to 3 adapters, mixed raw_lora and .phobos zip kinds
 if (pluginEntries.length > 0) {
   for (const p of pluginEntries) {
     if (!fs.existsSync(p.path)) {
       console.error(`FAIL: plugin file not found: ${p.path}`);
       process.exit(1);
     }
+    // Validate .phobos archives contain lora.safetensors before spawning Python.
+    // Catches corrupt/empty archives immediately rather than mid-generation.
+    if (p.kind === 'plugin') {
+      // AdmZip is a runtime dep — use the built-in zip check via node:fs instead.
+      // A .phobos file is a zip; the first 4 bytes must be PK\x03\x04.
+      const magic = Buffer.alloc(4);
+      const fd = fs.openSync(p.path, 'r');
+      fs.readSync(fd, magic, 0, 4, 0);
+      fs.closeSync(fd);
+      if (magic.toString('hex') !== '504b0304') {
+        console.error(`FAIL: ${p.path} is not a valid .phobos archive (bad magic bytes)`);
+        process.exit(1);
+      }
+    }
   }
-  args.push('--lora-paths',   pluginEntries.map(p => p.path).join(':'));
-  args.push('--lora-weights', pluginEntries.map(p => String(p.weight)).join(':'));
-  args.push('--lora-names',   pluginEntries.map((_, i) => `plugin_${i}`).join(':'));
-  args.push('--lora-kinds',   pluginEntries.map(() => 'raw_lora').join(':'));
-  console.log(`  Plugins: ${pluginEntries.map(p => `${path.basename(p.path)}@${p.weight}`).join(', ')}`);
+  // Pipe delimiter — colon conflicts with Windows drive letters in absolute paths.
+  args.push('--lora-paths',   pluginEntries.map(p => p.path).join('|'));
+  args.push('--lora-weights', pluginEntries.map(p => String(p.weight)).join('|'));
+  args.push('--lora-names',   pluginEntries.map((_, i) => `plugin_${i}`).join('|'));
+  args.push('--lora-kinds',   pluginEntries.map(p => p.kind).join('|'));
+  console.log(`  Plugins: ${pluginEntries.map(p => `${path.basename(p.path)}@${p.weight} (${p.kind})`).join(', ')}`);
 }
 
 // Performance flags
@@ -558,14 +623,14 @@ if (torchCompile)  { args.push('--torch-compile');  console.log('  Compile: enab
 
 // Mirror ImageServerManager: pass pre-converted directory when present.
 // --dequant overrides this and forces inline GGUF de-quantization.
-if (!forceDeQuant) {
+if (!forceDeQuant && !_isSana) {
   const variantDir = path.join(os.homedir(), '.phobos', 'models', 'image', 'pytorch', spec.modelId);
   if (fs.existsSync(path.join(variantDir, 'transformer', 'config.json')) ||
       fs.existsSync(path.join(variantDir, 'model_index.json'))) {
     args.push('--pytorch-variant-dir', variantDir);
     console.log(`  Variant: ${variantDir}`);
   }
-} else {
+} else if (!_isSana) {
   console.log('  Variant: forced inline de-quant (--dequant)');
 }
 

@@ -24,6 +24,7 @@ import {
 } from '../phobos/CartridgeManager.js';
 import { CartridgeStore } from '../db/CartridgeStore.js';
 import { DatabaseManager } from '../db/DatabaseManager.js';
+import { OwnershipError, NotFoundError } from '../db/errors.js';
 import type { CartridgeRecord } from '../phobos/CartridgeTypes.js';
 
 type Persona = 'sayon' | 'seren';
@@ -82,10 +83,10 @@ export async function registerCartridgeRoutes(fastify: FastifyInstance): Promise
     try {
       const s = store();
       if (filename.endsWith('.cartridge')) {
-        const record = await s.installCartridgeArchive(body);
+        const record = await s.installCartridgeArchive(body, 'system', req.phobosUser);
         return reply.status(201).send(deser(record));
       } else if (filename.endsWith('.gguf')) {
-        const record = await s.installRawLora(body, (req.query as Record<string, string>).filename ?? 'lora.gguf');
+        const record = await s.installRawLora(body, (req.query as Record<string, string>).filename ?? 'lora.gguf', 'system', req.phobosUser);
         return reply.status(201).send(deser(record));
       } else {
         return reply.status(400).send({
@@ -104,8 +105,6 @@ export async function registerCartridgeRoutes(fastify: FastifyInstance): Promise
   fastify.delete('/api/cartridges/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
     const s      = store();
-    const record = await s.get(id);
-    if (!record) return reply.status(404).send({ error: `Cartridge not found: ${id}` });
 
     // Deactivate from any live slot before deleting.
     for (const persona of ['sayon', 'seren'] as const) {
@@ -114,8 +113,14 @@ export async function registerCartridgeRoutes(fastify: FastifyInstance): Promise
       }
     }
 
-    await s.remove(id);
-    return reply.send({ ok: true, id });
+    try {
+      await s.remove(id, req.phobosUser);
+      return reply.send({ ok: true, id });
+    } catch (e) {
+      if (e instanceof OwnershipError) return reply.status(403).send({ error: e.message });
+      if (e instanceof NotFoundError)  return reply.status(404).send({ error: e.message });
+      throw e;
+    }
   });
 
   // ── Active slot — read ────────────────────────────────────────────────────

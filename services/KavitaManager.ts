@@ -33,10 +33,12 @@ import * as fs     from 'fs';
 import * as net    from 'net';
 import * as path   from 'path';
 import * as os     from 'os';
+import { DatabaseManager }       from '../db/DatabaseManager.js';
+import { UserServiceTokenStore } from '../db/UserServiceTokenStore.js';
 
 export const KAVITA_PORT         = 18000;
 export const KAVITA_ADMIN_USER   = 'phobos';
-export const KAVITA_RELEASE      = '0.8.9.1';
+export const KAVITA_RELEASE      = '0.9.0.2';
 export const PHOBOSDOCS_LIB_NAME = 'phobosDocs';
 
 // Library type codes per Kavita API
@@ -127,7 +129,7 @@ export function writeAutoLoginPage(): void {
   }
 
 export function defaultDocsPath(): string {
-  return path.join(os.homedir(), '.phobos', 'media', 'kavita', 'phobosdocs');
+  return path.join(os.homedir(), '.phobos', 'media', 'kavita', 'owner', 'phobosDocs');
 }
 
 export function isBinaryPresent(): boolean {
@@ -427,6 +429,7 @@ export async function startKavita(cfg: KavitaStartConfig): Promise<{ refreshToke
     service.refreshToken = refreshToken;
 
     await ensurePhobosDocsLibrary(cfg.docsPath);
+    await ensurePhobosDocsLibrary(cfg.docsPath);
 
     service.state = 'running';
     console.log(`[KavitaManager] ready on :${KAVITA_PORT}`);
@@ -583,6 +586,7 @@ export interface KavitaProvisionResult {
   jwt:          string;
   refreshToken: string;
   apiKey:       string;
+  password:     string;
 }
 
 /**
@@ -596,81 +600,402 @@ export interface KavitaProvisionResult {
  *
  * Best-effort: throws on failure so provisionSystemUser() can catch and log.
  */
-export async function provisionUser(username: string): Promise<KavitaProvisionResult> {
-  if (!service.jwt) throw new Error('Kavita not running');
 
-  const password = `Phobos-${crypto.randomBytes(12).toString('base64url')}!`;
-  const email    = `${username}@phobos.local`;
-
-  // Kavita 0.8.9.x allows admin-authed POST /api/Account/register for new accounts.
-  const regRes = await kavitaFetch('/Account/register', {
-    method: 'POST',
-    body:   { username, password, email },
-  });
-  if (!regRes.ok && regRes.status !== 400) {
-    throw new Error(`Kavita user register failed: HTTP ${regRes.status} — ${JSON.stringify(regRes.data)}`);
-  }
-
-  // Login as the new user to obtain their JWT and refresh token.
-  const loginRes = await kavitaFetch('/Account/login', {
-    method: 'POST',
-    body:   { username, password },
-  });
-  if (!loginRes.ok) {
-    throw new Error(`Kavita user login failed: HTTP ${loginRes.status}`);
-  }
-  const loginData = loginRes.data as Record<string, string>;
-  if (!loginData.token) throw new Error('Kavita login response missing token');
-
-  const userJwt     = loginData.token;
-  const refreshToken = loginData.refreshToken ?? '';
-
-  // Fetch the user's Kavita ID by calling /api/Users (admin endpoint).
-  const usersRes = await kavitaFetch('/Users', {});
-  const userList = Array.isArray(usersRes.data)
-    ? usersRes.data as Array<{ id: string; username: string }>
-    : [];
-  const match = userList.find(u => u.username === username);
-  const userId = match?.id ?? '';
-
-  // Create the user's phobosDocs directory and a library entry for it.
-  const docsPath = path.join(os.homedir(), '.phobos', 'media', 'kavita', username, 'phobosDocs');
+async function ensureUserLibrary(username: string): Promise<void> {
+  const docsPath  = path.join(os.homedir(), '.phobos', 'media', 'kavita', username, 'phobosDocs');
+  const libName   = `${username}-docs`;
   fs.mkdirSync(docsPath, { recursive: true });
 
   try {
     await kavitaFetch('/Library/create', {
       method: 'POST',
       body: {
-        name:                        `${username}-docs`,
+        name:                        libName,
         type:                        KAVITA_LIB_TYPE.books,
         folders:                     [docsPath],
         fileGroupTypes:              ALL_FILE_GROUPS,
         excludePatterns:             [],
-        folderWatching:              true,
+        folderWatching:              false,
         includeInDashboard:          true,
         includeInRecommended:        true,
         manageCollections:           true,
         collapseSeriesRelationships: false,
       },
     });
+
+    const libsRes = await kavitaFetch('/Library/libraries', {});
+    if (!libsRes.ok) {
+      console.warn(`[KavitaManager] Could not fetch libraries after create for ${username}`);
+      return;
+    }
+    const allLibs = libsRes.data as Array<{ id: number; name: string }>;
+    const userLib = allLibs.find(l => l.name === libName);
+    if (!userLib) {
+      console.warn(`[KavitaManager] Created library ${libName} not found in list`);
+      return;
+    }
+
+    await kavitaFetch('/Library/grant-access', {
+      method: 'POST',
+      body:   { username, selectedLibraries: [{ id: userLib.id, name: userLib.name }] },
+    });
+
+    const adminLibs = allLibs.filter(l => l.name !== libName);
+    await kavitaFetch('/Library/grant-access', {
+      method: 'POST',
+      body:   { username: KAVITA_ADMIN_USER, selectedLibraries: adminLibs.map(l => ({ id: l.id, name: l.name })) },
+    });
+
+    console.log(`[KavitaManager] Library ${libName} created and granted to ${username}.`);
   } catch (err) {
-    // Non-fatal — library can be added later via reprovision route.
-    console.warn(`[KavitaManager] Library create for ${username} failed (non-fatal):`, err);
+    console.warn(`[KavitaManager] ensureUserLibrary for ${username} failed (non-fatal):`, err);
+  }
+}
+
+export async function provisionUser(username: string, existingPassword?: string): Promise<KavitaProvisionResult> {
+  if (!service.jwt) throw new Error('Kavita not running');
+
+  const password = existingPassword ?? `Phobos-${crypto.randomBytes(12).toString('base64url')}!`;
+
+  // ── Path A: account already exists and we have a stored password ──────────
+  if (existingPassword) {
+    const loginRes = await kavitaFetch('/Account/login', {
+      method: 'POST',
+      body:   { username, password: existingPassword },
+    });
+    if (loginRes.ok) {
+      const d      = loginRes.data as Record<string, unknown>;
+      const userId = String(d['id'] ?? '');
+      const jwt    = String(d['token'] ?? '');
+      const ref    = String(d['refreshToken'] ?? '');
+      const key    = String(d['apiKey'] ?? '');
+      await ensureUserLibrary(username);
+      console.log(`[KavitaManager] Provisioned user (existing): ${username} (id=${userId})`);
+      return { userId, jwt, refreshToken: ref, apiKey: key, password: existingPassword };
+    }
+    console.log(`[KavitaManager] Stored password for ${username} rejected — reprovisioning.`);
   }
 
-  console.log(`[KavitaManager] Provisioned user: ${username} (id=${userId})`);
-  return { userId, jwt: userJwt, refreshToken, apiKey: '' };
+  // ── Check if account already exists in the DB ─────────────────────────────
+  const namesRes = await kavitaFetch('/Users/names', {});
+  const allNames = Array.isArray(namesRes.data) ? namesRes.data as string[] : [];
+  const existing = allNames.find(n => n.toLowerCase() === username.toLowerCase());
+
+  if (existing) {
+    // ── Path C: stale account — reset password and login ───────────────────
+    console.log(`[KavitaManager] Stale account found for ${username} — resetting password.`);
+    const resetRes = await kavitaFetch('/Account/reset-password', {
+      method: 'POST',
+      body:   { userName: existing, password, oldPassword: null },
+    });
+    if (!resetRes.ok) {
+      throw new Error(`Kavita password reset failed: HTTP ${resetRes.status}`);
+    }
+    const loginRes = await kavitaFetch('/Account/login', {
+      method: 'POST',
+      body:   { username: existing, password },
+    });
+    if (!loginRes.ok) {
+      await kavitaFetch(`/Users/delete-user?username=${encodeURIComponent(existing)}`, { method: 'DELETE' });
+      throw new Error(`Kavita login after reset failed — stale account deleted, retry provision.`);
+    }
+    const ld     = loginRes.data as Record<string, unknown>;
+    const userId = String(ld['id'] ?? '');
+    const jwt    = String(ld['token'] ?? '');
+    const ref    = String(ld['refreshToken'] ?? '');
+    const key    = String(ld['apiKey'] ?? '');
+    await ensureUserLibrary(username);
+    console.log(`[KavitaManager] Provisioned user (reset): ${username} (id=${userId})`);
+    return { userId, jwt, refreshToken: ref, apiKey: key, password };
+  }
+
+  // ── Path B: new account — direct DB insert ────────────────────────────────
+  // Kavita's invite endpoint crashes with NullReferenceException in all tested
+  // builds when SMTP is not configured (ASP.NET Identity token provider null).
+  // We insert directly into kavita.db using the same schema Kavita uses, then
+  // call login normally. The password is hashed using ASP.NET Identity V3
+  // (PBKDF2-SHA256, 600000 iterations) which Kavita's UserManager validates.
+  console.log(`[KavitaManager] Creating new Kavita user ${username} via direct DB insert.`);
+  const kavitaDbPath = path.join(resolveConfigDir(), 'kavita.db');
+  await insertKavitaUser(kavitaDbPath, username, password);
+
+  const loginRes2 = await kavitaFetch('/Account/login', {
+    method: 'POST',
+    body:   { username, password },
+  });
+  if (!loginRes2.ok) {
+    throw new Error(`Kavita login after DB insert failed: HTTP ${loginRes2.status} — ${JSON.stringify(loginRes2.data)}`);
+  }
+  const d2     = loginRes2.data as Record<string, unknown>;
+  const userId = String(d2['id'] ?? '');
+  const jwt    = String(d2['token'] ?? '');
+  const ref    = String(d2['refreshToken'] ?? '');
+  const key    = String(d2['apiKey'] ?? '');
+  await ensureUserLibrary(username);
+  console.log(`[KavitaManager] Provisioned user (direct): ${username} (id=${userId})`);
+  return { userId, jwt, refreshToken: ref, apiKey: key, password };
 }
+
+// ── ASP.NET Identity V3 password hasher ──────────────────────────────────────
+// Matches Kavita's exact parameters decoded from the phobos admin account:
+// PRF=2 (HMACSHA512), iterations=100000, saltLen=16, keyLen=32.
+// Format: 0x01 | prf(4B BE) | iter(4B BE) | saltLen(4B BE) | salt | subkey
+function hashAspNetIdentityPassword(password: string): string {
+  const salt       = crypto.randomBytes(16);
+  const iterations = 100_000;
+  const keyLen     = 32;
+
+  const header = Buffer.alloc(13);
+  header.writeUInt8(0x01, 0);          // version marker (V3)
+  header.writeUInt32BE(2, 1);          // PRF: HMACSHA512
+  header.writeUInt32BE(iterations, 5); // iteration count
+  header.writeUInt32BE(16, 9);         // salt length
+
+  const subkey = crypto.pbkdf2Sync(password, salt, iterations, keyLen, 'sha512');
+  return Buffer.concat([header, salt, subkey]).toString('base64');
+}
+
+// Inserts a fully-formed Kavita user row into kavita.db synchronously.
+// Assigns roles: Pleb (2) and Login (7) — same as a standard guest user.
+// Creates AppUserPreferences, DashboardStreams, and SideNavStreams to match
+// what Kavita generates for the admin user on first login.
+async function insertKavitaUser(dbPath: string, username: string, password: string): Promise<void> {
+  try {
+    // node:sqlite is available in Node 22+. Use synchronous API.
+    const { DatabaseSync } = await import('node:sqlite');
+      const db = new DatabaseSync(dbPath);
+
+      const now    = new Date();
+      const nowStr = now.toISOString().replace('T', ' ');
+      const nowUtc = now.toISOString().replace('T', ' ').replace('Z', '');
+      const apiKey = crypto.randomUUID();
+      const concurrencyStamp = crypto.randomUUID();
+      const securityStamp    = crypto.randomBytes(20).toString('hex').toUpperCase();
+      const passwordHash     = hashAspNetIdentityPassword(password);
+      const email            = `${username}@phobos.local`;
+
+      db.exec('BEGIN');
+      try {
+        // Insert user row — mirrors exact schema from AspNetUsers.
+        const insertUser = db.prepare(`
+          INSERT INTO AspNetUsers (
+            AccessFailedCount, AgeRestriction, AgeRestrictionIncludeUnknowns,
+            AniListAccessToken, ApiKey, ConcurrencyStamp, ConfirmationToken,
+            Created, CreatedUtc, Email, EmailConfirmed,
+            LastActive, LastActiveUtc, LockoutEnabled, LockoutEnd,
+            NormalizedEmail, NormalizedUserName, PasswordHash,
+            PhoneNumber, PhoneNumberConfirmed, RowVersion, SecurityStamp,
+            TwoFactorEnabled, UserName,
+            MalAccessToken, MalUserName, HasRunScrobbleEventGeneration,
+            ScrobbleEventGenerationRan, IdentityProvider, OidcId,
+            CoverImage, PrimaryColor, SecondaryColor
+          ) VALUES (
+            0, -1, 0,
+            NULL, ?, ?, NULL,
+            ?, ?, ?, 1,
+            ?, ?, 1, NULL,
+            ?, ?, ?,
+            NULL, 0, 0, ?,
+            0, ?,
+            NULL, NULL, 0,
+            '0001-01-01 00:00:00', 0, NULL,
+            NULL, NULL, NULL
+          )
+        `);
+
+        insertUser.run(
+          apiKey, concurrencyStamp,
+          nowStr, nowUtc, email,
+          nowStr, nowUtc,
+          email.toUpperCase(), username.toUpperCase(), passwordHash,
+          securityStamp,
+          username,
+        );
+
+        const userId = (db.prepare('SELECT last_insert_rowid() as id').get() as { id: number }).id;
+
+        // Role assignments: Pleb=2, Login=7
+        const insertRole = db.prepare('INSERT INTO AspNetUserRoles (UserId, RoleId) VALUES (?, ?)');
+        insertRole.run(userId, 2);
+        insertRole.run(userId, 7);
+
+        // Preferences row — defaults matching what Kavita creates for phobos.
+        db.prepare(`
+          INSERT INTO AppUserPreferences (
+            AllowAutomaticWebtoonReaderDetection, AniListScrobblingEnabled, AppUserId,
+            AutoCloseMenu, BackgroundColor, BlurUnreadSummaries,
+            BookReaderFontFamily, BookReaderFontSize, BookReaderHighlightSlots,
+            BookReaderImmersiveMode, BookReaderLayoutMode, BookReaderLineSpacing,
+            BookReaderMargin, BookReaderReadingDirection, BookReaderTapToPaginate,
+            BookReaderWritingStyle, BookThemeName, CollapseSeriesRelationships,
+            ColorScapeEnabled, CustomKeyBinds, DataSaver, EmulateBook,
+            GlobalPageLayoutMode, LayoutMode, Locale, NoTransitions,
+            OpdsPreferences, PageSplitOption, PdfScrollMode, PdfSpreadMode,
+            PdfTheme, PromptForDownloadSize, PromptForRereadsAfter, ReaderMode,
+            ReadingDirection, ScalingOption, ShareReviews, ShowScreenHints,
+            SocialPreferences, SwipeToPaginate, ThemeId, WantToReadSync
+          ) VALUES (
+            0,0,?,
+            1,'#000000',0,
+            'Default',100,'[{"Id":1,"SlotNumber":0,"Color":{"R":0,"G":255,"B":255,"A":0.4}},{"Id":2,"SlotNumber":1,"Color":{"R":0,"G":255,"B":0,"A":0.4}},{"Id":3,"SlotNumber":2,"Color":{"R":255,"G":255,"B":0,"A":0.4}},{"Id":4,"SlotNumber":3,"Color":{"R":255,"G":165,"B":0,"A":0.4}},{"Id":5,"SlotNumber":4,"Color":{"R":255,"G":0,"B":255,"A":0.4}}]',
+            0,0,100,
+            15,0,0,
+            0,'Dark',0,
+            1,'{}',0,0,
+            0,1,'en',0,
+            '{"EmbedProgressIndicator":true,"IncludeContinueFrom":true}',3,0,0,
+            0,1,30,0,
+            0,3,0,1,
+            '{"ShareReviews":false,"ShareAnnotations":false,"ViewOtherAnnotations":false,"SocialLibraries":[],"SocialMaxAgeRating":-1,"SocialIncludeUnknowns":true,"ShareProfile":false}',0,1,0
+          )
+        `).run(userId);
+
+        // Auth keys — required by ConstructUserDto via GetOpdsAuthKey().
+        // Two keys per user: opds and image-only, both Provider=1.
+        const ak = db.prepare(`
+          INSERT INTO AppUserAuthKey (Key, Name, CreatedAtUtc, ExpiresAtUtc, LastAccessedAtUtc, Provider, AppUserId)
+          VALUES (?, ?, ?, NULL, NULL, 1, ?)
+        `);
+        const opdsKey      = crypto.randomBytes(24).toString('base64url').slice(0, 32);
+        const imageOnlyKey = crypto.randomBytes(24).toString('base64url').slice(0, 32);
+        ak.run(opdsKey,      'opds',       nowUtc, userId);
+        ak.run(imageOnlyKey, 'image-only', nowUtc, userId);
+
+        // Dashboard streams.
+        const ds = db.prepare(`
+          INSERT INTO AppUserDashboardStream (Name, IsProvided, "Order", StreamType, Visible, SmartFilterId, AppUserId)
+          VALUES (?, 1, ?, ?, 1, NULL, ?)
+        `);
+        ds.run('on-deck',          0, 1, userId);
+        ds.run('recently-updated', 1, 2, userId);
+        ds.run('newly-added',      2, 3, userId);
+
+        // Side nav streams.
+        const sn = db.prepare(`
+          INSERT INTO AppUserSideNavStream (Name, IsProvided, "Order", LibraryId, ExternalSourceId, StreamType, Visible, SmartFilterId, AppUserId)
+          VALUES (?, 1, ?, NULL, NULL, ?, 1, NULL, ?)
+        `);
+        sn.run('want-to-read',   1, 8, userId);
+        sn.run('collections',    2, 1, userId);
+        sn.run('reading-lists',  3, 2, userId);
+        sn.run('bookmarks',      4, 3, userId);
+        sn.run('all-series',     5, 7, userId);
+        sn.run('browse-authors', 6, 9, userId);
+
+        db.exec('COMMIT');
+        db.close();
+        console.log(`[KavitaManager] DB insert complete for ${username} (kavitaId=${userId})`);
+      } catch (err) {
+        db.exec('ROLLBACK');
+        db.close();
+        throw err;
+      }
+  } catch (err) {
+    throw err;
+  }
+}
+
+
+// Creates the user's phobosDocs dir and Kavita library if not already present.
+
+
 
 /**
  * Remove a Kavita user account by their Kavita user ID.
  * Best-effort — does not throw if the user is already gone.
  */
-export async function deprovisionUser(kavitaUserId: string): Promise<void> {
+export async function deprovisionUser(username: string): Promise<void> {
   if (!service.jwt) return;
-  // Kavita admin delete: DELETE /api/Users/{id}
-  const res = await kavitaFetch(`/Users/${kavitaUserId}`, { method: 'DELETE' });
-  if (!res.ok && res.status !== 404) {
-    console.warn(`[KavitaManager] deprovisionUser failed: HTTP ${res.status}`);
+
+  // Delete the user's docs library first (cascade removes AppUserLibrary rows).
+  try {
+    const libsRes = await kavitaFetch('/Library/libraries', {});
+    if (libsRes.ok) {
+      const allLibs = libsRes.data as Array<{ id: number; name: string }>;
+      const userLib = allLibs.find(l => l.name === `${username}-docs`);
+      if (userLib) {
+        await kavitaFetch(`/Library/delete?libraryId=${userLib.id}`, { method: 'DELETE' });
+        console.log(`[KavitaManager] Deleted library ${userLib.name} (id=${userLib.id})`);
+      }
+    }
+  } catch (err) {
+    console.warn(`[KavitaManager] Library delete for ${username} failed (non-fatal):`, err);
   }
+
+  // Delete the Kavita user account.
+  const res = await kavitaFetch(
+    `/Users/delete-user?username=${encodeURIComponent(username)}`,
+    { method: 'DELETE' },
+  );
+  if (!res.ok && res.status !== 404) {
+    console.warn(`[KavitaManager] deprovisionUser(${username}) failed: HTTP ${res.status}`);
+  }
+}
+
+/**
+ * Reconcile Kavita accounts for every PHOBOS system user at boot.
+ *
+ * For each username in the list:
+ *   1. Fetch that user's stored Kavita tokens from user_service_tokens.
+ *   2. Check whether the account still exists in Kavita (GET /api/Users/names).
+ *   3. If missing → call provisionUser() to create the account and library,
+ *        then persist the new tokens to user_service_tokens.
+ *   4. If the account exists → call ensureUserLibrary() to guarantee the
+ *        phobosDocs directory and library entry are present.
+ *
+ * Fully non-fatal: one user's failure never blocks others.
+ * Called from server.ts after startKavita() resolves.
+ */
+export async function repairAllUserLibraries(usernames: string[]): Promise<void> {
+  if (!service.jwt) return;
+
+  // Fetch the Kavita user list once.
+  let kavitaNames: string[] = [];
+  try {
+    const namesRes = await kavitaFetch('/Users/names', {});
+    if (namesRes.ok && Array.isArray(namesRes.data)) {
+      kavitaNames = namesRes.data as string[];
+    }
+  } catch (err) {
+    console.warn('[KavitaManager] repairAllUserLibraries: failed to fetch user list:', err);
+    return;
+  }
+
+  for (const username of usernames) {
+    try {
+      const userDb     = DatabaseManager.getUserDb(username);
+      // getUserDb() returns an uninitialized instance when first called for a
+      // user — initialize it before any token store operations touch the DB.
+      await userDb.ensureReady();
+      const tokenStore = new UserServiceTokenStore(userDb);
+      const stored     = await tokenStore.getKavita().catch(() => null);
+
+      const existsInKavita = kavitaNames.some(
+        n => n.toLowerCase() === username.toLowerCase(),
+      );
+
+      if (!existsInKavita) {
+        // Account is missing — full provision.
+        console.log(`[KavitaManager] repairAllUserLibraries: re-provisioning ${username}`);
+        const existingPassword = stored?.password || undefined;
+        const kv = await provisionUser(username, existingPassword);
+        await tokenStore.setKavita({
+          user_id:       kv.userId,
+          jwt:           kv.jwt,
+          refresh_token: kv.refreshToken,
+          api_key:       kv.apiKey,
+          password:      kv.password,
+        });
+        console.log(`[KavitaManager] repairAllUserLibraries: ${username} provisioned (id=${kv.userId})`);
+        continue;
+      }
+
+      // Account exists — ensure their docs dir and library are present.
+      await ensureUserLibrary(username);
+    } catch (err) {
+      console.warn(`[KavitaManager] repairAllUserLibraries: ${username} failed (non-fatal):`, err);
+    }
+  }
+
+  console.log(`[KavitaManager] repairAllUserLibraries: done (${usernames.length} user(s) checked)`);
 }

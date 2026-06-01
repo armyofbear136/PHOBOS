@@ -29,9 +29,12 @@ import type {
   MediaUploadBegin, MediaChunkEnvelope, MediaUploadEnd, MediaUploadAck,
   AuthChallenge, AuthResponse, SessionReady, NeedsUsername, NeedsUsernameAndPassword,
   DeviceRegistered, AuthError,
+  FriendHandshake, FriendRecord, FriendConnected, FriendHandshakeError,
 } from './RemoteProtocol.js';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 import { UserStore }       from '../db/UserStore.js';
+import { FriendStore }     from '../db/FriendStore.js';
+import { getPublicKey }    from '../db/InstanceConfig.js';
 import { provisionSystemUser } from '../db/UserProvisioner.js';
 
 export interface DataChannelHandlerOptions {
@@ -80,12 +83,16 @@ export class DataChannelHandler {
 
   // Set after successful auth handshake — null means not yet authenticated.
   private _sessionUsername: string | null = null;
+  private _sessionRole:     string        = 'owner';
 
-  private _controlDC:     DataChannel | null = null;
-  private _mediaIndexDC:  DataChannel | null = null;
-  private _mediaUploadDC: DataChannel | null = null;
+  private _controlDC:          DataChannel | null = null;
+  private _mediaIndexDC:       DataChannel | null = null;
+  private _mediaUploadDC:      DataChannel | null = null;
+  private _friendHandshakeDC:  DataChannel | null = null;
   private _uploads = new Map<string, UploadState>();
   private _destroyed = false;
+  // FRD handshake resolver — null when no handshake is in progress
+  private _pendingFriendHandshakeResolve: ((r: FriendHandshake | null) => void) | null = null;
 
   // Auth handshake state
   private _authComplete       = false;
@@ -140,6 +147,31 @@ export class DataChannelHandler {
     });
   }
 
+  /**
+   * Attach the phobos-friend-handshake data channel opened by a remote PHOBOS
+   * core presenting a PH1.FRD.* code. Called by WebRTCServer._acceptDataChannel().
+   * Carries only FriendHandshake frames from the remote side — all responses
+   * are sent via _sendFriend(). Never opens a control session; _authComplete
+   * remains false for the lifetime of this channel.
+   */
+  attachFriendHandshakeChannel(dc: DataChannel): void {
+    this._friendHandshakeDC = dc;
+    dc.onMessage((data) => {
+      if (typeof data !== 'string') return;
+      let frame: { kind: string };
+      try { frame = JSON.parse(data) as { kind: string }; } catch { return; }
+
+      if (frame.kind === 'friend-handshake' && this._pendingFriendHandshakeResolve) {
+        const resolve = this._pendingFriendHandshakeResolve;
+        this._pendingFriendHandshakeResolve = null;
+        resolve(frame as unknown as FriendHandshake);
+      }
+    });
+    // Begin the handshake — the nonce will arrive in the FriendHandshake frame.
+    // We have no nonce yet at attach time; _handleFriendHandshake waits for it.
+    void this._handleFriendHandshake();
+  }
+
   destroy(): void {
     this._destroyed = true;
     // Abort any in-progress uploads
@@ -148,9 +180,10 @@ export class DataChannelHandler {
       try { unlinkSync(state.tmpPath); } catch { /* ignore */ }
       this._uploads.delete(id);
     }
-    this._controlDC     = null;
-    this._mediaIndexDC  = null;
-    this._mediaUploadDC = null;
+    this._controlDC         = null;
+    this._mediaIndexDC      = null;
+    this._mediaUploadDC     = null;
+    this._friendHandshakeDC = null;
   }
 
   // ── Auth handshake ──────────────────────────────────────────────────────────────────────────
@@ -212,6 +245,14 @@ export class DataChannelHandler {
 
     if (decoded.expiresAt < new Date()) { this._authFail('expired_code'); return; }
 
+    // FRD codes are no longer used — friend connections go through the
+    // phobos-friend-handshake channel with known_instances as the security gate.
+    // If somehow a FRD code arrives on the control channel, reject cleanly.
+    if (decoded.type === 'FRD') {
+      this._authFail('invalid_code');
+      return;
+    }
+
     interface AccessCodeRow {
       code_type:        string;
       target_username:  string | null;
@@ -251,6 +292,149 @@ export class DataChannelHandler {
     this._awaitingCredentials = true;
     this._pendingNonce        = decoded.nonce;
     this._sendControl<NeedsUsernameAndPassword>({ kind: 'needs-username-and-password' });
+  }
+
+  // ── FRD: friend handshake ─────────────────────────────────────────────────
+  //
+  // Called from attachFriendHandshakeChannel() when the phobos-friend-handshake
+  // channel opens. Waits for the remote core's FriendHandshake frame, verifies
+  // the connecting instance is in known_instances (security boundary), checks
+  // for duplicate friendship, exchanges identity, and writes the confirmed
+  // friendship to the owner's social.duckdb via FriendStore.
+  // Never grants a control session; _authComplete remains false.
+
+  private async _handleFriendHandshake(): Promise<void> {
+    // Wait for the remote core to send its identity.
+    const handshake = await this._awaitFriendHandshake(10_000);
+    if (!handshake) {
+      console.warn('[DataChannelHandler] FRD: timeout waiting for FriendHandshake');
+      this._sendFriendError('internal');
+      return;
+    }
+
+    // Security boundary: reject any instance not in known_instances.
+    // The user must have explicitly added this Phobos ID before a connection
+    // from it can proceed.
+    interface KnownRow { instance_uuid: string; }
+    let knownRow: KnownRow | null = null;
+    try {
+      const rows = await this._systemDb.query<KnownRow>(
+        `SELECT instance_uuid FROM known_instances WHERE instance_uuid = ?`,
+        [handshake.instanceId],
+      );
+      knownRow = rows[0] ?? null;
+    } catch (err) {
+      console.error('[DataChannelHandler] known_instances query error:', err);
+      this._sendFriendError('internal');
+      return;
+    }
+
+    if (!knownRow) {
+      console.warn(`[DataChannelHandler] FRD: rejected unknown instance ${handshake.instanceId}`);
+      this._sendFriendError('unknown_instance');
+      return;
+    }
+
+    // Resolve the owner username — friend records are always written under owner.
+    const userStore   = new UserStore(this._systemDb);
+    const ownerRow    = await userStore.getByUsername('owner');
+    const ownerUser   = ownerRow?.username ?? 'owner';
+    const displayName = ownerRow?.display_name ?? 'owner';
+
+    // Duplicate check against social.duckdb.
+    let socialDb: DatabaseManager;
+    try {
+      socialDb = await DatabaseManager.getSocialDb(ownerUser);
+    } catch (err) {
+      console.error('[DataChannelHandler] getSocialDb error:', err);
+      this._sendFriendError('internal');
+      return;
+    }
+
+    const friendStore    = new FriendStore(socialDb);
+    const alreadyFriends = await friendStore.isFriend(handshake.instanceId, handshake.username);
+    if (alreadyFriends) {
+      this._sendFriendError('already_friends');
+      return;
+    }
+
+    // Send our identity back to the connecting core.
+    const publicKey = await getPublicKey(this._systemDb);
+    this._sendFriend<FriendRecord>({
+      kind:         'friend-record',
+      instanceId:   this._instanceId,
+      username:     ownerUser,
+      displayName,
+      publicKey,
+      relayAddress: this._relayUrl,
+    });
+
+    // Write the remote core's identity into social.duckdb.
+    try {
+      await friendStore.addFriend({
+        instance_uuid: handshake.instanceId,
+        username:      handshake.username,
+        display_name:  handshake.displayName,
+        public_key:    handshake.publicKey,
+        relay_address: handshake.relayAddress,
+        avatar_token:  handshake.avatarToken,
+      });
+    } catch (err) {
+      console.error('[DataChannelHandler] FRD addFriend error:', err);
+      this._sendFriendError('internal');
+      return;
+    }
+
+    // Mark the known_instance as friended.
+    try {
+      await this._systemDb.execWithParams(
+        `UPDATE known_instances SET friended = true WHERE instance_uuid = ?`,
+        [handshake.instanceId],
+      );
+    } catch (err) {
+      // Non-fatal — friendship is written, flag update is cosmetic.
+      console.warn('[DataChannelHandler] FRD friended flag update failed:', err);
+    }
+
+    // Confirm and close.
+    this._sendFriend<FriendConnected>({ kind: 'friend-connected', success: true });
+    console.log(
+      `[DataChannelHandler] FRD complete: ${ownerUser} ↔ ` +
+      `${handshake.username}@${handshake.instanceId}`,
+    );
+    setTimeout(() => {
+      try { this._friendHandshakeDC?.close(); } catch { /* ignore */ }
+    }, 200);
+  }
+
+  /** Wait up to timeoutMs for the remote core to send a FriendHandshake frame. */
+  private _awaitFriendHandshake(timeoutMs: number): Promise<FriendHandshake | null> {
+    return new Promise((resolve) => {
+      this._pendingFriendHandshakeResolve = resolve;
+      setTimeout(() => {
+        if (this._pendingFriendHandshakeResolve) {
+          this._pendingFriendHandshakeResolve = null;
+          resolve(null);
+        }
+      }, timeoutMs);
+    });
+  }
+
+  /** Send a frame on the friend-handshake channel. */
+  private _sendFriend<T extends object>(frame: T): void {
+    if (this._destroyed || !this._friendHandshakeDC) return;
+    try {
+      this._friendHandshakeDC.sendMessage(JSON.stringify(frame));
+    } catch (err) {
+      console.warn('[DataChannelHandler] friend-handshake send error:', (err as Error).message);
+    }
+  }
+
+  private _sendFriendError(reason: FriendHandshakeError['reason']): void {
+    this._sendFriend<FriendHandshakeError>({ kind: 'friend-error', reason });
+    setTimeout(() => {
+      try { this._friendHandshakeDC?.close(); } catch { /* ignore */ }
+    }, 100);
   }
 
   // ── Path B: returning device token ───────────────────────────────────────
@@ -311,6 +495,7 @@ export class DataChannelHandler {
     );
 
     this._sessionUsername = username;
+    this._sessionRole     = user.role;
     this._authComplete    = true;
     this._sendControl<SessionReady>({
       kind: 'session-ready',
@@ -402,6 +587,7 @@ export class DataChannelHandler {
     }
 
     this._sessionUsername = username;
+    this._sessionRole     = role;
     this._authComplete    = true;
 
     // Send DeviceRegistered so mobile can persist reconnect credentials.
@@ -431,6 +617,7 @@ export class DataChannelHandler {
     // Self-access: mobile sent the relay code core registered with.
     if (bare === this._relayCode.toUpperCase()) {
       this._sessionUsername = 'owner';
+      this._sessionRole     = 'owner';
       this._authComplete    = true;
       this._sendControl<SessionReady>({ kind: 'session-ready', username: 'owner', role: 'owner' });
       console.log('[DataChannelHandler] Legacy self-access authenticated: owner');
@@ -466,14 +653,15 @@ export class DataChannelHandler {
     if (new Date(row.expires_at) < new Date()) { this._authFail('expired_code'); return; }
 
     if (row.target_username) {
-      this._sessionUsername = row.target_username;
-      this._authComplete    = true;
       const userStore = new UserStore(this._systemDb);
       const user      = await userStore.getByUsername(row.target_username);
+      this._sessionUsername = row.target_username;
+      this._sessionRole     = user?.role ?? 'guest';
+      this._authComplete    = true;
       this._sendControl<SessionReady>({
         kind:     'session-ready',
         username: row.target_username,
-        role:     (user?.role ?? 'guest') as SessionReady['role'],
+        role:     this._sessionRole as SessionReady['role'],
       });
       console.log(`[DataChannelHandler] Legacy guest session ready: ${row.target_username}`);
       return;
@@ -513,6 +701,7 @@ export class DataChannelHandler {
     );
 
     this._sessionUsername  = requested;
+    this._sessionRole      = 'guest';
     this._authComplete     = true;
     this._awaitingUsername = false;
     this._pendingCode      = null;
@@ -564,15 +753,28 @@ export class DataChannelHandler {
   private async _routeNonStreamingRequest(frame: RemoteRequest): Promise<void> {
     let result: Awaited<ReturnType<FastifyInstance['inject']>>;
     try {
+      // If the client flagged the body as base64-encoded binary, decode it back
+      // to a Buffer so Fastify's octet-stream parser receives raw bytes.
+      const isBinary = frame.headers?.['x-webrtc-binary'] === '1';
+      const payload: string | Buffer | undefined = isBinary && frame.body
+        ? Buffer.from(frame.body, 'base64')
+        : frame.body;
+
+      // Strip the internal binary flag before forwarding — the upstream route
+      // (e.g. syncProxy) should not see it.
+      const forwardHeaders = { ...frame.headers };
+      delete forwardHeaders['x-webrtc-binary'];
+
       result = await this._fastify.inject({
         method:  frame.method as 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
         url:     frame.path,
         headers: {
-          ...frame.headers,
+          ...forwardHeaders,
           'x-webrtc-user':       this._sessionUsername ?? 'owner',
+          'x-webrtc-role':       this._sessionRole,
           'x-webrtc-request-id': frame.id,
         },
-        payload: frame.body,
+        payload,
       });
     } catch (err) {
       this._sendControl<RemoteError>({
@@ -623,6 +825,7 @@ export class DataChannelHandler {
         headers: {
           ...frame.headers,
           'x-webrtc-user':       this._sessionUsername ?? 'owner',
+          'x-webrtc-role':       this._sessionRole,
           'x-webrtc-request-id': frame.id,
         },
         payload: frame.body,

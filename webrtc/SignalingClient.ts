@@ -23,6 +23,10 @@ export interface SignalingClientOptions {
   onCode:          (code: string, iceServers: RTCIceServer[]) => void;
   onRelayConnect:  () => void;
   onRelayDisconnect: () => void;
+  /** Called when a social relay message (friend-request or friend-request-ack) arrives. */
+  onSocialMessage?: (msg: import('./RemoteProtocol.js').SocialRelayMessage) => void;
+  /** Called when the relay confirms the sync_dirty notification was forwarded. */
+  onSyncNotified?: () => void;
 }
 
 const BACKOFF_INIT_MS    = 1_000;
@@ -49,10 +53,38 @@ export class SignalingClient {
   getCode(): string | null        { return this._code; }
   getRelayUrl(): string           { return this.opts.relayUrl; }
   getIceServers(): RTCIceServer[] { return this._iceServers; }
+  isRelayConnected(): boolean     { return this._ws?.readyState === WebSocket.OPEN && this._registered; }
 
   connect(): void {
     if (this._destroyed) return;
     this._open();
+  }
+
+  /**
+   * Send a social relay message (FriendRequestMessage or FriendRequestAck)
+   * to a specific remote instance via the relay's social routing endpoint.
+   * Returns true if the message was sent, false if the relay is not connected.
+   * The caller is responsible for persisting and retrying on false.
+   */
+  sendSocialMessage(
+    targetInstanceId: string,
+    msg: import('./RemoteProtocol.js').SocialRelayMessage,
+  ): boolean {
+    if (this._ws?.readyState !== WebSocket.OPEN) return false;
+    this._ws.send(JSON.stringify({ ...msg, targetInstanceId }));
+    return true;
+  }
+
+  /**
+   * Send a sync_dirty notification through the relay to the mobile background
+   * service. Called after a successful upload commit or desktop ingest so the
+   * background service wakes and triggers a full sync pass.
+   * No-op if the relay is not connected — the background service will catch up
+   * on next foreground or on reconnect.
+   */
+  notifySync(): void {
+    if (this._ws?.readyState !== WebSocket.OPEN) return;
+    this._send({ type: 'notify', instanceId: this.opts.instanceId, event: 'sync_dirty' });
   }
 
   /** Send an answer SDP back to the relay for forwarding to mobile. */
@@ -165,6 +197,14 @@ export class SignalingClient {
       case 'consumed':
         // Code was consumed — relay will issue a new one automatically after ICE STABLE
         console.log(`[SignalingClient] Code ${msg.code} consumed`);
+        break;
+
+      case 'friend-request':
+      case 'friend-request-ack':
+        // Social relay messages — routed to the social handler registered at boot.
+        if (this.opts.onSocialMessage) {
+          this.opts.onSocialMessage(msg as import('./RemoteProtocol.js').SocialRelayMessage);
+        }
         break;
     }
   }

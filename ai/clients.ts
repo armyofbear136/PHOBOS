@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 import { ModelConfigStore, PROVIDERS, type RoleConfig } from '../db/ModelConfigStore.js';
-import { reconcilePhobosServers, getServerStatus } from '../phobos/LlamaServerManager.js';
+import { reconcilePhobosServers, getServerStatus, awaitServerReady } from '../phobos/LlamaServerManager.js';
 import { getSpec } from '../phobos/PhobosLocalManager.js';
 import { PromptLogStore, type PromptStage } from '../db/PromptLogStore.js';
 import { ThinkingTokenRouter } from './ThinkingTokenRouter.js';
@@ -15,9 +15,9 @@ import { ThinkingTokenRouter } from './ThinkingTokenRouter.js';
  *   setLogContext({ threadId, messageId });   // at turn start
  *   clearLogContext();                         // at turn end (or in finally)
  */
-let _logCtx: { threadId: string; messageId?: string | null } | null = null;
+let _logCtx: { threadId: string; messageId?: string | null; username?: string } | null = null;
 
-export function setLogContext(ctx: { threadId: string; messageId?: string | null }): void {
+export function setLogContext(ctx: { threadId: string; messageId?: string | null; username?: string }): void {
   _logCtx = ctx;
 }
 export function clearLogContext(): void {
@@ -54,7 +54,7 @@ async function writePromptLog(opts: PromptLogSinkEntry): Promise<void> {
   }
   if (!_logCtx) return; // no context set — skip silently
   try {
-    const db = DatabaseManager.getUserDb();
+    const db = DatabaseManager.getUserDb(_logCtx.username ?? 'owner');
     const store = new PromptLogStore(db);
     await store.insert({
       threadId:  _logCtx.threadId,
@@ -658,6 +658,7 @@ export async function coordinatorCall(opts: {
   mode?: 'think' | 'no_think' | 'none';
   stage?: PromptStage;
 }): Promise<string> {
+  { const _s = getServerStatus().sayon.state; if (_s === 'starting' || _s === 'stopped') await awaitServerReady('sayon'); }
   const { mode = 'think' } = opts;
   const t0 = Date.now();
   const { messages: stratMsgs, systemPrompt: stratSystem } = applyThinkingStrategy(
@@ -767,6 +768,7 @@ export async function coordinatorStream(opts: {
   onThinkToken?: (token: string) => void;
   stage?: PromptStage;
 }): Promise<string> {
+  { const _s = getServerStatus().sayon.state; if (_s === 'starting' || _s === 'stopped') await awaitServerReady('sayon'); }
   const { mode = 'think', onThinkToken } = opts;
   const t0 = Date.now();
   const { messages: stratMsgs, systemPrompt: stratSystem } = applyThinkingStrategy(
@@ -867,8 +869,8 @@ export async function engineStream(opts: {
    */
   imageAttachments?: Array<{ filename: string; base64: string; mimeType: string }>;
 }): Promise<string> {
-  const { mode = 'think', onThinkToken } = opts;
-  const t0 = Date.now();
+  { const _s = getServerStatus().seren.state; if (_s === 'starting' || _s === 'stopped') await awaitServerReady('seren'); }
+  const { mode = 'think', onThinkToken } = opts;  const t0 = Date.now();
 
   // Use module-level vars directly — we are in the same module so no CJS binding issue.
   const liveProvider = ENGINE_PROVIDER;

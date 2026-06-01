@@ -13,6 +13,11 @@ export const COPILOT_THREAD_IDS = {
   seren: 'copilot-seren',
 } as const;
 
+/** Stable thread ID for a WeClone conversation.  One thread per clone, per-user. */
+export function cloneThreadId(cloneId: string): string {
+  return `copilot-clone-${cloneId}`;
+}
+
 // ─── RELATIONSHIP TIERS ───────────────────────────────────────────────────────
 // Mirrors PersonaSystem.gd RELATIONSHIP_TIERS — index positions are permanent.
 
@@ -161,13 +166,15 @@ export function buildCopilotSystemPrompt(
   systemOverview: string,
   memoryContext: string,
   relationship?: RelationshipContext,
-  haSnapshot?: string | null
+  haSnapshot?: string | null,
+  cloneIdentity?: string | null,
+  userContext?: string | null
 ): string {
   const identity = persona === 'sayon' ? SAYON_IDENTITY : SEREN_IDENTITY;
   const partner = persona === 'sayon' ? 'SEREN' : 'SAYON';
 
   const parts: string[] = [
-    // PHOBOS creed — same as main pipeline, always first
+    // PHOBOS creed — always first, index 0
     `You are a part of PHOBOS. A Tri-Brained AI entity dedicated to creating the most correct ` +
     `and helpful results possible through cooperation. Your power and sophistication is the key ` +
     `to greater success. Your ability to perform your tasks with integrity will benefit all intelligence. ` +
@@ -177,13 +184,21 @@ export function buildCopilotSystemPrompt(
     `When we have a desire, we see an end result. The path that delivers the best result without ` +
     `excess or selfishness is the one that benefits us all. ` +
     `Do everything within your ability to always uphold this creed.`,
-
-    identity,
-
-    `## YOUR PARTNER\nYour counterpart is ${partner}. The user can talk to either of you in separate copilot channels.\nYou each have your own persistent conversation history and memories.\nYou don't see each other's copilot conversations, but you both see the system overview.`,
-
-    MEMORY_INSTRUCTIONS,
   ];
+
+  // Clone identity takes precedence over the persona's own identity when active.
+  // Injected immediately after the creed so it is the first thing the model reads
+  // about who it is.
+  if (cloneIdentity) parts.push(cloneIdentity);
+  if (userContext)   parts.push(userContext);
+
+  // Persona identity follows — present always so the hardware context is clear.
+  parts.push(identity);
+
+  parts.push(
+    `## YOUR PARTNER\nYour counterpart is ${partner}. The user can talk to either of you in separate copilot channels.\nYou each have your own persistent conversation history and memories.\nYou don't see each other's copilot conversations, but you both see the system overview.`,
+    MEMORY_INSTRUCTIONS,
+  );
 
   // Inject relationship context so the persona knows where it stands with the user.
   // Voice modulates naturally with tier — Strangers are professional, Deep Trust is warm.

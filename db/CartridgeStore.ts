@@ -24,6 +24,8 @@ import AdmZip    from 'adm-zip';
 import archiver  from 'archiver';
 import { createWriteStream } from 'fs';
 import { DatabaseManager, userDir, getActiveUser } from './DatabaseManager.js';
+import { UserStore }                                from './UserStore.js';
+import { OwnershipError, NotFoundError }            from './errors.js';
 import {
   PHOBOS_DEFAULT_CART_PASSWORD,
   type CartridgeManifest,
@@ -40,6 +42,24 @@ import {
 
 const CARTRIDGES_DIR     = path.join(os.homedir(), '.phobos', 'cartridges');
 const RAW_LORA_SUBDIR    = path.join(CARTRIDGES_DIR, 'raw');
+
+/**
+ * Resolve the install root for a cartridge based on its scope.
+ *   'system' → ~/.phobos/cartridges/  (shared, all users)
+ *   'user'   → ~/.phobos/users/{username}/cartridges/  (private to that user)
+ *
+ * WeClone LoRAs are always 'user' scope. Externally installed cartridges and
+ * raw LoRAs are always 'system' scope.
+ */
+function cartridgeInstallRoot(scope: 'system' | 'user', username: string): string {
+  if (scope === 'user') return path.join(userDir(username), 'cartridges');
+  return CARTRIDGES_DIR;
+}
+
+function rawLoraInstallRoot(scope: 'system' | 'user', username: string): string {
+  if (scope === 'user') return path.join(userDir(username), 'cartridges', 'raw');
+  return RAW_LORA_SUBDIR;
+}
 
 // ── scrypt parameters (match PluginStore exactly) ─────────────────────────────
 
@@ -223,9 +243,20 @@ export class CartridgeStore {
         is_local_author     BOOLEAN NOT NULL DEFAULT false,
         has_license_unlock  BOOLEAN NOT NULL DEFAULT false,
         is_protected        BOOLEAN NOT NULL DEFAULT false,
+        scope               VARCHAR NOT NULL DEFAULT 'system',
+        owner_username      VARCHAR NOT NULL DEFAULT 'owner',
         installed_at        TIMESTAMP NOT NULL DEFAULT now()
       )
     `);
+
+    // ── Migrations ─────────────────────────────────────────────────────────
+    const migrations = [
+      `ALTER TABLE cartridges ADD COLUMN IF NOT EXISTS scope          VARCHAR NOT NULL DEFAULT 'system'`,
+      `ALTER TABLE cartridges ADD COLUMN IF NOT EXISTS owner_username VARCHAR NOT NULL DEFAULT 'owner'`,
+    ];
+    for (const sql of migrations) {
+      try { await this.db.run(sql); } catch { /* column already exists */ }
+    }
 
     // Active slot table — one row per persona, upserted on activate/deactivate.
     await this.db.run(`
@@ -257,12 +288,54 @@ export class CartridgeStore {
     return this.db.queryOne<CartridgeRecord>(`SELECT * FROM cartridges WHERE id = ?`, [id]);
   }
 
-  async remove(id: string): Promise<void> {
+  /**
+   * Delete a cartridge record, deactivate from live slots, and remove install files.
+   *
+   * Only the owning user or an admin-role user may delete a cartridge with an
+   * assigned owner_username. Unowned cartridges (owner_username IS NULL) may
+   * be deleted by anyone.
+   *
+   * Throws NotFoundError if the record does not exist.
+   * Throws OwnershipError if the requestingUser is not the owner and not admin.
+   */
+  async remove(id: string, requestingUser: string): Promise<void> {
     const record = await this.get(id);
-    if (!record) return;
-    await this.db.run(`UPDATE cartridge_slots SET cartridge_id = NULL WHERE cartridge_id = ?`, [id]);
-    try { fs.rmSync(record.install_path, { recursive: true, force: true }); } catch { /* non-fatal */ }
+    if (!record) throw new NotFoundError(`Cartridge not found: ${id}`);
+
+    if (record.owner_username && record.owner_username !== requestingUser) {
+      const systemDb  = DatabaseManager.getInstance();
+      const userStore = new UserStore(systemDb);
+      const requester = await userStore.getByUsername(requestingUser);
+      if (requester?.role !== 'admin') {
+        throw new OwnershipError(
+          `Cartridge '${record.name}' is owned by ${record.owner_username}. ` +
+          `Only the owner or an admin may delete it.`,
+        );
+      }
+    }
+
+    await this.db.run(
+      `UPDATE cartridge_slots SET cartridge_id = NULL WHERE cartridge_id = ?`,
+      [id],
+    );
+    try {
+      fs.rmSync(record.install_path, { recursive: true, force: true });
+    } catch {
+      /* non-fatal — log but continue */
+      console.warn(`[CartridgeStore] Could not delete install dir ${record.install_path}`);
+    }
     await this.db.run(`DELETE FROM cartridges WHERE id = ?`, [id]);
+  }
+
+  /**
+   * Return all cartridges owned by the given username.
+   * Used by deprovisionSystemUser to enumerate what to rescue before deletion.
+   */
+  queryOwnedByUser(username: string): Promise<CartridgeRecord[]> {
+    return this.db.query<CartridgeRecord>(
+      `SELECT * FROM cartridges WHERE owner_username = ?`,
+      [username],
+    );
   }
 
   // ── Slot management ───────────────────────────────────────────────────────
@@ -369,8 +442,13 @@ export class CartridgeStore {
 
   // ── Install: .cartridge archive ───────────────────────────────────────────
 
-  async installCartridgeArchive(archiveBuffer: Buffer): Promise<CartridgeRecord> {
-    fs.mkdirSync(CARTRIDGES_DIR, { recursive: true });
+  async installCartridgeArchive(
+    archiveBuffer: Buffer,
+    scope: 'system' | 'user' = 'system',
+    owner_username: string = 'owner',
+  ): Promise<CartridgeRecord> {
+    const installRoot = cartridgeInstallRoot(scope, owner_username);
+    fs.mkdirSync(installRoot, { recursive: true });
 
     const zip = new AdmZip(archiveBuffer);
 
@@ -415,7 +493,7 @@ export class CartridgeStore {
     const existing = await this.get(m.id);
     const finalId  = existing ? `${m.id}_${Date.now()}` : m.id;
 
-    const installPath = path.join(CARTRIDGES_DIR, finalId);
+    const installPath = path.join(installRoot, finalId);
     fs.mkdirSync(installPath, { recursive: true });
 
     const loraDestPath    = path.join(installPath, 'lora.gguf');
@@ -465,13 +543,21 @@ export class CartridgeStore {
       is_local_author:     isLocalAuthor,
       has_license_unlock:  hasLicenseUnlock,
       is_protected:        isProtected,
+      scope,
+      owner_username,
     });
   }
 
   // ── Install: raw LoRA (no signature, no auth) ─────────────────────────────
 
-  async installRawLora(fileBuffer: Buffer, filename: string): Promise<CartridgeRecord> {
-    fs.mkdirSync(RAW_LORA_SUBDIR, { recursive: true });
+  async installRawLora(
+    fileBuffer: Buffer,
+    filename: string,
+    scope: 'system' | 'user' = 'system',
+    owner_username: string = 'owner',
+  ): Promise<CartridgeRecord> {
+    const rawRoot = rawLoraInstallRoot(scope, owner_username);
+    fs.mkdirSync(rawRoot, { recursive: true });
 
     const ext = path.extname(filename).toLowerCase();
     if (!['.gguf'].includes(ext)) {
@@ -480,9 +566,9 @@ export class CartridgeStore {
     validateGgufHeader(fileBuffer.slice(0, 8));
 
     const base     = path.basename(filename, ext);
-    let finalDest  = path.join(RAW_LORA_SUBDIR, filename);
+    let finalDest  = path.join(rawRoot, filename);
     if (fs.existsSync(finalDest)) {
-      finalDest = path.join(RAW_LORA_SUBDIR, `${base}_${Date.now()}${ext}`);
+      finalDest = path.join(rawRoot, `${base}_${Date.now()}${ext}`);
     }
     fs.writeFileSync(finalDest, fileBuffer);
 
@@ -512,10 +598,12 @@ export class CartridgeStore {
       license:             'personal',
       halcyon_id:          null,
       lora_path:           finalDest,
-      install_path:        RAW_LORA_SUBDIR,
+      install_path:        rawRoot,
       is_local_author:     false,
       has_license_unlock:  false,
       is_protected:        false,
+      scope,
+      owner_username,
     });
   }
 
@@ -533,8 +621,11 @@ export class CartridgeStore {
     samplePaths:    string[],
     password:       string,
     addLicense:     boolean,
+    scope:          'system' | 'user' = 'system',
+    owner_username: string = 'owner',
   ): Promise<CartridgeRecord> {
-    fs.mkdirSync(CARTRIDGES_DIR, { recursive: true });
+    const installRoot = cartridgeInstallRoot(scope, owner_username);
+    fs.mkdirSync(installRoot, { recursive: true });
 
     const isProtected = password !== PHOBOS_DEFAULT_CART_PASSWORD;
     if (isProtected && password.length < 4) {
@@ -562,7 +653,7 @@ export class CartridgeStore {
     // Optional: safetensors for training resume (if present alongside the gguf).
     const stPath = loraGgufPath.replace(/\.gguf$/, '.safetensors');
 
-    const installPath     = path.join(CARTRIDGES_DIR, manifest.id);
+    const installPath     = path.join(installRoot, manifest.id);
     const archiveDestPath = path.join(installPath, 'cartridge-archive.cartridge');
     const loraDestPath    = path.join(installPath, 'lora.gguf');
     fs.mkdirSync(installPath, { recursive: true });
@@ -615,6 +706,8 @@ export class CartridgeStore {
       is_local_author:     true,
       has_license_unlock:  !!fp,
       is_protected:        isProtected,
+      scope,
+      owner_username,
     });
   }
 
@@ -661,8 +754,9 @@ export class CartridgeStore {
         training_documents, training_turns, training_steps,
         recommended_weight, weight_min, weight_max,
         license, halcyon_id, lora_path, install_path,
-        is_local_author, has_license_unlock, is_protected
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        is_local_author, has_license_unlock, is_protected,
+        scope, owner_username
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       r.id, r.kind, r.name, r.author, r.author_url, r.version, r.description,
       r.base_model, r.compatible_models, r.target_persona, r.rank, r.category,
@@ -671,6 +765,7 @@ export class CartridgeStore {
       r.recommended_weight, r.weight_min, r.weight_max,
       r.license, r.halcyon_id, r.lora_path, r.install_path,
       r.is_local_author, r.has_license_unlock, r.is_protected,
+      r.scope, r.owner_username,
     ]);
     return (await this.get(r.id))!;
   }

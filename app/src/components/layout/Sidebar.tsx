@@ -45,13 +45,13 @@ function SidebarIconGrid() {
   const meridianBrowserOpen  = useAppStore((s) => s.meridianBrowserOpen);
 
   return (
-    <div className="px-2 py-1.5 border-b border-border/30">
+    <div className="px-2 py-1.5 border-b border-phob-orange/15">
       <div className="grid grid-cols-2 gap-1">
         {/* Row 1 — Tools */}
         <button
           onClick={() => setSchedulerOpen(true)}
           title="Scheduler"
-          className="flex items-center gap-1.5 px-2 py-1 rounded-sm border border-transparent hover:border-phobos-green/20 text-muted-foreground/40 hover:text-phobos-green transition-all text-[9px] font-terminal uppercase tracking-widest"
+          className="flex items-center gap-1.5 px-2 py-1 rounded-sm border border-transparent hover:border-phob-amber/25 text-phob-steel/35 hover:text-phob-amber transition-all text-[9px] font-terminal uppercase tracking-widest"
         >
           <CalendarClock className="w-3 h-3 shrink-0" />
           <span>Schedule</span>
@@ -59,7 +59,7 @@ function SidebarIconGrid() {
         <button
           onClick={() => setSecurityOpen(true)}
           title="Security"
-          className="flex items-center gap-1.5 px-2 py-1 rounded-sm border border-transparent hover:border-phobos-green/20 text-muted-foreground/40 hover:text-phobos-green transition-all text-[9px] font-terminal uppercase tracking-widest"
+          className="flex items-center gap-1.5 px-2 py-1 rounded-sm border border-transparent hover:border-phob-amber/25 text-phob-steel/35 hover:text-phob-amber transition-all text-[9px] font-terminal uppercase tracking-widest"
         >
           <Shield className="w-3 h-3 shrink-0" />
           <span>Security</span>
@@ -70,8 +70,8 @@ function SidebarIconGrid() {
           title="Music Player"
           className={`flex items-center gap-1.5 px-2 py-1 rounded-sm border transition-all text-[9px] font-terminal uppercase tracking-widest ${
             polarisPlayerOpen
-              ? 'border-phobos-amber/30 text-phobos-amber/70'
-              : 'border-transparent hover:border-phobos-green/20 text-muted-foreground/40 hover:text-phobos-green'
+              ? 'border-phob-green/30 text-phob-green/70'
+              : 'border-transparent hover:border-phob-orange/20 text-phob-steel/35 hover:text-phob-orange'
           }`}
         >
           <Music2 className="w-3 h-3 shrink-0" />
@@ -82,8 +82,8 @@ function SidebarIconGrid() {
           title="Reading Library"
           className={`flex items-center gap-1.5 px-2 py-1 rounded-sm border transition-all text-[9px] font-terminal uppercase tracking-widest ${
             kavitaBrowserOpen
-              ? 'border-sayon/30 text-sayon/70'
-              : 'border-transparent hover:border-phobos-green/20 text-muted-foreground/40 hover:text-phobos-green'
+              ? 'border-phob-teal/30 text-phob-teal/70'
+              : 'border-transparent hover:border-phob-orange/20 text-phob-steel/35 hover:text-phob-orange'
           }`}
         >
           <BookMarked className="w-3 h-3 shrink-0" />
@@ -95,8 +95,8 @@ function SidebarIconGrid() {
           title="Video Library"
           className={`flex items-center gap-1.5 px-2 py-1 rounded-sm border transition-all text-[9px] font-terminal uppercase tracking-widest ${
             jellyfinBrowserOpen
-              ? 'border-phobos-blue/30 text-phobos-blue/70'
-              : 'border-transparent hover:border-phobos-green/20 text-muted-foreground/40 hover:text-phobos-green'
+              ? 'border-phob-yellow/30 text-phob-yellow/70'
+              : 'border-transparent hover:border-phob-orange/20 text-phob-steel/35 hover:text-phob-orange'
           }`}
         >
           <Film className="w-3 h-3 shrink-0" />
@@ -107,8 +107,8 @@ function SidebarIconGrid() {
           title="Photo Library"
           className={`flex items-center gap-1.5 px-2 py-1 rounded-sm border transition-all text-[9px] font-terminal uppercase tracking-widest ${
             meridianBrowserOpen
-              ? 'border-sayon/30 text-sayon/70'
-              : 'border-transparent hover:border-phobos-green/20 text-muted-foreground/40 hover:text-phobos-green'
+              ? 'border-phob-teal/30 text-phob-teal/70'
+              : 'border-transparent hover:border-phob-orange/20 text-phob-steel/35 hover:text-phob-orange'
           }`}
         >
           <Camera className="w-3 h-3 shrink-0" />
@@ -121,7 +121,7 @@ function SidebarIconGrid() {
 
 
 export function Sidebar() {
-  const { threads, activeThreadId, setActiveThread, sidebarOpen, addThread, deleteThread } = useAppStore();
+  const { threads, activeThreadId, setActiveThread, addThread, deleteThread } = useAppStore();
   const allMessages = useAppStore((s) => s.messages);
   const projectDocs = useAppStore((s) => s.projectDocs);
   const addProjectDoc = useAppStore((s) => s.addProjectDoc);
@@ -374,8 +374,6 @@ export function Sidebar() {
     setRenamingId(null);
   };
 
-  if (!sidebarOpen) return null;
-
   const sortedGroupKeys = Object.keys(grouped).sort();
 
   const getProjectName = (projectId: string): string => {
@@ -396,8 +394,8 @@ export function Sidebar() {
           isFork ? 'ml-3 pl-1.5 pr-2' : 'px-2'
         } ${
           t.id === activeThreadId
-            ? 'bg-phobos-green/10 text-foreground border-l-2 border-phobos-green/60 pl-1.5'
-            : 'text-foreground/80 hover:bg-accent hover:text-foreground border-l-2 border-transparent'
+            ? 'bg-phob-orange/10 text-phob-white border-l-2 border-phob-orange/70 pl-1.5'
+            : 'text-phob-white/70 hover:bg-phob-orange/5 hover:text-phob-white border-l-2 border-transparent'
         }`}
         onClick={() => !isRenaming && setActiveThread(t.id)}
       >
@@ -416,7 +414,7 @@ export function Sidebar() {
                 }}
                 onBlur={() => handleRenameCommit(t)}
                 onClick={(e) => e.stopPropagation()}
-                className="text-xs flex-1 font-mono bg-transparent border-b border-phobos-green/30 focus:outline-none text-foreground"
+                className="text-xs flex-1 font-mono bg-transparent border-b border-phob-orange/30 focus:outline-none text-phob-white"
               />
             ) : (
               <span
@@ -430,12 +428,12 @@ export function Sidebar() {
                 {t.title}
               </span>
             )}
-            <span className="text-[10px] text-sayon/55 shrink-0 font-mono">
+            <span className="text-[10px] text-phob-teal/50 shrink-0 font-mono">
               {relativeTime(t.createdAt)}
             </span>
           </div>
           {preview && (
-            <p className="text-[10px] text-muted-foreground/30 truncate leading-tight mt-0.5">
+            <p className="text-[10px] text-phob-steel/35 truncate leading-tight mt-0.5">
               {preview}
             </p>
           )}
@@ -444,7 +442,7 @@ export function Sidebar() {
         {/* Delete */}
         {isDeleting ? (
           <div
-            className="absolute right-1 top-1 flex items-center gap-1 bg-card border border-border rounded px-1.5 py-0.5 z-10"
+            className="absolute right-1 top-1 flex items-center gap-1 bg-[#0f0f0a] border border-phob-orange/20 px-1.5 py-0.5 z-10"
             onClick={(e) => e.stopPropagation()}
           >
             <span className="text-[10px] text-destructive font-mono">Delete?</span>
@@ -476,9 +474,9 @@ export function Sidebar() {
 
   return (
     <>
-      <aside className="phobos-sidebar phobos-chrome-zone w-56 border-r border-border/50 bg-background flex flex-col shrink-0 h-full">
+      <aside className="phobos-sidebar phob-chrome-zone w-56 border-r border-phob-orange/20 bg-[#080808] flex flex-col shrink-0 h-full">
         {/* Polaris dock — top of sidebar */}
-        <div className="p-2 border-b border-border/30">
+        <div className="p-2 border-b border-phob-orange/15">
           <PolarisPlayerDock />
         </div>
 
@@ -488,12 +486,12 @@ export function Sidebar() {
         <SidebarIconGrid />
 
         {/* Projects section */}
-        <div className="px-2 pt-2 pb-1 border-b border-border/30">
+        <div className="px-2 pt-2 pb-1 border-b border-phob-orange/15">
           <div className="flex items-center justify-between px-1 mb-1">
-            <span className="text-[10px] font-terminal text-ui-glow tracking-wider uppercase">Projects</span>
+            <span className="text-[8px] font-terminal text-phob-orange/40 tracking-[0.2em] uppercase">PROJECTS</span>
             <button
               onClick={() => setShowNewProject(!showNewProject)}
-              className="p-0.5 text-ui-glow hover:text-foreground transition-colors"
+              className="p-0.5 text-phob-orange/40 hover:text-phob-orange transition-colors"
             >
               <Plus className="w-3 h-3" />
             </button>
@@ -506,11 +504,11 @@ export function Sidebar() {
                 onChange={(e) => setNewProjectName(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleNewProject()}
                 placeholder="Name…"
-                className="flex-1 bg-transparent text-xs font-mono text-foreground placeholder:text-muted-foreground/30 focus:outline-none border-b border-border/30 pb-0.5"
+                className="flex-1 bg-transparent text-xs font-mono text-foreground placeholder:text-muted-foreground/30 focus:outline-none border-b border-phob-orange/20 pb-0.5"
               />
               <button
                 onClick={handleNewProject}
-                className="text-[10px] px-1.5 py-0.5 rounded bg-phobos-green/10 text-phobos-green/60 hover:bg-phobos-green/20 font-mono"
+                className="text-[10px] px-1.5 py-0.5 bg-phob-orange/10 text-phob-orange/60 hover:bg-phob-orange/20 font-mono"
               >
                 Add
               </button>
@@ -520,7 +518,7 @@ export function Sidebar() {
             <div key={doc.id} className="group flex items-center gap-1 px-1 py-0.5">
               <button
                 onClick={() => openProjectEditor(doc)}
-                className="flex-1 text-left text-[11px] font-mono text-phobos-green/50 hover:text-phobos-green/80 truncate transition-colors"
+                className="flex-1 text-left text-[11px] font-mono text-phob-orange/40 hover:text-phob-orange/70 truncate transition-colors"
               >
                 <FolderOpen className="w-3 h-3 inline mr-1 opacity-50" />
                 {doc.name}
@@ -540,11 +538,11 @@ export function Sidebar() {
           <button
             onClick={handleNew}
             title="New chat (⌘N)"
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs font-mono rounded-sm hover:bg-accent text-phobos-green/70 hover:text-phobos-green transition-colors border border-border/30 hover:border-border/60"
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-[9px] font-terminal uppercase tracking-[0.15em] hover:bg-phob-orange/5 text-phob-orange/55 hover:text-phob-orange transition-colors border border-phob-orange/20 hover:border-phob-orange/40"
           >
             <Plus className="w-3.5 h-3.5 shrink-0" />
             <span className="flex-1 text-left">New Chat</span>
-            <span className="text-[9px] font-mono text-ui-glow">⌘N</span>
+            <span className="text-[9px] font-mono text-phob-orange/30">⌘N</span>
           </button>
         </div>
 
@@ -556,7 +554,7 @@ export function Sidebar() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="search… ⌘K"
-              className="w-full bg-transparent text-[10px] font-mono text-foreground/60 placeholder:text-muted-foreground/20 focus:outline-none border border-border/20 focus:border-phobos-green/30 rounded-sm px-2 py-1 pr-5 transition-all"
+              className="w-full bg-transparent text-[10px] font-mono text-phob-white/60 placeholder:text-phob-orange/25 focus:outline-none border border-phob-orange/15 focus:border-phob-orange/35 px-2 py-1 pr-5 transition-all"
             />
             {search.length > 0 && (
               <button
@@ -585,13 +583,13 @@ export function Sidebar() {
               <div key={bucket} className="mb-1">
                 <button
                   onClick={() => toggle(bucketKey)}
-                  className="w-full flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-mono text-ui-glow text-ui-glow-hover transition-colors"
+                  className="w-full flex items-center gap-1.5 px-2 py-0.5 text-[8px] font-terminal uppercase tracking-[0.15em] text-phob-orange/45 hover:text-phob-orange/70 transition-colors"
                 >
                   <ChevronRight
                     className={`w-2.5 h-2.5 transition-transform shrink-0 ${!isCollapsed ? 'rotate-90' : ''}`}
                   />
                   <span className="tracking-wider uppercase">{bucket}</span>
-                  <span className="ml-auto text-ui-glow">{items.length}</span>
+                  <span className="ml-auto text-phob-orange/40">{items.length}</span>
                 </button>
                 {!isCollapsed && (
                   <div>
@@ -612,14 +610,14 @@ export function Sidebar() {
               <div key={projectId} className="mb-1">
                 <button
                   onClick={() => toggle(projectId)}
-                  className="w-full flex items-center gap-1.5 px-2 py-1 text-xs font-mono text-phobos-green/50 hover:text-phobos-green/80 transition-colors"
+                  className="w-full flex items-center gap-1.5 px-2 py-1 text-[9px] font-terminal uppercase tracking-[0.1em] text-phob-orange/45 hover:text-phob-orange/70 transition-colors"
                 >
                   <ChevronRight
                     className={`w-3 h-3 transition-transform ${!isCollapsed ? 'rotate-90' : ''}`}
                   />
                   <FolderOpen className="w-3 h-3" />
                   <span>{displayName}</span>
-                  <span className="ml-auto text-[10px] text-phobos-green/40">{items.length}</span>
+                  <span className="ml-auto text-[10px] text-phob-orange/35">{items.length}</span>
                 </button>
 
                 {!isCollapsed && (
@@ -632,7 +630,7 @@ export function Sidebar() {
           })}
 
           {threads.length === 0 && (
-            <div className="px-3 py-8 text-center text-[10px] text-muted-foreground/20 font-mono">
+            <div className="px-3 py-8 text-center text-[10px] text-phob-steel/25 font-mono">
               No conversations
             </div>
           )}

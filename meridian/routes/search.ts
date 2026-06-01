@@ -61,7 +61,7 @@ export async function searchRoutes(
 
     // Run keyword and vector searches in parallel
     const [keywordResult, vec] = await Promise.all([
-      opts.db.searchFiles({ userId: opts.config.userId, query: q, limit, offset }),
+      opts.db.searchFiles({ userId: (req as import('fastify').FastifyRequest & { meridianUser: string }).meridianUser, query: q, limit, offset }),
       embedQuery(q),
     ]);
 
@@ -82,7 +82,7 @@ export async function searchRoutes(
          WHERE user_id = ? AND embed_vec IS NOT NULL
          ORDER BY array_distance(embed_vec::FLOAT[768], ?::FLOAT[768])
          LIMIT ?`,
-        [opts.config.userId, JSON.stringify(vec), limit]
+        [(req as import('fastify').FastifyRequest & { meridianUser: string }).meridianUser, JSON.stringify(vec), limit]
       );
       vectorIds = rows.map(r => r.id as string);
     } catch {

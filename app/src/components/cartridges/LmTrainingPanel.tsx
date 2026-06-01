@@ -53,7 +53,7 @@ export interface LmTrainingPanelProps {
 function LossChart({ history }: { history: number[] }) {
   if (history.length < 2) return (
     <div className="w-full h-full flex items-center justify-center">
-      <span className="text-[10px] font-mono text-muted-foreground/20 uppercase tracking-widest">
+      <span className="text-[10px] font-mono text-phob-steel/20 uppercase tracking-widest">
         Waiting for data…
       </span>
     </div>
@@ -93,9 +93,9 @@ function LossChart({ history }: { history: number[] }) {
         return (
           <g key={i}>
             <line x1={PAD.l} y1={y} x2={W - PAD.r} y2={y}
-              stroke="hsl(120 100% 50% / 0.07)" strokeWidth="1" strokeDasharray="4 4" />
+              stroke="rgba(0,255,65,0.07)" strokeWidth="1" strokeDasharray="4 4" />
             <text x={PAD.l - 6} y={y + 3.5}
-              fill="hsl(120 100% 50% / 0.30)" fontSize="9" fontFamily="monospace"
+              fill="rgba(0,255,65,0.30)" fontSize="9" fontFamily="monospace"
               textAnchor="end">
               {v.toFixed(3)}
             </text>
@@ -106,7 +106,7 @@ function LossChart({ history }: { history: number[] }) {
       {/* X-axis ticks */}
       {xTicks.map(({ x, label }, i) => (
         <text key={i} x={x} y={H - 6}
-          fill="hsl(120 100% 50% / 0.25)" fontSize="9" fontFamily="monospace"
+          fill="rgba(0,255,65,0.25)" fontSize="9" fontFamily="monospace"
           textAnchor="middle">
           {label}
         </text>
@@ -119,7 +119,7 @@ function LossChart({ history }: { history: number[] }) {
           pts,
           `${PAD.l + iW},${PAD.t + iH}`,
         ].join(' ')}
-        fill="hsl(120 100% 50% / 0.04)"
+        fill="rgba(0,255,65,0.04)"
         stroke="none"
       />
 
@@ -127,7 +127,7 @@ function LossChart({ history }: { history: number[] }) {
       <polyline
         points={pts}
         fill="none"
-        stroke="hsl(120 100% 50% / 0.65)"
+        stroke="rgba(0,255,65,0.65)"
         strokeWidth="1.5"
         strokeLinejoin="round"
       />
@@ -139,8 +139,8 @@ function LossChart({ history }: { history: number[] }) {
         const y    = PAD.t + (1 - (last - min) / range) * iH;
         return (
           <circle cx={x} cy={y} r="3"
-            fill="hsl(120 100% 50% / 0.9)"
-            stroke="hsl(120 100% 50% / 0.3)"
+            fill="rgba(0,255,65,0.9)"
+            stroke="rgba(0,255,65,0.3)"
             strokeWidth="4"
           />
         );
@@ -153,12 +153,12 @@ function LossChart({ history }: { history: number[] }) {
 
 function ProgressBar({ ratio, indeterminate }: { ratio: number; indeterminate?: boolean }) {
   return (
-    <div className="h-0.5 w-full bg-border/20 rounded-full overflow-hidden">
+    <div className="h-0.5 w-full bg-phob-white/8 overflow-hidden">
       {indeterminate ? (
-        <div className="h-full w-1/3 bg-phobos-green/40 rounded-full"
+        <div className="h-full w-1/3 bg-phob-orange/40"
           style={{ animation: 'lm-slide 1.8s ease-in-out infinite' }} />
       ) : (
-        <div className="h-full bg-phobos-green/60 rounded-full transition-all duration-500"
+        <div className="h-full bg-phob-orange/60 transition-all duration-500"
           style={{ width: `${Math.min(100, ratio * 100)}%` }} />
       )}
       <style>{`@keyframes lm-slide { 0%{transform:translateX(-100%)} 100%{transform:translateX(400%)} }`}</style>
@@ -172,24 +172,24 @@ function PhaseView({ session, livePhase }: { session: LmSession; livePhase: stri
   const isTerminal = ['converting', 'packaging'].includes(session.status);
   return (
     <div className="flex flex-col h-full">
-      <div className="px-8 py-5 border-b border-border/40 shrink-0 space-y-3">
+      <div className="px-8 py-5 border-b border-phob-orange/20 shrink-0 space-y-3">
         <div className="flex items-center gap-3">
-          <Loader2 className="w-5 h-5 text-phobos-green/50 animate-spin" />
-          <span className="text-sm font-terminal uppercase tracking-widest text-phobos-green/70">
+          <Loader2 className="w-5 h-5 text-phob-orange/50 animate-spin" />
+          <span className="text-sm font-terminal uppercase tracking-widest text-phob-orange/70">
             {livePhase || session.current_phase || session.status}
           </span>
         </div>
         <ProgressBar ratio={0} indeterminate />
       </div>
       <div className="flex-1 flex flex-col items-center justify-center gap-6 p-10">
-        <div className="border border-border/20 rounded-sm p-6 bg-black/30 w-full max-w-lg space-y-4">
-          <p className="text-[10px] font-terminal uppercase tracking-[0.2em] text-muted-foreground/30">Session</p>
-          <p className="text-lg font-terminal text-foreground/80">{session.name}</p>
-          <p className="text-sm font-mono text-muted-foreground/40">
+        <div className="border border-phob-orange/15 p-6 bg-phob-white/3 w-full max-w-lg space-y-4">
+          <p className="text-[10px] font-terminal uppercase tracking-[0.2em] text-phob-steel/35">Session</p>
+          <p className="text-lg font-terminal text-phob-white/80">{session.name}</p>
+          <p className="text-sm font-mono text-phob-steel/40">
             {session.training_hf_id} · rank {session.rank}
           </p>
           {isTerminal && (
-            <p className="text-sm font-mono text-phobos-amber/50">
+            <p className="text-sm font-mono text-phob-amber/55">
               Training complete — finalizing output…
             </p>
           )}
@@ -214,51 +214,51 @@ function TrainingProgressView({
   return (
     <div className="flex flex-col h-full">
       {/* Phase bar */}
-      <div className="px-8 py-4 border-b border-border/30 shrink-0 space-y-2">
+      <div className="px-8 py-4 border-b border-phob-orange/15 shrink-0 space-y-2">
         <div className="flex items-center gap-3">
-          <Zap className="w-4 h-4 text-phobos-green/60" />
-          <span className="text-sm font-terminal uppercase tracking-widest text-phobos-green/70">
+          <Zap className="w-4 h-4 text-phob-orange/60" />
+          <span className="text-sm font-terminal uppercase tracking-widest text-phob-orange/70">
             {session.current_phase || 'Training'}
           </span>
           {elapsed && (
-            <span className="ml-auto text-xs font-mono text-muted-foreground/30">{elapsed}</span>
+            <span className="ml-auto text-xs font-mono text-phob-steel/35">{elapsed}</span>
           )}
         </div>
         <ProgressBar ratio={pct} />
       </div>
 
       {/* Stats row */}
-      <div className="px-8 py-5 border-b border-border/20 shrink-0">
+      <div className="px-8 py-5 border-b border-phob-orange/12 shrink-0">
         <div className="grid grid-cols-3 gap-4">
           {/* Step — big */}
-          <div className="border border-border/20 rounded-sm p-4 bg-black/40 space-y-1">
-            <div className="text-[9px] font-terminal uppercase tracking-[0.2em] text-muted-foreground/35">Step</div>
-            <div className="text-3xl font-mono text-foreground/90 tabular-nums leading-none">
+          <div className="border border-phob-orange/15 p-4 bg-phob-white/4 space-y-1">
+            <div className="text-[9px] font-terminal uppercase tracking-[0.2em] text-phob-steel/40">Step</div>
+            <div className="text-3xl font-mono text-phob-white/90 tabular-nums leading-none">
               {session.current_step.toLocaleString()}
             </div>
-            <div className="text-xs font-mono text-muted-foreground/35">
+            <div className="text-xs font-mono text-phob-steel/35">
               / {session.total_steps > 0 ? session.total_steps.toLocaleString() : '?'}
             </div>
           </div>
 
           {/* Loss — big */}
-          <div className="border border-border/20 rounded-sm p-4 bg-black/40 space-y-1">
-            <div className="text-[9px] font-terminal uppercase tracking-[0.2em] text-muted-foreground/35">Loss</div>
-            <div className="text-3xl font-mono text-phobos-green/80 tabular-nums leading-none">
+          <div className="border border-phob-orange/15 p-4 bg-phob-white/4 space-y-1">
+            <div className="text-[9px] font-terminal uppercase tracking-[0.2em] text-phob-steel/40">Loss</div>
+            <div className="text-3xl font-mono text-phob-green/80 tabular-nums leading-none">
               {session.current_loss > 0 ? session.current_loss.toFixed(4) : '—'}
             </div>
-            <div className="text-xs font-mono text-muted-foreground/35">
+            <div className="text-xs font-mono text-phob-steel/35">
               rank {session.rank} · {session.data_mode}
             </div>
           </div>
 
           {/* Progress % */}
-          <div className="border border-border/20 rounded-sm p-4 bg-black/40 space-y-1">
-            <div className="text-[9px] font-terminal uppercase tracking-[0.2em] text-muted-foreground/35">Progress</div>
-            <div className="text-3xl font-mono text-foreground/60 tabular-nums leading-none">
+          <div className="border border-phob-orange/15 p-4 bg-phob-white/4 space-y-1">
+            <div className="text-[9px] font-terminal uppercase tracking-[0.2em] text-phob-steel/40">Progress</div>
+            <div className="text-3xl font-mono text-phob-white/60 tabular-nums leading-none">
               {session.total_steps > 0 ? `${Math.floor(pct * 100)}%` : '—'}
             </div>
-            <div className="text-xs font-mono text-muted-foreground/35">
+            <div className="text-xs font-mono text-phob-steel/35">
               {elapsed ? `elapsed ${elapsed}` : 'running'}
             </div>
           </div>
@@ -268,18 +268,18 @@ function TrainingProgressView({
       {/* Chart — fills the rest */}
       <div className="flex-1 min-h-0 flex flex-col px-8 py-5 gap-3">
         <div className="flex items-center gap-2 shrink-0">
-          <BarChart2 className="w-4 h-4 text-muted-foreground/30" />
-          <span className="text-[9px] font-terminal uppercase tracking-widest text-muted-foreground/35">
+          <BarChart2 className="w-4 h-4 text-phob-steel/35" />
+          <span className="text-[9px] font-terminal uppercase tracking-widest text-phob-steel/40">
             Loss Curve — last {lossHistory.length} steps
           </span>
         </div>
-        <div className="flex-1 min-h-0 border border-border/15 rounded-sm bg-black/50 p-3">
+        <div className="flex-1 min-h-0 border border-phob-orange/12 bg-phob-white/3 p-3">
           <LossChart history={lossHistory} />
         </div>
-        <div className="shrink-0 border border-border/10 rounded-sm px-4 py-2 bg-black/20">
-          <p className="text-[9px] font-mono text-muted-foreground/30">
+        <div className="shrink-0 border border-phob-orange/8 px-4 py-2 bg-phob-white/3">
+          <p className="text-[9px] font-mono text-phob-steel/30">
             Base model: {session.training_hf_id}
-            <span className="ml-4 text-muted-foreground/20">
+            <span className="ml-4 text-phob-steel/20">
               cache at ~/.phobos/cartridge-training-cache — delete after training from the cartridges panel
             </span>
           </p>
@@ -335,61 +335,61 @@ function DoneView({
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
-      <div className="flex flex-col items-center justify-center gap-6 px-10 pt-14 pb-8 border-b border-border/20">
+      <div className="flex flex-col items-center justify-center gap-6 px-10 pt-14 pb-8 border-b border-phob-orange/15">
         <div className="relative">
-          <Cpu className="w-16 h-16 text-phobos-green/15" />
-          <CheckCircle2 className="w-7 h-7 text-phobos-green/60 absolute -bottom-1 -right-1" />
+          <Cpu className="w-16 h-16 text-phob-orange/15" />
+          <CheckCircle2 className="w-7 h-7 text-phob-green/60 absolute -bottom-1 -right-1" />
         </div>
         <div className="text-center space-y-2">
-          <p className="text-xl font-terminal text-foreground/80">{session.name}</p>
-          <p className="text-sm font-mono text-muted-foreground/45">
+          <p className="text-xl font-terminal text-phob-white/80">{session.name}</p>
+          <p className="text-sm font-mono text-phob-steel/45">
             {session.current_step.toLocaleString()} steps · rank {session.rank}
             {elapsed ? ` · ${elapsed}` : ''}
           </p>
         </div>
         <button
           onClick={onOpen}
-          className="flex items-center gap-2 px-8 py-3 text-sm font-terminal uppercase tracking-[0.15em] text-phobos-green border border-phobos-green/30 rounded-sm hover:border-phobos-green/60 hover:shadow-[0_0_24px_hsl(120_100%_50%/0.12)] transition-all"
+          className="flex items-center gap-2 px-8 py-3 text-sm font-terminal uppercase tracking-[0.15em] text-phob-orange border border-phob-orange/30 hover:border-phob-orange/60 hover:shadow-[0_0_24px_rgba(232,66,10,0.12)] transition-all"
         >
           <ChevronRight className="w-4 h-4" /> Open Cartridge
         </button>
       </div>
 
-      <div className="px-10 py-6 border-b border-border/15">
-        <p className="text-[9px] font-terminal uppercase tracking-[0.2em] text-muted-foreground/30 mb-4">Training Cache</p>
+      <div className="px-10 py-6 border-b border-phob-orange/12">
+        <p className="text-[9px] font-terminal uppercase tracking-[0.2em] text-phob-steel/35 mb-4">Training Cache</p>
         {cacheDeleted ? (
-          <div className="flex items-center gap-2 text-sm font-mono text-phobos-green/50">
-            <CheckCircle2 className="w-4 h-4" /> Cache deleted
+          <div className="flex items-center gap-2 text-sm font-mono text-phob-green/55">
+            <CheckCircle2 className="w-4 h-4 text-phob-green" /> Cache deleted
           </div>
         ) : (
-          <div className="border border-border/20 rounded-sm p-4 flex items-center justify-between gap-6 bg-black/20">
+          <div className="border border-phob-orange/15 p-4 flex items-center justify-between gap-6 bg-phob-white/3">
             <div>
-              <p className="text-sm font-mono text-foreground/50">{session.training_hf_id}</p>
-              <p className="text-xs font-mono text-muted-foreground/30 mt-1">
+              <p className="text-sm font-mono text-phob-white/50">{session.training_hf_id}</p>
+              <p className="text-xs font-mono text-phob-steel/30 mt-1">
                 {cacheGb ? `~${cacheGb} GB on disk` : 'HF safetensors base model cache'}
               </p>
             </div>
             <button
               onClick={handleDeleteCache}
               disabled={deletingCache}
-              className="flex items-center gap-2 px-4 py-2 text-xs font-terminal uppercase tracking-[0.15em] text-red-400/50 border border-red-900/25 rounded-sm hover:border-red-400/40 hover:text-red-400/70 transition-all disabled:opacity-40 whitespace-nowrap"
+              className="flex items-center gap-2 px-4 py-2 text-xs font-terminal uppercase tracking-[0.15em] text-phob-red/50 border border-phob-red/20 hover:border-phob-red/40 hover:text-phob-red/70 transition-all disabled:opacity-40 whitespace-nowrap"
             >
               {deletingCache ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
               Delete Cache
             </button>
           </div>
         )}
-        <p className="text-[8px] font-mono text-muted-foreground/20 mt-3 leading-relaxed">
+        <p className="text-[8px] font-mono text-phob-steel/20 mt-3 leading-relaxed">
           The training cache holds the HuggingFace safetensors base model used during training.
           Your trained cartridge (.gguf adapter) is unaffected by deleting this cache.
         </p>
       </div>
 
       <div className="px-10 py-5 flex items-center justify-between">
-        <p className="text-sm font-mono text-muted-foreground/25">Train additional steps from the last checkpoint?</p>
+        <p className="text-sm font-mono text-phob-steel/25">Train additional steps from the last checkpoint?</p>
         <button
           onClick={onResume}
-          className="flex items-center gap-2 px-4 py-2 text-xs font-terminal uppercase tracking-widest text-muted-foreground/40 border border-border/20 rounded-sm hover:border-phobos-amber/30 hover:text-phobos-amber/60 transition-all"
+          className="flex items-center gap-2 px-4 py-2 text-xs font-terminal uppercase tracking-widest text-phob-steel/40 border border-phob-orange/15 hover:border-phob-amber/30 hover:text-phob-amber/60 transition-all"
         >
           <RotateCcw className="w-3.5 h-3.5" /> Resume
         </button>
@@ -422,16 +422,16 @@ function ErrorView({
 
   return (
     <div className="flex flex-col h-full items-center justify-center gap-6 p-12">
-      <AlertTriangle className="w-14 h-14 text-red-400/30" />
+      <AlertTriangle className="w-14 h-14 text-phob-red/30" />
       <div className="text-center space-y-3 max-w-lg">
-        <p className="text-xl font-terminal text-foreground/55">
+        <p className="text-xl font-terminal text-phob-white/55">
           {aborted ? 'Training stopped' : 'Training failed'}
         </p>
         {session.error && (
-          <p className="text-sm font-mono text-red-400/55 leading-relaxed">{session.error}</p>
+          <p className="text-sm font-mono text-phob-red/55 leading-relaxed">{session.error}</p>
         )}
         {hasCheckpoint && !aborted && (
-          <p className="text-sm font-mono text-phobos-amber/55 leading-relaxed pt-1">
+          <p className="text-sm font-mono text-phob-amber/55 leading-relaxed pt-1">
             A checkpoint exists — resume to continue from where training stopped.
           </p>
         )}
@@ -440,14 +440,14 @@ function ErrorView({
         {(hasCheckpoint || aborted) && (
           <button
             onClick={onResume}
-            className="w-full flex items-center justify-center gap-2 px-6 py-3 text-sm font-terminal uppercase tracking-widest text-phobos-amber border border-phobos-amber/25 rounded-sm hover:border-phobos-amber/50 transition-all"
+            className="w-full flex items-center justify-center gap-2 px-6 py-3 text-sm font-terminal uppercase tracking-widest text-phob-amber border border-phob-amber/25 hover:border-phob-amber/50 transition-all"
           >
             <RotateCcw className="w-4 h-4" /> Resume from Checkpoint
           </button>
         )}
         <button
           onClick={onClose}
-          className="text-sm font-terminal uppercase tracking-widest text-muted-foreground/35 hover:text-muted-foreground/60 transition-colors"
+          className="text-sm font-terminal uppercase tracking-widest text-phob-steel/35 hover:text-phob-steel/60 transition-colors"
         >
           Close
         </button>
@@ -587,28 +587,28 @@ export function LmTrainingPanel({ sessionId, onCancel, onDone }: LmTrainingPanel
 
   return (
     // Fixed full-screen backdrop
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-phob-void/88 backdrop-blur-sm">
       {/* Panel — 75% of viewport, max capped for readability */}
       <div
-        className="relative flex flex-col bg-background border border-border/40 rounded-sm overflow-hidden shadow-2xl"
+        className="relative flex flex-col bg-[#0f0f0a] border border-phob-orange/30 overflow-hidden shadow-2xl phob-corners phob-corners-full"
         style={{ width: '75vw', height: '75vh', maxWidth: '1400px', maxHeight: '900px' }}
       >
         {/* Header */}
-        <div className="px-8 py-4 border-b border-border/40 flex items-center justify-between shrink-0 bg-black/60">
+        <div className="px-8 py-4 border-b border-phob-orange/20 flex items-center justify-between shrink-0 bg-[#080808] phob-header">
           <div className="flex items-center gap-3">
-            <Cpu className="w-5 h-5 text-phobos-green/50" />
-            <span className="text-sm font-terminal uppercase tracking-widest text-phobos-green/70">
+            <Cpu className="w-5 h-5 text-phob-orange/55" />
+            <span className="text-sm font-terminal uppercase tracking-widest text-phob-orange/70">
               LM Training
             </span>
             {session?.name && (
-              <span className="text-sm font-mono text-muted-foreground/35">— {session.name}</span>
+              <span className="text-sm font-mono text-phob-steel/35">— {session.name}</span>
             )}
           </div>
           <div className="flex items-center gap-3">
             {showAbort && (
               <button
                 onClick={handleAbort}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-terminal uppercase tracking-widest text-red-400/55 border border-red-400/20 rounded-sm hover:border-red-400/45 hover:text-red-400/80 transition-all"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-terminal uppercase tracking-widest text-phob-red/55 border border-phob-red/20 hover:border-phob-red/45 hover:text-phob-red/80 transition-all"
               >
                 <X className="w-3 h-3" /> Abort
               </button>
@@ -620,7 +620,7 @@ export function LmTrainingPanel({ sessionId, onCancel, onDone }: LmTrainingPanel
         <div className="flex-1 min-h-0 overflow-hidden">
           {!session ? (
             <div className="flex h-full items-center justify-center">
-              <Loader2 className="w-8 h-8 text-muted-foreground/20 animate-spin" />
+              <Loader2 className="w-8 h-8 text-phob-steel/20 animate-spin" />
             </div>
           ) : (
             <>

@@ -182,17 +182,25 @@ def _materialize_and_save_transformer(transformer, out_dir: str, dtype, t0: floa
     config_path_out = os.path.join(transformer_dir, "config.json")
     if config_repo:
         try:
-            from huggingface_hub import hf_hub_download
-            config_file = hf_hub_download(
-                repo_id=config_repo,
-                filename="config.json",
-                subfolder=config_subfolder,
-            )
             import shutil as _shutil
-            _shutil.copy(config_file, config_path_out)
-            config_saved = True
-            emit("saving", 0.90, f"Config saved from {config_repo}/{config_subfolder}/config.json")
+            _local_cfg = os.path.join(config_repo, config_subfolder, "config.json")
+            if os.path.isfile(_local_cfg):
+                # Inline config written to a temp dir -- copy directly, no HF access.
+                _shutil.copy(_local_cfg, config_path_out)
+                config_saved = True
+                emit("saving", 0.90, f"Config saved from inline config ({config_subfolder}/config.json)")
+            else:
+                from huggingface_hub import hf_hub_download
+                config_file = hf_hub_download(
+                    repo_id=config_repo,
+                    filename="config.json",
+                    subfolder=config_subfolder,
+                )
+                _shutil.copy(config_file, config_path_out)
+                config_saved = True
+                emit("saving", 0.90, f"Config saved from {config_repo}/{config_subfolder}/config.json")
         except Exception as e:
+            emit("saving", 0.90, f"Warning: could not fetch config from {config_repo}: {e} -- falling back")
             emit("saving", 0.90, f"Warning: could not fetch config from {config_repo}: {e} — falling back")
     if not config_saved:
         config = transformer.config.to_dict() if hasattr(transformer.config, "to_dict") else {}
@@ -200,6 +208,18 @@ def _materialize_and_save_transformer(transformer, out_dir: str, dtype, t0: floa
         config.pop("_pre_quantization_dtype", None)
         with open(config_path_out, "w") as f:
             json.dump(config, f, indent=2)
+
+    # Write the source config repo into the saved config so downstream loaders
+    # can reconstruct the correct HF pipeline without guessing from file size.
+    if config_repo:
+        try:
+            with open(config_path_out) as f:
+                _cfg_tmp = json.load(f)
+            _cfg_tmp["_phobos_config_repo"] = config_repo
+            with open(config_path_out, "w") as f:
+                json.dump(_cfg_tmp, f, indent=2)
+        except Exception:
+            pass
 
     # Patch config fields against actual weight shapes. The HF repo config may
     # be stale or simply wrong for a specific GGUF variant. Weights are always
@@ -337,9 +357,14 @@ def convert_sdxl(model_path: str, out_dir: str, dtype_str: str):
     from diffusers import StableDiffusionXLPipeline
     dtype = dtype_torch(dtype_str)
     emit("loading", 0.0, f"Loading {os.path.basename(model_path)} via from_single_file ...")
+    emit("loading", 0.05, "Fetching SDXL config (may take a moment on first run) ...")
     t0 = time.time()
+    import os as _os
+    _hf_offline = _os.environ.get("TRANSFORMERS_OFFLINE") == "1"
     pipe = StableDiffusionXLPipeline.from_single_file(
         model_path, torch_dtype=dtype, use_safetensors=True,
+        # Use cached config if available; fall back to network if not.
+        local_files_only=_hf_offline,
     )
     emit("saving", 0.5, f"Loaded in {time.time()-t0:.1f}s — saving diffusers directory ...")
     os.makedirs(out_dir, exist_ok=True)
@@ -351,20 +376,67 @@ def convert_sdxl(model_path: str, out_dir: str, dtype_str: str):
 
 # ── FLUX / Chroma / Kontext ───────────────────────────────────────────────────
 
+# ---------------------------------------------------------------------------
+# Known-correct inline configs for models whose HF repos are gated or
+# whose public mirrors have wrong num_layers (e.g. Flex.1-alpha has 8, not 19).
+# Written to a temp dir and passed as config= to from_single_file so we never
+# need unauthenticated HF access for architecture constants.
+# ---------------------------------------------------------------------------
+
+_FLUX_TRANSFORMER_CONFIG = {
+    "_class_name": "FluxTransformer2DModel",
+    "_diffusers_version": "0.38.0",
+    "patch_size": 1,
+    "in_channels": 64,
+    "out_channels": None,
+    "num_layers": 19,
+    "num_single_layers": 38,
+    "attention_head_dim": 128,
+    "num_attention_heads": 24,
+    "joint_attention_dim": 4096,
+    "pooled_projection_dim": 768,
+    "guidance_embeds": False,
+    "axes_dims_rope": [16, 56, 56],
+}
+
+# Kontext is architecturally identical to FLUX dev -- same class, same dims.
+# The only difference is the pipeline (FluxKontextPipeline) and training.
+_KONTEXT_TRANSFORMER_CONFIG = {
+    **_FLUX_TRANSFORMER_CONFIG,
+    "guidance_embeds": True,
+}
+
+
+def _write_inline_config(config_dict: dict, subfolder: str = "transformer") -> str:
+    """Write an inline config dict to a temp directory tree and return the
+    directory path suitable for use as config= in from_single_file / from_pretrained.
+    The temp directory is cleaned up at process exit."""
+    import tempfile, atexit
+    tmp = tempfile.mkdtemp(prefix="phobos_cfg_")
+    atexit.register(lambda p=tmp: __import__('shutil').rmtree(p, ignore_errors=True))
+    sub = os.path.join(tmp, subfolder)
+    os.makedirs(sub, exist_ok=True)
+    with open(os.path.join(sub, "config.json"), "w") as f:
+        json.dump(config_dict, f, indent=2)
+    return tmp
+
+
 def convert_flux(model_path: str, out_dir: str, dtype_str: str, config_path, t5_path=None):
     from diffusers import FluxTransformer2DModel, GGUFQuantizationConfig
     dtype = dtype_torch(dtype_str)
-    config_repo = config_path or "ostris/Flex.1-alpha"
+    # Use the inline config so we never need unauthenticated HF access.
+    # config_path can still override (e.g. for fine-tunes with different dims).
+    config_dir = config_path or _write_inline_config(_FLUX_TRANSFORMER_CONFIG)
     emit("loading", 0.0, f"Loading {os.path.basename(model_path)} (FLUX transformer, GGUF dequant) ...")
     t0 = time.time()
     transformer = FluxTransformer2DModel.from_single_file(
         model_path,
         quantization_config=GGUFQuantizationConfig(compute_dtype=dtype),
-        config=config_repo,
+        config=config_dir,
         subfolder="transformer",
         torch_dtype=dtype,
     )
-    _materialize_and_save_transformer(transformer, out_dir, dtype, t0, config_repo=config_repo)
+    _materialize_and_save_transformer(transformer, out_dir, dtype, t0, config_repo=config_dir)
     if t5_path and os.path.exists(t5_path):
         _materialize_and_save_t5(t5_path, out_dir, dtype, t0)
 
@@ -391,17 +463,17 @@ def convert_kontext(model_path: str, out_dir: str, dtype_str: str, config_path, 
     # Kontext uses FluxTransformer2DModel — same class, different weights
     from diffusers import FluxTransformer2DModel, GGUFQuantizationConfig
     dtype = dtype_torch(dtype_str)
-    config_repo = config_path or "ostris/Flex.1-alpha"
+    config_dir = config_path or _write_inline_config(_KONTEXT_TRANSFORMER_CONFIG)
     emit("loading", 0.0, f"Loading {os.path.basename(model_path)} (Kontext transformer, GGUF dequant) ...")
     t0 = time.time()
     transformer = FluxTransformer2DModel.from_single_file(
         model_path,
         quantization_config=GGUFQuantizationConfig(compute_dtype=dtype),
-        config=config_repo,
+        config=config_dir,
         subfolder="transformer",
         torch_dtype=dtype,
     )
-    _materialize_and_save_transformer(transformer, out_dir, dtype, t0, config_repo=config_repo)
+    _materialize_and_save_transformer(transformer, out_dir, dtype, t0, config_repo=config_dir)
     if t5_path and os.path.exists(t5_path):
         _materialize_and_save_t5(t5_path, out_dir, dtype, t0)
 

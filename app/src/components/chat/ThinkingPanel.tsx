@@ -93,7 +93,7 @@ function PreviousThoughts({ groups, tintClass }: PreviousThoughtsProps) {
   if (!expanded) {
     return (
       <div
-        className="cursor-pointer hover:bg-accent/10 transition-colors px-1 py-1.5 mb-2 border border-border/20"
+        className="cursor-pointer hover:bg-phob-orange/5 transition-colors px-1 py-1.5 mb-2 border border-phob-orange/15"
         onClick={() => setExpanded(true)}
       >
         <div className="text-[9px] font-terminal text-muted-foreground/30 tracking-wider">
@@ -109,10 +109,10 @@ function PreviousThoughts({ groups, tintClass }: PreviousThoughtsProps) {
   return (
     <div className="mb-2 border border-border/20">
       <div
-        className="cursor-pointer hover:bg-accent/10 transition-colors px-1 py-1.5"
+        className="cursor-pointer hover:bg-phob-orange/5 transition-colors px-1 py-1.5"
         onClick={() => setExpanded(false)}
       >
-        <div className="text-[9px] font-terminal text-muted-foreground/30 tracking-wider">
+        <div className="text-[9px] font-terminal text-phob-orange/35 tracking-wider">
           PREVIOUS THOUGHTS ▾
         </div>
       </div>
@@ -120,7 +120,7 @@ function PreviousThoughts({ groups, tintClass }: PreviousThoughtsProps) {
         {groups.map((g, i) => (
           <div key={i}>
             <div
-              className="cursor-pointer hover:bg-accent/10 transition-colors py-1 flex items-center gap-2"
+              className="cursor-pointer hover:bg-phob-orange/5 transition-colors py-1 flex items-center gap-2"
               onClick={() => setExpandedIdx(expandedIdx === i ? null : i)}
             >
               <span className="text-[9px] font-mono text-muted-foreground/30">
@@ -215,7 +215,7 @@ function SectionPanel({
           {agentState && agentState.state !== 'idle' && (
             <AgentStateIcon
               state={agentState.state}
-              tint={tintClass === 'text-sayon' ? 'hsl(30, 100%, 50%)' : 'hsl(0, 85%, 55%)'}
+              tint={tintClass === 'text-sayon' ? '#00d4aa' : '#CFFF04'}
               size={18}
             />
           )}
@@ -305,7 +305,7 @@ function SectionPanel({
                         </span>
                       )}
                       {seg.live && isStreaming && (
-                        <span className={`inline-block w-1.5 h-3 ${tintClass === 'text-sayon' ? 'bg-sayon/60' : 'bg-seren/60'} animate-pulse ml-0.5 align-text-bottom`} />
+                        <span className={`inline-block w-1.5 h-3 ${tintClass === 'text-sayon' ? 'bg-phob-teal/60' : 'bg-phob-yellow/60'} animate-pulse ml-0.5 align-text-bottom`} />
                       )}
                     </pre>
                     {seg.completedAt && <TimestampDivider iso={seg.completedAt} />}
@@ -376,10 +376,10 @@ export function ThinkingPanel({
   if (!thinkingOpen) {
     return (
       <div
-        className="phobos-chrome-zone phobos-thinking-collapsed w-8 shrink-0 border-l border-border/50 bg-background flex items-center justify-center cursor-pointer hover:bg-accent/20 transition-colors"
+        className="phob-chrome-zone phobos-thinking-collapsed w-8 shrink-0 border-l border-phob-orange/20 bg-[#080808] flex items-center justify-center cursor-pointer hover:bg-phob-orange/8 transition-colors"
         onClick={toggleThinking}
       >
-        <span className="text-[10px] font-terminal text-muted-foreground/50 tracking-widest [writing-mode:vertical-rl]">
+        <span className="text-[10px] font-terminal text-phob-orange/40 tracking-widest [writing-mode:vertical-rl]">
           THINKING
         </span>
       </div>
@@ -387,17 +387,17 @@ export function ThinkingPanel({
   }
 
   return (
-    <div className="phobos-thinking-panel w-[280px] shrink-0 border-l border-border/50 bg-background/90 flex flex-col overflow-hidden">
+    <div className="phobos-thinking-panel w-[280px] shrink-0 border-l border-phob-orange/20 bg-[#0a0a06] flex flex-col overflow-hidden">
       {/* Header */}
-      <div data-navy-header style={navyHeader} className="phobos-chrome-zone flex items-center justify-between px-3 py-2 border-b border-border/30 bg-background shrink-0">
+      <div className="phob-chrome-zone phob-header flex items-center justify-between px-3 py-2 border-b border-phob-orange/25 bg-[#080808] shrink-0">
         <div className="flex items-center gap-2">
-          <span data-green style={navyGreen} className="text-[10px] font-terminal font-semibold text-muted-foreground/60 tracking-[0.15em]">
+          <span className="text-[10px] font-terminal font-semibold text-phob-orange/70 tracking-[0.15em]">
             REASONING
           </span>
           {(() => {
             const totalTk = segments.reduce((sum, seg) => sum + seg.tokenCount, 0);
             return totalTk > 0 ? (
-              <span style={navyGreen} className="text-[10px] font-mono text-phobos-green/60">
+              <span className="text-[10px] font-mono text-phob-orange/50">
                 {totalTk.toLocaleString()} tk
               </span>
             ) : null;
@@ -405,8 +405,7 @@ export function ThinkingPanel({
         </div>
         <button
           onClick={() => { onClose(); toggleThinking(); }}
-          style={navyText}
-          className="text-[10px] font-mono text-muted-foreground/30 hover:text-muted-foreground transition-colors"
+          className="text-[10px] font-mono text-phob-steel/30 hover:text-phob-steel transition-colors"
         >
           ×
         </button>

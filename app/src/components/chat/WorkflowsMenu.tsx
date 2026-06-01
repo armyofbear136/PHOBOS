@@ -95,7 +95,7 @@ export function WorkflowsMenu({ threadId }: WorkflowsMenuProps) {
         <span className="text-[9px] font-mono text-ui-glow uppercase tracking-wider flex-1">Workflows</span>
         <button
           onClick={createWorkflow}
-          className="p-0.5 text-ui-glow hover:text-phobos-green/60 transition-colors"
+          className="p-0.5 text-phob-orange/40 hover:text-phob-orange transition-colors"
           title="New workflow"
         >
           <Plus className="w-3 h-3" />
@@ -120,7 +120,7 @@ export function WorkflowsMenu({ threadId }: WorkflowsMenuProps) {
             <div
               key={entry.workflowId}
               className={`w-full flex items-center gap-2 px-2 py-1.5 text-left transition-all border-b border-border/10 group ${
-                isActive ? 'bg-phobos-green/8' : 'hover:bg-muted/20'
+                isActive ? 'bg-phob-orange/8' : 'hover:bg-phob-orange/5'
               }`}
             >
               <div
@@ -129,14 +129,14 @@ export function WorkflowsMenu({ threadId }: WorkflowsMenuProps) {
               >
                 {/* Thumb */}
                 <div className={`w-8 h-8 rounded border overflow-hidden shrink-0 flex items-center justify-center ${
-                  entry.workflowType === 'video' ? 'border-phobos-amber/20 bg-phobos-amber/5'
-                  : entry.workflowType === 'audio' ? 'border-phobos-green/20 bg-phobos-green/5'
+                  entry.workflowType === 'video' ? 'border-phob-amber/20 bg-phob-amber/5'
+                  : entry.workflowType === 'audio' ? 'border-phob-green/20 bg-phob-green/5'
                   : 'border-border/20 bg-muted/20'
                 }`}>
                   {entry.workflowType === 'video' ? (
-                    <Film className="w-3.5 h-3.5 text-phobos-amber/50" />
+                    <Film className="w-3.5 h-3.5 text-phob-amber/50" />
                   ) : entry.workflowType === 'audio' ? (
-                    <Music2 className="w-3.5 h-3.5 text-phobos-green/50" />
+                    <Music2 className="w-3.5 h-3.5 text-phob-green/50" />
                   ) : (
                     <img
                       key={entry.workflowId}
@@ -149,10 +149,10 @@ export function WorkflowsMenu({ threadId }: WorkflowsMenuProps) {
                   )}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className={`text-[10px] font-mono truncate ${isActive ? 'text-phobos-green/80' : 'text-foreground/80'}`}>
+                  <div className={`text-[10px] font-mono truncate ${isActive ? 'text-phob-orange/80' : 'text-phob-white/70'}`}>
                     {entry.name}
                   </div>
-                  <div className="flex items-center gap-1 text-[9px] font-mono text-sayon/55">
+                  <div className="flex items-center gap-1 text-[9px] font-mono text-phob-teal/45">
                     <Clock className="w-2 h-2" />
                     {relTime(entry.createdAt)}
                   </div>

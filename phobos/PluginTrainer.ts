@@ -24,7 +24,7 @@ import {
   gpuToVendor,
   type GpuVendor,
 } from './PythonEnvManager.js';
-import { detectHardware, IMAGE_FLUX_DIR, IMAGE_SDXL_DIR } from './PhobosLocalManager.js';
+import { detectHardware, IMAGE_FLUX_DIR, IMAGE_SDXL_DIR, IMAGE_WAN_DIR } from './PhobosLocalManager.js';
 import type { PluginBaseModel, PluginCategory } from './PluginTypes.js';
 
 const execFileAsync = promisify(execFile);
@@ -260,17 +260,29 @@ export async function createSession(opts: StartTrainingOptions): Promise<Trainin
 }
 
 function _resolveModelPath(baseModel: PluginBaseModel): string {
+  // HF-native models (SANA) have no local GGUF.
+  // The trainer loads them from HF cache via from_pretrained — return empty string.
+  const HF_NATIVE_MODELS = new Set(['sana', 'sana-sprint']);
+  if (HF_NATIVE_MODELS.has(baseModel)) return '';
+
   // Mirror PhobosLocalManager's directory layout:
   //   flux/chroma/kontext/flux2/z-image/qwen-image → IMAGE_FLUX_DIR() = image/flux/
   //   sdxl → IMAGE_SDXL_DIR() = image/sdxl/
-  const searchDir = baseModel === 'sdxl' ? IMAGE_SDXL_DIR() : IMAGE_FLUX_DIR();
+  //   wan   → IMAGE_WAN_DIR()  = image/wan/
+  const searchDir =
+    baseModel === 'sdxl' ? IMAGE_SDXL_DIR() :
+    baseModel === 'wan'  ? IMAGE_WAN_DIR()  :
+    IMAGE_FLUX_DIR();
 
   const modelMap: Record<string, string[]> = {
     'flux-dev':    ['flux-dev', 'flux.1-dev', 'flux1-dev'],
     'flux-schnell':['flux-schnell', 'flux.1-schnell', 'flux1-schnell'],
+    'flux-kontext':['kontext', 'flux-kontext'],
     'chroma':      ['chroma'],
     'sdxl':        ['sdxl', 'sd_xl'],
     'flux2-klein': ['flux2-klein', 'klein'],
+    'wan':         ['wan2.1-t2v-1.3b', 'wan2.1-t2v', 'wan'],
+    'qwen-image':  ['qwen-image'],
   };
 
   const patterns = modelMap[baseModel] ?? [];
@@ -300,9 +312,14 @@ export function estimateTrainingVramGb(baseModel: PluginBaseModel, rank: number)
   const base: Record<string, number> = {
     'flux-dev':     9.5,
     'flux-schnell': 9.5,
+    'flux-kontext': 9.5,
     'flux2-klein':  6.5,
     'chroma':       9.0,
     'sdxl':         5.5,
+    'wan':          4.0,
+    'qwen-image':  14.0,
+    'sana':         6.0,
+    'sana-sprint':  4.0,
     '*':            6.0,
   };
   const baseGb   = base[baseModel] ?? 6.0;

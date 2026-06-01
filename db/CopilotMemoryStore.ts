@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 
 export interface CopilotMemory {
   id: string;
-  persona: 'sayon' | 'seren';
+  persona: string;
   category: string;
   key_name: string;
   value: string;
@@ -29,7 +29,7 @@ export class CopilotMemoryStore {
     await this.db.run(`
       CREATE TABLE IF NOT EXISTS copilot_memories (
         id         VARCHAR PRIMARY KEY,
-        persona    VARCHAR NOT NULL CHECK (persona IN ('sayon', 'seren')),
+        persona    VARCHAR NOT NULL,
         category   VARCHAR NOT NULL,
         key_name   VARCHAR NOT NULL,
         value      TEXT NOT NULL,
@@ -40,11 +40,48 @@ export class CopilotMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_copilot_memories_persona
         ON copilot_memories(persona, category)
     `);
+    await this._migrateDropPersonaCheck();
+  }
+
+  /**
+   * DuckDB enforces CHECK constraints on insert.  The original schema had
+   * CHECK (persona IN ('sayon','seren')) which rejects clone persona strings.
+   * This migration drops and recreates the table without the constraint,
+   * preserving all existing rows.
+   */
+  private async _migrateDropPersonaCheck(): Promise<void> {
+    try {
+      // Probe: attempt an insert with a clone-style persona value.
+      // If it succeeds the constraint is already gone and we roll back cleanly.
+      // If it throws we do the full drop/recreate migration.
+      await this.db.run(
+        `INSERT INTO copilot_memories (id, persona, category, key_name, value)
+           VALUES ('__probe__', 'copilot-clone-probe', '__probe__', '__probe__', '__probe__')`,
+      );
+      await this.db.run(`DELETE FROM copilot_memories WHERE id = '__probe__'`);
+    } catch {
+      // Constraint still present — migrate.
+      await this.db.exec(`
+        ALTER TABLE copilot_memories RENAME TO copilot_memories_old;
+        CREATE TABLE copilot_memories (
+          id         VARCHAR PRIMARY KEY,
+          persona    VARCHAR NOT NULL,
+          category   VARCHAR NOT NULL,
+          key_name   VARCHAR NOT NULL,
+          value      TEXT NOT NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT now()
+        );
+        INSERT INTO copilot_memories SELECT * FROM copilot_memories_old;
+        DROP TABLE copilot_memories_old;
+        CREATE INDEX IF NOT EXISTS idx_copilot_memories_persona
+          ON copilot_memories(persona, category);
+      `);
+    }
   }
 
   /** Store a memory. Upserts on (persona, category, key_name). */
   async store(
-    persona: 'sayon' | 'seren',
+    persona: string,
     category: string,
     key: string,
     value: string
@@ -76,7 +113,7 @@ export class CopilotMemoryStore {
 
   /** Recall all memories for a persona, optionally filtered by category. */
   async recall(
-    persona: 'sayon' | 'seren',
+    persona: string,
     category?: string
   ): Promise<CopilotMemory[]> {
     if (category) {
@@ -104,7 +141,7 @@ export class CopilotMemoryStore {
   }
 
   /** Render memories as a context block for injection into system prompts. */
-  async renderMemoryContext(persona: 'sayon' | 'seren'): Promise<string> {
+  async renderMemoryContext(persona: string): Promise<string> {
     const memories = await this.recall(persona);
     if (memories.length === 0) return '';
 

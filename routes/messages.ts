@@ -21,6 +21,8 @@ import { ThinkingStripper } from '../context/ThinkingStripper.js';
 import type { IntentType } from '../ai/IntentClassifier.js';
 import type { ClassificationContext } from '../ai/IntentClassifier.js';
 import { ENGINE_MODEL, COORDINATOR_MODEL as COORD_MODEL_REF, COORDINATOR_PROVIDER, getThinkingStrategy, setLogContext, clearLogContext, getModelVisionCapability, coordinatorCall, engineStream } from '../ai/clients.js';
+import { getServerStatus, awaitServerReady } from '../phobos/LlamaServerManager.js';
+import { S, ProcessState } from '../coordinator/SharedState.js';
 import { embedTaskCompletion, retrieveWorkspaceMemory } from '../ai/MemoryWriter.js';
 import { runConversationRAG } from '../ai/ConversationRAGClient.js';
 import { distillAssistantContent, buildEmbedInput } from '../ai/distillAssistantContent.js';
@@ -31,27 +33,53 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { exec, execFile, spawn } from 'child_process';
 import { getHaSnapshot } from '../services/HAManager.js';
+import { runWebSearch } from '../ai/WebSearchPipeline.js';
+import { getCamofoxStatus } from '../phobos/CamofoxManager.js';
 
 export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
+  // System DB is shared — model config, cartridges, services. Never user-scoped.
   const systemDb = DatabaseManager.getInstance();
-  const userDb   = DatabaseManager.getUserDb();
-  const messageStore = new MessageStore(userDb);
-  const threadStore = new ThreadStore(userDb);
-  const documentStore = new DocumentStore(userDb);
-  const dispatchLogStore = new DispatchLogStore(userDb);
-  const eventStore = new MessageEventStore(userDb);
-  const segmentStore = new ThinkingSegmentStore(userDb);
-  const summaryStore = new ChatSummaryStore(userDb);
+  // configStore is system-scoped and safe to hold at registration time.
   const configStore = new ModelConfigStore(systemDb);
-  const knowledgeStore = new KnowledgeStore(userDb);
   const classifier = new IntentClassifier();
   const stripper = new ThinkingStripper();
 
-  // Workspace is a module-level singleton —
-  // it caches internally so no per-request filesystem walks.
-  const workspace = new ThreadWorkspace(userDb);
-  const attachmentStore = new MessageAttachmentStore(userDb);
-  await attachmentStore.ensureTable();
+  // All per-user stores are derived per-request via this factory.
+  // DatabaseManager.getUserDb() caches open connections by username so this
+  // is a hashtable lookup + constructor call — not a new file open each time.
+  type UserStores = {
+    userDb: ReturnType<typeof DatabaseManager.getUserDb>;
+    messageStore: MessageStore;
+    threadStore: ThreadStore;
+    documentStore: DocumentStore;
+    dispatchLogStore: DispatchLogStore;
+    eventStore: MessageEventStore;
+    segmentStore: ThinkingSegmentStore;
+    summaryStore: ChatSummaryStore;
+    knowledgeStore: KnowledgeStore;
+    workspace: ThreadWorkspace;
+    attachmentStore: MessageAttachmentStore;
+  };
+  function getStores(req: import('fastify').FastifyRequest): UserStores {
+    const userDb = DatabaseManager.getUserDb(req.phobosUser);
+    return {
+      userDb,
+      messageStore:    new MessageStore(userDb),
+      threadStore:     new ThreadStore(userDb),
+      documentStore:   new DocumentStore(userDb),
+      dispatchLogStore: new DispatchLogStore(userDb),
+      eventStore:      new MessageEventStore(userDb),
+      segmentStore:    new ThinkingSegmentStore(userDb),
+      summaryStore:    new ChatSummaryStore(userDb),
+      knowledgeStore:  new KnowledgeStore(userDb),
+      workspace:       new ThreadWorkspace(userDb),
+      attachmentStore: new MessageAttachmentStore(userDb),
+    };
+  }
+
+  // MessageAttachmentStore schema init is deferred to resumeBootAfterSetup
+  // in server.ts, after the first-run gate, so getUserDb('owner') is never
+  // called before the owner account exists on a fresh install.
 
   // Tracks threads that are mid-clarification. When the user responds to a
   // NEEDS_CLARIFICATION question, we skip classification and route directly
@@ -92,6 +120,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
     Params: { id: string };
     Querystring: { includeThinking?: string };
   }>('/api/threads/:id/messages', async (req, reply) => {
+    const { messageStore, attachmentStore } = getStores(req);
     const includeThinking = req.query.includeThinking === 'true';
     const messages = await messageStore.getByThread(req.params.id, includeThinking);
 
@@ -131,6 +160,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   fastify.get<{ Params: { id: string } }>(
     '/api/threads/:id/events',
     async (req, reply) => {
+      const { eventStore } = getStores(req);
       const events = await eventStore.getByThread(req.params.id);
       const mapped = events.map((e) => ({
         messageId: e.message_id,
@@ -150,6 +180,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   fastify.get<{ Params: { id: string } }>(
     '/api/threads/:id/summary',
     async (req, reply) => {
+      const { summaryStore } = getStores(req);
       const row = await summaryStore.get(req.params.id);
       if (!row) return reply.send(null);
       return reply.send({
@@ -167,6 +198,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   fastify.get<{ Params: { id: string } }>(
     '/api/threads/:id/thinking',
     async (req, reply) => {
+      const { segmentStore } = getStores(req);
       const segments = await segmentStore.getByThread(req.params.id);
       return reply.send(segments);
     }
@@ -177,6 +209,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   fastify.get<{ Params: { id: string } }>(
     '/api/threads/:id/workspace',
     async (req, reply) => {
+      const { workspace } = getStores(req);
       const index = await workspace.getIndex(req.params.id);
       return reply.send(index);
     }
@@ -244,7 +277,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   fastify.get<{ Params: { id: string; filename: string } }>(
     '/api/threads/:id/workspace/*',
     async (req, reply) => {
-      // Fastify captures wildcard as params['*']
+      const { workspace } = getStores(req);
       const filename = (req.params as Record<string, string>)['*'];
       const content = await workspace.readFile(req.params.id, filename);
       if (content === null) return reply.status(404).send({ error: 'File not found' });
@@ -258,6 +291,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
     Params: { id: string };
     Body: { filename: string; content: string };
   }>('/api/threads/:id/workspace', async (req, reply) => {
+    const { workspace } = getStores(req);
     const { filename, content } = req.body;
     await workspace.writeFile(req.params.id, filename, content, 'user');
     return reply.status(201).send({ ok: true, filename });
@@ -270,6 +304,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
     Params: { id: string };
     Body: { content: string };
   }>('/api/threads/:id/workspace/*', async (req, reply) => {
+    const { workspace } = getStores(req);
     const filename = (req.params as Record<string, string>)['*'];
     await workspace.writeFile(req.params.id, filename, req.body.content, 'user');
     return reply.status(200).send({ ok: true, filename });
@@ -279,6 +314,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   fastify.delete<{ Params: { id: string } }>(
     '/api/threads/:id/workspace/*',
     async (req, reply) => {
+      const { workspace } = getStores(req);
       const filename = (req.params as Record<string, string>)['*'];
       await workspace.deleteFile(req.params.id, filename);
       return reply.status(204).send();
@@ -296,6 +332,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
     Params: { id: string };
     Body: { filename: string; content: string; mime_type?: string; message_id?: string };
   }>('/api/threads/:id/attachments', async (req, reply) => {
+    const { attachmentStore } = getStores(req);
     const threadId = req.params.id;
     const { filename, content, mime_type = 'text/plain', message_id = '' } = req.body;
     if (!filename || content === undefined) {
@@ -316,6 +353,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
     Params: { id: string; attachmentId: string };
     Body: { message_id: string };
   }>('/api/threads/:id/attachments/:attachmentId', async (req, reply) => {
+    const { userDb } = getStores(req);
     const { attachmentId } = req.params;
     const { message_id } = req.body;
     if (!message_id) return reply.status(400).send({ error: 'message_id required' });
@@ -331,6 +369,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   fastify.get<{ Params: { id: string; attachmentId: string } }>(
     '/api/threads/:id/attachments/:attachmentId/content',
     async (req, reply) => {
+      const { attachmentStore } = getStores(req);
       const attachment = await attachmentStore.getById(req.params.attachmentId);
       if (!attachment || attachment.thread_id !== req.params.id) {
         return reply.status(404).send({ error: 'Attachment not found' });
@@ -503,6 +542,11 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
   }>('/api/threads/:id/messages', async (req, reply) => {
     const { id: threadId } = req.params;
     const { content, build_command, skip_build, attachment_ids, context_history_depth } = req.body;
+    // Capture once — all async callbacks below close over this.
+    const { messageStore, threadStore, workspace, attachmentStore, documentStore,
+            dispatchLogStore, eventStore, segmentStore, summaryStore, knowledgeStore,
+            userDb } = getStores(req);
+    const phobosUser = req.phobosUser;
 
     // Validate/create thread
     let thread = await threadStore.getById(threadId);
@@ -805,6 +849,12 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
 
       // Route based on intent routing signal
       if (!pendingClarity && intent.routing === 'ANSWER_DIRECTLY') {
+        // Mark SAYON busy for the full ANSWER_DIRECTLY path — includes inference
+        // AND generateAndPersistSummary which runs after. Cleared in the finally
+        // block below so no subsequent coordinatorCall can race with the summary.
+        const _routeSharedBuf = (globalThis as Record<string, unknown>).__phobosSharedState as Int32Array | undefined;
+        if (_routeSharedBuf) Atomics.store(_routeSharedBuf, S.SAYON_STATE, ProcessState.BUSY);
+        console.log('[messagesRoute] SAYON_STATE → BUSY (ANSWER_DIRECTLY)');
         trackingsendEvent({ type: 'status', content: 'Answering directly via coordinator…' });
         const directMsgId = await handleDirectResponse(
           threadId,
@@ -816,7 +866,9 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
           eventStore,
           segmentStore,
           trackingsendEvent,
-          coordinatorSupportsVision ? imageBlocksForCoord : []
+          coordinatorSupportsVision ? imageBlocksForCoord : [],
+          phobosUser,
+          intent.requiresWebSearch ?? false
         );
         if (directMsgId && activityLog.length > 0) {
           await eventStore.insert(threadId, 'activity', { type: 'activity', events: activityLog }, directMsgId);
@@ -839,7 +891,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
 
         // Set prompt logging context so all downstream AI calls are tagged
         // with this thread + message ID in the prompt_log table.
-        setLogContext({ threadId, messageId: assistantMsg.id });
+        setLogContext({ threadId, messageId: assistantMsg.id, username: phobosUser });
 
         // Intercept status events before they hit the wire so we can persist the full
         // activity log after the loop finishes — enables gizmo replay on refresh.
@@ -909,6 +961,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
             threadId:     threadId,
             skipBuild:    skip_build ?? !hasBuildCommand(docs.claudeMd),
             maxAttempts:  3,
+            username:     phobosUser,
           },
           messageId: assistantMsg.id,
           priority: 'local',
@@ -934,7 +987,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
               try {
                 const { PromptLogStore: PLS } = await import('../db/PromptLogStore.js');
                 const { DatabaseManager: DM } = await import('../db/DatabaseManager.js');
-                const pls = new PLS(DM.getUserDb());
+                const pls = new PLS(DM.getUserDb(phobosUser));
                 const i = info as any;
                 const who = i.assignedTo === 'sayon' ? 'sayon' : 'seren';
                 const promptText =
@@ -1110,6 +1163,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
               threadId,
               assistantMsg.id,
               finalContent,
+              phobosUser,
             ).catch(() => {});
           }
         }
@@ -1147,6 +1201,13 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
       gsm.setPersonaState('sayon', 'idle');
       gsm.setPersonaState('seren', 'idle');
       clearLogContext();
+      // Reset SAYON_STATE to RUNNING — must happen after generateAndPersistSummary
+      // so waitForModelIdle doesn't unblock before the summary coordinatorCall finishes.
+      const _finalSharedBuf = (globalThis as Record<string, unknown>).__phobosSharedState as Int32Array | undefined;
+      if (_finalSharedBuf) {
+        Atomics.store(_finalSharedBuf, S.SAYON_STATE, ProcessState.RUNNING);
+        console.log('[messagesRoute] SAYON_STATE → RUNNING (finally)');
+      }
       reply.raw.write('data: {"type":"done"}\n\n');
       reply.raw.end();
     }
@@ -1171,7 +1232,9 @@ async function handleDirectResponse(
   eventStore: MessageEventStore,
   segmentStore: ThinkingSegmentStore,
   sendEvent: (data: Record<string, unknown>) => void,
-  imageContentBlocks: Array<{ type: 'image_url'; image_url: { url: string } }> = []
+  imageContentBlocks: Array<{ type: 'image_url'; image_url: { url: string } }> = [],
+  phobosUser: string = 'owner',
+  requiresWebSearch: boolean = false
 ): Promise<string | null> {
   const { coordinatorClient, COORDINATOR_MODEL, getThinkingStrategy: getStrategy, COORDINATOR_PROVIDER: COORD_PROV } = await import('../ai/clients.js');
 
@@ -1203,6 +1266,27 @@ async function handleDirectResponse(
   );
   if (docs.projectMd) systemParts.push(`\n\nProject context:\n${docs.projectMd}`);
   if (docs.chatMd) systemParts.push(`\n\nChat rules:\n${docs.chatMd}`);
+
+  // ── Web search — runs before systemPrompt is assembled so context is grounding ──
+  // Only fires when the classifier flagged requiresWebSearch AND Camofox is running.
+  // On any pipeline failure the function returns '' and SAYON answers from weights.
+  if (requiresWebSearch) {
+    const camofox = getCamofoxStatus();
+    if (camofox.state === 'running') {
+      console.log('[handleDirectResponse] Web search triggered — running pipeline');
+      const webContext = await runWebSearch(
+        userMessage,
+        history,
+        (msg: string) => sendEvent({ type: 'status', content: msg }),
+      );
+      if (webContext) {
+        systemParts.push(`\n\n${webContext}`);
+        console.log(`[handleDirectResponse] Web context injected: ${webContext.length} chars`);
+      }
+    } else {
+      console.log('[handleDirectResponse] Web search flagged but Camofox not running — answering from weights');
+    }
+  }
 
   const strategy = getStrategy(COORD_PROV, COORDINATOR_MODEL);
   const baseSystemPrompt = systemParts.join('\n\n');
@@ -1353,6 +1437,7 @@ async function handleDirectResponse(
       let enhancedNegative = '';
 
       try {
+        { const _s = getServerStatus().sayon.state; if (_s === 'starting' || _s === 'stopped') await awaitServerReady('sayon'); }
         const completion = await coordinatorClient.chat.completions.create({
           model: COORDINATOR_MODEL,
           messages: mediaMessages,
@@ -1547,6 +1632,7 @@ async function handleDirectResponse(
       } else {
         // Non-phobos: OpenAI SDK stream
         let stream: Awaited<ReturnType<typeof coordinatorClient.chat.completions.create>>;
+        { const _s = getServerStatus().sayon.state; if (_s === 'starting' || _s === 'stopped') await awaitServerReady('sayon'); }
         try {
           stream = await coordinatorClient.chat.completions.create({
             model: COORDINATOR_MODEL,
@@ -1590,7 +1676,7 @@ async function handleDirectResponse(
     try {
       const { PromptLogStore } = await import('../db/PromptLogStore.js');
       const { DatabaseManager } = await import('../db/DatabaseManager.js');
-      const _pls = new PromptLogStore(DatabaseManager.getUserDb());
+      const _pls = new PromptLogStore(DatabaseManager.getUserDb(phobosUser));
       const _promptText = coordMessages.map(m => `### ${m.role.toUpperCase()}\n${m.content}`).join('\n\n');
       await _pls.insert({
         threadId,

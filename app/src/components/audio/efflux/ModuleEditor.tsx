@@ -44,13 +44,13 @@ function EnableToggle({
   color?: 'green' | 'amber' | 'blue';
 }) {
   const onCls =
-    color === 'green' ? 'border-phobos-green/60 text-phobos-green bg-phobos-green/10' :
-    color === 'amber' ? 'border-phobos-amber/60 text-phobos-amber bg-phobos-amber/10' :
-                        'border-blue-500/60 text-blue-400 bg-blue-500/10';
-  const offCls = 'border-border/30 text-muted-foreground/50 hover:text-foreground';
+    color === 'green' ? 'border-phob-green/60 text-phob-green bg-phob-green/10' :
+    color === 'amber' ? 'border-phob-amber/60 text-phob-amber bg-phob-amber/10' :
+                        'border-phob-teal/60 text-phob-teal bg-phob-teal/10';
+  const offCls = 'border-phob-orange/15 text-phob-steel/45 hover:text-phob-white';
   return (
     <div className="flex items-center justify-between mb-2">
-      <legend className="px-1 text-[9px] font-terminal text-phobos-green/50 uppercase tracking-widest">
+      <legend className="px-1 text-[9px] font-terminal text-phob-orange/45 uppercase tracking-widest">
         {label}
       </legend>
       <button
@@ -109,7 +109,7 @@ function ModuleEditorImpl({ instrument }: ModuleEditorProps) {
   return (
     <div className="p-4 flex flex-col gap-4">
       {/* ── EQ ───────────────────────────────────────────────────────── */}
-      <fieldset className="border border-border/20 rounded-sm px-3 py-2">
+      <fieldset className="border border-phob-orange/12 px-3 py-2">
         <EnableToggle label="EQ" enabled={instrument.eq.enabled} onToggle={toggleEq} color="green" />
         <SliderRow
           label="Low Gain"  min={0} max={4} step={0.01} value={instrument.eq.lowGain}
@@ -132,7 +132,7 @@ function ModuleEditorImpl({ instrument }: ModuleEditorProps) {
       </fieldset>
 
       {/* ── Overdrive ────────────────────────────────────────────────── */}
-      <fieldset className="border border-border/20 rounded-sm px-3 py-2">
+      <fieldset className="border border-phob-orange/12 px-3 py-2">
         <EnableToggle label="Overdrive" enabled={overdrive.enabled} onToggle={toggleOverdrive} color="amber" />
         <SliderRow
           label="Drive"    min={0} max={1} step={0.01} value={overdrive.drive}
@@ -163,18 +163,18 @@ function ModuleEditorImpl({ instrument }: ModuleEditorProps) {
       </fieldset>
 
       {/* ── Filter ───────────────────────────────────────────────────── */}
-      <fieldset className="border border-border/20 rounded-sm px-3 py-2">
+      <fieldset className="border border-phob-orange/12 px-3 py-2">
         <EnableToggle label="Filter" enabled={instrument.filter.enabled} onToggle={toggleFilter} color="blue" />
 
         <div className="flex items-center gap-3 py-1.5">
-          <span className="w-20 text-[9px] font-terminal uppercase tracking-[0.12em] text-muted-foreground/70">
+          <span className="w-20 text-[9px] font-terminal uppercase tracking-[0.12em] text-phob-steel/55">
             Type
           </span>
           <select
             value={instrument.filter.type}
             onChange={(e) => { instrument.filter.type = e.target.value as BiquadFilterType; commit(); }}
             disabled={!instrument.filter.enabled}
-            className="flex-1 px-2 py-1 text-[10px] font-mono bg-black/60 border border-border/30 rounded-sm text-blue-400/90 focus:outline-none focus:border-blue-500/60 disabled:opacity-40"
+            className="flex-1 px-2 py-1 text-[10px] font-mono bg-phob-white/5 border border-phob-orange/20 text-phob-teal/80 focus:outline-none focus:border-phob-teal/50 disabled:opacity-40"
           >
             {FILTER_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
@@ -195,14 +195,14 @@ function ModuleEditorImpl({ instrument }: ModuleEditorProps) {
         />
 
         <div className="flex items-center gap-3 py-1.5">
-          <span className="w-20 text-[9px] font-terminal uppercase tracking-[0.12em] text-muted-foreground/70">
+          <span className="w-20 text-[9px] font-terminal uppercase tracking-[0.12em] text-phob-steel/55">
             LFO Type
           </span>
           <select
             value={instrument.filter.lfoType}
             onChange={(e) => { instrument.filter.lfoType = e.target.value as OscillatorType | 'off'; commit(); }}
             disabled={!instrument.filter.enabled}
-            className="flex-1 px-2 py-1 text-[10px] font-mono bg-black/60 border border-border/30 rounded-sm text-blue-400/90 focus:outline-none focus:border-blue-500/60 disabled:opacity-40"
+            className="flex-1 px-2 py-1 text-[10px] font-mono bg-phob-white/5 border border-phob-orange/20 text-phob-teal/80 focus:outline-none focus:border-phob-teal/50 disabled:opacity-40"
           >
             {LFO_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
@@ -225,7 +225,7 @@ function ModuleEditorImpl({ instrument }: ModuleEditorProps) {
       </fieldset>
 
       {/* ── Delay ────────────────────────────────────────────────────── */}
-      <fieldset className="border border-border/20 rounded-sm px-3 py-2">
+      <fieldset className="border border-phob-orange/12 px-3 py-2">
         <EnableToggle label="Delay" enabled={instrument.delay.enabled} onToggle={toggleDelay} color="green" />
         <SliderRow
           label="Time"     min={0} max={2} step={0.001} value={instrument.delay.time}

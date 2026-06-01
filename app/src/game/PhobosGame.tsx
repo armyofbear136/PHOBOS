@@ -279,7 +279,7 @@ export function PhobosGame() {
           const tryApplyBuild = () => {
             const game  = gameRef.current;
             const scene = game?.scene.getScene('WorldScene') as any;
-            if (scene?.configurePlayer) {
+            if (scene?.configurePlayer && scene?.player) {
               const config = {
                 name:         buildSnapshot.name,
                 element:      buildSnapshot.element,

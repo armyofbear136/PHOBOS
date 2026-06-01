@@ -79,10 +79,10 @@ function QueryFileChip({
         disabled={isImage || loading}
         className={`inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono rounded border transition-colors ${
           isImage
-            ? 'border-phobos-blue/30 bg-phobos-blue/10 text-phobos-blue cursor-default'
+            ? 'border-phob-teal/30 bg-phob-teal/8 text-phob-teal cursor-default'
             : loading
-              ? 'border-border/30 bg-black/20 text-muted-foreground/30 cursor-wait'
-              : 'border-border/40 bg-black/30 text-muted-foreground/60 hover:text-foreground hover:border-border/70 cursor-pointer'
+              ? 'border-phob-orange/15 bg-phob-white/4 text-phob-steel/30 cursor-wait'
+              : 'border-phob-orange/20 bg-phob-white/4 text-phob-steel/50 hover:text-phob-white hover:border-phob-orange/40 cursor-pointer'
         }`}
         title={isImage ? name : `View ${name}`}
       >
@@ -148,19 +148,19 @@ export function MessageBubble({ message, onResolveContent }: Props) {
   return (
     <div className={`group relative flex ${isUser ? 'justify-end' : 'justify-start'} mb-3`}>
       <div
-        className={`max-w-[80%] min-w-0 rounded-md px-3 py-2 text-sm leading-relaxed break-words ${
+        className={`max-w-[80%] min-w-0 px-3 py-2 text-sm leading-relaxed break-words ${
           isUser
-            ? 'bg-primary/10 text-foreground border border-primary/20'
+            ? 'phob-bubble-user bg-phob-orange/8 text-phob-white border border-phob-orange/25'
             : isCoordinator
             ? isAllmindCoord
-              ? 'bg-seren/10 border border-seren/30 text-seren'
-              : 'bg-coordinator-bg border border-coordinator/30 text-sayon'
-            : 'bg-secondary text-secondary-foreground border border-border/50'
+              ? 'bg-phob-yellow/8 border border-phob-yellow/25 text-phob-yellow'
+              : 'bg-phob-teal/6 border border-phob-teal/20 text-phob-teal'
+            : 'bg-phob-white/4 text-phob-white/90 border border-phob-white/10'
         }`}
       >
         {isCoordinator && (
           <span className={`text-[10px] font-mono font-medium uppercase tracking-wider block mb-1 ${
-            isAllmindCoord ? 'text-seren/70' : 'text-sayon/70'
+            isAllmindCoord ? 'text-phob-yellow/70' : 'text-phob-teal/70'
           }`}>
             {isAllmindCoord ? 'SEREN' : 'SAYON'}
           </span>
@@ -233,7 +233,7 @@ export function MessageBubble({ message, onResolveContent }: Props) {
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
           }}
-          className="absolute -top-5 right-0 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 px-1.5 py-0.5 rounded-sm border border-border/20 bg-background text-muted-foreground/30 hover:text-muted-foreground hover:border-border/40 text-[9px] font-mono"
+          className="absolute -top-5 right-0 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 px-1.5 py-0.5 border border-phob-orange/20 bg-[#080808] text-phob-orange/30 hover:text-phob-orange/60 hover:border-phob-orange/40 text-[9px] font-mono"
           title="Copy message"
         >
           {copied ? <Check className="w-2.5 h-2.5" /> : <Copy className="w-2.5 h-2.5" />}

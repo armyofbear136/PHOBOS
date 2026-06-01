@@ -86,9 +86,9 @@ type ViewMode  = 'grid' | 'list';
 // ── Design tokens ──────────────────────────────────────────────────────────────
 
 const M: React.CSSProperties = { fontFamily: '"JetBrains Mono", monospace' };
-const cyan    = '#22d3ee';
-const amber   = '#f59e0b';
-const green   = '#4ade80';
+const cyan    = '#00d4aa';
+const amber   = '#c8a000';
+const green   = '#00ff41';
 const rose    = '#f43f5e';
 const dim     = 'hsl(var(--muted-foreground))';
 const dimMid  = '#5a6a80';
@@ -845,7 +845,7 @@ export default function KavitaBrowser() {
         .kavita-scrollbar::-webkit-scrollbar { width: 4px; }
         .kavita-scrollbar::-webkit-scrollbar-track { background: #0a0c10; }
         .kavita-scrollbar::-webkit-scrollbar-thumb { background: #1a2030; border-radius: 0; }
-        .kavita-scrollbar::-webkit-scrollbar-thumb:hover { background: #22d3ee; }
+        .kavita-scrollbar::-webkit-scrollbar-thumb:hover { background: #00d4aa; }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
       `}</style>

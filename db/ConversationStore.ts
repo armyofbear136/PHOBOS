@@ -113,7 +113,11 @@ async function getDb(): Promise<{ db: Database.Database; ftsAvailable: boolean }
       const escaped = BUNDLED_EXTENSION_DIR.replace(/\\/g, '/');
       await conn.exec(`SET extension_directory='${escaped}'`);
     }
-    await conn.exec(`LOAD vss`);
+    try {
+      await conn.exec(`LOAD vss`);
+    } catch {
+      // VSS unavailable — semantic search disabled (test environments without extension)
+    }
     try {
       await conn.exec(`LOAD fts`);
       _ftsAvailable = true;

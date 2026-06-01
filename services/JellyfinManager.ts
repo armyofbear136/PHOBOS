@@ -25,6 +25,8 @@ import * as net  from 'net';
 import * as path from 'path';
 import * as os   from 'os';
 import crypto    from 'crypto';
+import { DatabaseManager }       from '../db/DatabaseManager.js';
+import { UserServiceTokenStore } from '../db/UserServiceTokenStore.js';
 
 // ── Wire constants ─────────────────────────────────────────────────────────────
 export const JELLYFIN_PORT    = 18096;
@@ -126,9 +128,9 @@ export function resolveConfigDir(): string {
   return path.join(resolveServiceDir(), 'config');
 }
 
-/** ~/.phobos/media/jellyfin/phobosVideos — the mandatory default library for user-created content. */
+/** ~/.phobos/media/jellyfin/owner/phobosVideos — the mandatory default library for owner-created content. */
 export function defaultMediaPath(): string {
-  return path.join(os.homedir(), '.phobos', 'media', 'jellyfin', 'phobosVideos');
+  return path.join(os.homedir(), '.phobos', 'media', 'jellyfin', 'owner', 'phobosVideos');
 }
 
 // ── Binary presence check ─────────────────────────────────────────────────────
@@ -463,6 +465,65 @@ function writeNetworkConfig(): void {
   fs.writeFileSync(networkXmlPath, xml, 'utf8');
 }
 
+/**
+ * Jellyfin 10.11.8 bug: if jellyfin.db is missing or corrupt (below the size
+ * threshold for a valid initialized DB), EF Core's PreInitialisation migration
+ * stage runs INSERT INTO __EFMigrationsHistory without first creating that
+ * table, causing an immediate fatal crash.
+ *
+ * Root cause: when config files (system.xml, database.xml) exist from a prior
+ * run but jellyfin.db does not, Jellyfin takes the "upgrade existing install"
+ * code path instead of the "fresh install" path. The upgrade path assumes the
+ * DB schema already exists and skips the CREATE TABLE step.
+ *
+ * Fix: when jellyfin.db is absent or below the valid-DB size threshold, also
+ * remove system.xml and database.xml so Jellyfin treats the next boot as a
+ * clean first install and runs the full initialization path.
+ *
+ * network.xml is deliberately preserved — we write it ourselves before spawn
+ * to lock in the port, and it has no effect on the DB initialization path.
+ *
+ * A fully initialized jellyfin.db (wizard complete, admin user, all EF entity
+ * tables) is consistently several hundred KB to several MB.
+ * 300 KB is a safe lower bound — crash leftovers are always tiny (< 50 KB).
+ */
+const JELLYFIN_DB_MIN_VALID_BYTES = 300 * 1024; // 300 KB
+
+function wipeCorruptJellyfinDb(): void {
+  const dbPath     = path.join(resolveDataDir(), 'data', 'jellyfin.db');
+  const configDir  = resolveConfigDir();
+  const systemXml  = path.join(configDir, 'system.xml');
+  const databaseXml = path.join(configDir, 'database.xml');
+
+  // Nothing to do if the DB file doesn't exist at all — fresh install, no
+  // stale config cleanup needed either (config dir may be empty).
+  if (!fs.existsSync(dbPath)) return;
+
+  try {
+    const { size } = fs.statSync(dbPath);
+    if (size >= JELLYFIN_DB_MIN_VALID_BYTES) return; // DB looks valid — leave everything alone.
+
+    console.warn(
+      `[JellyfinManager] jellyfin.db is ${size} bytes (< ${JELLYFIN_DB_MIN_VALID_BYTES} threshold).` +
+      ` Wiping DB and stale config to force a clean first-boot initialization.`,
+    );
+
+    // Wipe the DB and its SQLite sidecar files.
+    fs.rmSync(dbPath,          { force: true });
+    fs.rmSync(dbPath + '-wal', { force: true });
+    fs.rmSync(dbPath + '-shm', { force: true });
+
+    // Wipe the config files that cause Jellyfin to take the "upgrade existing
+    // install" path instead of the "fresh install" path.
+    // network.xml is preserved — we write it ourselves to control the port.
+    fs.rmSync(systemXml,   { force: true });
+    fs.rmSync(databaseXml, { force: true });
+
+  } catch (err) {
+    console.warn('[JellyfinManager] wipeCorruptJellyfinDb failed (non-fatal):', (err as Error).message);
+  }
+}
+
 function spawnJellyfin(): void {
   const bin       = resolveBinaryPath();
   const dataDir   = resolveDataDir();
@@ -472,6 +533,10 @@ function spawnJellyfin(): void {
   fs.mkdirSync(dataDir,   { recursive: true });
   fs.mkdirSync(cacheDir,  { recursive: true });
   fs.mkdirSync(configDir, { recursive: true });
+
+  // Detect and remove a partially-initialized jellyfin.db from a previous
+  // crashed run before spawning — prevents the EF migrations table error.
+  wipeCorruptJellyfinDb();
 
   // Write network.xml BEFORE spawning so the port is locked in on first boot.
   writeNetworkConfig();
@@ -560,6 +625,10 @@ export async function startJellyfin(cfg: JellyfinConfig, adminPassword: string):
     // Non-fatal — a library creation failure must not prevent Jellyfin from being usable.
     await ensurePhobosLibrary().catch(err =>
       console.warn('[JellyfinManager] ensurePhobosLibrary failed (non-fatal):', err.message)
+    );
+    // Remove any {username}-media virtual folders whose backing dirs no longer exist.
+    repairOrphanedLibraries().catch(err =>
+      console.warn('[JellyfinManager] repairOrphanedLibraries failed (non-fatal):', err.message)
     );
   } catch (err) {
     service.state = 'error';
@@ -747,6 +816,167 @@ export async function addLibrary(
   }
 }
 
+/**
+ * Scan all Jellyfin virtual folders and remove any whose backing directory
+ * no longer exists on disk. Catches the accumulated orphans from test users
+ * that were deprovisioned before removeLibrary was wired in.
+ * Non-fatal — logs and continues if the API call fails.
+ */
+async function repairOrphanedLibraries(): Promise<void> {
+  if (service.state !== 'running' || !service.accessToken) return;
+  try {
+    const res = await jellyfinApiRequest('GET', '/Library/VirtualFolders');
+    if (!res.ok) return;
+    const folders = await res.json() as Array<{ Name: string; Locations: string[] }>;
+    for (const folder of folders) {
+      // Only touch phobos-managed per-user media folders (pattern: {username}-media).
+      if (!folder.Name.endsWith('-media')) continue;
+      // If every backing location is gone, remove the virtual folder.
+      const allMissing = folder.Locations.length > 0 &&
+        folder.Locations.every(loc => !fs.existsSync(loc));
+      if (allMissing) {
+        console.log(`[JellyfinManager] Removing orphaned library: ${folder.Name}`);
+        await jellyfinApiRequest('DELETE', `/Library/VirtualFolders?name=${encodeURIComponent(folder.Name)}`);
+      }
+    }
+  } catch (err) {
+    console.warn('[JellyfinManager] repairOrphanedLibraries failed (non-fatal):', err);
+  }
+}
+
+/**
+ * Reconcile Jellyfin accounts for every PHOBOS system user at boot.
+ *
+ * For each username in the list:
+ *   1. Fetch that user's stored Jellyfin tokens from user_service_tokens.
+ *   2. Verify the stored UserId still exists in Jellyfin (GET /Users).
+ *   3. If missing (account wiped, DB replaced, first boot for this user):
+ *        → call provisionUser() to create the account and library fresh,
+ *          then persist the new tokens to user_service_tokens.
+ *   4. If the account exists but the library backing dir is missing:
+ *        → re-create the library entry only (addLibrary).
+ *
+ * Fully non-fatal: one user's failure never blocks others.
+ * Called from server.ts after startJellyfin() resolves.
+ */
+export async function repairAllUserLibraries(usernames: string[]): Promise<void> {
+  if (service.state !== 'running' || !service.accessToken) return;
+
+  // Fetch the current Jellyfin user list once — avoids one round-trip per user.
+  let jellyfinUsers: Array<{ Id: string; Name: string }> = [];
+  try {
+    const usersRes = await jellyfinApiRequest('GET', '/Users');
+    if (usersRes.ok) {
+      jellyfinUsers = await usersRes.json() as Array<{ Id: string; Name: string }>;
+    }
+  } catch (err) {
+    console.warn('[JellyfinManager] repairAllUserLibraries: failed to fetch user list:', err);
+    return;
+  }
+
+  for (const username of usernames) {
+    try {
+      const userDb     = DatabaseManager.getUserDb(username);
+      // getUserDb() returns an uninitialized instance when first called for a
+      // user — initialize it before any token store operations touch the DB.
+      await userDb.ensureReady();
+      const tokenStore = new UserServiceTokenStore(userDb);
+      const stored     = await tokenStore.getJellyfin().catch(() => null);
+
+      // Check whether the stored Jellyfin account still exists.
+      // Normalize both sides: Jellyfin's GET /Users returns UUIDs with hyphens,
+      // but stored user_id values have hyphens stripped.
+      // Also match by Name as a fallback — covers the case where user_service_tokens
+      // has no row yet but the account was already created (e.g. first successful boot
+      // before tokens were persisted).
+      const normalise = (id: string) => id.replace(/-/g, '');
+      const existsInJellyfin = jellyfinUsers.some(u =>
+        (stored?.user_id && normalise(u.Id) === normalise(stored.user_id)) ||
+        u.Name.toLowerCase() === username.toLowerCase(),
+      );
+
+      if (!existsInJellyfin) {
+        // Account is missing — full provision (creates account, library, policy).
+        console.log(`[JellyfinManager] repairAllUserLibraries: re-provisioning ${username}`);
+        const result = await provisionUser(username);
+        await tokenStore.setJellyfin({
+          user_id:      result.userId,
+          access_token: result.accessToken,
+        });
+        console.log(`[JellyfinManager] repairAllUserLibraries: ${username} provisioned (id=${result.userId})`);
+        continue;
+      }
+
+      // Account exists — ensure their library backing dir and virtual folder are present.
+      const userMediaPath = path.join(
+        os.homedir(), '.phobos', 'media', 'jellyfin', username, 'phobosVideos',
+      );
+      fs.mkdirSync(userMediaPath, { recursive: true });
+
+      // If we matched by name rather than stored ID, tokens are stale or missing.
+      // Re-authenticate to get a fresh token and persist it.
+      const jellyfinUser = jellyfinUsers.find(
+        u => u.Name.toLowerCase() === username.toLowerCase(),
+      );
+      const idMatch = stored?.user_id && jellyfinUser &&
+        normalise(jellyfinUser.Id) === normalise(stored.user_id);
+      if (jellyfinUser && !idMatch) {
+        try {
+          const authRes = await fetch(
+            `http://127.0.0.1:${JELLYFIN_PORT}/Users/AuthenticateByName`,
+            {
+              method:  'POST',
+              headers: {
+                'Content-Type':  'application/json',
+                'X-Emby-Authorization': `MediaBrowser Client="PHOBOS", Device="Server", DeviceId="phobos-repair", Version="1.0", Token=""`,
+              },
+              body: JSON.stringify({ Username: username, Pw: stored?.access_token ?? '' }),
+            },
+          );
+          if (authRes.ok) {
+            const auth = await authRes.json() as { User: { Id: string }; AccessToken: string };
+            await tokenStore.setJellyfin({
+              user_id:      auth.User.Id.replace(/-/g, ''),
+              access_token: auth.AccessToken,
+            });
+            console.log(`[JellyfinManager] repairAllUserLibraries: refreshed tokens for ${username}`);
+          }
+        } catch {
+          // Non-fatal — token refresh failure doesn't block library repair.
+        }
+      }
+
+      const libs = await listLibraries().catch(() => [] as JellyfinLibrary[]);
+      const libraryExists = libs.some(l =>
+        l.Name === `${username}-media` || l.Locations.includes(userMediaPath),
+      );
+      if (!libraryExists) {
+        console.log(`[JellyfinManager] repairAllUserLibraries: re-creating library for ${username}`);
+        await addLibrary(`${username}-media`, userMediaPath, 'homevideos');
+      }
+    } catch (err) {
+      console.warn(`[JellyfinManager] repairAllUserLibraries: ${username} failed (non-fatal):`, err);
+    }
+  }
+
+  console.log(`[JellyfinManager] repairAllUserLibraries: done (${usernames.length} user(s) checked)`);
+}
+
+/**
+ * Remove a virtual folder (library) from Jellyfin by name.
+ * Best-effort — logs on failure but does not throw.
+ */
+export async function removeLibrary(name: string): Promise<void> {
+  if (service.state !== 'running' || !service.accessToken) return;
+  const res = await jellyfinApiRequest(
+    'DELETE',
+    `/Library/VirtualFolders?name=${encodeURIComponent(name)}`,
+  );
+  if (!res.ok && res.status !== 404) {
+    console.warn(`[JellyfinManager] removeLibrary(${name}) failed: HTTP ${res.status}`);
+  }
+}
+
 // ── Hardware acceleration ─────────────────────────────────────────────────────
 // VRAM is shared with LLM servers — only applied when explicitly configured.
 
@@ -815,16 +1045,37 @@ export async function provisionUser(username: string): Promise<JellyfinProvision
   const authData = await authRes.json() as { AccessToken: string };
 
   // Create the user's personal media directory.
-  const userMediaPath = path.join(os.homedir(), '.phobos', 'media', 'jellyfin', username);
+  const userMediaPath = path.join(os.homedir(), '.phobos', 'media', 'jellyfin', username, 'phobosVideos');
   fs.mkdirSync(userMediaPath, { recursive: true });
 
-  // Add the directory as a library scoped to this user (admin adds it system-wide;
-  // Jellyfin library access is managed per-user via policy in 10.11).
+  // Add the directory as a virtual folder (system-wide in Jellyfin).
   try {
     await addLibrary(`${username}-media`, userMediaPath, 'homevideos');
   } catch (err) {
-    // Non-fatal — library can be added later via the reprovision route.
     console.warn(`[JellyfinManager] Library create for ${username} failed (non-fatal):`, err);
+  }
+
+  // Restrict the user's access to only their own library.
+  try {
+    const foldersRes = await jellyfinApiRequest('GET', '/Library/VirtualFolders');
+    if (foldersRes.ok) {
+      const folders = await foldersRes.json() as Array<{ Name: string; ItemId: string }>;
+      const userFolder = folders.find(f => f.Name === `${username}-media`);
+      if (userFolder) {
+        await jellyfinApiRequest('POST', `/Users/${userId}/Policy`, {
+          EnableAllFolders:         false,
+          EnabledFolders:           [userFolder.ItemId],
+          IsAdministrator:          false,
+          IsDisabled:               false,
+          EnableRemoteAccess:       true,
+          EnableMediaPlayback:      true,
+          EnableContentDownloading: false,
+        });
+        console.log(`[JellyfinManager] Restricted ${username} to library ${userFolder.ItemId}`);
+      }
+    }
+  } catch (err) {
+    console.warn(`[JellyfinManager] Policy set for ${username} failed (non-fatal):`, err);
   }
 
   console.log(`[JellyfinManager] Provisioned user: ${username} (id=${userId})`);

@@ -1,8 +1,19 @@
 import 'dotenv/config';
 import Fastify, { type FastifyError } from 'fastify';
+
+// ── Per-request user identity ─────────────────────────────────────────────────
+// DataChannelHandler stamps x-webrtc-user on every fastify.inject() call.
+// The hook below promotes it to req.phobosUser so all route handlers have a
+// single typed field to read — no header parsing scattered across route files.
+declare module 'fastify' {
+  interface FastifyRequest {
+    phobosUser: string;
+    phobosRole: string;
+  }
+}
 import cors from '@fastify/cors';
 import os from 'node:os';
-import { mkdirSync, existsSync as fsExistsSync } from 'node:fs';
+import { mkdirSync, existsSync as fsExistsSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseManager, userDir, getActiveUser, writeActiveUser } from './db/DatabaseManager.js';
 import { getInstanceId } from './db/InstanceConfig.js';
@@ -27,8 +38,9 @@ import { initScheduler } from './scheduling/Scheduler.js';
 import { ScheduledTaskStore } from './db/ScheduledTaskStore.js';
 import { scanOnStartup as scanUserSkills } from './db/UserSkillManager.js';
 import { stopAllServers, startSybil } from './phobos/LlamaServerManager.js';
+import { initWecloneSlotManager } from './phobos/WecloneSlotManager.js';
 import { Worker }                  from 'node:worker_threads';
-import { fileURLToPath }           from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { S, SHARED_BUFFER_BYTE_LENGTH } from './coordinator/SharedState.js';
 import { CoordinatorBridge }       from './CoordinatorBridge.js';
 import type { CoordinatorOutbound, ClientRoleConfig } from './coordinator/MessageTypes.js';
@@ -48,15 +60,17 @@ import { VaultStore }           from './db/VaultStore.js';
 import { initVaultManager }     from './vault/VaultManager.js';
 import { registerVaultRoutes }  from './routes/vaultRoutes.js';
 import { registerUserManagementRoutes, setUserManagementContext } from './routes/userManagement.js';
+import { registerSocialRoutes, setSocialContext, setSocialSignalingClient } from './routes/social.js';
 import { registerAudioRoutes } from './routes/audio.js';
-import { shutdownKokoroDaemon, shutdownAllVcDaemons } from './phobos/AudioServerManager.js';
+import { shutdownKokoroDaemon, shutdownAllVcDaemons, shutdownSupertonicDaemon, preWarmKokoro, preWarmVcDaemons, preWarmSupertonic } from './phobos/AudioServerManager.js';
 import { ServiceStore } from './db/ServiceStore.js';
-import { stopMeridian, startMeridian, getMeridianStatus } from './services/MeridianManager.js';
+import { stopMeridian, startMeridian, getMeridianStatus, setMeridianSignalingClient, repairAllUserLibraries as repairMeridianUserLibraries } from './services/MeridianManager.js';
 import { stopPolaris, startPolaris, isBinaryPresent as isPolarisBinaryPresent } from './services/PolarisManager.js';
 import {
   stopJellyfin,
   startJellyfin,
   isBinaryPresent as isJellyfinBinaryPresent,
+  repairAllUserLibraries as repairJellyfinUserLibraries,
 } from './services/JellyfinManager.js';
 import { registerToolsRoutes } from './routes/toolsRoute.js';
 import { registerCartridgeRoutes } from './routes/cartridgeRoutes.js';
@@ -79,6 +93,7 @@ import {
   stopKavita,
   isBinaryPresent as isKavitaBinaryPresent,
   defaultDocsPath,
+  repairAllUserLibraries as repairKavitaUserLibraries,
 } from './services/KavitaManager.js';
 import { registerKavitaIngestRoutes } from './routes/kavitaIngestRoutes.js';
 import { registerJellyfinIngestRoutes } from './routes/jellyfinIngestRoutes.js';
@@ -87,7 +102,8 @@ import { registerMeridianIngestRoutes } from './routes/meridianIngestRoutes.js';
 import { registerSyncProxyRoutes }      from './routes/syncProxy.js';
 import { registerWebRTCRoutes, setWebRTCContext } from './routes/webrtc.js';
 import { registerBootEventsRoute } from './routes/bootEvents.js';
-import { runDepPrep, isPrepComplete } from './boot/DepPrep.js';
+import { UserStore }               from './db/UserStore.js';
+import { provisionSystemUser }     from './db/UserProvisioner.js';
 import { setBootPhase, setBootProgress, snapshot as bootSnapshot } from './boot/BootState.js';
 import { waitForServicesToSettle } from './boot/waitForServices.js';
 
@@ -97,12 +113,17 @@ const HOST = process.env.HOST ?? '0.0.0.0';
 const PHOBOS_DATA_DIR = process.env.PHOBOS_DATA_DIR ?? path.join(os.homedir(), '.phobos');
 mkdirSync(PHOBOS_DATA_DIR, { recursive: true });
 
-const DB_PATH         = process.env.DB_PATH         ?? path.join(PHOBOS_DATA_DIR, 'phobos.duckdb');
-// WORKSPACES_ROOT is per-user. The active user defaults to 'owner' (E2 will
-// resolve from per-request session). mkdirSync is deferred to main() so the
-// E1 migration can rename a pre-existing ~/.phobos/workspaces/ into place
-// before this dir gets auto-created empty.
-const WORKSPACES_ROOT = process.env.WORKSPACES_ROOT ?? path.join(userDir(getActiveUser()), 'workspaces');
+const DB_PATH = process.env.DB_PATH ?? path.join(PHOBOS_DATA_DIR, 'phobos.duckdb');
+
+// WORKSPACES_ROOT is per-user. Resolved dynamically at call time from
+// getActiveUser() so user switching doesn't require a restart.
+// Routes read process.env.WORKSPACES_ROOT which is updated on switch.
+function getWorkspacesRoot(): string {
+  return process.env.WORKSPACES_ROOT ?? path.join(userDir(getActiveUser()), 'workspaces');
+}
+function applyWorkspacesRoot(): void {
+  process.env.WORKSPACES_ROOT = getWorkspacesRoot();
+}
 
 async function buildServer() {
   const fastify = Fastify({
@@ -144,6 +165,51 @@ async function buildServer() {
     if (origin && !reply.hasHeader('access-control-allow-origin')) {
       reply.header('Access-Control-Allow-Origin', origin);
     }
+    done();
+  });
+
+  // Promote x-webrtc-user and x-webrtc-role headers to typed req fields.
+  // Falls back to 'owner' / 'owner' for any request without the headers
+  // (e.g. browser direct, health checks, startup init calls).
+  fastify.addHook('preHandler', (req, reply, done) => {
+    req.phobosUser = (req.headers['x-webrtc-user'] as string | undefined)?.trim() || 'owner';
+    req.phobosRole = (req.headers['x-webrtc-role'] as string | undefined)?.trim() || 'owner';
+
+    // ── Role-based access control ──────────────────────────────────────────
+    // guest: chat + game only — all other routes return 403.
+    // read:  same as guest for writes; may read thread/message data.
+    // admin/full/owner: unrestricted.
+    const role = req.phobosRole;
+    if (role === 'guest' || role === 'read') {
+      const url = req.url.split('?')[0];
+
+      const guestAllowedPrefixes = [
+        '/api/threads',
+        '/api/copilot',
+        '/api/status',
+        '/api/stats',
+        '/api/version',
+        '/api/config/models',
+        '/api/game',
+        '/health',
+        '/api/webrtc',
+        '/api/social',
+      ];
+
+      // read role additionally cannot POST/PATCH/DELETE to message endpoints.
+      const allowed = guestAllowedPrefixes.some(p => url === p || url.startsWith(p + '/'));
+      if (!allowed) {
+        reply.status(403).send({ error: 'Forbidden: insufficient role' });
+        return;
+      }
+
+      // read role: block all mutations.
+      if (role === 'read' && req.method !== 'GET' && req.method !== 'HEAD') {
+        reply.status(403).send({ error: 'Forbidden: read-only role' });
+        return;
+      }
+    }
+
     done();
   });
 
@@ -199,6 +265,48 @@ async function buildServer() {
   await registerMpvRoutes(fastify);
   await registerIptvRoutes(fastify);
   await registerWebRTCRoutes(fastify);
+  await registerSocialRoutes(fastify);
+
+  // ── First-run setup ────────────────────────────────────────────────────────
+  // Registered statically so it's available before listen() is called.
+  // The handler rejects requests unless boot phase is 'awaiting_setup' —
+  // this prevents it being callable once the server is fully running.
+  // continueBootSequence calls setBootPhase('awaiting_setup') then returns;
+  // when the form is submitted this route provisions the owner and resumes boot.
+  fastify.post<{
+    Body: { username: string; displayName?: string };
+  }>('/api/setup/init', async (req, reply) => {
+    if (bootSnapshot().phase !== 'awaiting_setup') {
+      return reply.status(503).send({ error: 'Server is not in setup mode.' });
+    }
+
+    const { username, displayName } = req.body ?? {};
+    if (!username || typeof username !== 'string' || !/^[a-z0-9_\-]{2,32}$/.test(username)) {
+      return reply.status(400).send({ error: 'Username must be 2–32 lowercase alphanumeric characters.' });
+    }
+
+    // _setupContext is populated by continueBootSequence before entering the
+    // awaiting_setup phase. It holds the db, userStore, webrtcRelayUrl, and
+    // instanceId needed to resume boot after the account is created.
+    const ctx = _setupContext;
+    if (!ctx) {
+      return reply.status(500).send({ error: 'Setup context not initialised — this is a bug.' });
+    }
+
+    try {
+      const result = await provisionSystemUser(username, 'admin', ctx.userStore, displayName ?? username);
+      writeActiveUser(username);
+      console.log(`[Boot] Owner account '${username}' created. Resuming boot.`);
+      if (result.errors.length > 0) {
+        console.warn('[Boot] Setup provision warnings:', result.errors);
+      }
+      setImmediate(() => resumeBootAfterSetup(ctx.fastify, ctx.db, ctx.webrtcRelayUrl, ctx.instanceId));
+      return reply.send({ ok: true, username });
+    } catch (err) {
+      console.error('[Boot] Setup provision failed:', err);
+      return reply.status(500).send({ error: String(err) });
+    }
+  });
 
   fastify.get('/health', async () => ({ ok: true, ts: Date.now() }));
 
@@ -249,7 +357,37 @@ async function initializeDbWithRetry(
 
 async function main() {
   process.env.DB_PATH         = DB_PATH;
-  process.env.WORKSPACES_ROOT = WORKSPACES_ROOT;
+  process.env.WORKSPACES_ROOT = getWorkspacesRoot();
+
+  // ── WAL cleanup ────────────────────────────────────────────────────────────
+  // DuckDB WAL files left by a hard crash cause an internal assertion failure
+  // on the next open ("Failure while replaying WAL file"). Wipe them before
+  // opening any DB connection. Safe to delete unconditionally: the WAL only
+  // contains uncommitted writes from the crashed session; committed data is
+  // already in the .duckdb file. Any user DB WALs under users/* are also wiped.
+  {
+    const walTargets: string[] = [
+      DB_PATH + '.wal',
+    ];
+    // Sweep users/*/phobos.duckdb.wal and users/*/conversations.duckdb.wal
+    const usersDir = path.join(PHOBOS_DATA_DIR, 'users');
+    try {
+      for (const username of readdirSync(usersDir)) {
+        const userPath = path.join(usersDir, username);
+        if (!statSync(userPath).isDirectory()) continue;
+        walTargets.push(
+          path.join(userPath, 'phobos.duckdb.wal'),
+          path.join(userPath, 'conversations.duckdb.wal'),
+        );
+      }
+    } catch { /* usersDir may not exist yet on first boot */ }
+    for (const walPath of walTargets) {
+      try {
+        unlinkSync(walPath);
+        console.log(`[Boot] Removed stale WAL: ${walPath}`);
+      } catch { /* not present — fine */ }
+    }
+  }
 
   // ── PHASE 0: E1 multi-user migration ───────────────────────────────────────
   // Detect the pre-E1 single-DB layout. If found, split it:
@@ -301,36 +439,28 @@ async function main() {
     }
   }
 
-  // The owner's workspaces dir must exist before threads are created. After
-  // migration, this is users/owner/workspaces/ — either freshly moved from the
-  // pre-E1 location or created here on a fresh install.
-  mkdirSync(WORKSPACES_ROOT, { recursive: true });
-
   // ── PHASE 1: Dependency prep ───────────────────────────────────────────────
   // Fastify starts immediately so /api/boot/events is reachable during prep.
   // The frontend subscribes to the SSE stream and shows granular progress.
+  //
+  // DepPrep is imported lazily so that tsx/ESM test environments with
+  // PHOBOS_SKIP_DEP_PREP=1 never evaluate DepPrep.ts (which uses __dirname,
+  // unavailable in raw ESM). The built client compiles to CJS where __dirname
+  // is injected by the bundler — no change needed there.
 
-  if (!isPrepComplete()) {
+  const _skipDep = process.env.PHOBOS_SKIP_DEP_PREP === '1';
+  const _depPrep = _skipDep ? null : await import('./boot/DepPrep.js');
+
+  if (!_skipDep && _depPrep && !_depPrep.isPrepComplete()) {
     console.log('⚙️  [Boot] Phase 1: Dependency prep — downloading missing assets...');
     setBootPhase('prep_deps');
 
     // Initialize DB before buildServer() — routes call DatabaseManager.getInstance()
     // and ensureTable() at plugin registration time and need a live connection.
-    // Both DBs are opened here. The system DB holds shared config (model_config,
-    // users master list, cartridges, plugins, services). The user DB holds the
-    // active user's threads, messages, prompt logs, workspaces, etc.
+    // System DB only — user DB is opened after the first-run gate in
+    // resumeBootAfterSetup, once we know the actual owner username.
     const db = DatabaseManager.getInstance(DB_PATH);
     await initializeDbWithRetry(db, 'system');
-    // Ensure the owner user row exists. ON CONFLICT is unreliable in DuckDB 1.4.x
-    // across different connection contexts — use WHERE NOT EXISTS instead, which
-    // avoids the conflict-resolution binder entirely and works in all versions.
-    await db.exec(
-      `INSERT INTO users (username, display_name, role)
-       SELECT 'owner', 'Owner', 'admin'
-       WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = 'owner')`,
-    );
-    const userDb = DatabaseManager.getUserDb();
-    await userDb.initialize();
 
     const fastify = await buildServer();
     try {
@@ -341,7 +471,7 @@ async function main() {
       process.exit(1);
     }
 
-    await runDepPrep((evt) => {
+    await _depPrep.runDepPrep((evt) => {
       switch (evt.phase) {
         case 'prep_start':
           setBootProgress({ depsTotal: evt.depsTotal, depsDone: 0 });
@@ -373,21 +503,13 @@ async function main() {
   }
 
   // Fast-path: prep already done on a previous boot.
-  // DB must be initialized before buildServer() — routes call DatabaseManager.getInstance()
-  // and ensureTable() at plugin registration time. Both system and user DBs
-  // open here; see the Phase 1 path above for split rationale.
+  // System DB only before buildServer() — user DB is opened after the
+  // first-run gate in resumeBootAfterSetup, once we know the actual username.
   console.log('⚙️  Initializing Phobos Core Systems...');
   setBootPhase('db_init');
 
   const fastDb = DatabaseManager.getInstance(DB_PATH);
   await initializeDbWithRetry(fastDb, 'system');
-  await fastDb.exec(
-    `INSERT INTO users (username, display_name, role)
-     SELECT 'owner', 'Owner', 'admin'
-     WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = 'owner')`,
-  );
-  const fastUserDb = DatabaseManager.getUserDb();
-  await fastUserDb.initialize();
 
   const fastify = await buildServer();
   try {
@@ -414,11 +536,12 @@ async function continueBootSequence(
 
   // existingDb is passed when we already called initialize() before buildServer()
   // (the dep-prep path). On the fast-path it is null and we initialize here.
-  // The user DB follows the same pattern: idempotent initialize() if missing.
+  // The user DB is intentionally NOT opened here — it is opened inside
+  // resumeBootAfterSetup, after the first-run gate, once we know the actual
+  // owner username. Opening it here would create users/owner/ on a fresh
+  // install before setup runs.
   const db = existingDb ?? DatabaseManager.getInstance(DB_PATH);
   if (!existingDb) await db.initialize();
-  const userDb = DatabaseManager.getUserDb();
-  if (!existingDb) await userDb.initialize();
 
   // Instance identity and relay URL — resolved early so route handlers and
   // WebRTC init both read from the same values.
@@ -426,9 +549,142 @@ async function continueBootSequence(
   const instanceId     = await getInstanceId(db);
   console.log(`[Boot] Instance ID: ${instanceId}`);
 
-  // ── PHASE 3: Core init ─────────────────────────────────────────────────────
+  // ── FIRST-RUN GATE ─────────────────────────────────────────────────────────
+  // If no users exist, pause boot and wait for the owner account to be created
+  // via POST /api/setup/init. That route is registered statically in buildServer()
+  // and guards on boot phase 'awaiting_setup'. The SSE stream pushes this phase
+  // to the frontend which renders the account creation form inside ConnectionSplash.
+  const userStore  = new UserStore(db);
+  const userCount  = await db.query<{ n: number }>('SELECT COUNT(*)::INT AS n FROM users');
+  const hasUsers   = (userCount[0]?.n ?? 0) > 0;
+
+  if (!hasUsers) {
+    console.log('[Boot] No users found — entering first-run setup.');
+    // Stash everything the /api/setup/init route handler needs to resume boot.
+    // The route is already registered in buildServer() and guards on this phase.
+    _setupContext = { fastify, db, userStore, webrtcRelayUrl, instanceId };
+    setBootPhase('awaiting_setup');
+    // Hold — resumeBootAfterSetup will be called by /api/setup/init.
+    return;
+  }
+
+  await resumeBootAfterSetup(fastify, db, webrtcRelayUrl, instanceId);
+}
+
+// ── In-process user switch ────────────────────────────────────────────────────
+// Mutable refs updated by performUserSwitch so the shutdown closure and
+// checkpoint timer always close/stop the correct instances.
+const _live = {
+  scheduler:    null as ReturnType<typeof initScheduler> | null,
+  userDb:       null as ReturnType<typeof DatabaseManager.getUserDb> | null,
+  checkpointFn: null as (() => void) | null,
+};
+
+// Populated by continueBootSequence when entering the awaiting_setup phase.
+// Read by the static /api/setup/init route in buildServer().
+let _setupContext: {
+  fastify:        Awaited<ReturnType<typeof buildServer>>;
+  db:             ReturnType<typeof DatabaseManager.getInstance>;
+  userStore:      InstanceType<typeof UserStore>;
+  webrtcRelayUrl: string;
+  instanceId:     string;
+} | null = null;
+
+// Called by userManagement POST /api/admin/switch-user instead of process.exit.
+export async function performUserSwitch(
+  username:      string,
+  securityStore: InstanceType<typeof SecurityStore>,
+  port:          number,
+): Promise<void> {
+  console.log(`[UserSwitch] Switching active user to '${username}'...`);
+
+  // 1. Stop the current scheduler — its timer fires against the old userDb.
+  _live.scheduler?.stop();
+
+  // 2. Checkpoint and explicitly close the old user DB so its file handle is
+  //    released. This is critical on Windows — DuckDB holds an OS lock on the
+  //    .duckdb file; without closing, a subsequent deprovision rm() will EBUSY.
+  if (_live.userDb) {
+    try { await _live.userDb.checkpoint(); } catch { /* best-effort */ }
+    try { await _live.userDb.close(); }      catch { /* best-effort */ }
+    // Remove from cache so getUserDb creates a fresh instance on next access.
+    await DatabaseManager.evictUser(getActiveUser());
+  }
+
+  // 3. Write the new active user and update process.env for workspace paths.
+  writeActiveUser(username);
+  applyWorkspacesRoot();
+  mkdirSync(getWorkspacesRoot(), { recursive: true });
+
+  // 4. Open (or retrieve from cache) the new user's DB.
+  // getUserDb returns the cached instance — already initialized from provisioning.
+  // Call ensureReady() as a safety net in case the instance was evicted between
+  // provisioning and the switch (e.g. a failed prior switch evicted it).
+  const newUserDb = DatabaseManager.getUserDb(username);
+  await newUserDb.ensureReady();
+
+  // 5. Ensure all user-scoped tables exist for this user.
+  const newMemoryStore  = new MemoryStore(newUserDb);
+  await newMemoryStore.ensureTable();
+
+  const newTaskStore = new ScheduledTaskStore(newUserDb);
+  await newTaskStore.ensureTable();
+
+  const newVaultStore = new VaultStore(newUserDb);
+  await initVaultManager(newVaultStore);
+
+  const newGameStore = new GameStore(newUserDb);
+  await newGameStore.ensureTable();
+
+  // 6. Reinit scheduler against new user DB.
+  const newScheduler = initScheduler(newUserDb);
+  registerSecurityHandlers(newScheduler, securityStore, port);
+  await syncScheduledTasks(securityStore, newTaskStore);
+  newScheduler.start();
+
+  // 7. Update live refs so shutdown and checkpoint timer use new instances.
+  _live.scheduler = newScheduler;
+  _live.userDb    = newUserDb;
+
+  console.log(`[UserSwitch] Active user is now '${username}'.`);
+}
+
+// ── resumeBootAfterSetup ───────────────────────────────────────────────────────
+// Everything from Phase 3 onward. Called directly on normal boot (users exist),
+// or via setImmediate from the setup route after owner account is created.
+
+async function resumeBootAfterSetup(
+  fastify:        Awaited<ReturnType<typeof buildServer>>,
+  db:             ReturnType<typeof DatabaseManager.getInstance>,
+  webrtcRelayUrl: string,
+  instanceId:     string,
+): Promise<void> {
   console.log('⚙️  [Boot] Phase 3: Core init...');
   setBootPhase('core_init');
+
+  // Open the user DB here — after the first-run gate — so we never create
+  // users/owner/ before setup runs on a fresh install. getActiveUser() now
+  // returns the real username (written by provisionSystemUser in the setup
+  // route, or already present on a returning boot).
+  applyWorkspacesRoot();
+  mkdirSync(getWorkspacesRoot(), { recursive: true });
+
+  const userDb = DatabaseManager.getUserDb();
+  await userDb.initialize();
+
+  // Schema init for stores that were previously eager-initialized in route
+  // registration against getUserDb('owner'). Now runs here — post-gate —
+  // so a fresh install never touches the user DB before setup completes.
+  {
+    const { MessageAttachmentStore } = await import('./db/MessageAttachmentStore.js');
+    await new MessageAttachmentStore(userDb).ensureTable();
+  }
+  {
+    const { EffectRackStore }  = await import('./db/EffectRackStore.js');
+    const { DawProjectStore }  = await import('./db/DawProjectStore.js');
+    await new EffectRackStore(userDb).ensureTable();
+    await new DawProjectStore(userDb).ensureTable();
+  }
 
   const memoryStore = new MemoryStore(userDb);
   await memoryStore.ensureTable();
@@ -437,7 +693,9 @@ async function continueBootSequence(
   await reconfigureClients();
 
   // ── SYBIL ──────────────────────────────────────────────────────────────────
-  const archiveHasContent = ArchiveStore.hasAnyContent();
+  const allUsers          = await new UserStore(db).list();
+  const allUsernames      = allUsers.map((u: { username: string }) => u.username);
+  const archiveHasContent = ArchiveStore.hasAnyContent(allUsernames);
 
   if (archiveHasContent) {
     try {
@@ -466,6 +724,10 @@ async function continueBootSequence(
 
   scheduler.start();
 
+  // Wire live refs so performUserSwitch and shutdown always use current instances.
+  _live.scheduler = scheduler;
+  _live.userDb    = userDb;
+
   // HA startup reconnect: if HA was enabled when server last shut down, reconnect.
   connectHa(db).catch(err => {
     console.error('[Server] HA startup connect failed:', err.message);
@@ -492,6 +754,10 @@ async function continueBootSequence(
   await cartridgeStore.ensureTable();
   initCartridgeManager(cartridgeStore);
   await reconcileCartridgeSlots();
+
+  // ── WeClone Slot State ──────────────────────────────────────────────────────
+  // Restores any clone activation that persisted across a server restart.
+  await initWecloneSlotManager();
 
   // ── Camofox Web Browser ─────────────────────────────────────────────────────
   if (isCamofoxInstalled()) {
@@ -541,8 +807,8 @@ async function continueBootSequence(
       await serviceStore.setEnabled('meridian', true);
       merRecord = await serviceStore.get('meridian');
     }
-    const correctDefaultPath = path.join(os.homedir(), '.phobos', 'media', 'meridian', 'phobosPhotos');
-    if (!merRecord.libraryPath || merRecord.libraryPath.endsWith('phobosPictures') || merRecord.libraryPath.endsWith('photos')) {
+    const correctDefaultPath = path.join(os.homedir(), '.phobos', 'media', 'meridian', 'owner', 'phobosPhotos');
+    if (!merRecord.libraryPath || merRecord.libraryPath.endsWith('phobosPictures') || merRecord.libraryPath.endsWith('photos') || merRecord.libraryPath === path.join(os.homedir(), '.phobos', 'media', 'meridian', 'phobosPhotos')) {
       // Migrate from old incorrect default path to the correct one
       mkdirSync(correctDefaultPath, { recursive: true });
       await serviceStore.setLibraryPath('meridian', correctDefaultPath);
@@ -553,6 +819,12 @@ async function continueBootSequence(
       libraryPath:  merRecord.libraryPath!,
       idleEnabled:  Boolean(merRecord.settings.idleClassifier ?? true),
       syncDb:       userDb,
+    }).then(() => {
+      // Reconcile all PHOBOS users against Meridian on every boot.
+      // Creates per-user library rows, scans missing libraries, and starts watchers.
+      repairMeridianUserLibraries(allUsernames).catch(err =>
+        console.warn('[MediaHub] repairMeridianUserLibraries failed (non-fatal):', err.message),
+      );
     }).catch(err => console.warn('[MediaHub] Meridian auto-start failed:', err.message));
   }
 
@@ -564,7 +836,7 @@ async function continueBootSequence(
       polarisRecord = await serviceStore.get('polaris');
     }
     if (!polarisRecord.libraryPath) {
-      const defaultPath = path.join(os.homedir(), '.phobos', 'media', 'polaris', 'phobosMusic');
+      const defaultPath = path.join(os.homedir(), '.phobos', 'media', 'polaris', 'owner', 'phobosMusic');
       mkdirSync(defaultPath, { recursive: true });
       await serviceStore.setLibraryPath('polaris', defaultPath);
       polarisRecord = await serviceStore.get('polaris');
@@ -592,7 +864,7 @@ async function continueBootSequence(
       console.log('[MediaHub] Generated missing Jellyfin adminPassword and persisted to DB.');
     }
     if (!jellyfinRecord.libraryPath) {
-      const defaultPath = path.join(os.homedir(), '.phobos', 'media', 'jellyfin', 'phobosVideos');
+      const defaultPath = path.join(os.homedir(), '.phobos', 'media', 'jellyfin', 'owner', 'phobosVideos');
       mkdirSync(defaultPath, { recursive: true });
       await serviceStore.setLibraryPath('jellyfin', defaultPath);
       jellyfinRecord = await serviceStore.get('jellyfin');
@@ -604,7 +876,13 @@ async function continueBootSequence(
         hardwareAccel: (jellyfinRecord.settings.hardwareAccel as string) || '',
       },
       adminPassword,
-    ).catch(err => console.warn('[MediaHub] Jellyfin auto-start failed:', err.message));
+    ).then(() => {
+      // Reconcile all PHOBOS users against Jellyfin on every boot.
+      // Re-provisions any user whose account was wiped and creates missing libraries.
+      repairJellyfinUserLibraries(allUsernames).catch(err =>
+        console.warn('[MediaHub] repairJellyfinUserLibraries failed (non-fatal):', err.message),
+      );
+    }).catch(err => console.warn('[MediaHub] Jellyfin auto-start failed:', err.message));
   }
 
   // Kavita — starts if binary is present
@@ -629,6 +907,10 @@ async function continueBootSequence(
       .then(async ({ refreshToken: newToken }) => {
         if (newToken !== authKey) await serviceStore.patchSettings('kavita', { refreshToken: newToken });
         if (!kavitaRecord.libraryPath) await serviceStore.setLibraryPath('kavita', docsPath);
+        // Reconcile all PHOBOS users against Kavita on every boot.
+        repairKavitaUserLibraries(allUsernames).catch(err =>
+          console.warn('[MediaHub] repairKavitaUserLibraries failed (non-fatal):', err.message),
+        );
       })
       .catch(async (err: Error) => {
         console.warn('[MediaHub] Kavita auto-start failed:', err.message);
@@ -646,6 +928,9 @@ async function continueBootSequence(
   const checkpointTimer = setInterval(() => {
     db.checkpoint().catch((err: unknown) =>
       console.warn('[DB] Periodic checkpoint failed (non-fatal):', err)
+    );
+    _live.userDb?.checkpoint().catch((err: unknown) =>
+      console.warn('[DB] Periodic user checkpoint failed (non-fatal):', err)
     );
   }, CHECKPOINT_INTERVAL_MS);
   checkpointTimer.unref();
@@ -688,7 +973,10 @@ async function continueBootSequence(
   const coordinatorPath = (() => {
     const seaPath = path.join(path.dirname(process.execPath), 'coordinator.cjs');
     if (fsExistsSync(seaPath)) return seaPath;
-    return path.join(_dirname_server, 'coordinator', 'coordinator.js');
+    const jsPath = path.join(_dirname_server, 'coordinator', 'coordinator.js');
+    if (fsExistsSync(jsPath)) return jsPath;
+    // tsx dev: compiled .js doesn't exist — use the .ts source directly.
+    return path.join(_dirname_server, 'coordinator', 'coordinator.ts');
   })();
 
   // Read INIT_CONFIG values once before the first spawn — these are the
@@ -726,8 +1014,21 @@ async function continueBootSequence(
     };
   };
 
+  // In tsx dev mode the coordinator entry is coordinator.ts. Worker threads do
+  // not inherit the parent's module hooks, so TypeScript resolution (.js->.ts)
+  // must be bootstrapped inside the worker itself. module.register() via a
+  // static .mjs shim is the correct tsx 4.x API; --loader is deprecated in
+  // Node v20+ and tsx 4.x throws if it detects --loader in execArgv.
+  // In the SEA build coordinatorPath is .cjs and execArgv is empty.
+  const _workerBootstrap = pathToFileURL(
+    path.join(_dirname_server, 'coordinator-worker-bootstrap.mjs'),
+  ).href;
+
   const spawnCoordinator = (): Worker => new Worker(coordinatorPath, {
     workerData: { sharedBuffer },
+    execArgv: coordinatorPath.endsWith('.ts')
+      ? ['--import', _workerBootstrap, '--no-warnings']
+      : [],
     // stdout/stderr inherit parent — log lines appear in the same console.
     stdout: false,
     stderr: false,
@@ -744,9 +1045,10 @@ async function continueBootSequence(
     try {
       const { search: archiveSearch } = await import('./ai/ArchiveClient.js');
       const result = await archiveSearch({
-        query:   msg.query,
-        domains: msg.domains,
-        k:       msg.k,
+        username: msg.username,
+        query:    msg.query,
+        domains:  msg.domains,
+        k:        msg.k,
       });
       worker.postMessage({ type: 'ARCHIVE_SEARCH_REPLY', requestId: msg.requestId, result });
     } catch (err) {
@@ -764,8 +1066,8 @@ async function continueBootSequence(
   ): Promise<void> => {
     try {
       const { retrieveWorkspaceMemory } = await import('./ai/MemoryWriter.js');
-      const result = await retrieveWorkspaceMemory(msg.query);
-      worker.postMessage({ type: 'MEMORY_SEARCH_REPLY', requestId: msg.requestId, result });
+      const result = await retrieveWorkspaceMemory(msg.query, 5, msg.username ?? 'owner');
+      worker.postMessage({ type: 'MEMORY_SEARCH_REPLY', requestId: msg.requestId, result,  });
     } catch (err) {
       worker.postMessage({
         type: 'MEMORY_SEARCH_REPLY',
@@ -960,50 +1262,133 @@ async function continueBootSequence(
   fastifyHeartbeatTimer.unref();
 
   // ── WebRTC signaling ───────────────────────────────────────────────────────
-  // Non-fatal: if autarch.net is unreachable the relay client reconnects in
-  // the background. The access code routes return null until it connects.
+  // LocalSignalingServer is always created — it handles LAN connections even
+  // when the relay is unreachable. WebRTCServer is always created for the same
+  // reason. SignalingClient (relay) is optional: if webrtcRelayUrl is empty or
+  // autarch.net is unreachable, LAN-only mode still works.
+  const { LocalSignalingServer } = await import('./webrtc/LocalSignalingServer.js');
+  const { WebRTCServer }         = await import('./webrtc/WebRTCServer.js');
+
+  const localSignaling = new LocalSignalingServer();
+
   let webrtcSignalingClient: import('./webrtc/SignalingClient.js').SignalingClient | null = null;
   let webrtcServer: import('./webrtc/WebRTCServer.js').WebRTCServer | null = null;
-  if (!webrtcRelayUrl) {
-    console.log('[WebRTC] WEBRTC_RELAY_URL is empty — relay disabled');
-  }
-  if (webrtcRelayUrl) try {
-    const { SignalingClient } = await import('./webrtc/SignalingClient.js');
-    const { WebRTCServer }    = await import('./webrtc/WebRTCServer.js');
 
-    webrtcSignalingClient = new SignalingClient({
-      relayUrl:   webrtcRelayUrl,
-      instanceId,
-      activeUser: 'owner',
-      onCode:     (code, _ice) => console.log(`[WebRTC] Registered with relay: ${code}`),
-      onOffer:    (offer)      => webrtcServer?.handleOffer(offer),
-      onIce:      (ice)        => webrtcServer?.addIceCandidate(ice),
-      onRelayConnect:    () => console.log('[WebRTC] Relay connected'),
-      onRelayDisconnect: () => console.warn('[WebRTC] Relay disconnected'),
-    });
+  if (!webrtcRelayUrl) {
+    console.log('[WebRTC] WEBRTC_RELAY_URL is empty — relay disabled, LAN-only mode');
+  }
+
+  // WebRTCServer is always instantiated (needed for LAN path even without relay)
+  // signalingClient is passed as null when relay is disabled — only the LAN
+  // path uses it, which goes through localSignaling instead.
+  try {
+    if (webrtcRelayUrl) {
+      const { SignalingClient } = await import('./webrtc/SignalingClient.js');
+      webrtcSignalingClient = new SignalingClient({
+        relayUrl:   webrtcRelayUrl,
+        instanceId,
+        activeUser: 'owner',
+        onCode:     (code, _ice) => console.log(`[WebRTC] Registered with relay: ${code}`),
+        onOffer:    (offer)      => webrtcServer?.handleOffer(offer),
+        onIce:      (ice)        => webrtcServer?.addIceCandidate(ice),
+        onRelayConnect: () => {
+          console.log('[WebRTC] Relay connected');
+          void (async () => {
+            try {
+              const now  = Date.now();
+              const rows = await db.query<{
+                id:              string;
+                to_instance_id:  string;
+                payload:         string;
+              }>(
+                `SELECT id, to_instance_id, payload
+                   FROM pending_outbound_requests
+                  WHERE expires_at > ?`,
+                [now],
+              );
+              for (const row of rows) {
+                const msg = JSON.parse(row.payload) as import('./webrtc/RemoteProtocol.js').SocialRelayMessage;
+                const sent = webrtcSignalingClient!.sendSocialMessage(row.to_instance_id, msg);
+                if (sent) {
+                  await db.run(`DELETE FROM pending_outbound_requests WHERE id = ?`, [row.id]);
+                } else {
+                  await db.run(
+                    `UPDATE pending_outbound_requests
+                        SET retry_count = retry_count + 1, last_attempt_at = ?
+                      WHERE id = ?`,
+                    [now, row.id],
+                  );
+                }
+              }
+            } catch (err) {
+              console.error('[WebRTC] Relay connect flush error:', (err as Error).message);
+            }
+          })();
+        },
+        onRelayDisconnect: () => console.warn('[WebRTC] Relay disconnected'),
+        onSocialMessage:   (msg) => {
+          // Route inbound social relay messages to the social handler.
+          // friend-request: store in pending_friend_requests for UI pickup.
+          // friend-request-ack: clear pending_outbound_requests, trigger handshake if accepted.
+          void import('./webrtc/SocialRelayHandler.js').then(m =>
+            m.handleInboundSocialMessage(db, msg),
+          );
+        },
+      });
+    }
 
     webrtcServer = new WebRTCServer({
       fastify,
-      signalingClient: webrtcSignalingClient,
-      systemDb:        db,
+      signalingClient:  webrtcSignalingClient!,
+      localSignaling,
+      systemDb:         db,
       instanceId,
-      relayUrl:        webrtcRelayUrl,
-      onConnected:     () => console.log('[WebRTC] Mobile session connected'),
-      onDisconnected:  () => console.log('[WebRTC] Mobile session disconnected'),
+      relayUrl:         webrtcRelayUrl,
+      onConnected:      () => console.log('[WebRTC] Mobile session connected'),
+      onDisconnected:   () => console.log('[WebRTC] Mobile session disconnected'),
     });
 
-    setWebRTCContext({ signalingClient: webrtcSignalingClient, webrtcServer });
-    webrtcSignalingClient.connect();
+    setWebRTCContext({ signalingClient: webrtcSignalingClient, webrtcServer, localSignaling, instanceId, systemDb: db });
+
+    // Respect relay_enabled preference — default true if no row exists.
+    let relayEnabled = true;
+    try {
+      const rows = await db.query<{ value: string }>(
+        `SELECT value FROM instance_config WHERE key = 'relay_enabled'`, [],
+      );
+      if (rows.length > 0) relayEnabled = rows[0].value !== 'false';
+    } catch { /* non-fatal — connect anyway */ }
+
+    if (relayEnabled) {
+      webrtcSignalingClient?.connect();
+    } else {
+      console.log('[WebRTC] Relay disabled by preference — skipping connect');
+    }
+
+    if (webrtcSignalingClient) {
+      setSocialSignalingClient(webrtcSignalingClient);
+      setMeridianSignalingClient(webrtcSignalingClient);
+    }
+
+    console.log('[WebRTC] LAN signaling ready on /api/webrtc/{ping,offer,signal,ice}');
   } catch (err) {
     console.warn('[WebRTC] Failed to initialize (non-fatal):', (err as Error).message);
   }
 
   // Inject context-dependent values into the user management routes now that
   // db, instanceId, and relayUrl are all resolved.
-  setUserManagementContext(db, instanceId, webrtcRelayUrl);
+  setUserManagementContext(db, instanceId, webrtcRelayUrl, PORT);
+  setSocialContext(db, instanceId, webrtcRelayUrl);
 
   // ── PHASE 4: Services wait → Ready ────────────────────────────────────────
   // All service start() calls above are fire-and-forgot. Give them up to 5
+  // Pre-warm audio daemons before the settle wait so Kokoro's ONNX model load
+  // runs in parallel with Jellyfin/Polaris/etc finishing their startup.
+  // By the time waitForServicesToSettle returns, the model is already loaded.
+  preWarmKokoro();
+  preWarmSupertonic();
+  preWarmVcDaemons(getActiveUser());
+
   // minutes to come online. The frontend holds the splash screen open and shows
   // a live per-service checklist. When every tracked service has settled (or the
   // deadline passes), we advance to 'ready', which triggers a full page reload —
@@ -1031,8 +1416,14 @@ async function continueBootSequence(
     } catch (err) {
       console.error('[Shutdown] Database close error:', err);
     }
+    try {
+      await _live.userDb?.close();
+      console.log('[Shutdown] User database closed cleanly');
+    } catch (err) {
+      console.error('[Shutdown] User database close error:', err);
+    }
 
-    scheduler.stop();
+    _live.scheduler?.stop();
     gsm.stop();
 
     clearInterval(fastifyHeartbeatTimer);
@@ -1053,6 +1444,7 @@ async function continueBootSequence(
     await stopAllServers().catch(() => {});
     await coordinatorWorker.terminate().catch(() => {});
     shutdownKokoroDaemon();
+    shutdownSupertonicDaemon();
     shutdownAllVcDaemons();
     await fastify.close().catch(() => {});
 

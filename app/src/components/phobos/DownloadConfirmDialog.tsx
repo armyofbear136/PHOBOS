@@ -76,16 +76,16 @@ export function DownloadConfirmDialog({ title, entries, onConfirm, onCancel }: P
       className="fixed inset-0 z-[250] bg-black/90 flex items-center justify-center"
       onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
     >
-      <div className="w-[460px] bg-secondary border border-phobos-green/20 rounded-sm shadow-[0_0_40px_hsl(120_100%_50%/0.06)] font-mono">
+      <div className="w-[460px] bg-[#0f0f0a] border border-phob-orange/30 phob-corners  shadow-[0_0_24px_rgba(232,66,10,0.08)] font-mono">
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-border/30">
-          <span className="text-xs font-terminal tracking-[0.2em] text-phobos-green/70 uppercase">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-phob-orange/20">
+          <span className="text-xs font-terminal tracking-[0.2em] text-phob-orange/70 uppercase">
             {title}
           </span>
           <button
             onClick={onCancel}
-            className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+            className="p-1 hover:bg-phob-orange/8 text-phob-steel/50 hover:text-phob-white transition-colors"
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -93,7 +93,7 @@ export function DownloadConfirmDialog({ title, entries, onConfirm, onCancel }: P
 
         {/* License list */}
         <div className="px-5 py-4 space-y-3 max-h-[50vh] overflow-y-auto scrollbar-phobos">
-          <p className="text-[10px] text-muted-foreground/50 leading-relaxed">
+          <p className="text-[10px] text-phob-steel/45 leading-relaxed">
             {entries.length === 1
               ? 'By downloading, you agree to the license terms below.'
               : 'This download includes files under multiple licences. Review and agree to each before proceeding.'}
@@ -104,20 +104,20 @@ export function DownloadConfirmDialog({ title, entries, onConfirm, onCancel }: P
               key={entry.id}
               className={`flex items-start gap-3 px-3 py-2.5 border rounded cursor-pointer transition-colors ${
                 agreed.has(entry.id)
-                  ? 'border-phobos-green/40 bg-phobos-green/[0.06]'
-                  : 'border-border/40 bg-muted/30 hover:border-border/60 hover:bg-muted/50'
+                  ? 'border-phob-green/40 bg-phob-green/[0.06]'
+                  : 'border-phob-orange/20 bg-phob-white/3 hover:border-phob-orange/35 hover:bg-phob-white/5'
               }`}
             >
               {/* Custom checkbox */}
               <div
                 className={`w-4 h-4 rounded border-2 shrink-0 mt-0.5 flex items-center justify-center transition-colors ${
                   agreed.has(entry.id)
-                    ? 'border-phobos-green bg-phobos-green/20'
+                    ? 'border-phob-green bg-phob-green/20'
                     : 'border-foreground/40 bg-transparent'
                 }`}
               >
                 {agreed.has(entry.id) && (
-                  <svg className="w-2.5 h-2.5 text-phobos-green" fill="none" viewBox="0 0 12 12" stroke="currentColor" strokeWidth={2.5}>
+                  <svg className="w-2.5 h-2.5 text-phob-orange" fill="none" viewBox="0 0 12 12" stroke="currentColor" strokeWidth={2.5}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M2 6l3 3 5-5" />
                   </svg>
                 )}
@@ -131,11 +131,11 @@ export function DownloadConfirmDialog({ title, entries, onConfirm, onCancel }: P
 
               {/* Label: license name + covered files */}
               <div className="flex-1 min-w-0">
-                <div className="text-[11px] font-terminal tracking-[0.08em] text-foreground/80">
+                <div className="text-[11px] font-terminal tracking-[0.08em] text-phob-white/80">
                   {entry.license}
                 </div>
                 {entry.labels.length > 0 && (
-                  <div className="text-[10px] font-mono text-muted-foreground/40 mt-0.5 leading-relaxed">
+                  <div className="text-[10px] font-mono text-phob-steel/40 mt-0.5 leading-relaxed">
                     {entry.labels.join(', ')}
                   </div>
                 )}
@@ -147,7 +147,7 @@ export function DownloadConfirmDialog({ title, entries, onConfirm, onCancel }: P
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={(e) => e.stopPropagation()}
-                className="flex items-center gap-1 text-[9px] text-phobos-green/50 hover:text-phobos-green/80 transition-colors shrink-0 mt-0.5"
+                className="flex items-center gap-1 text-[9px] text-phob-orange/50 hover:text-phob-orange/80 transition-colors shrink-0 mt-0.5"
               >
                 View <ExternalLink className="w-2.5 h-2.5" />
               </a>
@@ -156,11 +156,11 @@ export function DownloadConfirmDialog({ title, entries, onConfirm, onCancel }: P
         </div>
 
         {/* Footer */}
-        <div className="flex items-center gap-2 px-5 py-3 border-t border-border/20">
+        <div className="flex items-center gap-2 px-5 py-3 border-t border-phob-orange/15">
           <button
             disabled={!allAgreed}
             onClick={onConfirm}
-            className="flex-1 py-2.5 border text-[10px] font-terminal uppercase tracking-[0.15em] rounded-sm transition-all disabled:opacity-30 disabled:cursor-not-allowed border-phobos-green/40 text-phobos-green/80 hover:text-phobos-green hover:border-phobos-green/60 hover:bg-phobos-green/[0.06] disabled:border-border/20 disabled:text-foreground/30"
+            className="flex-1 py-2.5 border text-[10px] font-terminal uppercase tracking-[0.15em]  transition-all disabled:opacity-30 disabled:cursor-not-allowed border-phob-orange/40 text-phob-orange/80 hover:text-phob-orange hover:border-phob-orange/60 hover:bg-phob-orange/[0.06] disabled:border-phob-orange/12 disabled:text-phob-steel/30"
           >
             {allAgreed
               ? 'CONFIRM DOWNLOAD'
@@ -168,7 +168,7 @@ export function DownloadConfirmDialog({ title, entries, onConfirm, onCancel }: P
           </button>
           <button
             onClick={onCancel}
-            className="px-4 py-2.5 border border-border/15 text-muted-foreground/35 text-[10px] uppercase tracking-[0.15em] rounded-sm hover:text-muted-foreground hover:border-border/30 transition-all"
+            className="px-4 py-2.5 border border-phob-orange/12 text-phob-steel/35 text-[10px] uppercase tracking-[0.15em] hover:text-phob-white/60 hover:border-phob-orange/25 transition-all"
           >
             Cancel
           </button>

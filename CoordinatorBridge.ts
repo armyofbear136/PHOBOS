@@ -45,6 +45,7 @@ export interface BridgeEnqueueParams {
     threadId:      string;
     skipBuild?:    boolean;
     maxAttempts?:  number;
+    username?:     string;
   };
   messageId:    string;
   priority?:    'local' | 'external';

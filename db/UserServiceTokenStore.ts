@@ -29,6 +29,7 @@ export interface KavitaTokens {
   jwt:          string;
   refresh_token: string;
   api_key:      string;
+  password:     string;   // stored so re-provision can login with the same credential
 }
 
 export class UserServiceTokenStore {
@@ -83,6 +84,7 @@ export class UserServiceTokenStore {
       jwt:           m.get('jwt')!,
       refresh_token: m.get('refresh_token') ?? '',
       api_key:       m.get('api_key') ?? '',
+      password:      m.get('password') ?? '',
     };
   }
 
@@ -91,6 +93,7 @@ export class UserServiceTokenStore {
     await this.set('kavita', 'jwt',           tokens.jwt);
     await this.set('kavita', 'refresh_token', tokens.refresh_token);
     await this.set('kavita', 'api_key',       tokens.api_key);
+    await this.set('kavita', 'password',      tokens.password);
   }
 
   async clear(service: ServiceName): Promise<void> {

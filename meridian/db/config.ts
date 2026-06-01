@@ -36,9 +36,9 @@ export function defaultConfig(): MeridianConfig {
   const base = path.join(os.homedir(), '.phobos', 'services', 'meridian');
   return {
     port:          16320,
-    phobosLibPath: path.join(os.homedir(), '.phobos', 'media', 'meridian', 'phobosPhotos'),
+    phobosLibPath: path.join(os.homedir(), '.phobos', 'media', 'meridian', 'owner', 'phobosPhotos'),
     userLibPaths:  [],
-    userId:        'default',
+    userId:        'owner',
     thumbCacheDir: path.join(base, 'thumbs'),
     dbPath:        path.join(os.homedir(), '.phobos', 'localai.duckdb'),
     ffmpegPath:    null,

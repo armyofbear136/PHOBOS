@@ -7,17 +7,25 @@ import os from 'os';
 // DuckDB looks for extensions at: {extension_directory}/v{version}/{platform}/
 // We bundle vss.duckdb_extension in phobos/extensions/ staged alongside the exe.
 function resolveBundledExtensionDir(): string | null {
-  const seaDir  = path.dirname(process.execPath);
-  const repoDir = path.resolve(path.dirname(
-    typeof __filename !== 'undefined' ? __filename : process.cwd()
-  ), '..');
+  const seaDir = path.dirname(process.execPath);
 
   const candidates = [
-    path.join(seaDir, 'phobos', 'extensions'),
-    path.join(repoDir, 'phobos', 'extensions'),
-    path.join(repoDir, 'dist', 'phobos', 'extensions'),
-    path.join(process.cwd(), 'phobos', 'extensions'),
+    path.join(seaDir,        'phobos', 'extensions'),  // compiled SEA: exe sits in dist/
+    path.join(process.cwd(), 'dist', 'phobos', 'extensions'),  // tsx from repo root
+    path.join(process.cwd(), 'phobos', 'extensions'),          // tsx from dist/
   ];
+
+  // In the CJS bundle __dirname is defined by esbuild and points to the bundle
+  // output directory — same as seaDir, already covered above. In tsx (ESM) it
+  // is undefined, so we fall through to the process.cwd() candidates which
+  // correctly resolve to dist/phobos/extensions when run from the repo root.
+  if (typeof __dirname !== 'undefined') {
+    const repoRoot = path.resolve(__dirname, '..', '..');
+    candidates.splice(1, 0,
+      path.join(repoRoot, 'dist', 'phobos', 'extensions'),
+      path.join(repoRoot, 'phobos', 'extensions'),
+    );
+  }
 
   for (const dir of candidates) {
     if (fs.existsSync(dir)) return dir;
@@ -86,6 +94,10 @@ export function userDbPath(username: string): string {
   return path.join(userDir(username), 'phobos.duckdb');
 }
 
+export function socialDbPath(username: string): string {
+  return path.join(userDir(username), 'social.duckdb');
+}
+
 // ── Schemas ───────────────────────────────────────────────────────────────────
 //
 // SYSTEM_SCHEMA: tables that live in ~/.phobos/phobos.duckdb. Shared across
@@ -134,8 +146,13 @@ CREATE TABLE IF NOT EXISTS access_codes (
   expires_at        TIMESTAMP NOT NULL
 );
 
--- Permanent instance identity. One row: key='instance_id', value=UUID v4.
--- Written on first boot via InstanceConfig.getInstanceId(). Never updated.
+-- Permanent instance identity and configuration.
+-- Known keys:
+--   instance_id   — UUID v4, generated on first boot
+--   public_key    — hex ed25519 public key
+--   private_key   — hex ed25519 private key (never transmitted)
+--   relay_enabled — 'true' | 'false', default true
+--   core_name     — user-assigned display name for this instance
 CREATE TABLE IF NOT EXISTS instance_config (
   key    VARCHAR PRIMARY KEY,
   value  VARCHAR NOT NULL
@@ -160,25 +177,63 @@ CREATE TABLE IF NOT EXISTS guest_credentials (
   updated_at    TIMESTAMP NOT NULL DEFAULT now()
 );
 
--- Nonce tracking for outbound friend invite codes (PH1.FRD.*).
--- Mirrors the access_codes pattern; consumed on first use.
-CREATE TABLE IF NOT EXISTS friend_invites (
-  nonce             VARCHAR PRIMARY KEY,
-  issuing_username  VARCHAR NOT NULL,
-  created_at        TIMESTAMP NOT NULL DEFAULT now(),
-  expires_at        TIMESTAMP NOT NULL,
-  consumed          BOOLEAN NOT NULL DEFAULT false
+-- Known remote PHOBOS instances. A Phobos ID (instance_uuid + relay_address)
+-- must be present here before any connection from that instance is accepted.
+-- This is the security boundary for all social features — unknown instances
+-- are rejected in DataChannelHandler before any session is opened.
+-- label is a user-assigned nickname, set before or after friending.
+-- friended=true once the full friend handshake completes.
+CREATE TABLE IF NOT EXISTS known_instances (
+  instance_uuid   VARCHAR PRIMARY KEY,
+  relay_address   VARCHAR NOT NULL,
+  label           VARCHAR,
+  friended        BOOLEAN NOT NULL DEFAULT false,
+  added_at        BIGINT NOT NULL
 );
 
--- Pending friend session requests queued while Alice's UI is offline.
--- Cleared when Alice acknowledges (accept/decline) or TTL expires.
+-- Inbound friend requests received from known instances while the user's
+-- UI was not present to respond interactively. The requesting core retries
+-- delivery on a timer; this table holds the latest request per sender so
+-- the UI can surface it on next open.
+-- status: 'pending' -> 'accepted' | 'declined'
+-- responded_at is set when the user acts; the requesting core is notified
+-- via a FriendRequestAck relay message and the row is deleted after ack.
 CREATE TABLE IF NOT EXISTS pending_friend_requests (
   id                VARCHAR PRIMARY KEY,
-  from_instance_id  VARCHAR NOT NULL,
+  from_instance_id  VARCHAR NOT NULL UNIQUE,
   from_username     VARCHAR NOT NULL,
-  purpose           VARCHAR NOT NULL DEFAULT 'chat',
-  received_at       TIMESTAMP NOT NULL DEFAULT now(),
-  expires_at        TIMESTAMP NOT NULL
+  from_display_name VARCHAR NOT NULL,
+  received_at       BIGINT NOT NULL,
+  expires_at        BIGINT NOT NULL,
+  status            VARCHAR NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'accepted', 'declined')),
+  responded_at      BIGINT
+);
+
+-- Outbound friend requests sent to known instances, persisted for retry until
+-- the target acks or TTL expires. One row per target instance — re-sending
+-- overwrites the previous entry so the target always sees the freshest request.
+-- retry_count is incremented by SignalingClient on each send attempt.
+CREATE TABLE IF NOT EXISTS pending_outbound_requests (
+  id               VARCHAR PRIMARY KEY,
+  to_instance_id   VARCHAR NOT NULL UNIQUE,
+  payload          TEXT NOT NULL,
+  sent_at          BIGINT NOT NULL,
+  expires_at       BIGINT NOT NULL,
+  retry_count      INTEGER NOT NULL DEFAULT 0,
+  last_attempt_at  BIGINT
+);
+
+-- WeClone activation state — one row per hardware slot.
+-- clone_id / username are NULL when no clone is active on that slot.
+-- holding_snapshot is a JSON-serialised ServerSnapshot captured at activation
+-- time so deactivation can restore the exact previous model + config.
+-- Non-empty holding_snapshot is the authoritative flag that a clone is active.
+CREATE TABLE IF NOT EXISTS weclone_active_slots (
+  slot              VARCHAR PRIMARY KEY CHECK (slot IN ('sayon','seren')),
+  clone_id          VARCHAR,
+  username          VARCHAR,
+  holding_snapshot  TEXT
 );
 `;
 
@@ -406,13 +461,40 @@ CREATE TABLE IF NOT EXISTS vault_config (
   value VARCHAR
 );
 
+-- Owner self-description — the "# YOU ARE TALKING TO" context injected into
+-- clone sessions and copilot context when clone mode is active.
+CREATE TABLE IF NOT EXISTS user_profiles (
+  id                 VARCHAR PRIMARY KEY,
+  display_name       VARCHAR NOT NULL DEFAULT '',
+  age                VARCHAR NOT NULL DEFAULT '',
+  gender             VARCHAR NOT NULL DEFAULT '',
+  pronouns           VARCHAR NOT NULL DEFAULT '',
+  appearance         TEXT    NOT NULL DEFAULT '',
+  personality        TEXT    NOT NULL DEFAULT '',
+  background         TEXT    NOT NULL DEFAULT '',
+  interests          TEXT    NOT NULL DEFAULT '',
+  dislikes           TEXT    NOT NULL DEFAULT '',
+  hobbies            TEXT    NOT NULL DEFAULT '',
+  goals              TEXT    NOT NULL DEFAULT '',
+  fears              TEXT    NOT NULL DEFAULT '',
+  values             TEXT    NOT NULL DEFAULT '',
+  speech_style       TEXT    NOT NULL DEFAULT '',
+  humor_style        VARCHAR NOT NULL DEFAULT '',
+  expertise          TEXT    NOT NULL DEFAULT '',
+  relationship_style TEXT    NOT NULL DEFAULT '',
+  love_language      VARCHAR NOT NULL DEFAULT '',
+  dealbreakers       TEXT    NOT NULL DEFAULT '',
+  updated_at         TIMESTAMP NOT NULL DEFAULT now()
+);
+
 -- Sync devices and policies: per-user so each user's mobile devices
 -- sync only to their own Meridian library.
 CREATE TABLE IF NOT EXISTS phobos_sync_devices (
-  device_id   VARCHAR PRIMARY KEY,
-  device_name VARCHAR NOT NULL,
-  platform    VARCHAR NOT NULL DEFAULT 'unknown',
-  sync_token  VARCHAR NOT NULL UNIQUE,
+  device_id     VARCHAR PRIMARY KEY,
+  device_name   VARCHAR NOT NULL,
+  platform      VARCHAR NOT NULL DEFAULT 'unknown',
+  sync_token    VARCHAR NOT NULL UNIQUE,
+  user_id       VARCHAR NOT NULL DEFAULT 'owner',
   registered_at TIMESTAMP NOT NULL DEFAULT now(),
   last_seen_at  TIMESTAMP
 );
@@ -440,19 +522,83 @@ CREATE INDEX IF NOT EXISTS idx_sync_exclusions_policy
   ON phobos_sync_exclusions (policy_id);
 
 CREATE TABLE IF NOT EXISTS phobos_sync_manifest (
-  content_hash VARCHAR NOT NULL,
-  device_id    VARCHAR NOT NULL REFERENCES phobos_sync_devices(device_id),
-  dest_path    VARCHAR NOT NULL,
-  file_size    BIGINT  NOT NULL DEFAULT 0,
-  taken_at     TIMESTAMP,
-  synced_at    TIMESTAMP NOT NULL DEFAULT now(),
+  content_hash  VARCHAR NOT NULL,
+  device_id     VARCHAR NOT NULL,
+  library       VARCHAR NOT NULL,
+  orig_filename VARCHAR NOT NULL,
+  dest_path     VARCHAR NOT NULL,
+  file_size     BIGINT,
+  taken_at      TIMESTAMP WITH TIME ZONE,
+  synced_at     TIMESTAMP WITH TIME ZONE DEFAULT now(),
   PRIMARY KEY (content_hash, device_id)
 );
-
 CREATE INDEX IF NOT EXISTS idx_sync_manifest_device
   ON phobos_sync_manifest (device_id);
 CREATE INDEX IF NOT EXISTS idx_sync_manifest_taken
   ON phobos_sync_manifest (taken_at);
+`;
+
+// ── SOCIAL_SCHEMA ─────────────────────────────────────────────────────────────
+//
+// Tables that live in ~/.phobos/users/{username}/social.duckdb.
+// Separated from phobos.duckdb so the social graph can be exported, wiped,
+// or migrated independently of chat and workspace data.
+//
+// Opened via DatabaseManager.getSocialDb(username). Created on first call.
+
+export const SOCIAL_SCHEMA = `
+-- Confirmed friends. Composite PK prevents duplicates for the same remote user
+-- even if they share a PHOBOS instance with others.
+-- public_key is stored for Phase 2 post signing; Phase 1 exchanges it but
+-- does not yet verify signatures on incoming data.
+CREATE TABLE IF NOT EXISTS friends (
+  instance_uuid   TEXT NOT NULL,
+  username        TEXT NOT NULL,
+  display_name    TEXT NOT NULL,
+  public_key      TEXT NOT NULL,
+  relay_address   TEXT NOT NULL,
+  avatar_token    TEXT,
+  connected_at    BIGINT NOT NULL,
+  last_seen_at    BIGINT,
+  notes           TEXT,
+  PRIMARY KEY (instance_uuid, username)
+);
+
+-- Direct messages — sent and received — for all friend conversations.
+-- direction='sent'     means we originated this message.
+-- direction='received' means it arrived from a friend's core.
+-- sent_at is unix-ms set by the sender; received_at is when we persisted locally.
+-- delivered=1 for sent messages means we received a DirectMessageAck from peer.
+-- read_at is populated for received messages when the user opens the conversation.
+CREATE TABLE IF NOT EXISTS direct_messages (
+  message_id      TEXT PRIMARY KEY,
+  friend_uuid     TEXT NOT NULL,
+  friend_username TEXT NOT NULL,
+  direction       TEXT NOT NULL CHECK (direction IN ('sent', 'received')),
+  content_text    TEXT NOT NULL,
+  sent_at         BIGINT NOT NULL,
+  received_at     BIGINT NOT NULL,
+  delivered       INTEGER NOT NULL DEFAULT 0,
+  read_at         BIGINT
+);
+
+CREATE INDEX IF NOT EXISTS idx_dm_conversation
+  ON direct_messages (friend_uuid, friend_username, sent_at DESC);
+
+-- Outbound messages that could not be delivered because the friend's core was
+-- unreachable. Delivered on next successful connection.
+-- retry_count is capped at 10 by the caller; stale entries are pruned silently.
+-- payload is the full JSON DirectMessageFrame, ready to re-send without rebuilding.
+CREATE TABLE IF NOT EXISTS pending_dm_queue (
+  queue_id        TEXT PRIMARY KEY,
+  target_uuid     TEXT NOT NULL,
+  target_username TEXT NOT NULL,
+  message_id      TEXT NOT NULL,
+  payload         TEXT NOT NULL,
+  created_at      BIGINT NOT NULL,
+  retry_count     INTEGER NOT NULL DEFAULT 0,
+  last_attempt_at BIGINT
+);
 `;
 
 // ── DatabaseManager ───────────────────────────────────────────────────────────
@@ -466,7 +612,7 @@ CREATE INDEX IF NOT EXISTS idx_sync_manifest_taken
 // (model_config, cartridges, plugins, media services) keep getInstance().
 // Routes that touch per-user data (threads, messages, etc.) use getUserDb().
 
-type Kind = 'system' | 'user';
+type Kind = 'system' | 'user' | 'social';
 
 export class DatabaseManager {
   private static instances = new Map<string, DatabaseManager>();
@@ -528,6 +674,70 @@ export class DatabaseManager {
   }
 
   /**
+   * Close and evict a user's DB instance from the singleton cache.
+   * Must be called before deleting the user's filesystem directory so DuckDB
+   * releases its file handle and WAL before the rmSync.
+   * Safe to call even if the user never had an open connection.
+   */
+  static async evictUser(username: string): Promise<void> {
+    const resolvedPath = userDbPath(username);
+    const key = `user:${username}:${resolvedPath}`;
+    const inst = DatabaseManager.instances.get(key);
+    if (inst) {
+      DatabaseManager.instances.delete(key);
+      try {
+        await inst.close();
+      } catch {
+        // Already closed or never opened — safe to ignore.
+      }
+    }
+  }
+
+  /**
+   * Social-scoped DatabaseManager for ~/.phobos/users/{username}/social.duckdb.
+   * Singleton per user — created on first call with SOCIAL_SCHEMA applied.
+   * Always pass an explicit username; never falls back to getActiveUser() to
+   * prevent cross-user data contamination.
+   */
+  static async getSocialDb(username: string): Promise<DatabaseManager> {
+    const resolvedPath = socialDbPath(username);
+    const key = `social:${username}:${resolvedPath}`;
+    const existing = DatabaseManager.instances.get(key);
+    if (existing) return existing;
+
+    fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+    const inst = new DatabaseManager('social', resolvedPath);
+    // Register before initialize() so concurrent callers do not create a second instance.
+    DatabaseManager.instances.set(key, inst);
+    try {
+      await inst.initialize();
+    } catch (err) {
+      DatabaseManager.instances.delete(key);
+      throw err;
+    }
+    return inst;
+  }
+
+  /**
+   * Close and evict a user's social DB from the singleton cache.
+   * Call before deleting the user's directory so DuckDB releases the file
+   * handle before rmSync. Safe to call if social DB was never opened.
+   */
+  static async evictSocialDb(username: string): Promise<void> {
+    const resolvedPath = socialDbPath(username);
+    const key = `social:${username}:${resolvedPath}`;
+    const inst = DatabaseManager.instances.get(key);
+    if (inst) {
+      DatabaseManager.instances.delete(key);
+      try {
+        await inst.close();
+      } catch {
+        // Already closed or never opened — safe to ignore.
+      }
+    }
+  }
+
+  /**
    * Wrap an already-open Database.Database instance as a DatabaseManager.
    * Used by Migration.ts so that schema-pre-creation calls (ensureSchema,
    * ensureTable) share the same native handle as the copy phase, avoiding
@@ -540,6 +750,17 @@ export class DatabaseManager {
     return inst;
   }
 
+  private _initPromise: Promise<void> | null = null;
+
+  /** Idempotent: calls initialize() once and caches the promise so concurrent
+   *  callers all await the same initialization. Safe to call from any store's
+   *  ensureTable() — no-op if already initialized. */
+  async ensureReady(): Promise<void> {
+    if (this.db) return; // already initialized
+    if (!this._initPromise) this._initPromise = this.initialize();
+    return this._initPromise;
+  }
+
   async initialize(): Promise<void> {
     fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
 
@@ -548,12 +769,26 @@ export class DatabaseManager {
       : {};
 
     this.db = await Database.Database.create(this.dbPath, dbConfig as any);
-    const schema = this.kind === 'system' ? SYSTEM_SCHEMA : USER_SCHEMA;
+    const schema = this.kind === 'system' ? SYSTEM_SCHEMA
+                 : this.kind === 'user'   ? USER_SCHEMA
+                 : SOCIAL_SCHEMA;
     await this.db.exec(schema);
+    if (this.kind === 'system') {
+      // Seed the two permanent weclone slot rows.  INSERT OR IGNORE so existing
+      // rows (with live clone_id / holding_snapshot) are never overwritten.
+      await this.db.exec(`
+        INSERT OR IGNORE INTO weclone_active_slots (slot, clone_id, username, holding_snapshot)
+          VALUES ('sayon', NULL, NULL, NULL);
+        INSERT OR IGNORE INTO weclone_active_slots (slot, clone_id, username, holding_snapshot)
+          VALUES ('seren', NULL, NULL, NULL);
+      `);
+    }
     if (this.kind === 'user') {
       await this.migrateDocuments();
       await this.ensureDistilledColumn();
       await this.migrateSyncPoliciesRetainDays();
+      await this.migrateSyncDevicesUserId();
+      await this.migrateSyncManifest();
     }
     if (BUNDLED_EXTENSION_DIR && this.kind === 'system') {
       console.log(`[DB] Extension dir: ${BUNDLED_EXTENSION_DIR}`);
@@ -588,6 +823,56 @@ export class DatabaseManager {
     } catch {
       // Either the table doesn't exist yet (fresh install — schema will create it
       // correctly) or the constraint is already gone. Both are fine.
+    }
+  }
+
+  /** Add user_id to phobos_sync_devices if missing. */
+  private async migrateSyncDevicesUserId(): Promise<void> {
+    try {
+      await this.db!.exec(
+        `ALTER TABLE phobos_sync_devices ADD COLUMN IF NOT EXISTS user_id VARCHAR NOT NULL DEFAULT 'owner'`,
+      );
+    } catch { /* already exists or table not yet created */ }
+  }
+
+  /** Fix phobos_sync_manifest: rename columns and correct the PRIMARY KEY.
+   *  The old schema had a single-column PK (content_hash) and wrong column names.
+   *  Because DuckDB cannot ALTER a PRIMARY KEY, we drop and recreate the table
+   *  when the old schema is detected. Any existing rows are lost — acceptable
+   *  since test data is stale and re-upload is the recovery path. */
+  private async migrateSyncManifest(): Promise<void> {
+    try {
+      // Detect old schema by checking for the original_name column.
+      const cols = await this.query<{ column_name: string }>(
+        `SELECT column_name FROM information_schema.columns
+         WHERE table_name = 'phobos_sync_manifest' AND column_name = 'original_name'`,
+      );
+      if (cols && cols.length > 0) {
+        // Old schema detected — drop and let CREATE TABLE IF NOT EXISTS rebuild it.
+        await this.db!.exec(`DROP TABLE IF EXISTS phobos_sync_manifest`);
+        await this.db!.exec(`
+          CREATE TABLE IF NOT EXISTS phobos_sync_manifest (
+            content_hash  VARCHAR NOT NULL,
+            device_id     VARCHAR NOT NULL,
+            library       VARCHAR NOT NULL,
+            orig_filename VARCHAR NOT NULL,
+            dest_path     VARCHAR NOT NULL,
+            file_size     BIGINT,
+            taken_at      TIMESTAMP WITH TIME ZONE,
+            synced_at     TIMESTAMP WITH TIME ZONE DEFAULT now(),
+            PRIMARY KEY (content_hash, device_id)
+          )
+        `);
+        await this.db!.exec(`
+          CREATE INDEX IF NOT EXISTS idx_sync_manifest_device ON phobos_sync_manifest (device_id)
+        `);
+        await this.db!.exec(`
+          CREATE INDEX IF NOT EXISTS idx_sync_manifest_taken ON phobos_sync_manifest (taken_at)
+        `);
+        console.log('[DB] Migrated phobos_sync_manifest to corrected schema.');
+      }
+    } catch (err) {
+      console.warn('[DB] migrateSyncManifest skipped (non-fatal):', err);
     }
   }
 
@@ -652,6 +937,7 @@ export class DatabaseManager {
     } finally {
       await conn.close();
     }
+    this.checkpointSoon();
   }
 
   /** Execute a SQL statement directly without going through prepare().
@@ -664,6 +950,7 @@ export class DatabaseManager {
     } finally {
       await conn.close();
     }
+    this.checkpointSoon();
   }
 
   /**
@@ -705,6 +992,21 @@ export class DatabaseManager {
    * Force a WAL checkpoint — flushes all WAL entries into the main .duckdb file.
    * After this call, the .wal file can be deleted without data loss.
    */
+  private _checkpointTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Debounced checkpoint — flushes WAL to disk 1 second after the last write.
+   *  Ensures data survives process exit even if the periodic timer hasn't fired.
+   *  Multiple rapid writes coalesce into a single checkpoint. */
+  private checkpointSoon(): void {
+    if (this._checkpointTimer) clearTimeout(this._checkpointTimer);
+    this._checkpointTimer = setTimeout(() => {
+      this._checkpointTimer = null;
+      this.checkpoint().catch((err: unknown) =>
+        console.warn('[DB] Post-write checkpoint failed (non-fatal):', err),
+      );
+    }, 1000);
+  }
+
   async checkpoint(): Promise<void> {
     const conn = await this.db.connect();
     try {

@@ -60,7 +60,7 @@ export interface UserSkillRecord extends UserSkillManifest {
 }
 
 export interface UserSkillCreateInput {
-  id: string;
+  id?: string;  // optional — derived from name if absent
   name: string;
   description: string;
   version: string;
@@ -171,7 +171,9 @@ export async function getUserSkill(id: string): Promise<UserSkillRecord | null> 
 // ── Create ────────────────────────────────────────────────────────────────────
 
 export async function createUserSkill(input: UserSkillCreateInput): Promise<UserSkillRecord> {
-  const id = sanitizeId(input.id);
+  // id is optional — derive from name if not provided
+  const baseId = input.id ?? slugify(input.name ?? 'skill');
+  const id = await uniqueId(baseId);
   const dir = skillDir(id);
 
   if (existsSync(dir)) {

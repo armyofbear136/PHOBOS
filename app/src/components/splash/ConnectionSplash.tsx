@@ -34,7 +34,7 @@ const PLATFORM_CONFIG: Record<Platform, { label: string; file: string }> = {
 
 // ── Boot state from /api/boot/events ─────────────────────────────────────────
 
-type BootPhase = 'prep_deps' | 'db_init' | 'core_init' | 'services_wait' | 'ready';
+type BootPhase = 'awaiting_setup' | 'prep_deps' | 'db_init' | 'core_init' | 'services_wait' | 'ready';
 
 type ServiceReadyState = 'waiting' | 'ready' | 'failed';
 
@@ -62,11 +62,12 @@ interface BootState {
 // ── Phase label map ───────────────────────────────────────────────────────────
 
 const PHASE_LABEL: Record<BootPhase, string> = {
-  prep_deps:     'Downloading dependencies',
-  db_init:       'Initializing database',
-  core_init:     'Starting core systems',
-  services_wait: 'Starting services',
-  ready:         'Ready',
+  awaiting_setup: 'First-run setup',
+  prep_deps:      'Downloading dependencies',
+  db_init:        'Initializing database',
+  core_init:      'Starting core systems',
+  services_wait:  'Starting services',
+  ready:          'Ready',
 };
 
 function fmt(bytes: number): string {
@@ -86,6 +87,12 @@ export function ConnectionSplash() {
   // Boot awareness — null = core not reachable at all (show install guide)
   const [bootState, setBootState]       = useState<BootState | null>(null);
   const [coreReachable, setCoreReachable] = useState(false);
+
+  // First-run setup form
+  const [setupUsername,    setSetupUsername]    = useState('');
+  const [setupDisplayName, setSetupDisplayName] = useState('');
+  const [setupError,       setSetupError]       = useState('');
+  const [setupSubmitting,  setSetupSubmitting]  = useState(false);
 
   const setBootPhase = useAppStore((s) => s.setBootPhase);
 
@@ -177,7 +184,7 @@ export function ConnectionSplash() {
   }, []);
 
   const dots = '.'.repeat(dotCount);
-  const mono: React.CSSProperties = { fontFamily: "'Share Tech Mono', monospace" };
+  const mono: React.CSSProperties = { fontFamily: "'Space Mono', 'Share Tech Mono', monospace" };
 
   const getDownloadUrl = (plat: Platform) =>
     `${RELEASE_BASE}/${PLATFORM_CONFIG[plat].file}`;
@@ -186,6 +193,126 @@ export function ConnectionSplash() {
   const handleConfirm = () => { window.open(getDownloadUrl(platform), '_blank', 'noopener,noreferrer'); setShowConfirm(false); };
   const handleCancel  = () => setShowConfirm(false);
   const handleOtherPlatform = (plat: Platform) => window.open(getDownloadUrl(plat), '_blank', 'noopener,noreferrer');
+
+  // ── First-run setup form ──────────────────────────────────────────────────
+  const handleSetupSubmit = async () => {
+    const u = setupUsername.trim().toLowerCase();
+    if (!/^[a-z0-9_\-]{2,32}$/.test(u)) {
+      setSetupError('2–32 characters: lowercase letters, numbers, _ or -');
+      return;
+    }
+    setSetupError('');
+    setSetupSubmitting(true);
+    try {
+      const res = await fetch(`${ENGINE_URL}/api/setup/init`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ username: u, displayName: setupDisplayName.trim() || u }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        setSetupError(data.error ?? `Server error ${res.status}`);
+        setSetupSubmitting(false);
+      }
+      // On success the server resumes boot — SSE stream carries us through to ready.
+    } catch (err) {
+      setSetupError(String(err));
+      setSetupSubmitting(false);
+    }
+  };
+
+  const renderSetupForm = () => (
+    <div style={{
+      width: '100%',
+      background: 'rgba(232,66,10,0.04)',
+      border: '1px solid rgba(232,66,10,0.2)',
+      padding: '24px 22px',
+      marginBottom: 24,
+      boxSizing: 'border-box',
+    }}>
+      <div style={{ marginBottom: 18 }}>
+        <span style={{ ...mono, fontSize: 10, color: 'rgba(232,66,10,0.7)', letterSpacing: '0.2em' }}>
+          // CREATE OWNER ACCOUNT
+        </span>
+      </div>
+
+      <p style={{ fontFamily: "'Inter', sans-serif", fontSize: 13, color: 'rgba(255,255,255,0.5)', lineHeight: 1.7, margin: '0 0 20px' }}>
+        No accounts exist yet. Create the owner account to continue.
+      </p>
+
+      {/* Username */}
+      <div style={{ marginBottom: 14 }}>
+        <label style={{ ...mono, fontSize: 9, color: 'rgba(232,66,10,0.6)', letterSpacing: '0.18em', display: 'block', marginBottom: 6 }}>
+          USERNAME
+        </label>
+        <input
+          type="text"
+          value={setupUsername}
+          onChange={(e) => setSetupUsername(e.target.value.toLowerCase())}
+          onKeyDown={(e) => e.key === 'Enter' && handleSetupSubmit()}
+          placeholder="e.g. commander"
+          maxLength={32}
+          style={{
+            width: '100%', boxSizing: 'border-box',
+            background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(232,66,10,0.25)',
+            color: 'rgba(255,255,255,0.85)', ...mono, fontSize: 13,
+            padding: '10px 12px', outline: 'none',
+            transition: 'border-color 150ms',
+          }}
+          onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(232,66,10,0.6)'; }}
+          onBlur={(e)  => { e.currentTarget.style.borderColor = 'rgba(232,66,10,0.25)'; }}
+        />
+      </div>
+
+      {/* Display name */}
+      <div style={{ marginBottom: 20 }}>
+        <label style={{ ...mono, fontSize: 9, color: 'rgba(232,66,10,0.6)', letterSpacing: '0.18em', display: 'block', marginBottom: 6 }}>
+          DISPLAY NAME <span style={{ color: 'rgba(255,255,255,0.2)' }}>(optional)</span>
+        </label>
+        <input
+          type="text"
+          value={setupDisplayName}
+          onChange={(e) => setSetupDisplayName(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleSetupSubmit()}
+          placeholder="e.g. Commander Shepard"
+          maxLength={64}
+          style={{
+            width: '100%', boxSizing: 'border-box',
+            background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(232,66,10,0.25)',
+            color: 'rgba(255,255,255,0.85)', ...mono, fontSize: 13,
+            padding: '10px 12px', outline: 'none',
+            transition: 'border-color 150ms',
+          }}
+          onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(232,66,10,0.6)'; }}
+          onBlur={(e)  => { e.currentTarget.style.borderColor = 'rgba(232,66,10,0.25)'; }}
+        />
+      </div>
+
+      {setupError && (
+        <p style={{ ...mono, fontSize: 10, color: 'rgba(255,100,60,0.85)', margin: '0 0 14px', letterSpacing: '0.05em' }}>
+          {setupError}
+        </p>
+      )}
+
+      <button
+        onClick={handleSetupSubmit}
+        disabled={setupSubmitting || !setupUsername.trim()}
+        style={{
+          width: '100%', padding: '11px 0',
+          background: setupSubmitting ? 'rgba(232,66,10,0.08)' : 'rgba(232,66,10,0.15)',
+          border: '1px solid rgba(232,66,10,0.4)',
+          color: setupSubmitting ? 'rgba(232,66,10,0.4)' : 'rgba(240,80,20,0.9)',
+          ...mono, fontSize: 11, letterSpacing: '0.2em',
+          cursor: setupSubmitting ? 'not-allowed' : 'pointer',
+          transition: 'all 150ms',
+        }}
+        onMouseEnter={(e) => { if (!setupSubmitting) e.currentTarget.style.background = 'rgba(232,66,10,0.25)'; }}
+        onMouseLeave={(e) => { if (!setupSubmitting) e.currentTarget.style.background = 'rgba(232,66,10,0.15)'; }}
+      >
+        {setupSubmitting ? 'CREATING ACCOUNT...' : 'CREATE ACCOUNT'}
+      </button>
+    </div>
+  );
 
   // ── Boot progress panel (prep_deps / db_init / core_init) ─────────────────
   const renderBootProgress = () => {
@@ -202,15 +329,15 @@ export function ConnectionSplash() {
     return (
       <div style={{
         width: '100%',
-        background: 'rgba(0,200,255,0.04)',
-        border: '1px solid rgba(0,200,255,0.15)',
+        background: 'rgba(232,66,10,0.04)',
+        border: '1px solid rgba(232,66,10,0.15)',
         padding: '20px 22px',
         marginBottom: 24,
         boxSizing: 'border-box',
       }}>
         {/* Phase header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-          <span style={{ ...mono, fontSize: 10, color: 'rgba(0,200,255,0.6)', letterSpacing: '0.2em' }}>
+          <span style={{ ...mono, fontSize: 10, color: 'rgba(232,66,10,0.7)', letterSpacing: '0.2em' }}>
             // {phaseLabel.toUpperCase()}
           </span>
           {overallPct !== null && (
@@ -226,7 +353,7 @@ export function ConnectionSplash() {
             <div style={{ height: 2, background: 'rgba(255,255,255,0.08)', borderRadius: 1, overflow: 'hidden' }}>
               <div style={{
                 height: '100%', width: `${overallPct}%`,
-                background: 'linear-gradient(to right, rgba(0,200,255,0.5), rgba(0,200,255,0.8))',
+                background: 'linear-gradient(to right, rgba(232,66,10,0.5), rgba(232,66,10,0.8))',
                 transition: 'width 300ms ease',
               }} />
             </div>
@@ -296,14 +423,14 @@ export function ConnectionSplash() {
     return (
       <div style={{
         width: '100%',
-        background: 'rgba(0,200,255,0.04)',
-        border: '1px solid rgba(0,200,255,0.15)',
+        background: 'rgba(232,66,10,0.04)',
+        border: '1px solid rgba(232,66,10,0.15)',
         padding: '20px 22px',
         marginBottom: 24,
         boxSizing: 'border-box',
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-          <span style={{ ...mono, fontSize: 10, color: 'rgba(0,200,255,0.6)', letterSpacing: '0.2em' }}>
+          <span style={{ ...mono, fontSize: 10, color: 'rgba(232,66,10,0.7)', letterSpacing: '0.2em' }}>
             // SERVICES INITIALIZING
           </span>
           {!allSettled && (
@@ -351,7 +478,7 @@ export function ConnectionSplash() {
     <div
       className="fixed inset-0 z-[100] flex flex-col items-center justify-center overflow-y-auto"
       style={{
-        background: 'radial-gradient(ellipse 120% 80% at 50% 20%, #050d1a 0%, #060810 50%, #020408 100%)',
+        background: 'radial-gradient(ellipse 120% 80% at 50% 10%, #0a0500 0%, #080808 50%, #040404 100%)',
       }}
     >
       <style>{`
@@ -360,7 +487,7 @@ export function ConnectionSplash() {
         @keyframes cs-orbit   { from{transform:rotate(0deg) translateX(38px) rotate(0deg)} to{transform:rotate(360deg) translateX(38px) rotate(-360deg)} }
         @keyframes cs-orbit2  { from{transform:rotate(120deg) translateX(52px) rotate(-120deg)} to{transform:rotate(480deg) translateX(52px) rotate(-480deg)} }
         @keyframes cs-orbit3  { from{transform:rotate(240deg) translateX(28px) rotate(-240deg)} to{transform:rotate(600deg) translateX(28px) rotate(-600deg)} }
-        @keyframes cs-glow    { 0%,100%{box-shadow:0 0 20px rgba(0,200,255,0.15)} 50%{box-shadow:0 0 40px rgba(0,200,255,0.3)} }
+        @keyframes cs-glow    { 0%,100%{box-shadow:0 0 20px rgba(232,66,10,0.15)} 50%{box-shadow:0 0 40px rgba(232,66,10,0.3)} }
         @keyframes cs-rise    { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:translateY(0)} }
       `}</style>
 
@@ -391,12 +518,12 @@ export function ConnectionSplash() {
           {[38, 52, 28].map((r, i) => (
             <div key={i} style={{
               position: 'absolute', inset: `${60 - r}px`,
-              borderRadius: '50%', border: `1px solid rgba(0,180,255,${0.08 + i * 0.03})`,
+              border: `1px solid rgba(232,66,10,${0.08 + i * 0.03})`,
             }} />
           ))}
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <div style={{ position: 'relative', width: 0, height: 0 }}>
-              <div style={{ position: 'absolute', width: 5, height: 5, borderRadius: '50%', background: '#00c8ff', boxShadow: '0 0 6px rgba(0,200,255,0.8)', animation: 'cs-orbit 4s linear infinite', marginTop: -2.5, marginLeft: -2.5 }} />
+              <div style={{ position: 'absolute', width: 5, height: 5, borderRadius: '50%', background: '#e8420a', boxShadow: '0 0 6px rgba(232,66,10,0.8)', animation: 'cs-orbit 4s linear infinite', marginTop: -2.5, marginLeft: -2.5 }} />
               <div style={{ position: 'absolute', width: 3.5, height: 3.5, borderRadius: '50%', background: '#00ff9d', boxShadow: '0 0 5px rgba(0,255,157,0.7)', animation: 'cs-orbit2 7s linear infinite', marginTop: -1.75, marginLeft: -1.75 }} />
               <div style={{ position: 'absolute', width: 3, height: 3, borderRadius: '50%', background: '#7b6fff', boxShadow: '0 0 5px rgba(123,111,255,0.7)', animation: 'cs-orbit3 5.5s linear infinite', marginTop: -1.5, marginLeft: -1.5 }} />
             </div>
@@ -405,10 +532,10 @@ export function ConnectionSplash() {
 
         {/* Title */}
         <div style={{ textAlign: 'center', marginBottom: 28 }}>
-          <h1 style={{ ...mono, fontSize: 'clamp(22px,4vw,30px)', letterSpacing: '0.45em', color: 'rgba(0,200,255,0.9)', margin: '0 0 6px', animation: 'cs-flicker 5s ease-in-out infinite' }}>
+          <h1 style={{ ...mono, fontSize: 'clamp(22px,4vw,30px)', letterSpacing: '0.45em', color: 'rgba(232,66,10,0.9)', margin: '0 0 6px', animation: 'cs-flicker 5s ease-in-out infinite' }}>
             PHOBOS
           </h1>
-          <div style={{ height: 1, background: 'linear-gradient(to right, transparent, rgba(0,200,255,0.25), transparent)', marginBottom: 10 }} />
+          <div style={{ height: 1, background: 'linear-gradient(to right, transparent, rgba(232,66,10,0.25), transparent)', marginBottom: 10 }} />
           <p style={{ ...mono, fontSize: 10, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.25em', margin: 0 }}>
             {coreReachable
               ? 'TRI-BRAINED AI SYSTEM — INITIALIZING'
@@ -418,23 +545,25 @@ export function ConnectionSplash() {
 
         {/* Boot progress panel — shown when core is reachable but not yet ready */}
         {coreReachable && bootState && bootState.phase !== 'ready' && (
-          bootState.phase === 'services_wait'
-            ? renderServicesWait()
-            : renderBootProgress()
+          bootState.phase === 'awaiting_setup'
+            ? renderSetupForm()
+            : bootState.phase === 'services_wait'
+              ? renderServicesWait()
+              : renderBootProgress()
         )}
 
         {/* Install guide — shown when core is not reachable at all */}
         {!coreReachable && (
           <>
-            <div style={{ width: '100%', background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(0,200,255,0.12)', padding: '24px 26px', marginBottom: 24, boxSizing: 'border-box' }}>
-              <p style={{ ...mono, fontSize: 10, color: 'rgba(0,200,255,0.45)', letterSpacing: '0.2em', marginBottom: 14 }}>
+            <div style={{ width: '100%', background: 'rgba(232,66,10,0.03)', border: '1px solid rgba(232,66,10,0.15)', padding: '24px 26px', marginBottom: 24, boxSizing: 'border-box' }}>
+              <p style={{ ...mono, fontSize: 10, color: 'rgba(232,66,10,0.6)', letterSpacing: '0.2em', marginBottom: 14 }}>
                 // QUICK SETUP
               </p>
               <p style={{ fontFamily: "'Inter', sans-serif", fontSize: 15, color: 'rgba(255,255,255,0.75)', lineHeight: 1.7, marginBottom: 10 }}>
-                <strong style={{ color: '#fff' }}>PHOBOS runs AI on your computer</strong>, not the cloud. You need <strong style={{ color: 'rgba(0,200,255,0.85)' }}>phobos-core</strong> running locally first.
+                <strong style={{ color: '#fff' }}>PHOBOS runs AI on your computer</strong>, not the cloud. You need <strong style={{ color: 'rgba(232,66,10,0.85)' }}>phobos-core</strong> running locally first.
               </p>
               <p style={{ fontFamily: "'Inter', sans-serif", fontSize: 13, color: 'rgba(255,255,255,0.45)', lineHeight: 1.75, margin: 0 }}>
-                Download the launcher, and run <code style={{ color: 'rgba(0,200,255,0.7)', background: 'rgba(0,200,255,0.07)', padding: '1px 5px' }}>phobos-core</code>. Then come back here — PHOBOS connects automatically.
+                Download the launcher, and run <code style={{ color: 'rgba(232,66,10,0.7)', background: 'rgba(232,66,10,0.07)', padding: '1px 5px' }}>phobos-core</code>. Then come back here — PHOBOS connects automatically.
               </p>
             </div>
 
@@ -445,7 +574,7 @@ export function ConnectionSplash() {
                 { n: '3', text: 'Return here — connection is automatic' },
               ].map(step => (
                 <div key={step.n} style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                  <div style={{ ...mono, fontSize: 10, color: 'rgba(0,200,255,0.7)', border: '1px solid rgba(0,200,255,0.2)', width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, borderRadius: 2 }}>
+                  <div style={{ ...mono, fontSize: 10, color: 'rgba(232,66,10,0.7)', border: '1px solid rgba(232,66,10,0.2)', width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, borderRadius: 2 }}>
                     {step.n}
                   </div>
                   <p style={{ fontFamily: "'Inter', sans-serif", fontSize: 13, color: 'rgba(255,255,255,0.5)', lineHeight: 1.5, margin: 0 }}>
@@ -460,29 +589,29 @@ export function ConnectionSplash() {
                 onClick={handlePrimaryClick}
                 style={{
                   display: 'inline-flex', alignItems: 'center', gap: 10,
-                  background: 'linear-gradient(135deg, rgba(0,200,255,0.18) 0%, rgba(0,140,255,0.12) 100%)',
-                  border: '1px solid rgba(0,200,255,0.5)',
-                  color: 'rgba(0,220,255,0.95)',
+                  background: 'linear-gradient(135deg, rgba(232,66,10,0.18) 0%, rgba(200,50,8,0.12) 100%)',
+                  border: '1px solid rgba(232,66,10,0.5)',
+                  color: 'rgba(240,80,20,0.95)',
                   ...mono, fontSize: 12, letterSpacing: '0.18em',
                   padding: '13px 32px', cursor: 'pointer',
                   marginBottom: 10, width: '100%', justifyContent: 'center',
                   transition: 'all 180ms',
                   animation: 'cs-glow 3s ease-in-out infinite',
                 }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(0,200,255,0.2)'; e.currentTarget.style.borderColor = 'rgba(0,220,255,0.8)'; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'linear-gradient(135deg, rgba(0,200,255,0.18) 0%, rgba(0,140,255,0.12) 100%)'; e.currentTarget.style.borderColor = 'rgba(0,200,255,0.5)'; }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(232,66,10,0.2)'; e.currentTarget.style.borderColor = 'rgba(240,80,20,0.8)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'linear-gradient(135deg, rgba(232,66,10,0.18) 0%, rgba(200,50,8,0.12) 100%)'; e.currentTarget.style.borderColor = 'rgba(232,66,10,0.5)'; }}
               >
                 <Download size={14} />
                 {PLATFORM_CONFIG[platform].label}
               </button>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'center', background: 'rgba(0,200,255,0.04)', border: '1px solid rgba(0,200,255,0.2)', padding: '16px 24px', marginBottom: 10, width: '100%', boxSizing: 'border-box' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'center', background: 'rgba(232,66,10,0.04)', border: '1px solid rgba(232,66,10,0.2)', padding: '16px 24px', marginBottom: 10, width: '100%', boxSizing: 'border-box' }}>
                 <p style={{ ...mono, fontSize: 11, color: 'rgba(255,255,255,0.65)', letterSpacing: '0.1em', margin: 0 }}>
                   Download phobos-core for {platform.charAt(0).toUpperCase() + platform.slice(1)}?
                 </p>
                 <div style={{ display: 'flex', gap: 10 }}>
-                  <button onClick={handleConfirm} style={{ ...mono, fontSize: 11, letterSpacing: '0.12em', padding: '8px 20px', background: 'rgba(0,200,255,0.15)', border: '1px solid rgba(0,200,255,0.4)', color: 'rgba(0,220,255,0.9)', cursor: 'pointer', transition: 'all 150ms' }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(0,200,255,0.25)'; }} onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(0,200,255,0.15)'; }}>
+                  <button onClick={handleConfirm} style={{ ...mono, fontSize: 11, letterSpacing: '0.12em', padding: '8px 20px', background: 'rgba(232,66,10,0.15)', border: '1px solid rgba(232,66,10,0.4)', color: 'rgba(240,80,20,0.9)', cursor: 'pointer', transition: 'all 150ms' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(232,66,10,0.25)'; }} onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(232,66,10,0.15)'; }}>
                     CONFIRM
                   </button>
                   <button onClick={handleCancel} style={{ ...mono, fontSize: 11, letterSpacing: '0.12em', padding: '8px 20px', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)', color: 'rgba(255,255,255,0.5)', cursor: 'pointer', transition: 'all 150ms' }}
@@ -503,11 +632,11 @@ export function ConnectionSplash() {
             )}
 
             {showOtherVersions && !showConfirm && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(0,200,255,0.12)', padding: 6, marginBottom: 14, width: '100%', boxSizing: 'border-box' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, background: 'rgba(8,8,8,0.8)', border: '1px solid rgba(232,66,10,0.15)', padding: 6, marginBottom: 14, width: '100%', boxSizing: 'border-box' }}>
                 {(Object.keys(PLATFORM_CONFIG) as Platform[]).map((plat) => (
                   <button key={plat} onClick={() => handleOtherPlatform(plat)}
                     style={{ ...mono, fontSize: 10, color: 'rgba(255,255,255,0.45)', letterSpacing: '0.1em', background: 'transparent', border: 'none', cursor: 'pointer', padding: '6px 8px', textAlign: 'left', transition: 'all 150ms' }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(0,200,255,0.08)'; e.currentTarget.style.color = 'rgba(0,200,255,0.75)'; }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(232,66,10,0.08)'; e.currentTarget.style.color = 'rgba(240,80,20,0.75)'; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.45)'; }}>
                     {PLATFORM_CONFIG[plat].label}
                   </button>
@@ -521,11 +650,11 @@ export function ConnectionSplash() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
           <span style={{
             width: 6, height: 6, borderRadius: '50%',
-            background: coreReachable ? 'rgba(0,255,157,0.6)' : 'rgba(0,180,255,0.5)',
+            background: coreReachable ? 'rgba(0,255,65,0.6)' : 'rgba(232,66,10,0.5)',
             display: 'inline-block',
             animation: 'cs-flicker 2s ease-in-out infinite',
           }} />
-          <span style={{ ...mono, fontSize: 9, color: coreReachable ? 'rgba(0,255,157,0.45)' : 'rgba(0,180,255,0.35)', letterSpacing: '0.15em' }}>
+          <span style={{ ...mono, fontSize: 9, color: coreReachable ? 'rgba(0,255,65,0.45)' : 'rgba(232,66,10,0.40)', letterSpacing: '0.15em' }}>
             {coreReachable
               ? `${PHASE_LABEL[bootState?.phase ?? 'db_init']}${dots}`
               : `Connecting to localhost:3001${dots}`}

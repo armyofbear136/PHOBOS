@@ -265,7 +265,7 @@ export default function JellyfinBrowser() {
   const border    = 'var(--color-border,    #2d2d4e)';
   const textMain  = '#e2e8f0';
   const textMuted = '#94a3b8';
-  const accent    = '#4ade80';   // phobos green
+  const accent    = '#00d4aa';   // phobos green
 
   // ── Status dot ────────────────────────────────────────────────────────────
   const dotColor = jellyfinRunning ? accent : '#f87171';

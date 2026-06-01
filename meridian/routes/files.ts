@@ -30,7 +30,7 @@ export async function fileRoutes(
     const type   = q.type as import('../db/db.js').FileType | undefined;
 
     const { files, total } = await opts.db.listFiles({
-      userId:    opts.config.userId,
+      userId:    (req as FastifyRequest & { meridianUser: string }).meridianUser,
       libraryId: q.libraryId,
       limit, offset,
       orderBy:   order,

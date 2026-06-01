@@ -87,6 +87,17 @@ async function startSybilForTest(): Promise<boolean> {
   console.log('  Starting SYBIL (nomic-embed-text-v1.5)…');
   console.log(`  Searching in: ${path.join(process.cwd(), 'dist', 'phobos', 'models')}`);
   console.log('  This may take 10–30 seconds on first load.');
+
+  // Point resolveLlamaServerBin() at dist/ where the binary lives in the dev tree.
+  // PHOBOS_BIN_DIR is the built-in hook in PhobosLocalManager — no code change needed there.
+  if (!process.env.PHOBOS_BIN_DIR) {
+    const distDir = path.join(process.cwd(), 'dist');
+    if (fs.existsSync(path.join(distDir, `llama-server-${process.platform}-${process.arch}.exe`)) ||
+        fs.existsSync(path.join(distDir, `llama-server-${process.platform}-${process.arch}`))) {
+      process.env.PHOBOS_BIN_DIR = distDir;
+    }
+  }
+
   try {
     const { startSybil, getServerStatus } = await import('./phobos/LlamaServerManager.js');
     await startSybil();
@@ -144,7 +155,7 @@ async function main() {
   console.log('\n╔════════════════════════════════════════════════════════╗');
   console.log('║           PHOBOS ARCHIVE — END-TO-END TEST             ║');
   console.log('╚════════════════════════════════════════════════════════╝');
-  console.log(`\n  Archive dir: ${path.join(process.env.HOME ?? process.env.USERPROFILE ?? '~', '.phobos', 'archive')}`);
+  console.log(``);
 
   const TEST_DOMAIN = `custom-test-${Date.now()}` as const;
   const INPUT_DIR   = path.join(__dirname, 'test-outputs', 'extractor');
@@ -168,18 +179,28 @@ async function main() {
 
   // ── 2. Domain creation ────────────────────────────────────────────────────
   section('2. Domain Creation');
-  const { ArchiveStore, ARCHIVE_DIR } = await import('./db/ArchiveStore.js');
-  console.log(`  ARCHIVE_DIR: ${ARCHIVE_DIR}`);
+  const { ArchiveStore } = await import('./db/ArchiveStore.js');
+  const { userDir } = await import('./db/DatabaseManager.js');
+  const TEST_USERNAME = 'owner';
+  const archiveTestDir = userDir(TEST_USERNAME);
+  console.log(`  Archive dir: ${archiveTestDir}/archive`);
 
   try {
-    await ArchiveStore.ensureDomain(TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain);
+    await ArchiveStore.ensureDomain(TEST_USERNAME, TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain);
     pass('ensureDomain()', `created ${TEST_DOMAIN}`);
   } catch (err) {
-    fail('ensureDomain()', (err as Error).message);
+    const msg = (err as Error).message;
+    // vss extension missing when running via tsx outside the compiled bundle —
+    // the domain file is still created and readable; treat as a warning.
+    if (msg.includes('vss') || msg.includes('Extension')) {
+      warn(`ensureDomain() — vss extension unavailable outside compiled bundle (domain still created)`);
+    } else {
+      fail('ensureDomain()', msg);
+    }
   }
 
   try {
-    const domains = await ArchiveStore.listDomains();
+    const domains = await ArchiveStore.listDomains(TEST_USERNAME);
     const found   = domains.find(d => d.domain === TEST_DOMAIN);
     found
       ? pass('listDomains()', `domain visible, ${found.chunkCount} chunks`)
@@ -191,7 +212,7 @@ async function main() {
   // ── 3. hasAnyContent() ────────────────────────────────────────────────────
   section('3. hasAnyContent()');
   try {
-    ArchiveStore.hasAnyContent()
+    ArchiveStore.hasAnyContent([TEST_USERNAME])
       ? pass('hasAnyContent() → true after domain creation')
       : warn('hasAnyContent() → false (unexpected)');
   } catch (err) {
@@ -214,7 +235,7 @@ async function main() {
   for (const t of classifierCases) {
     try {
       const decision = await classifier.classify({
-        userMessage: t.msg, hasActiveProject: true,
+        username: TEST_USERNAME, userMessage: t.msg, hasActiveProject: true,
         pinnedDomains: [], isCopilot: false,
       });
       const short = t.msg.slice(0, 48).padEnd(48);
@@ -246,7 +267,7 @@ async function main() {
   if (!sybilOk) {
     warn('Skipping ingestion — SYBIL not running');
     summarize();
-    await cleanup(TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain, ArchiveStore);
+    await cleanup(TEST_USERNAME, TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain, ArchiveStore);
     return;
   }
 
@@ -259,7 +280,7 @@ async function main() {
     try {
       let chunkCount = 0;
       const sourceId = await ingestSource(
-        TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain,
+        TEST_USERNAME, TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain,
         filePath,
         'file',
         (evt) => {
@@ -286,14 +307,14 @@ async function main() {
   if (totalChunks === 0) {
     fail('No chunks written — cannot test retrieval');
     summarize();
-    await cleanup(TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain, ArchiveStore);
+    await cleanup(TEST_USERNAME, TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain, ArchiveStore);
     return;
   }
 
   // ── 7. Source listing ─────────────────────────────────────────────────────
   section('7. Source Listing');
   try {
-    const sources = await ArchiveStore.listSources(TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain);
+    const sources = await ArchiveStore.listSources(TEST_USERNAME, TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain);
     sources.length === testFiles.length
       ? pass('listSources()', `${sources.length} sources`)
       : warn('listSources()', `expected ${testFiles.length}, got ${sources.length}`);
@@ -321,7 +342,7 @@ async function main() {
       const vec     = await embed(query);
       if (!vec) { warn(`embed("${query}")`, 'null vector'); continue; }
       const results = await ArchiveStore.semanticSearch(
-        TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain,
+        TEST_USERNAME, TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain,
         vec, 5, 0.25,   // low floor — synthetic doc may not be super similar
       );
       if (results.length > 0) {
@@ -347,7 +368,7 @@ async function main() {
   for (const query of QUERIES.slice(0, 2)) {
     try {
       const results = await searchRaw({
-        query, domains: [TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain],
+        username: TEST_USERNAME, query, domains: [TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain],
         k: 5, minScore: 0.25,
       });
       results.length > 0
@@ -365,7 +386,7 @@ async function main() {
   try {
     const xml = await archiveSearch({
       query:   'PHOBOS archive knowledge base',
-      domains: [TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain],
+      username: TEST_USERNAME, domains: [TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain],
       k: 3, minScore: 0.25,
     });
     if (xml.includes('<archive_context>') && xml.includes('</archive_context>')) {
@@ -386,13 +407,13 @@ async function main() {
   // ── 11. Source deletion ───────────────────────────────────────────────────
   section('11. Source Deletion');
   try {
-    const sources = await ArchiveStore.listSources(TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain);
+    const sources = await ArchiveStore.listSources(TEST_USERNAME, TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain);
     const first   = sources[0];
     if (first) {
       await ArchiveStore.deleteSourceById(
-        TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain, first.id,
+        TEST_USERNAME, TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain, first.id,
       );
-      const after = await ArchiveStore.listSources(TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain);
+      const after = await ArchiveStore.listSources(TEST_USERNAME, TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain);
       after.length === sources.length - 1
         ? pass('deleteSourceById()', `removed "${first.sourceTitle ?? first.sourcePath}"`)
         : fail('deleteSourceById()', `count: ${sources.length} → ${after.length}`);
@@ -406,7 +427,7 @@ async function main() {
   // ── Done ──────────────────────────────────────────────────────────────────
   summarize();
   await stopSybilAfterTest();
-  await cleanup(TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain, ArchiveStore);
+  await cleanup(TEST_USERNAME, TEST_DOMAIN as import('./db/ArchiveStore.js').ArchiveDomain, ArchiveStore);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -420,22 +441,23 @@ function summarize() {
 }
 
 async function cleanup(
+  username: string,
   domain: import('./db/ArchiveStore.js').ArchiveDomain,
-  store:  typeof import('./db/ArchiveStore.js').ArchiveStore,
+  store:   typeof import('./db/ArchiveStore.js').ArchiveStore,
 ) {
   if (KEEP) {
     console.log(`  --keep: domain retained: ${domain}\n`);
     return;
   }
   try {
-    await store.deleteDomain(domain);
+    await store.deleteDomain(username, domain);
     console.log('  Test domain cleaned up.\n');
   } catch (err) {
     // Windows sometimes needs an extra moment after SYBIL stops for DuckDB to 
     // release all file handles. Retry once with a longer delay.
     await new Promise(r => setTimeout(r, 1_000));
     try {
-      await store.deleteDomain(domain);
+      await store.deleteDomain(username, domain);
       console.log('  Test domain cleaned up (after retry).\n');
     } catch (err2) {
       console.warn(`  Cleanup failed: ${(err2 as Error).message}`);

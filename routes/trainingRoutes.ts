@@ -393,7 +393,7 @@ export async function registerTrainingRoutes(fastify: FastifyInstance): Promise<
         return reply.status(409).send({ error: `Another LM session is active: ${activeLmSessionId()}` });
       }
 
-      const result = startLmTraining(sessionId, cartridgeStore);
+      const result = startLmTraining(sessionId, cartridgeStore, req.phobosUser);
       if (!result.ok) {
         return reply.status(409).send({ error: result.error });
       }

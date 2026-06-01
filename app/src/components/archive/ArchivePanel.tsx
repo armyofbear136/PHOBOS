@@ -122,19 +122,20 @@ function domainLabel(domain: string): string {
 const mono: React.CSSProperties = { fontFamily: '"JetBrains Mono", "Fira Code", monospace' };
 
 const colors = {
-  bg:        '#07090b',
-  surface:   '#0d0f13',
-  surfaceHi: '#111418',
-  border:    '#1c2028',
+  bg:        '#080808',
+  surface:   '#0f0f0a',
+  surfaceHi: '#161610',
+  border:    'rgba(232,66,10,0.2)',
   borderHi:  'hsl(var(--secondary))',
   text:      '#c8d4e0',
   muted:     'hsl(var(--muted-foreground))',
-  green:     '#39ff6e',
-  greenDim:  'rgba(57,255,110,0.15)',
-  greenGlow: 'rgba(57,255,110,0.06)',
-  amber:     '#f59e0b',
-  red:       '#ef4444',
-  blue:      '#60a5fa',
+  orange:    '#e8420a',
+  green:     '#00ff41',
+  orangeDim: 'rgba(232,66,10,0.12)',
+  orangeGlow:'rgba(232,66,10,0.06)',
+  amber:     '#c8a000',
+  red:       '#ff3c3c',
+  teal:      '#00d4aa',
 };
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -159,7 +160,7 @@ function GreenBtn({ onClick, disabled, children, style }: {
         ...mono, fontSize: 10, fontWeight: 700, letterSpacing: '0.12em',
         padding: '6px 14px', borderRadius: 3, cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.4 : 1,
-        background: colors.green, color: '#07090b', border: 'none',
+        background: colors.orange, color: '#07090b', border: 'none',
         ...style,
       }}
     >
@@ -202,10 +203,10 @@ function DomainTab({ domain, active, chunkCount, onClick }: {
       style={{
         ...mono, fontSize: 9, fontWeight: 700, letterSpacing: '0.14em',
         padding: '6px 12px', whiteSpace: 'nowrap', cursor: 'pointer',
-        background: active ? colors.greenDim : 'transparent',
-        color: active ? colors.green : colors.muted,
+        background: active ? colors.orangeDim : 'transparent',
+        color: active ? colors.orange : colors.muted,
         border: 'none',
-        borderBottom: active ? `2px solid ${colors.green}` : '2px solid transparent',
+        borderBottom: active ? `2px solid ${colors.orange}` : '2px solid transparent',
         transition: 'all 0.15s',
       }}
       onMouseEnter={e => !active && (e.currentTarget.style.color = colors.text)}
@@ -290,8 +291,8 @@ function SearchResultRow({ result }: { result: SearchResult }) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
             <span style={{ ...mono, fontSize: 9, fontWeight: 700, letterSpacing: '0.12em',
-              color: colors.green, background: colors.greenDim,
-              border: `1px solid rgba(57,255,110,0.2)`, borderRadius: 2,
+              color: colors.orange, background: colors.orangeDim,
+              border: `1px solid rgba(232,66,10,0.2)`, borderRadius: 2,
               padding: '1px 6px' }}>
               {result.domain.toUpperCase()}
             </span>
@@ -520,10 +521,10 @@ export function ArchivePanel({ onClose }: { onClose: () => void }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{
               width: 28, height: 28, borderRadius: 4,
-              background: colors.greenDim, border: `1px solid rgba(57,255,110,0.25)`,
+              background: colors.orangeDim, border: `1px solid rgba(232,66,10,0.25)`,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
             }}>
-              <Database size={14} color={colors.green} />
+              <Database size={14} color={colors.orange} />
             </div>
             <div>
               <div style={{ ...mono, fontSize: 12, fontWeight: 700, color: colors.text }}>
@@ -540,8 +541,8 @@ export function ArchivePanel({ onClose }: { onClose: () => void }) {
               <button key={v} onClick={() => setView(v)} style={{
                 ...mono, fontSize: 9, fontWeight: 700, letterSpacing: '0.14em',
                 background: 'none', border: 'none', cursor: 'pointer',
-                color: view === v ? colors.green : colors.muted,
-                borderBottom: view === v ? `1px solid ${colors.green}` : '1px solid transparent',
+                color: view === v ? colors.orange : colors.muted,
+                borderBottom: view === v ? `1px solid ${colors.orange}` : '1px solid transparent',
                 paddingBottom: 2,
               }}>
                 {v === 'sources' ? 'LIBRARY' : v === 'ingest' ? 'INGEST' : 'SEARCH'}
@@ -595,7 +596,7 @@ export function ArchivePanel({ onClose }: { onClose: () => void }) {
                 <button onClick={createDomain} disabled={addingDomain || !newDomainInput.trim()}
                   style={{ background: 'none', border: 'none', cursor: 'pointer',
                     color: colors.muted, display: 'flex', padding: 2 }}
-                  onMouseEnter={e => (e.currentTarget.style.color = colors.green)}
+                  onMouseEnter={e => (e.currentTarget.style.color = colors.orange)}
                   onMouseLeave={e => (e.currentTarget.style.color = colors.muted)}
                 >
                   <Plus size={13} />
@@ -669,7 +670,7 @@ export function ArchivePanel({ onClose }: { onClose: () => void }) {
                     <button key={t} onClick={() => setIngestTab(t)} style={{
                       ...mono, fontSize: 9, fontWeight: 700, letterSpacing: '0.12em',
                       padding: '5px 14px', cursor: 'pointer', border: 'none',
-                      background: ingestTab === t ? colors.green : colors.surfaceHi,
+                      background: ingestTab === t ? colors.orange : colors.surfaceHi,
                       color: ingestTab === t ? '#07090b' : colors.muted,
                       borderRadius: t === 'file' ? '3px 0 0 3px' : t === 'paste' ? '0 3px 3px 0' : '0',
                     }}>
@@ -686,13 +687,13 @@ export function ArchivePanel({ onClose }: { onClose: () => void }) {
                       onDragLeave={() => setDragging(false)}
                       onDrop={handleFileDrop}
                       style={{
-                        border: `2px dashed ${dragging ? colors.green : colors.border}`,
+                        border: `2px dashed ${dragging ? colors.orange : colors.border}`,
                         borderRadius: 4, padding: '28px 20px', textAlign: 'center',
                         transition: 'border-color 0.15s',
-                        background: dragging ? colors.greenGlow : 'transparent',
+                        background: dragging ? colors.orangeGlow : 'transparent',
                       }}
                     >
-                      <Upload size={24} color={dragging ? colors.green : colors.muted}
+                      <Upload size={24} color={dragging ? colors.orange : colors.muted}
                         style={{ margin: '0 auto 10px' }} />
                       <div style={{ ...mono, fontSize: 11, color: colors.text, marginBottom: 8 }}>
                         Drag & drop a file here
@@ -706,8 +707,8 @@ export function ArchivePanel({ onClose }: { onClose: () => void }) {
                         style={{
                           ...mono, fontSize: 10, fontWeight: 700, letterSpacing: '0.12em',
                           padding: '6px 16px', borderRadius: 3, cursor: pickingFile ? 'wait' : 'pointer',
-                          background: 'transparent', color: colors.green,
-                          border: `1px solid rgba(57,255,110,0.4)`,
+                          background: 'transparent', color: colors.orange,
+                          border: `1px solid rgba(232,66,10,0.35)`,
                         }}
                       >
                         {pickingFile ? 'Opening…' : 'BROWSE FILES'}
@@ -748,7 +749,7 @@ export function ArchivePanel({ onClose }: { onClose: () => void }) {
                       borderRadius: 3, color: colors.text, outline: 'none',
                       boxSizing: 'border-box',
                     }}
-                    onFocus={e => (e.currentTarget.style.borderColor = colors.green)}
+                    onFocus={e => (e.currentTarget.style.borderColor = colors.orange)}
                     onBlur={e => (e.currentTarget.style.borderColor = colors.border)}
                   />
                 )}
@@ -766,7 +767,7 @@ export function ArchivePanel({ onClose }: { onClose: () => void }) {
                       borderRadius: 3, color: colors.text, outline: 'none',
                       resize: 'vertical', boxSizing: 'border-box', lineHeight: 1.6,
                     }}
-                    onFocus={e => (e.currentTarget.style.borderColor = colors.green)}
+                    onFocus={e => (e.currentTarget.style.borderColor = colors.orange)}
                     onBlur={e => (e.currentTarget.style.borderColor = colors.border)}
                   />
                 )}
@@ -783,7 +784,7 @@ export function ArchivePanel({ onClose }: { onClose: () => void }) {
                       <Loader2 size={13} color={colors.amber}
                         style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }} />
                     )}
-                    {progress.status === 'done' && <CheckCircle2 size={13} color={colors.green} />}
+                    {progress.status === 'done' && <CheckCircle2 size={13} color={colors.orange} />}
                     {progress.status === 'error' && <AlertTriangle size={13} color={colors.red} />}
                     <span style={{ ...mono, fontSize: 10, color: colors.text }}>
                       {progress.status === 'running'
@@ -840,7 +841,7 @@ export function ArchivePanel({ onClose }: { onClose: () => void }) {
                       borderRadius: 3, color: colors.text, outline: 'none',
                       boxSizing: 'border-box',
                     }}
-                    onFocus={e => (e.currentTarget.style.borderColor = colors.green)}
+                    onFocus={e => (e.currentTarget.style.borderColor = colors.orange)}
                     onBlur={e => (e.currentTarget.style.borderColor = colors.border)}
                   />
                 </div>
@@ -863,9 +864,9 @@ export function ArchivePanel({ onClose }: { onClose: () => void }) {
                         style={{
                           ...mono, fontSize: 9, fontWeight: 700, letterSpacing: '0.1em',
                           padding: '3px 10px', borderRadius: 3, cursor: 'pointer',
-                          background: active ? colors.greenDim : 'transparent',
-                          color: active ? colors.green : colors.muted,
-                          border: `1px solid ${active ? 'rgba(57,255,110,0.3)' : colors.border}`,
+                          background: active ? colors.orangeDim : 'transparent',
+                          color: active ? colors.orange : colors.muted,
+                          border: `1px solid ${active ? 'rgba(232,66,10,0.25)' : colors.border}`,
                         }}
                       >
                         {domainLabel(d.domain)}
@@ -908,8 +909,8 @@ export function ArchivePanel({ onClose }: { onClose: () => void }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <div style={{
                 width: 6, height: 6, borderRadius: '50%',
-                background: status?.sybilOnline ? colors.green : colors.red,
-                boxShadow: status?.sybilOnline ? `0 0 6px ${colors.green}` : 'none',
+                background: status?.sybilOnline ? colors.orange : colors.red,
+                boxShadow: status?.sybilOnline ? `0 0 6px ${colors.orange}` : 'none',
               }} />
               <span style={{ ...mono, fontSize: 9, color: colors.muted }}>
                 SYBIL {status?.sybilOnline ? 'ONLINE' : 'OFFLINE'}

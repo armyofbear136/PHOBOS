@@ -1275,6 +1275,29 @@ function buildDeps(arch: PhobosArch): Dep[] {
   //   gh release upload PHOBOS-DEPS whisper-cli-win32-x64.zip --repo armyofbear136/PHOBOS-BUILDS
   //   gh release upload PHOBOS-DEPS ace-step-win32-x64.zip --repo armyofbear136/PHOBOS-BUILDS
 
+  const supertonicDep: Dep | null = (() => {
+    if (!isWin) return null; // ONNX models are platform-neutral but Win-only for now
+    const supertonicDir = path.join(BIN_DIR, 'supertonic');
+    // vector_estimator.onnx is the largest file (257 MB) — presence + size confirms full extract
+    return {
+      id:        'supertonic-3',
+      label:     'Supertonic 3 TTS (ONNX)',
+      file:      'supertonic-3-onnx.zip',
+      minBytes:  350_000_000,
+      isPresent: () => {
+        try { return fs.statSync(path.join(supertonicDir, 'vector_estimator.onnx')).size >= 250_000_000; }
+        catch { return false; }
+      },
+      install: async (arc) => {
+        if (fs.existsSync(supertonicDir)) fs.rmSync(supertonicDir, { recursive: true, force: true });
+        fs.mkdirSync(supertonicDir, { recursive: true });
+        await extractZip(arc, supertonicDir);
+        if (!fs.existsSync(path.join(supertonicDir, 'vector_estimator.onnx')))
+          throw new Error('vector_estimator.onnx not found after extracting supertonic-3-onnx.zip');
+      },
+    };
+  })();
+
   const kokoro82mDep: Dep | null = (() => {
     if (!isWin) return null;  // ONNX model is platform-neutral but binaries are Win-only for now
     const kokoroDir = path.join(BIN_DIR, 'kokoro');
@@ -1376,6 +1399,7 @@ function buildDeps(arch: PhobosArch): Dep[] {
     sculptglDep,
     godotDep,
     // Audio generative pipeline binaries
+    supertonicDep,
     kokoro82mDep,
     whisperCliBinDep,
     aceStepBinDep,

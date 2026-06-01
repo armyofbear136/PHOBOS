@@ -87,7 +87,7 @@ function acceptForMode(mode: LmDataMode): string {
 
 function Label({ children }: { children: React.ReactNode }) {
   return (
-    <span className="text-[11px] font-terminal uppercase tracking-[0.2em] text-muted-foreground/80">
+    <span className="text-[11px] font-terminal uppercase tracking-[0.2em] text-phob-white/80">
       {children}
     </span>
   );
@@ -119,7 +119,7 @@ function TextInput({
       value={value}
       onChange={e => onChange(e.target.value)}
       placeholder={placeholder}
-      className={`w-full bg-black/40 border border-border/40 rounded-sm px-2.5 py-1.5 text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-phobos-green/30 transition-colors ${mono ? 'font-mono' : 'font-terminal'}`}
+      className={`w-full bg-phob-white/5 border border-phob-amber/20  px-2.5 py-1.5 text-[13px] text-foreground placeholder:text-phob-steel/45 focus:outline-none focus:border-phob-amber/50 transition-colors ${mono ? 'font-mono' : 'font-terminal'}`}
     />
   );
 }
@@ -141,7 +141,7 @@ function TextArea({
       onChange={e => onChange(e.target.value)}
       placeholder={placeholder}
       rows={rows}
-      className="w-full bg-black/40 border border-border/40 rounded-sm px-2.5 py-1.5 text-[13px] font-terminal text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-phobos-green/30 transition-colors resize-none leading-relaxed"
+      className="w-full bg-phob-white/5 border border-phob-amber/20  px-2.5 py-1.5 text-[13px] font-terminal text-foreground placeholder:text-phob-steel/45 focus:outline-none focus:border-phob-amber/50 transition-colors resize-none leading-relaxed"
     />
   );
 }
@@ -167,7 +167,7 @@ function NumberInput({
       max={max}
       step={step}
       onChange={e => onChange(Number(e.target.value))}
-      className="w-full bg-black/40 border border-border/40 rounded-sm px-2.5 py-1.5 text-[13px] font-mono text-foreground focus:outline-none focus:border-phobos-green/30 transition-colors"
+      className="w-full bg-phob-white/5 border border-phob-amber/20  px-2.5 py-1.5 text-[13px] font-mono text-foreground focus:outline-none focus:border-phob-amber/50 transition-colors"
     />
   );
 }
@@ -209,7 +209,7 @@ function StepBase({ fields, onChange }: { fields: BaseFields; onChange: (f: Part
         <select
           value={fields.baseModelId}
           onChange={e => onChange({ baseModelId: e.target.value })}
-          className="w-full bg-black/40 border border-border/40 rounded-sm px-2.5 py-1.5 text-[13px] font-mono text-foreground focus:outline-none focus:border-phobos-green/30 transition-colors"
+          className="w-full bg-phob-white/5 border border-phob-amber/20  px-2.5 py-1.5 text-[13px] font-mono text-foreground focus:outline-none focus:border-phob-amber/50 transition-colors"
         >
           <option value="">— Select base model —</option>
           {TRAINABLE_MODELS.map(m => (
@@ -218,24 +218,24 @@ function StepBase({ fields, onChange }: { fields: BaseFields; onChange: (f: Part
             </option>
           ))}
         </select>
-        <p className="text-[10px] font-mono text-muted-foreground/60 mt-1">
+        <p className="text-[10px] font-mono text-phob-steel/55 mt-1">
           Training requires the model to be downloaded. The HF safetensors base will be cached separately.
         </p>
       </FieldGroup>
 
       <div className="grid grid-cols-2 gap-4">
         <FieldGroup label="Target Persona">
-          <div className="flex border border-border/40 rounded-sm overflow-hidden">
+          <div className="flex border border-phob-amber/20  overflow-hidden">
             {personas.map((p, i) => (
               <button
                 key={p}
                 onClick={() => onChange({ targetPersona: p })}
-                className={`flex-1 py-1.5 text-[12px] font-terminal uppercase tracking-[0.15em] transition-colors ${i < personas.length - 1 ? 'border-r border-border/40' : ''} ${
+                className={`flex-1 py-1.5 text-[12px] font-terminal uppercase tracking-[0.15em] transition-colors ${i < personas.length - 1 ? 'border-r border-phob-amber/20' : ''} ${
                   fields.targetPersona === p
-                    ? p === 'sayon' ? 'bg-phobos-amber/10 text-phobos-amber'
-                    : p === 'seren' ? 'bg-phobos-blue/10 text-phobos-blue'
-                    : 'bg-phobos-green/10 text-phobos-green'
-                    : 'text-muted-foreground/40 hover:text-muted-foreground/70'
+                    ? p === 'sayon' ? 'bg-phob-amber/10 text-phob-amber'
+                    : p === 'seren' ? 'bg-phob-teal/10 text-phob-teal'
+                    : 'bg-phob-amber/10 text-phob-amber'
+                    : 'text-phob-steel/40 hover:text-phob-white/70'
                 }`}
               >
                 {PERSONA_LABELS[p]}
@@ -248,7 +248,7 @@ function StepBase({ fields, onChange }: { fields: BaseFields; onChange: (f: Part
           <select
             value={fields.category}
             onChange={e => onChange({ category: e.target.value as CartridgeCategory })}
-            className="w-full bg-black/40 border border-border/40 rounded-sm px-2.5 py-1.5 text-[13px] font-terminal text-foreground focus:outline-none focus:border-phobos-green/30 transition-colors"
+            className="w-full bg-phob-white/5 border border-phob-amber/20  px-2.5 py-1.5 text-[13px] font-terminal text-foreground focus:outline-none focus:border-phob-amber/50 transition-colors"
           >
             {categories.map(c => <option key={c} value={c}>{CATEGORY_LABELS[c]}</option>)}
           </select>
@@ -412,18 +412,18 @@ function StepData({
               <button
                 key={mode}
                 onClick={() => onChange({ dataMode: mode })}
-                className={`p-3 rounded-sm border text-left space-y-1.5 transition-all ${
+                className={`p-3  border text-left space-y-1.5 transition-all ${
                   active
-                    ? 'border-phobos-green/40 bg-phobos-green/5'
-                    : 'border-border/30 bg-black/20 hover:border-border/60'
+                    ? 'border-phob-amber/40 bg-phob-amber/5'
+                    : 'border-phob-amber/15 bg-phob-white/3 hover:border-phob-amber/35'
                 }`}
               >
-                <Icon className={`w-4 h-4 ${active ? 'text-phobos-green/70' : 'text-muted-foreground/30'}`} />
-                <p className={`text-[10px] font-terminal uppercase tracking-[0.15em] ${active ? 'text-phobos-green/80' : 'text-muted-foreground/50'}`}>
+                <Icon className={`w-4 h-4 ${active ? 'text-phob-amber/70' : 'text-phob-steel/35'}`} />
+                <p className={`text-[10px] font-terminal uppercase tracking-[0.15em] ${active ? 'text-phob-amber/80' : 'text-phob-steel/45'}`}>
                   {meta.label}
                 </p>
-                <p className="text-[11px] font-mono text-muted-foreground/65 leading-relaxed">{meta.desc}</p>
-                <p className="text-[7px] font-mono text-muted-foreground/25 leading-relaxed">{meta.formats}</p>
+                <p className="text-[11px] font-mono text-phob-steel/55 leading-relaxed">{meta.desc}</p>
+                <p className="text-[7px] font-mono text-phob-steel/25 leading-relaxed">{meta.formats}</p>
               </button>
             );
           })}
@@ -437,28 +437,28 @@ function StepData({
           <button
             onClick={pickFiles}
             disabled={uploading}
-            className="flex items-center justify-center gap-2 px-4 py-3 rounded-sm border border-phobos-green/30 bg-phobos-green/5 hover:bg-phobos-green/10 hover:border-phobos-green/50 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            className="flex items-center justify-center gap-2 px-4 py-3  border border-phob-amber/30 bg-phob-amber/5 hover:bg-phob-amber/10 hover:border-phob-amber/50 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
           >
             {uploading ? (
-              <Loader2 className="w-4 h-4 text-phobos-green/60 animate-spin" />
+              <Loader2 className="w-4 h-4 text-phob-amber/60 animate-spin" />
             ) : (
-              <Files className="w-4 h-4 text-phobos-green/60" />
+              <Files className="w-4 h-4 text-phob-amber/60" />
             )}
-            <span className="text-[10px] font-terminal text-phobos-green/70 uppercase tracking-[0.15em]">
+            <span className="text-[10px] font-terminal text-phob-amber/70 uppercase tracking-[0.15em]">
               Pick Files
             </span>
           </button>
           <button
             onClick={pickFolder}
             disabled={uploading}
-            className="flex items-center justify-center gap-2 px-4 py-3 rounded-sm border border-phobos-green/30 bg-phobos-green/5 hover:bg-phobos-green/10 hover:border-phobos-green/50 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            className="flex items-center justify-center gap-2 px-4 py-3  border border-phob-amber/30 bg-phob-amber/5 hover:bg-phob-amber/10 hover:border-phob-amber/50 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
           >
             {uploading ? (
-              <Loader2 className="w-4 h-4 text-phobos-green/60 animate-spin" />
+              <Loader2 className="w-4 h-4 text-phob-amber/60 animate-spin" />
             ) : (
-              <FolderOpen className="w-4 h-4 text-phobos-green/60" />
+              <FolderOpen className="w-4 h-4 text-phob-amber/60" />
             )}
-            <span className="text-[10px] font-terminal text-phobos-green/70 uppercase tracking-[0.15em]">
+            <span className="text-[10px] font-terminal text-phob-amber/70 uppercase tracking-[0.15em]">
               Pick Folder
             </span>
           </button>
@@ -470,17 +470,17 @@ function StepData({
           onDragLeave={() => setDragOver(false)}
           onDrop={handleDrop}
           onClick={() => fileRef.current?.click()}
-          className={`cursor-pointer border rounded-sm p-4 flex flex-col items-center justify-center gap-2 transition-all ${
+          className={`cursor-pointer border  p-4 flex flex-col items-center justify-center gap-2 transition-all ${
             dragOver
-              ? 'border-phobos-green/50 bg-phobos-green/5'
-              : 'border-dashed border-border/20 hover:border-border/40 bg-black/10'
+              ? 'border-phob-amber/50 bg-phob-amber/5'
+              : 'border-dashed border-phob-amber/12 hover:border-phob-amber/20 bg-black/10'
           }`}
         >
-          <Upload className="w-5 h-5 text-muted-foreground/15" />
-          <p className="text-[9px] font-terminal text-muted-foreground/30 uppercase tracking-[0.15em]">
+          <Upload className="w-5 h-5 text-phob-steel/20" />
+          <p className="text-[9px] font-terminal text-phob-steel/35 uppercase tracking-[0.15em]">
             {uploading ? 'Uploading…' : 'Or drag and drop files here'}
           </p>
-          <p className="text-[9px] font-mono text-muted-foreground/25">
+          <p className="text-[9px] font-mono text-phob-steel/25">
             {acceptForMode(fields.dataMode).split(',').join('  ')}
           </p>
         </div>
@@ -501,16 +501,16 @@ function StepData({
       {/* Uploaded file list */}
       {uploaded.length > 0 && (
         <div className="space-y-1">
-          <p className="text-[10px] font-terminal uppercase tracking-[0.15em] text-phobos-green/60 mb-1">
+          <p className="text-[10px] font-terminal uppercase tracking-[0.15em] text-phob-amber/60 mb-1">
             {uploaded.length} file{uploaded.length !== 1 ? 's' : ''} ready
           </p>
           {uploaded.map(name => (
-            <div key={name} className="flex items-center gap-2 text-[11px] font-mono text-muted-foreground/70 group">
-              <CheckCircle2 className="w-3 h-3 text-phobos-green/50 shrink-0" />
+            <div key={name} className="flex items-center gap-2 text-[11px] font-mono text-phob-white/65 group">
+              <CheckCircle2 className="w-3 h-3 text-phob-amber/50 shrink-0" />
               <span className="truncate flex-1">{name}</span>
               <button
                 onClick={() => removeFile(name)}
-                className="opacity-0 group-hover:opacity-100 text-muted-foreground/40 hover:text-red-400/70 transition-all shrink-0"
+                className="opacity-0 group-hover:opacity-100 text-phob-steel/40 hover:text-phob-red/70 transition-all shrink-0"
                 title="Remove file"
               >
                 <X className="w-3 h-3" />
@@ -528,7 +528,7 @@ function StepData({
       )}
 
       {/* Minimum requirements note */}
-      <div className="border border-border/20 rounded-sm p-3 bg-black/20">
+      <div className="border border-phob-amber/12  p-3 bg-phob-white/3">
         <p className="text-[10px] font-terminal uppercase tracking-[0.15em] text-muted-foreground/70 mb-1.5">Minimum requirements</p>
         <div className="space-y-0.5 text-[10px] font-mono text-muted-foreground/60">
           <p>Document mode — 50+ documents recommended</p>
@@ -577,15 +577,15 @@ function StepConfig({ fields, onChange }: { fields: ConfigFields; onChange: (f: 
       </div>
 
       <FieldGroup label="License">
-        <div className="flex border border-border/40 rounded-sm overflow-hidden">
+        <div className="flex border border-phob-amber/20  overflow-hidden">
           {licenses.map((l, i) => (
             <button
               key={l}
               onClick={() => onChange({ license: l })}
-              className={`flex-1 py-1.5 text-[12px] font-terminal uppercase tracking-[0.15em] transition-colors ${i < licenses.length - 1 ? 'border-r border-border/40' : ''} ${
+              className={`flex-1 py-1.5 text-[12px] font-terminal uppercase tracking-[0.15em] transition-colors ${i < licenses.length - 1 ? 'border-r border-phob-amber/20' : ''} ${
                 fields.license === l
-                  ? 'bg-phobos-green/10 text-phobos-green/80'
-                  : 'text-muted-foreground/40 hover:text-muted-foreground/70'
+                  ? 'bg-phob-amber/10 text-phob-amber/80'
+                  : 'text-phob-steel/40 hover:text-phob-white/70'
               }`}
             >
               {licenseLabels[l]}
@@ -602,7 +602,7 @@ function StepConfig({ fields, onChange }: { fields: ConfigFields; onChange: (f: 
             value={fields.password}
             onChange={e => onChange({ password: e.target.value })}
             placeholder="Leave empty for open cartridge"
-            className="w-full bg-black/40 border border-border/40 rounded-sm pl-7 pr-2.5 py-1.5 text-[13px] font-mono text-foreground placeholder:text-muted-foreground/25 focus:outline-none focus:border-phobos-green/30 transition-colors"
+            className="w-full bg-phob-white/5 border border-phob-amber/20  pl-7 pr-2.5 py-1.5 text-[13px] font-mono text-foreground placeholder:text-muted-foreground/25 focus:outline-none focus:border-phob-amber/50 transition-colors"
           />
         </div>
         <p className="text-[10px] font-mono text-muted-foreground/55 mt-1">
@@ -613,11 +613,11 @@ function StepConfig({ fields, onChange }: { fields: ConfigFields; onChange: (f: 
       <label className="flex items-center gap-2.5 cursor-pointer">
         <div
           onClick={() => onChange({ addLicense: !fields.addLicense })}
-          className={`w-4 h-4 rounded-sm border flex items-center justify-center transition-colors ${
-            fields.addLicense ? 'border-phobos-green/50 bg-phobos-green/10' : 'border-border/40'
+          className={`w-4 h-4  border flex items-center justify-center transition-colors ${
+            fields.addLicense ? 'border-phob-amber/50 bg-phob-amber/10' : 'border-phob-amber/20'
           }`}
         >
-          {fields.addLicense && <CheckCircle2 className="w-2.5 h-2.5 text-phobos-green/70" />}
+          {fields.addLicense && <CheckCircle2 className="w-2.5 h-2.5 text-phob-amber/70" />}
         </div>
         <span className="text-[11px] font-terminal text-muted-foreground/75">
           Embed license text in cartridge archive
@@ -658,7 +658,7 @@ function StepReview({
   return (
     <div className="space-y-4">
       {/* Summary card */}
-      <div className="border border-border/30 rounded-sm divide-y divide-border/20">
+      <div className="border border-phob-amber/15  divide-y divide-border/20">
         <Row label="Cartridge"    value={baseFields.name || '—'} />
         <Row label="Base Model"   value={model?.label ?? baseFields.baseModelId} />
         <Row label="Persona"      value={PERSONA_LABELS[baseFields.targetPersona]} />
@@ -672,15 +672,15 @@ function StepReview({
       </div>
 
       {/* VRAM check */}
-      <div className={`border rounded-sm p-3 flex items-start gap-3 ${
-        checkingVram ? 'border-border/30' :
-        vram?.ok     ? 'border-phobos-green/30 bg-phobos-green/5' :
+      <div className={`border  p-3 flex items-start gap-3 ${
+        checkingVram ? 'border-phob-amber/15' :
+        vram?.ok     ? 'border-phob-amber/30 bg-phob-amber/5' :
                        'border-red-900/30 bg-red-950/10'
       }`}>
         {checkingVram ? (
-          <Loader2 className="w-4 h-4 text-muted-foreground/30 animate-spin shrink-0 mt-0.5" />
+          <Loader2 className="w-4 h-4 text-phob-steel/35 animate-spin shrink-0 mt-0.5" />
         ) : vram?.ok ? (
-          <CheckCircle2 className="w-4 h-4 text-phobos-green/60 shrink-0 mt-0.5" />
+          <CheckCircle2 className="w-4 h-4 text-phob-amber/60 shrink-0 mt-0.5" />
         ) : (
           <AlertTriangle className="w-4 h-4 text-red-400/60 shrink-0 mt-0.5" />
         )}
@@ -690,7 +690,7 @@ function StepReview({
             {checkingVram ? 'Checking GPU memory…' : (vram?.message ?? 'Unknown')}
           </p>
           {vram && !checkingVram && (
-            <p className="text-[10px] font-mono text-muted-foreground/60 mt-1">
+            <p className="text-[10px] font-mono text-phob-steel/55 mt-1">
               {vram.device}  ·  {vram.totalGb} GB total  ·  {vram.requiredGb} GB required
             </p>
           )}
@@ -699,7 +699,7 @@ function StepReview({
 
       {/* Training time estimate */}
       {model && configFields.steps > 0 && (
-        <div className="text-[10px] font-mono text-muted-foreground/60 border border-border/20 rounded-sm p-2.5 bg-black/20">
+        <div className="text-[10px] font-mono text-muted-foreground/60 border border-phob-amber/12  p-2.5 bg-phob-white/3">
           Estimated training time: {_estimateMinutes(model.vramGb, configFields.steps)} min on a capable GPU · HF base model download will add time on first run
         </div>
       )}
@@ -872,30 +872,30 @@ export function CartridgeWizard({ onClose, onStart }: CartridgeWizardProps) {
   const isLast = step === STEPS.length - 1;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-      <div className="w-[620px] max-h-[88vh] flex flex-col bg-background border border-phobos-green/20 rounded-sm shadow-[0_0_60px_hsl(120_100%_50%/0.05)]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-phob-void/92 backdrop-blur-sm">
+      <div className="w-[620px] max-h-[88vh] flex flex-col bg-background border border-phob-amber/20  shadow-[0_0_60px_hsl(120_100%_50%/0.05)]">
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-phobos-green/10 shrink-0">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-phob-amber/10 shrink-0">
           <div className="flex items-center gap-2">
-            <Cpu className="w-4 h-4 text-phobos-green/60" />
-            <span className="text-[11px] font-terminal uppercase tracking-[0.2em] text-phobos-green/80">Train Cartridge</span>
+            <Cpu className="w-4 h-4 text-phob-amber/60" />
+            <span className="text-[11px] font-terminal uppercase tracking-[0.2em] text-phob-amber/80">Train Cartridge</span>
           </div>
-          <button onClick={onClose} className="text-muted-foreground/30 hover:text-muted-foreground/70 transition-colors">
+          <button onClick={onClose} className="text-phob-steel/35 hover:text-muted-foreground/70 transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Step breadcrumb */}
-        <div className="flex items-center gap-0 px-5 py-2 border-b border-border/20 shrink-0">
+        <div className="flex items-center gap-0 px-5 py-2 border-b border-phob-amber/12 shrink-0">
           {STEPS.map((label, i) => (
             <div key={label} className="flex items-center">
               <span className={`text-[11px] font-terminal uppercase tracking-[0.2em] transition-colors ${
-                i === step         ? 'text-phobos-green/80' :
-                i < step           ? 'text-muted-foreground/40' :
+                i === step         ? 'text-phob-amber/80' :
+                i < step           ? 'text-phob-steel/40' :
                                      'text-muted-foreground/20'
               }`}>
-                {i < step && <span className="mr-1 text-phobos-green/50">✓</span>}
+                {i < step && <span className="mr-1 text-phob-amber/50">✓</span>}
                 {label}
               </span>
               {i < STEPS.length - 1 && (
@@ -930,13 +930,13 @@ export function CartridgeWizard({ onClose, onStart }: CartridgeWizardProps) {
         </div>
 
         {/* Footer */}
-        <div className="px-5 py-3 border-t border-border/20 flex items-center justify-between shrink-0">
+        <div className="px-5 py-3 border-t border-phob-amber/12 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
             {step > 0 && (
               <button
                 onClick={() => setStep(s => s - 1)}
                 disabled={submitting}
-                className="flex items-center gap-1 px-3 py-1.5 text-[12px] font-terminal uppercase tracking-[0.15em] text-muted-foreground/70 border border-border/30 rounded-sm hover:border-border/60 hover:text-muted-foreground/80 transition-all disabled:opacity-40"
+                className="flex items-center gap-1 px-3 py-1.5 text-[12px] font-terminal uppercase tracking-[0.15em] text-muted-foreground/70 border border-phob-amber/15  hover:border-border/60 hover:text-muted-foreground/80 transition-all disabled:opacity-40"
               >
                 <ChevronLeft className="w-3 h-3" /> Back
               </button>
@@ -950,7 +950,7 @@ export function CartridgeWizard({ onClose, onStart }: CartridgeWizardProps) {
             <button
               onClick={handleStart}
               disabled={submitting || checkingVram}
-              className="flex items-center gap-1.5 px-5 py-1.5 text-[12px] font-terminal uppercase tracking-[0.2em] text-phobos-green border border-phobos-green/30 rounded-sm hover:border-phobos-green/60 hover:shadow-[0_0_16px_hsl(120_100%_50%/0.1)] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 px-5 py-1.5 text-[12px] font-terminal uppercase tracking-[0.2em] text-phob-amber border border-phob-amber/30  hover:border-phob-amber/60 hover:shadow-[0_0_16px_hsl(120_100%_50%/0.1)] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {submitting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
               Start Training
@@ -959,7 +959,7 @@ export function CartridgeWizard({ onClose, onStart }: CartridgeWizardProps) {
             <button
               onClick={handleNext}
               disabled={!canAdvance() || submitting}
-              className="flex items-center gap-1.5 px-4 py-1.5 text-[12px] font-terminal uppercase tracking-[0.2em] text-phobos-green/80 border border-phobos-green/20 rounded-sm hover:border-phobos-green/40 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 px-4 py-1.5 text-[12px] font-terminal uppercase tracking-[0.2em] text-phob-amber/80 border border-phob-amber/20  hover:border-phob-amber/40 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
             >
               {submitting ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
               {step === 0 ? 'Continue' : 'Next'}

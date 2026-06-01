@@ -25,6 +25,7 @@ export interface PluginRecord {
   archive_path:       string;
   is_local_author:    boolean;
   has_license_unlock: boolean;
+  owner_username:     string | null;
   installed_at:       string;
 }
 

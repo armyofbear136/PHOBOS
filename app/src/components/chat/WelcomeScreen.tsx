@@ -11,7 +11,7 @@ const CAPABILITIES = [
 ];
 
 function AgentStatusBadge({ role, label, model, state }: { role: 'coordinator' | 'engine'; label: string; model: string; state: 'connected' | 'disconnected' }) {
-  const tint = role === 'coordinator' ? '#4eb8e0' : '#ffaa33';
+  const tint = role === 'coordinator' ? '#00d4aa' : '#CFFF04';
   const connected = state === 'connected';
   return (
     <div className={`flex items-center gap-2 px-3 py-1.5 rounded-md border transition-colors ${
@@ -46,7 +46,7 @@ export function WelcomeScreen() {
           className="w-28 h-28 object-contain opacity-80"
           style={{ filter: 'drop-shadow(0 0 24px hsl(120 100% 50% / 0.12))' }}
         />
-        <h1 className="mt-4 text-3xl font-terminal tracking-[0.3em] text-phobos-green/70 text-glow select-none">
+        <h1 className="mt-4 text-3xl font-display font-black tracking-[0.35em] text-phob-orange/60 select-none">
           PHOBOS
         </h1>
         <p className="mt-1 text-[11px] font-mono text-muted-foreground/30 tracking-widest uppercase">
@@ -59,19 +59,19 @@ export function WelcomeScreen() {
           <AgentStatusBadge role="engine" label="SEREN" model={modelNames.engine} state={connectionStatus.engine as any} />
         </div>
 
-        <div className="mt-8 w-full border-t border-phobos-green/8" />
+        <div className="mt-8 w-full border-t border-phob-orange/8" />
 
         <div className="mt-8 w-full">
-          <p className="text-[10px] font-mono text-phobos-green/30 tracking-widest uppercase mb-3">// how it works</p>
+          <p className="text-[10px] font-mono text-phob-orange/30 tracking-widest uppercase mb-3">// how it works</p>
           <div className="grid grid-cols-2 gap-3">
             <div className="rounded-md border border-sayon/15 bg-sayon/5 px-4 py-3">
-              <p className="text-[10px] font-terminal tracking-widest text-sayon/60 uppercase mb-1.5">SAYON — Coordinator</p>
+              <p className="text-[10px] font-terminal tracking-widest text-phob-teal/60 uppercase mb-1.5">SAYON — Coordinator</p>
               <p className="text-[11px] text-muted-foreground/50 leading-relaxed">
                 Reads your request, maps the problem, extracts workspace context, and hands a precise brief to SEREN. Writes the final delivery summary you read.
               </p>
             </div>
             <div className="rounded-md border border-seren/15 bg-seren/5 px-4 py-3">
-              <p className="text-[10px] font-terminal tracking-widest text-seren/60 uppercase mb-1.5">SEREN — Engine</p>
+              <p className="text-[10px] font-terminal tracking-widest text-phob-yellow/60 uppercase mb-1.5">SEREN — Engine</p>
               <p className="text-[11px] text-muted-foreground/50 leading-relaxed">
                 Decomposes tasks, thinks deeply through every step with a full internal reasoning pass, writes and patches code, and reviews its own output before returning.
               </p>
@@ -80,7 +80,7 @@ export function WelcomeScreen() {
         </div>
 
         <div className="mt-8 w-full">
-          <p className="text-[10px] font-mono text-phobos-green/30 tracking-widest uppercase mb-3">// capabilities</p>
+          <p className="text-[10px] font-mono text-phob-orange/30 tracking-widest uppercase mb-3">// capabilities</p>
           <div className="grid grid-cols-2 gap-2">
             {CAPABILITIES.map((cap) => (
               <div
@@ -88,7 +88,7 @@ export function WelcomeScreen() {
                 className={`rounded-md border px-3 py-2.5 ${
                   cap.upcoming
                     ? 'border-border/15 bg-transparent opacity-40'
-                    : 'border-phobos-green/10 hover:border-phobos-green/20 transition-colors'
+                    : 'border-phob-orange/10 hover:border-phob-orange/20 transition-colors'
                 }`}
               >
                 <div className="flex items-center gap-2 mb-1">

@@ -35,10 +35,10 @@ function Dropdown({ label, value, options, tint, onSelect }: {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const selectedLabel = options.find(o => o.id === value)?.label ?? value;
-  const tintColor  = tint === 'sayon' ? '#4ade80' : '#f59e0b';
-  const tintBg     = tint === 'sayon' ? 'rgba(74,222,128,0.06)'  : 'rgba(245,158,11,0.06)';
-  const tintBorder = tint === 'sayon' ? 'rgba(74,222,128,0.25)'  : 'rgba(245,158,11,0.25)';
-  const tintHover  = tint === 'sayon' ? 'rgba(74,222,128,0.1)'   : 'rgba(245,158,11,0.1)';
+  const tintColor  = tint === 'sayon' ? '#00d4aa' : '#CFFF04';
+  const tintBg     = tint === 'sayon' ? 'rgba(0,212,170,0.06)'   : 'rgba(207,255,4,0.06)';
+  const tintBorder = tint === 'sayon' ? 'rgba(0,212,170,0.25)'   : 'rgba(207,255,4,0.25)';
+  const tintHover  = tint === 'sayon' ? 'rgba(0,212,170,0.1)'    : 'rgba(207,255,4,0.10)';
 
   useEffect(() => {
     if (!open) return;
@@ -49,20 +49,20 @@ function Dropdown({ label, value, options, tint, onSelect }: {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
-      <span style={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(255,255,255,0.3)', letterSpacing: '0.15em', textTransform: 'uppercase' }}>{label}</span>
+      <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, color: 'rgba(255,255,255,0.3)', letterSpacing: '0.15em', textTransform: 'uppercase' }}>{label}</span>
       <div ref={ref} style={{ position: 'relative' }}>
         <button onClick={() => setOpen(!open)}
           style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, padding: '7px 10px', background: tintBg, border: `1px solid ${tintBorder}`, cursor: 'pointer', transition: 'all 150ms' }}
           onMouseEnter={e => (e.currentTarget.style.borderColor = tintColor)}
           onMouseLeave={e => (e.currentTarget.style.borderColor = tintBorder)}>
-          <span style={{ fontFamily: 'monospace', fontSize: 11, color: tintColor }}>{selectedLabel || '— select —'}</span>
+          <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, color: tintColor }}>{selectedLabel || '— select —'}</span>
           <ChevronDown size={11} style={{ color: 'rgba(255,255,255,0.3)', flexShrink: 0, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 150ms' }} />
         </button>
         {open && (
           <div style={{ position: 'absolute', top: 'calc(100% + 2px)', left: 0, right: 0, zIndex: 200, background: '#111', border: `1px solid ${tintBorder}`, maxHeight: 220, overflowY: 'auto', boxShadow: '0 8px 24px rgba(0,0,0,0.6)' }}>
             {options.map(opt => (
               <button key={opt.id} onClick={() => { onSelect(opt.id); setOpen(false); }}
-                style={{ width: '100%', textAlign: 'left', padding: '7px 10px', fontFamily: 'monospace', fontSize: 11, color: opt.id === value ? tintColor : 'rgba(255,255,255,0.55)', background: opt.id === value ? tintHover : 'transparent', border: 'none', cursor: 'pointer', transition: 'all 100ms', display: 'flex', alignItems: 'center', gap: 6 }}
+                style={{ width: '100%', textAlign: 'left', padding: '7px 10px', fontFamily: "'Space Mono', monospace", fontSize: 11, color: opt.id === value ? tintColor : 'rgba(255,255,255,0.55)', background: opt.id === value ? tintHover : 'transparent', border: 'none', cursor: 'pointer', transition: 'all 100ms', display: 'flex', alignItems: 'center', gap: 6 }}
                 onMouseEnter={e => { e.currentTarget.style.background = tintHover; e.currentTarget.style.color = tintColor; }}
                 onMouseLeave={e => { e.currentTarget.style.background = opt.id === value ? tintHover : 'transparent'; e.currentTarget.style.color = opt.id === value ? tintColor : 'rgba(255,255,255,0.55)'; }}>
                 <span style={{ width: 5, height: 5, borderRadius: '50%', background: opt.id === value ? tintColor : 'transparent', border: `1px solid ${tintBorder}`, flexShrink: 0 }} />
@@ -82,9 +82,9 @@ function AgentCard({ agentName, tint, description, currentProvider, currentModel
   onSelectProvider: (id: string, endpoint: string) => void;
   onSelectModel: (id: string) => void;
 }) {
-  const tintColor  = tint === 'sayon' ? '#4ade80' : '#f59e0b';
-  const tintBorder = tint === 'sayon' ? 'rgba(74,222,128,0.2)'  : 'rgba(245,158,11,0.2)';
-  const tintBg     = tint === 'sayon' ? 'rgba(74,222,128,0.03)' : 'rgba(245,158,11,0.03)';
+  const tintColor  = tint === 'sayon' ? '#00d4aa' : '#CFFF04';
+  const tintBorder = tint === 'sayon' ? 'rgba(0,212,170,0.2)'   : 'rgba(207,255,4,0.2)';
+  const tintBg     = tint === 'sayon' ? 'rgba(0,212,170,0.03)'  : 'rgba(207,255,4,0.03)';
   const models = MODELS_BY_PROVIDER[currentProvider] ?? [];
 
   return (
@@ -93,13 +93,13 @@ function AgentCard({ agentName, tint, description, currentProvider, currentModel
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <img src={agentName === 'SAYON' ? '/sayon.png' : '/seren.png'} alt={agentName} style={{ width: 26, height: 26, borderRadius: 4, objectFit: 'cover', opacity: 0.8 }} />
           <div>
-            <div style={{ fontFamily: 'monospace', fontSize: 12, letterSpacing: '0.2em', color: tintColor, fontWeight: 600 }}>{agentName}</div>
-            <div style={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(255,255,255,0.3)', marginTop: 1 }}>{description}</div>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 12, letterSpacing: '0.2em', color: tintColor, fontWeight: 600 }}>{agentName}</div>
+            <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, color: 'rgba(255,255,255,0.3)', marginTop: 1 }}>{description}</div>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
           <span style={{ width: 6, height: 6, borderRadius: '50%', background: connected ? '#00ff41' : 'rgba(255,255,255,0.12)', boxShadow: connected ? '0 0 5px rgba(0,255,65,0.5)' : 'none', display: 'inline-block', animation: connected ? 'setupPulse 2s ease-in-out infinite' : 'none' }} />
-          <span style={{ fontFamily: 'monospace', fontSize: 9, letterSpacing: '0.1em', color: connected ? 'rgba(0,255,65,0.65)' : 'rgba(255,255,255,0.2)' }}>
+          <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, letterSpacing: '0.1em', color: connected ? 'rgba(0,255,65,0.65)' : 'rgba(255,255,255,0.2)' }}>
             {connected ? 'CONNECTED' : 'NOT CONNECTED'}
           </span>
         </div>
@@ -158,19 +158,19 @@ export function SetupGuide() {
         {/* Header */}
         <div style={{ textAlign: 'center', marginBottom: 26 }}>
           <img src={`${import.meta.env.BASE_URL}phobos.png`} alt="PHOBOS" style={{ width: 44, height: 44, objectFit: 'contain', opacity: 0.5, marginBottom: 10, filter: 'brightness(0.8) saturate(0.4)' }} />
-          <h1 style={{ fontFamily: 'monospace', fontSize: 17, letterSpacing: '0.4em', color: 'rgba(0,200,255,0.8)', marginBottom: 6, animation: 'setupFlicker 5s ease-in-out infinite' }}>
+          <h1 style={{ fontFamily: "'Space Mono', monospace", fontSize: 17, letterSpacing: '0.4em', color: 'rgba(232,66,10,0.85)', marginBottom: 6, animation: 'setupFlicker 5s ease-in-out infinite' }}>
             PHOBOS
           </h1>
-          <div style={{ height: 1, background: 'linear-gradient(to right, transparent, rgba(0,200,255,0.2), transparent)', marginBottom: 8 }} />
-          <p style={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(255,255,255,0.25)', letterSpacing: '0.2em' }}>
+          <div style={{ height: 1, background: 'linear-gradient(to right, transparent, rgba(232,66,10,0.25), transparent)', marginBottom: 8 }} />
+          <p style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, color: 'rgba(255,255,255,0.25)', letterSpacing: '0.2em' }}>
             LLM CONNECTION REQUIRED
           </p>
         </div>
 
         {/* Connection status bar */}
         <div style={{
-          border: bothConnected ? '1px solid rgba(0,255,65,0.3)' : '1px solid rgba(0,200,255,0.15)',
-          background: bothConnected ? 'rgba(0,255,65,0.04)' : 'rgba(0,200,255,0.03)',
+          border: bothConnected ? '1px solid rgba(0,255,65,0.3)' : '1px solid rgba(232,66,10,0.20)',
+          background: bothConnected ? 'rgba(0,255,65,0.04)' : 'rgba(232,66,10,0.04)',
           padding: '14px 18px', marginBottom: 16,
           display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
         }}>
@@ -178,13 +178,13 @@ export function SetupGuide() {
             {bothConnected ? (
               <CheckCircle2 size={14} style={{ color: '#00ff41', flexShrink: 0 }} />
             ) : (
-              <div style={{ width: 14, height: 14, border: '2px solid rgba(0,200,255,0.2)', borderTopColor: 'rgba(0,200,255,0.7)', borderRadius: '50%', flexShrink: 0, animation: 'setupSpin 1s linear infinite' }} />
+              <div style={{ width: 14, height: 14, border: '2px solid rgba(232,66,10,0.2)', borderTopColor: 'rgba(232,66,10,0.7)', borderRadius: '50%', flexShrink: 0, animation: 'setupSpin 1s linear infinite' }} />
             )}
-            <span style={{ fontFamily: 'monospace', fontSize: 10, letterSpacing: '0.18em', color: bothConnected ? 'rgba(0,255,65,0.85)' : 'rgba(0,200,255,0.65)' }}>
+            <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, letterSpacing: '0.18em', color: bothConnected ? 'rgba(0,255,65,0.85)' : 'rgba(232,66,10,0.75)' }}>
               LLM CONNECTION
             </span>
           </div>
-          <span style={{ fontFamily: 'monospace', fontSize: 11, letterSpacing: '0.12em', color: bothConnected ? 'rgba(0,255,65,0.85)' : 'rgba(255,165,0,0.7)', fontWeight: 600 }}>
+          <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, letterSpacing: '0.12em', color: bothConnected ? 'rgba(0,255,65,0.85)' : 'rgba(255,165,0,0.7)', fontWeight: 600 }}>
             {bothConnected ? '● ESTABLISHED' : `● WAITING${dots}`}
           </span>
         </div>
@@ -199,11 +199,11 @@ export function SetupGuide() {
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: 14 }}>
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <span style={{ fontFamily: 'monospace', fontSize: 13, letterSpacing: '0.18em', color: 'rgba(0,255,65,0.95)', fontWeight: 700 }}>
+                <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 13, letterSpacing: '0.18em', color: 'rgba(232,66,10,0.95)', fontWeight: 700 }}>
                   STEP 1 — Download AI Models
                 </span>
               </div>
-              <p style={{ fontFamily: "'Inter', sans-serif", fontSize: 13, color: 'rgba(255,255,255,0.6)', lineHeight: 1.7, margin: 0 }}>
+              <p style={{ fontFamily: "'Noto Sans JP', sans-serif", fontSize: 13, color: 'rgba(255,255,255,0.6)', lineHeight: 1.7, margin: 0 }}>
                 PHOBOS needs AI language models installed on your computer to work.
                 Click below to open the model manager and download them.
               </p>
@@ -213,12 +213,12 @@ export function SetupGuide() {
           {/* Model slots preview */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
             {[
-              { name: 'SAYON', desc: 'Coordinator · ~3 GB', color: '#4ade80', border: 'rgba(74,222,128,0.2)', bg: 'rgba(74,222,128,0.04)' },
-              { name: 'SEREN', desc: 'Engine · ~20 GB',     color: '#f59e0b', border: 'rgba(245,158,11,0.2)', bg: 'rgba(245,158,11,0.04)' },
+              { name: 'SAYON', desc: 'Coordinator · ~3 GB', color: '#00d4aa', border: 'rgba(0,212,170,0.2)', bg: 'rgba(0,212,170,0.04)' },
+              { name: 'SEREN', desc: 'Engine · ~20 GB',     color: '#CFFF04', border: 'rgba(207,255,4,0.2)',   bg: 'rgba(207,255,4,0.04)' },
             ].map(slot => (
               <div key={slot.name} style={{ flex: 1, border: `1px solid ${slot.border}`, background: slot.bg, padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontFamily: 'monospace', fontSize: 11, letterSpacing: '0.15em', color: slot.color, fontWeight: 600 }}>{slot.name}</span>
-                <span style={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(255,255,255,0.3)' }}>{slot.desc}</span>
+                <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 11, letterSpacing: '0.15em', color: slot.color, fontWeight: 600 }}>{slot.name}</span>
+                <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, color: 'rgba(255,255,255,0.3)' }}>{slot.desc}</span>
               </div>
             ))}
           </div>
@@ -226,19 +226,19 @@ export function SetupGuide() {
           <button
             onClick={togglePhobosLLMPanel}
             style={{
-              width: '100%', padding: '11px 16px', fontFamily: 'monospace', fontSize: 11,
+              width: '100%', padding: '11px 16px', fontFamily: "'Space Mono', monospace", fontSize: 11,
               letterSpacing: '0.2em', textTransform: 'uppercase',
-              background: 'rgba(0,255,65,0.12)', border: '1px solid rgba(0,255,65,0.45)',
-              color: 'rgba(0,255,65,0.9)', cursor: 'pointer', transition: 'all 150ms',
+              background: 'rgba(232,66,10,0.12)', border: '1px solid rgba(232,66,10,0.45)',
+              color: 'rgba(232,66,10,0.9)', cursor: 'pointer', transition: 'all 150ms',
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
             }}
-            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,255,65,0.2)'; e.currentTarget.style.borderColor = 'rgba(0,255,65,0.7)'; e.currentTarget.style.color = '#00ff41'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'rgba(0,255,65,0.12)'; e.currentTarget.style.borderColor = 'rgba(0,255,65,0.45)'; e.currentTarget.style.color = 'rgba(0,255,65,0.9)'; }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(232,66,10,0.2)'; e.currentTarget.style.borderColor = 'rgba(232,66,10,0.7)'; e.currentTarget.style.color = '#e8420a'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'rgba(232,66,10,0.12)'; e.currentTarget.style.borderColor = 'rgba(232,66,10,0.45)'; e.currentTarget.style.color = 'rgba(232,66,10,0.9)'; }}
           >
             <span style={{ fontSize: 14 }}>⬡</span> Open PHOBOS LLM Manager ▸
           </button>
 
-          <p style={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(255,255,255,0.2)', textAlign: 'center', marginTop: 10, marginBottom: 0, letterSpacing: '0.08em' }}>
+          <p style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, color: 'rgba(255,255,255,0.2)', textAlign: 'center', marginTop: 10, marginBottom: 0, letterSpacing: '0.08em' }}>
             After downloading, launch them from the manager — PHOBOS connects automatically.
           </p>
         </div>
@@ -257,12 +257,12 @@ export function SetupGuide() {
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Zap size={11} style={{ color: 'rgba(245,158,11,0.5)', flexShrink: 0 }} />
-              <span style={{ fontFamily: 'monospace', fontSize: 10, letterSpacing: '0.15em', color: 'rgba(255,255,255,0.45)' }}>
+              <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 10, letterSpacing: '0.15em', color: 'rgba(255,255,255,0.45)' }}>
                 Already have Ollama or FastFlowLLM?
               </span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(255,255,255,0.25)', letterSpacing: '0.1em' }}>
+              <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, color: 'rgba(255,255,255,0.25)', letterSpacing: '0.1em' }}>
                 {byoOpen ? 'COLLAPSE' : 'CONFIGURE'}
               </span>
               <ChevronDown size={12} style={{ color: 'rgba(255,255,255,0.25)', transform: byoOpen ? 'rotate(180deg)' : 'none', transition: 'transform 200ms', flexShrink: 0 }} />
@@ -273,7 +273,7 @@ export function SetupGuide() {
             <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', padding: '16px 18px 18px', animation: 'byoSlide 200ms ease both' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12, padding: '7px 10px', background: 'rgba(245,158,11,0.04)', border: '1px solid rgba(245,158,11,0.12)' }}>
                 <Clock size={10} style={{ color: 'rgba(245,158,11,0.45)', flexShrink: 0 }} />
-                <span style={{ fontFamily: 'monospace', fontSize: 9, color: 'rgba(245,158,11,0.5)', letterSpacing: '0.06em' }}>
+                <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, color: 'rgba(245,158,11,0.5)', letterSpacing: '0.06em' }}>
                   Ensure your LLM server is running before configuring
                 </span>
               </div>
@@ -301,8 +301,8 @@ export function SetupGuide() {
 
         {/* Footer */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: 14 }}>
-          <span style={{ width: 5, height: 5, borderRadius: '50%', background: bothConnected ? '#00ff41' : 'rgba(0,180,255,0.45)', display: 'inline-block', animation: 'setupPulse 1.5s ease-in-out infinite' }} />
-          <span style={{ fontFamily: 'monospace', fontSize: 9, letterSpacing: '0.12em', color: bothConnected ? 'rgba(0,255,65,0.5)' : 'rgba(0,180,255,0.3)' }}>
+          <span style={{ width: 5, height: 5, borderRadius: '50%', background: bothConnected ? '#00ff41' : 'rgba(232,66,10,0.5)', display: 'inline-block', animation: 'setupPulse 1.5s ease-in-out infinite' }} />
+          <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 9, letterSpacing: '0.12em', color: bothConnected ? 'rgba(0,255,65,0.5)' : 'rgba(232,66,10,0.40)' }}>
             {bothConnected ? 'All systems connected — loading interface' : `Waiting for LLM connection${dots}`}
           </span>
         </div>

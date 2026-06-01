@@ -11,20 +11,20 @@ const PANEL_H = 280; // px — fixed height
 // ── Node type display metadata ────────────────────────────────────────────────
 
 const NODE_META: Record<WorkflowNodeType, { label: string; color: string }> = {
-  Source:          { label: 'Source',          color: 'text-phobos-amber' },
-  Generate:        { label: 'Generate',         color: 'text-phobos-green' },
-  VarySeed:        { label: 'Vary Seed',        color: 'text-phobos-blue' },
-  Img2imgRefine:   { label: 'Img2Img',          color: 'text-sayon' },
-  KontextEdit:     { label: 'Kontext Edit',     color: 'text-phobos-blue' },
-  FaceFix:         { label: 'Face Fix',         color: 'text-phobos-amber' },
-  HandFix:         { label: 'Hand Fix',         color: 'text-phobos-amber' },
-  DepthControlNet: { label: 'Depth CN',         color: 'text-seren' },
-  RemoveBg:        { label: 'Remove BG',        color: 'text-phobos-amber' },
-  Upscale:         { label: 'Upscale',          color: 'text-phobos-green' },
-  VideoGenerate:   { label: 'Video Generate',   color: 'text-phobos-amber' },
-  VideoFromImage:  { label: 'Video From Image', color: 'text-phobos-amber' },
-  MusicGenerate:   { label: 'Generate Music',   color: 'text-phobos-green' },
-  VoiceClone:      { label: 'Voice Clone',      color: 'text-sayon' },
+  Source:          { label: 'Source',          color: 'text-phob-amber' },
+  Generate:        { label: 'Generate',         color: 'text-phob-green' },
+  VarySeed:        { label: 'Vary Seed',        color: 'text-phob-yellow' },
+  Img2imgRefine:   { label: 'Img2Img',          color: 'text-phob-teal' },
+  KontextEdit:     { label: 'Kontext Edit',     color: 'text-phob-yellow' },
+  FaceFix:         { label: 'Face Fix',         color: 'text-phob-orange' },
+  HandFix:         { label: 'Hand Fix',         color: 'text-phob-orange' },
+  DepthControlNet: { label: 'Depth CN',         color: 'text-phob-yellow' },
+  RemoveBg:        { label: 'Remove BG',        color: 'text-phob-red' },
+  Upscale:         { label: 'Upscale',          color: 'text-phob-green' },
+  VideoGenerate:   { label: 'Video Generate',   color: 'text-phob-amber' },
+  VideoFromImage:  { label: 'Video From Image', color: 'text-phob-amber' },
+  MusicGenerate:   { label: 'Generate Music',   color: 'text-phob-green' },
+  VoiceClone:      { label: 'Voice Clone',      color: 'text-phob-teal' },
 };
 
 // ── Node status indicator ─────────────────────────────────────────────────────
@@ -36,7 +36,7 @@ function NodeStatus({ node }: { node: WorkflowNode }) {
   if (node.stale) {
     return <AlertTriangle className="w-3 h-3 text-yellow-500/70 shrink-0" />;
   }
-  return <span className="w-1.5 h-1.5 rounded-full bg-phobos-green/60 shrink-0" />;
+  return <span className="phob-dot text-phob-green shrink-0" />;
 }
 
 // ── Param field renderer ─────────────────────────────────────────────────────
@@ -56,7 +56,7 @@ function ParamField({ name, value, onChange }: ParamFieldProps) {
         <span className="text-[11px] font-mono text-muted-foreground/60">{label}</span>
         <button
           onClick={() => onChange(name, !value)}
-          className={`w-9 h-5 rounded-full transition-colors relative shrink-0 ${value ? 'bg-phobos-green/60' : 'bg-muted'}`}
+          className={`w-9 h-5 transition-colors relative shrink-0 ${value ? 'bg-phob-green/60' : 'bg-phob-white/10'}`}
         >
           <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${value ? 'left-4.5' : 'left-0.5'}`} />
         </button>
@@ -102,7 +102,7 @@ function ParamField({ name, value, onChange }: ParamFieldProps) {
             if (!isNaN(parsed)) onChange(name, parsed);
           }}
           step={floatFields.has(name) ? 0.05 : 1}
-          className="w-full bg-black/50 border border-border/30 rounded px-2 py-1 text-[12px] font-mono text-foreground focus:outline-none focus:border-phobos-green/40"
+          className="w-full bg-phob-white/5 border border-phob-orange/20 px-2 py-1 text-[12px] font-mono text-foreground focus:outline-none focus:border-phob-orange/40"
         />
         {hint && <span className="text-[9px] font-mono text-muted-foreground/25 leading-tight">{hint}</span>}
       </div>
@@ -117,7 +117,7 @@ function ParamField({ name, value, onChange }: ParamFieldProps) {
           value={String(value ?? '')}
           onChange={(e) => onChange(name, e.target.value)}
           rows={name === 'lyrics' || name === 'text' ? 5 : name === 'prompt' ? 3 : 2}
-          className="w-full bg-black/50 border border-border/30 rounded px-2 py-1 text-[12px] font-mono text-foreground focus:outline-none focus:border-phobos-green/40 resize-none"
+          className="w-full bg-phob-white/5 border border-phob-orange/20 px-2 py-1 text-[12px] font-mono text-foreground focus:outline-none focus:border-phob-orange/40 resize-none"
           placeholder={
             name === 'prompt'         ? 'Describe the image or music style…'
             : name === 'lyrics'       ? 'Song lyrics (leave blank for instrumental)…'
@@ -140,7 +140,7 @@ function ParamField({ name, value, onChange }: ParamFieldProps) {
             readOnly
             value={displayName}
             placeholder="No file selected"
-            className="flex-1 min-w-0 bg-black/50 border border-border/30 rounded-l px-2 py-1 text-[11px] font-mono text-muted-foreground/60 focus:outline-none truncate"
+            className="flex-1 min-w-0 bg-phob-white/5 border border-phob-orange/20-l px-2 py-1 text-[11px] font-mono text-muted-foreground/60 focus:outline-none truncate"
           />
           <button
             onClick={() => {
@@ -176,7 +176,7 @@ function ParamField({ name, value, onChange }: ParamFieldProps) {
               };
               input.click();
             }}
-            className="px-2 py-1 text-[10px] font-terminal border border-border/30 rounded-r text-muted-foreground/60 hover:text-phobos-green/70 hover:border-phobos-green/30 transition-colors whitespace-nowrap"
+            className="px-2 py-1 text-[10px] font-terminal border border-phob-orange/20 text-phob-steel/50 hover:text-phob-orange/70 hover:border-phob-orange/30 transition-colors whitespace-nowrap"
           >
             Browse
           </button>
@@ -194,7 +194,7 @@ function ParamField({ name, value, onChange }: ParamFieldProps) {
         <select
           value={String(value ?? 'euler')}
           onChange={(e) => onChange(name, e.target.value)}
-          className="w-full bg-black/50 border border-border/30 rounded px-2 py-1 text-[12px] font-mono text-foreground focus:outline-none focus:border-phobos-green/40"
+          className="w-full bg-phob-white/5 border border-phob-orange/20 px-2 py-1 text-[12px] font-mono text-foreground focus:outline-none focus:border-phob-orange/40"
         >
           {samplers.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
@@ -210,7 +210,7 @@ function ParamField({ name, value, onChange }: ParamFieldProps) {
         <select
           value={String(value ?? models[0])}
           onChange={(e) => onChange(name, e.target.value)}
-          className="w-full bg-black/50 border border-border/30 rounded px-2 py-1 text-[12px] font-mono text-foreground focus:outline-none focus:border-phobos-green/40"
+          className="w-full bg-phob-white/5 border border-phob-orange/20 px-2 py-1 text-[12px] font-mono text-foreground focus:outline-none focus:border-phob-orange/40"
         >
           {models.map((m) => <option key={m} value={m}>{m.replace('RealESRGAN_', '').replace('.pth', '')}</option>)}
         </select>
@@ -225,7 +225,7 @@ function ParamField({ name, value, onChange }: ParamFieldProps) {
         <select
           value={String(value)}
           onChange={(e) => onChange(name, e.target.value)}
-          className="w-full bg-black/50 border border-border/30 rounded px-2 py-1 text-[12px] font-mono text-foreground focus:outline-none focus:border-phobos-green/40"
+          className="w-full bg-phob-white/5 border border-phob-orange/20 px-2 py-1 text-[12px] font-mono text-foreground focus:outline-none focus:border-phob-orange/40"
         >
           {['small', 'medium', 'large'].map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
@@ -241,7 +241,7 @@ function ParamField({ name, value, onChange }: ParamFieldProps) {
         type="text"
         value={String(value ?? '')}
         onChange={(e) => onChange(name, e.target.value)}
-        className="w-full bg-black/50 border border-border/30 rounded px-2 py-1 text-[12px] font-mono text-foreground focus:outline-none focus:border-phobos-green/40"
+        className="w-full bg-phob-white/5 border border-phob-orange/20 px-2 py-1 text-[12px] font-mono text-foreground focus:outline-none focus:border-phob-orange/40"
       />
     </div>
   );
@@ -388,18 +388,18 @@ function AddNodeMenu({ threadId, workflowId, onAdded, upstreamNode, activeModelI
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-1.5 px-2 py-1.5 text-[10px] font-mono text-ui-glow hover:text-phobos-green/70 hover:bg-phobos-green/5 transition-all border-t border-border/20"
+        className="w-full flex items-center gap-1.5 px-2 py-1.5 text-[10px] font-mono text-phob-orange/40 hover:text-phob-orange/70 hover:bg-phob-orange/5 transition-all border-t border-phob-orange/15"
       >
         <Plus className="w-3 h-3" />
         ADD NODE
       </button>
       {open && (
-        <div className="absolute bottom-full left-0 mb-1 w-40 bg-background border border-phobos-green/20 rounded-sm shadow-xl z-50 overflow-hidden">
+        <div className="absolute bottom-full left-0 mb-1 w-40 bg-[#0f0f0a] border border-phob-orange/25 shadow-xl z-50 overflow-hidden">
           {addNodeTypes.map((type) => (
             <button
               key={type}
               onClick={() => addNode(type)}
-              className="w-full text-left px-3 py-1.5 text-[11px] font-mono text-muted-foreground/60 hover:bg-phobos-green/10 hover:text-phobos-green/80 transition-all"
+              className="w-full text-left px-3 py-1.5 text-[11px] font-mono text-phob-steel/50 hover:bg-phob-orange/8 hover:text-phob-orange/80 transition-all"
             >
               {NODE_META[type].label}
             </button>
@@ -442,8 +442,8 @@ function PreviewPane({
       {/* Status text above preview */}
       {isGenerating && (
         <div className="flex items-center gap-1.5 px-1 shrink-0">
-          <Loader2 className="w-3 h-3 text-phobos-green/50 animate-spin shrink-0" />
-          <span className="text-[9px] font-mono text-phobos-green/50 truncate">
+          <Loader2 className="w-3 h-3 text-phob-orange/50 animate-spin shrink-0" />
+          <span className="text-[9px] font-mono text-phob-orange/50 truncate">
             {progress ? `Step ${progress.step}/${progress.totalSteps}` : 'Generating…'}
           </span>
         </div>
@@ -455,12 +455,12 @@ function PreviewPane({
         </div>
       )}
       {/* Preview image / video output */}
-      <div className="flex-1 relative bg-black/60 rounded border border-border/20 overflow-hidden flex items-center justify-center">
+      <div className="flex-1 relative bg-phob-white/5 border border-phob-orange/15 overflow-hidden flex items-center justify-center">
         {node?.type === 'VideoGenerate' || node?.type === 'VideoFromImage' ? (
           node?.outputPath ? (
             <div className="flex flex-col items-center gap-3 select-none">
-              <Film className="w-6 h-6 text-phobos-amber/50" />
-              <span className="text-[10px] font-mono text-phobos-amber/60">Video ready</span>
+              <Film className="w-6 h-6 text-phob-amber/50" />
+              <span className="text-[10px] font-mono text-phob-amber/60">Video ready</span>
               <button
                 onClick={async () => {
                   if (!node.outputPath) return;
@@ -472,7 +472,7 @@ function PreviewPane({
                     });
                   } catch { /* silent */ }
                 }}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-terminal tracking-[0.1em] rounded-sm border border-phobos-amber/30 text-phobos-amber/70 hover:text-phobos-amber hover:border-phobos-amber/50 transition-all"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-terminal tracking-[0.1em] rounded-sm border border-phob-amber/30 text-phob-amber/70 hover:text-phob-amber hover:border-phob-amber/50 transition-all"
               >
                 ▶ Open in native player
               </button>
@@ -524,7 +524,7 @@ function PreviewPane({
 
 // Node types that accept LoRA plugins (have a prompt; generate via PyTorch)
 const PLUGIN_CAPABLE_NODES = new Set([
-  'Generate', 'VarySeed', 'Img2imgRefine', 'FaceFix', 'HandFix',
+  'Generate', 'VarySeed', 'Img2imgRefine', 'FaceFix', 'HandFix', 'KEdit',
 ]);
 
 interface PluginRow {
@@ -678,13 +678,13 @@ function PluginSlot({
         <span className="text-[8px] font-terminal uppercase tracking-[0.12em] text-muted-foreground/40">
           Art Plugins
           {activeCount > 0 && (
-            <span className="ml-1.5 text-phobos-green/50">{activeCount} active</span>
+            <span className="ml-1.5 text-phob-orange/50">{activeCount} active</span>
           )}
         </span>
         {rows.length < MAX_PLUGINS && !disabled && (
           <button
             onClick={addRow}
-            className="flex items-center gap-0.5 text-[8px] font-terminal text-muted-foreground/30 hover:text-phobos-green/50 transition-colors"
+            className="flex items-center gap-0.5 text-[8px] font-terminal text-phob-steel/30 hover:text-phob-orange/50 transition-colors"
           >
             <Plus className="w-2.5 h-2.5" /> add
           </button>
@@ -699,7 +699,7 @@ function PluginSlot({
               value={row.pluginId}
               disabled={disabled}
               onChange={e => selectPlugin(i, e.target.value)}
-              className="flex-1 min-w-0 text-[9px] font-mono bg-background border border-border/30 rounded-sm px-1.5 py-1 text-foreground/70 focus:outline-none focus:border-phobos-green/30 disabled:opacity-40 disabled:cursor-not-allowed appearance-none"
+              className="flex-1 min-w-0 text-[9px] font-mono bg-background border border-border/30 rounded-sm px-1.5 py-1 text-foreground/70 focus:outline-none focus:border-phob-orange/30 disabled:opacity-40 disabled:cursor-not-allowed appearance-none"
             >
               <option value="">— none —</option>
               {compatible.map(p => (
@@ -720,7 +720,7 @@ function PluginSlot({
                   value={row.weight}
                   disabled={disabled}
                   onChange={e => updateRow(i, { weight: Number(e.target.value) })}
-                  className="w-16 accent-phobos-green disabled:opacity-40"
+                  className="w-16 accent-phob-orange disabled:opacity-40"
                 />
                 <span className="text-[9px] font-mono text-muted-foreground/50 w-7 text-right">
                   {row.weight.toFixed(2)}
@@ -750,7 +750,7 @@ function PluginSlot({
               Combined weight
             </span>
             <span className={`text-[9px] font-mono ${
-              weightError ? 'text-red-400/80' : weightWarn ? 'text-phobos-amber/80' : 'text-phobos-green/60'
+              weightError ? 'text-phob-red/80' : weightWarn ? 'text-phob-amber/80' : 'text-phob-green/60'
             }`}>
               {totalWeight.toFixed(2)}
             </span>
@@ -758,7 +758,7 @@ function PluginSlot({
           <div className="h-0.5 w-full bg-border/20 rounded-full overflow-hidden">
             <div
               className={`h-full rounded-full transition-all duration-200 ${
-                weightError ? 'bg-red-400/70' : weightWarn ? 'bg-phobos-amber/60' : 'bg-phobos-green/50'
+                weightError ? 'bg-phob-red/70' : weightWarn ? 'bg-phob-amber/60' : 'bg-phob-green/50'
               }`}
               style={{ width: `${Math.min(100, (totalWeight / 2.0) * 100)}%` }}
             />
@@ -769,12 +769,12 @@ function PluginSlot({
             </p>
           )}
           {weightWarn && !weightError && (
-            <p className="text-[8px] font-mono text-phobos-amber/60 leading-relaxed">
+            <p className="text-[8px] font-mono text-phob-amber/60 leading-relaxed">
               Combined weight over 1.0 — styles may compete. Consider lowering one.
             </p>
           )}
           {conflictCategories.length > 0 && (
-            <p className="text-[8px] font-mono text-phobos-amber/60 leading-relaxed">
+            <p className="text-[8px] font-mono text-phob-amber/60 leading-relaxed">
               Multiple {conflictCategories.join(' & ')} plugins active — they may conflict.
             </p>
           )}
@@ -815,15 +815,15 @@ function AudioOutputPane({
     : null;
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center gap-3 border border-border/20 rounded-sm bg-black/40">
+    <div className="flex-1 flex flex-col items-center justify-center gap-3 border border-phob-orange/15 bg-phob-white/4">
       {isGenerating ? (
         <div className="flex flex-col items-center gap-2">
-          <Music2 className="w-6 h-6 text-phobos-green/40 animate-pulse" />
+          <Music2 className="w-6 h-6 text-phob-green/40 animate-pulse" />
           <span className="text-[9px] font-mono text-muted-foreground/40">Generating…</span>
         </div>
       ) : audioUrl ? (
         <div className="flex flex-col items-center gap-2 px-3 w-full">
-          <Volume2 className="w-4 h-4 text-phobos-green/50" />
+          <Volume2 className="w-4 h-4 text-phob-green/50" />
           <audio
             src={audioUrl}
             controls
@@ -1068,6 +1068,11 @@ export function WorkflowPanel() {
 
     setLocalParams(newParams);
     updateNodeParams(activeNode.id, newParams);
+    // Mark node stale so the run endpoint sees paramSnapshot !== params
+    // and doesn't re-use the previous generation's cached output.
+    // This also clears the node-level modelId from paramSnapshot so the
+    // run endpoint falls back to session.modelId on the next generation.
+    markStale(activeNode.index);
     // Save immediately (don't wait for debounce)
     try {
       await fetch(`${ENGINE_URL}/api/threads/${session.threadId}/workflows/${session.workflowId}/nodes/${activeNode.id}`, {
@@ -1076,7 +1081,7 @@ export function WorkflowPanel() {
         body: JSON.stringify({ params: newParams }),
       });
     } catch { /* silent */ }
-  }, [session, activeNode, localParams, updateNodeParams, downloadedModels]);
+  }, [session, activeNode, localParams, updateNodeParams, downloadedModels, markStale]);
 
   const reloadSession = useCallback(async () => {
     if (!session) return;
@@ -1345,14 +1350,14 @@ export function WorkflowPanel() {
 
   return (
     <div
-      className="phobos-panel border-t border-phobos-green/20 bg-black/95 shrink-0 flex flex-col"
+      className="border-t border-phob-orange/20 bg-[#080808] shrink-0 flex flex-col"
       style={{ height: PANEL_H }}
     >
       {/* Panel header */}
       <div className="flex items-center gap-2 px-3 h-8 border-b border-border/30 shrink-0">
         {session.workflowType === 'audio'
-          ? <Music2 className="w-3 h-3 text-phobos-green/60" />
-          : <ImageIcon className="w-3 h-3 text-phobos-green/60" />
+          ? <Music2 className="w-3 h-3 text-phob-green/60" />
+          : <ImageIcon className="w-3 h-3 text-phob-orange/50" />
         }
         {editingName ? (
           <input
@@ -1361,12 +1366,12 @@ export function WorkflowPanel() {
             onChange={(e) => setNameValue(e.target.value)}
             onBlur={() => saveRename(nameValue)}
             onKeyDown={(e) => { if (e.key === 'Enter') saveRename(nameValue); if (e.key === 'Escape') setEditingName(false); }}
-            className="text-[10px] font-terminal tracking-[0.15em] text-phobos-green/70 uppercase bg-transparent border-b border-phobos-green/40 focus:outline-none px-0 py-0 w-48"
+            className="text-[10px] font-terminal tracking-[0.15em] text-phob-orange/70 uppercase bg-transparent border-b border-phob-orange/35 focus:outline-none px-0 py-0 w-48"
           />
         ) : (
           <span
             onDoubleClick={() => { setNameValue(session.name); setEditingName(true); }}
-            className="text-[10px] font-terminal tracking-[0.15em] text-phobos-green/70 uppercase cursor-default select-none"
+            className="text-[10px] font-terminal tracking-[0.15em] text-phob-orange/70 uppercase cursor-default select-none"
             title="Double-click to rename"
           >
             {session.name}
@@ -1383,7 +1388,7 @@ export function WorkflowPanel() {
               disabled={isGenerating}
               className={`px-2 h-full text-[9px] font-terminal tracking-[0.08em] transition-colors disabled:opacity-30 ${
                 activeNode?.type === 'MusicGenerate'
-                  ? 'bg-phobos-green/20 text-phobos-green/90'
+                  ? 'bg-phob-orange/15 text-phob-orange/90'
                   : 'text-muted-foreground/50 hover:text-muted-foreground'
               }`}
               title="Music generation"
@@ -1394,7 +1399,7 @@ export function WorkflowPanel() {
               disabled={isGenerating}
               className={`px-2 h-full text-[9px] font-terminal tracking-[0.08em] transition-colors disabled:opacity-30 ${
                 activeNode?.type === 'VoiceClone'
-                  ? 'bg-sayon/15 text-sayon/90'
+                  ? 'bg-phob-teal/15 text-phob-teal/90'
                   : 'text-muted-foreground/50 hover:text-muted-foreground'
               }`}
               title="Voice clone"
@@ -1425,7 +1430,7 @@ export function WorkflowPanel() {
                   <option
                     key={m.modelId}
                     value={m.modelId}
-                    className={`bg-background ${isDisabled ? 'text-muted-foreground/30' : anyFits ? 'text-phobos-green/80' : 'text-red-400/60'}`}
+                    className={`bg-background ${isDisabled ? 'text-muted-foreground/30' : anyFits ? 'text-phob-green/80' : 'text-phob-red/60'}`}
                     disabled={isDisabled}
                   >
                     {m.displayName || m.label} ({label}){suffix}
@@ -1540,7 +1545,7 @@ export function WorkflowPanel() {
                   title={canToggleSource ? 'Right-click to toggle Generate ↔ Source' : undefined}
                   className={`w-full flex items-center gap-2 px-2 py-2 text-left transition-all border-b border-border/10 ${
                     isActive
-                      ? 'bg-phobos-green/8 border-l-2 border-l-phobos-green/50'
+                      ? 'bg-phob-orange/8 border-l-2 border-l-phob-orange/50'
                       : 'hover:bg-muted/20 border-l-2 border-l-transparent'
                   } ${isGenerating ? 'opacity-60 cursor-not-allowed' : ''}`}
                 >
@@ -1553,7 +1558,7 @@ export function WorkflowPanel() {
                       {node.executedAt ? 'done' : 'pending'}
                     </div>
                   </div>
-                  {isActive && <ChevronRight className="w-3 h-3 text-phobos-green/40 shrink-0" />}
+                  {isActive && <ChevronRight className="w-3 h-3 text-phob-orange/40 shrink-0" />}
                 </button>
               );
             })}
@@ -1601,7 +1606,7 @@ export function WorkflowPanel() {
             <button
               onClick={() => runGenerate(nodes.length - 1, true)}
               disabled={isGenerating}
-              className="w-full flex items-center gap-1.5 px-2 py-2 text-[10px] font-terminal tracking-[0.1em] text-phobos-green/80 hover:text-phobos-green hover:bg-phobos-green/8 transition-all disabled:opacity-30 disabled:cursor-not-allowed border-t border-phobos-green/10"
+              className="w-full flex items-center gap-1.5 px-2 py-2 text-[10px] font-terminal tracking-[0.1em] text-phob-orange/70 hover:text-phob-orange hover:bg-phob-orange/8 transition-all disabled:opacity-30 disabled:cursor-not-allowed border-t border-phob-orange/15"
             >
               {isGenerating ? (
                 <Loader2 className="w-3 h-3 animate-spin shrink-0" />
@@ -1617,9 +1622,9 @@ export function WorkflowPanel() {
         <div className="flex-1 flex flex-col min-w-0 border-r border-border/30 relative">
           {/* Generation lockout overlay with phase checklist */}
           {isGenerating && (
-            <div className="absolute inset-0 bg-black/70 z-10 flex flex-col items-center justify-center gap-3 px-6">
-              <Loader2 className="w-5 h-5 text-phobos-green/50 animate-spin" />
-              <span className="text-[11px] font-terminal tracking-[0.15em] text-phobos-green/60 uppercase">
+            <div className="absolute inset-0 bg-phob-void/80 z-10 flex flex-col items-center justify-center gap-3 px-6">
+              <Loader2 className="w-5 h-5 text-phob-orange/50 animate-spin" />
+              <span className="text-[11px] font-terminal tracking-[0.15em] text-phob-orange/60 uppercase">
                 Generating · Node {(currentProg?.nodeIndex ?? activeNodeIndex) + 1}
               </span>
               {/* Phase checklist */}
@@ -1628,11 +1633,11 @@ export function WorkflowPanel() {
                   {currentPhases.map((p, i) => (
                     <div key={i} className="flex items-center gap-2">
                       {p.done ? (
-                        <CheckCircle className="w-3 h-3 text-phobos-green/50 shrink-0" />
+                        <CheckCircle className="w-3 h-3 text-phob-green/50 shrink-0" />
                       ) : (
-                        <Loader2 className="w-3 h-3 text-phobos-green/40 animate-spin shrink-0" />
+                        <Loader2 className="w-3 h-3 text-phob-orange/40 animate-spin shrink-0" />
                       )}
-                      <span className={`text-[10px] font-mono truncate ${p.done ? 'text-muted-foreground/40' : 'text-phobos-green/60'}`}>
+                      <span className={`text-[10px] font-mono truncate ${p.done ? 'text-phob-steel/40' : 'text-phob-orange/60'}`}>
                         {p.detail || p.renderPhase}
                       </span>
                     </div>
@@ -1644,11 +1649,11 @@ export function WorkflowPanel() {
                 <div className="w-full max-w-xs flex flex-col gap-1">
                   <div className="w-full h-1 bg-muted/20 rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-phobos-green/50 rounded-full transition-all duration-300"
+                      className="h-full bg-phob-orange/50 transition-all duration-300"
                       style={{ width: `${Math.round((currentProg.step / currentProg.totalSteps) * 100)}%` }}
                     />
                   </div>
-                  <span className="text-[9px] font-mono text-phobos-green/40 text-center">
+                  <span className="text-[9px] font-mono text-phob-orange/40 text-center">
                     {batchStep ? `Batch ${batchStep.current}/${batchStep.total} · ` : ''}Step {currentProg.step} / {currentProg.totalSteps}
                   </span>
                 </div>
@@ -1677,11 +1682,11 @@ export function WorkflowPanel() {
                     Source Image
                   </span>
                   {activeNode.outputPath && (
-                    <span className="text-[9px] font-mono text-phobos-green/40 ml-auto">Ready</span>
+                    <span className="text-[9px] font-mono text-phob-green/40 ml-auto">Ready</span>
                   )}
                 </div>
                 <div
-                  className="flex-1 flex flex-col items-center justify-center gap-3 px-6 cursor-pointer border-2 border-dashed border-border/20 hover:border-phobos-green/30 m-2 rounded transition-colors"
+                  className="flex-1 flex flex-col items-center justify-center gap-3 px-6 cursor-pointer border-2 border-dashed border-phob-orange/15 hover:border-phob-orange/30 m-2 transition-colors"
                   onClick={() => {
                     const input = document.createElement('input');
                     input.type = 'file';
@@ -1705,11 +1710,11 @@ export function WorkflowPanel() {
                     };
                     input.click();
                   }}
-                  onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-phobos-green/50'); }}
-                  onDragLeave={(e) => { e.currentTarget.classList.remove('border-phobos-green/50'); }}
+                  onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-phob-orange/50'); }}
+                  onDragLeave={(e) => { e.currentTarget.classList.remove('border-phob-orange/50'); }}
                   onDrop={async (e) => {
                     e.preventDefault();
-                    e.currentTarget.classList.remove('border-phobos-green/50');
+                    e.currentTarget.classList.remove('border-phob-orange/50');
                     const file = e.dataTransfer.files[0];
                     if (!file || !session) return;
                     const ext = file.name.split('.').pop()?.toLowerCase();
@@ -1760,7 +1765,7 @@ export function WorkflowPanel() {
                   <button
                     onClick={() => batchEnabled ? runBatch(activeNode.index, batchCount) : runGenerate(activeNode.index)}
                     disabled={isGenerating}
-                    className="flex items-center gap-1.5 px-3 py-1 text-[10px] font-terminal tracking-[0.1em] border border-phobos-green/30 text-phobos-green/70 hover:text-phobos-green hover:border-phobos-green/50 rounded-sm transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                    className="flex items-center gap-1.5 px-3 py-1 text-[10px] font-terminal tracking-[0.1em] border border-phob-orange/30 text-phob-orange/70 hover:text-phob-orange hover:border-phob-orange/50 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
                   >
                     {isGenerating
                       ? batchStep
@@ -1777,7 +1782,7 @@ export function WorkflowPanel() {
                         checked={batchEnabled}
                         onChange={(e) => setBatchEnabled(e.target.checked)}
                         disabled={isGenerating}
-                        className="w-3 h-3 accent-phobos-green"
+                        className="w-3 h-3 accent-phob-orange"
                       />
                       <span className="text-[9px] font-mono text-muted-foreground/50">batch</span>
                     </label>
@@ -1790,7 +1795,7 @@ export function WorkflowPanel() {
                       value={batchCount}
                       onChange={(e) => setBatchCount(Math.max(2, parseInt(e.target.value) || 2))}
                       disabled={isGenerating}
-                      className="w-14 px-2 py-1 text-[11px] font-mono text-center bg-black/50 border border-phobos-green/20 rounded-sm text-phobos-green/70 focus:outline-none focus:border-phobos-green/50 disabled:opacity-30"
+                      className="w-14 px-2 py-1 text-[11px] font-mono text-center bg-phob-white/5 border border-phob-orange/20 text-phob-orange/70 focus:outline-none focus:border-phob-orange/50 disabled:opacity-30"
                     />
                   )}
                   {/* Export — image/video only */}
@@ -1806,7 +1811,7 @@ export function WorkflowPanel() {
                         } catch { /* non-fatal */ }
                       }}
                       disabled={isGenerating}
-                      className="ml-auto flex items-center gap-1 px-2 py-1 text-[9px] font-terminal tracking-[0.1em] border border-border/30 text-ui-glow hover:text-phobos-green/70 hover:border-phobos-green/30 rounded-sm transition-all disabled:opacity-30"
+                      className="ml-auto flex items-center gap-1 px-2 py-1 text-[9px] font-terminal tracking-[0.1em] border border-phob-orange/20 text-phob-steel/50 hover:text-phob-orange/70 hover:border-phob-orange/30 transition-all disabled:opacity-30"
                       title="Export to images folder"
                     >
                       ↓ EXPORT

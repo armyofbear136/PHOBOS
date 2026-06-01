@@ -57,8 +57,8 @@ function nextRuns(expr: string): string[] {
   return results;
 }
 
-const INPUT = 'w-full bg-transparent border border-border/50 rounded-sm px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-phobos-green/40 transition-colors';
-const LABEL = 'block text-[10px] font-terminal uppercase tracking-[0.12em] text-muted-foreground/60 mb-1';
+const INPUT = 'w-full bg-transparent border border-phob-amber/20 px-2 py-1.5 text-xs text-phob-white/85 placeholder:text-phob-steel/40 bg-phob-white/4 focus:outline-none focus:border-phob-amber/40 transition-colors';
+const LABEL = 'block text-[10px] font-terminal uppercase tracking-[0.12em] text-phob-steel/50 mb-1';
 
 export function TaskBuilderDialog({ initial, onSave, onClose, saving }: Props) {
   const [name,        setName]        = useState(initial?.name ?? '');
@@ -129,19 +129,19 @@ export function TaskBuilderDialog({ initial, onSave, onClose, saving }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 backdrop-blur-sm">
-      <div className="w-[560px] max-w-[96vw] bg-card border border-border rounded-sm flex flex-col shadow-2xl max-h-[90vh]">
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-phob-void/85 backdrop-blur-sm">
+      <div className="w-[560px] max-w-[96vw] bg-[#0f0f0a] border border-phob-amber/30 flex flex-col shadow-[0_0_24px_rgba(200,160,0,0.10)] max-h-[90vh] phob-corners">
 
         {/* Header */}
-        <div className="h-10 flex items-center justify-between px-3 border-b border-border/50 bg-background shrink-0">
+        <div className="h-10 flex items-center justify-between px-3 border-b border-phob-amber/20 bg-[#080808] shrink-0">
           <div className="flex items-center gap-2">
-            <Clock className="w-3.5 h-3.5 text-phobos-green/50" />
-            <span className="text-[10px] font-terminal uppercase tracking-[0.15em] text-phobos-green/70">
+            <Clock className="w-3.5 h-3.5 text-phob-amber/50" />
+            <span className="text-[10px] font-terminal uppercase tracking-[0.15em] text-phob-amber/70">
               {initial ? 'Edit Task' : 'New Scheduled Task'}
             </span>
           </div>
-          <button onClick={onClose} className="p-1 hover:bg-accent rounded transition-colors">
-            <X className="w-3.5 h-3.5 text-muted-foreground" />
+          <button onClick={onClose} className="p-1 hover:bg-phob-amber/8 rounded transition-colors">
+            <X className="w-3.5 h-3.5 text-phob-steel/50" />
           </button>
         </div>
 
@@ -167,10 +167,10 @@ export function TaskBuilderDialog({ initial, onSave, onClose, saving }: Props) {
             <div className="flex flex-wrap gap-1 mb-2">
               {PRESETS.map((p, i) => (
                 <button key={i} onClick={() => selectPreset(i)}
-                  className={`px-2 py-0.5 text-[9px] font-terminal uppercase tracking-widest rounded-sm border transition-colors ${
+                  className={`px-2 py-0.5 text-[9px] font-terminal uppercase tracking-widest  border transition-colors ${
                     presetIdx === i
-                      ? 'border-phobos-green/50 text-phobos-green/80 bg-phobos-green/5'
-                      : 'border-border/40 text-muted-foreground/50 hover:text-muted-foreground/70 hover:border-border/60'
+                      ? 'border-phob-green/50 text-phob-amber/80 bg-phob-green/5'
+                      : 'border-phob-amber/15 text-phob-steel/50 hover:text-phob-white/70 hover:border-phob-amber/30'
                   }`}
                 >
                   {p.label}
@@ -183,7 +183,7 @@ export function TaskBuilderDialog({ initial, onSave, onClose, saving }: Props) {
             {cron && (
               <div className="mt-1.5 space-y-0.5">
                 {cronValid ? previews.map((ts, i) => (
-                  <div key={i} className="text-[9px] text-phobos-green/50 font-mono">
+                  <div key={i} className="text-[9px] text-phob-amber/50 font-mono">
                     {i === 0 ? '↳ next: ' : '        '}{ts}
                   </div>
                 )) : (
@@ -204,10 +204,10 @@ export function TaskBuilderDialog({ initial, onSave, onClose, saving }: Props) {
           {/* Enabled */}
           <div className="flex items-center gap-2">
             <button onClick={() => setEnabled(v => !v)}
-              className={`w-8 h-4 rounded-full transition-colors relative ${enabled ? 'bg-phobos-green/60' : 'bg-border'}`}>
+              className={`w-8 h-4 rounded-full transition-colors relative ${enabled ? 'bg-phob-amber/60' : 'bg-border'}`}>
               <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${enabled ? 'left-4' : 'left-0.5'}`} />
             </button>
-            <span className="text-[10px] font-terminal text-muted-foreground/60">
+            <span className="text-[10px] font-terminal text-phob-steel/50">
               {enabled ? 'Enabled -- will fire on schedule' : 'Disabled'}
             </span>
           </div>
@@ -218,14 +218,14 @@ export function TaskBuilderDialog({ initial, onSave, onClose, saving }: Props) {
             <div className="flex flex-wrap gap-1">
               {(['conversation', 'background', 'ha'] as const).map(t => (
                 <button key={t} onClick={() => setTaskType(t)}
-                  className={`px-2.5 py-0.5 text-[9px] font-terminal uppercase tracking-widest rounded-sm border transition-colors ${
+                  className={`px-2.5 py-0.5 text-[9px] font-terminal uppercase tracking-widest  border transition-colors ${
                     taskType === t
-                      ? 'border-phobos-green/50 text-phobos-green/80 bg-phobos-green/5'
-                      : 'border-border/40 text-muted-foreground/50 hover:text-muted-foreground/70 hover:border-border/60'
+                      ? 'border-phob-green/50 text-phob-amber/80 bg-phob-green/5'
+                      : 'border-phob-amber/15 text-phob-steel/50 hover:text-phob-white/70 hover:border-phob-amber/30'
                   }`}>{t}</button>
               ))}
             </div>
-            <p className="text-[9px] font-mono text-muted-foreground/30 mt-1.5 leading-relaxed">
+            <p className="text-[9px] font-mono text-phob-steel/30 mt-1.5 leading-relaxed">
               {taskType === 'conversation' && 'Fires a prompt into the copilot panel. Requires the frontend to be open.'}
               {taskType === 'background' && 'Runs a headless background handler. Works while frontend is closed.'}
               {taskType === 'ha' && 'Home Assistant watch duty. Monitors home state and acts or alerts on conditions.'}
@@ -242,7 +242,7 @@ export function TaskBuilderDialog({ initial, onSave, onClose, saving }: Props) {
                 onChange={e => setHaApprovals(e.target.value)}
                 placeholder="e.g. lock.lock, climate.*, all_writes"
               />
-              <p className="text-[9px] font-mono text-muted-foreground/30 mt-1 leading-relaxed">
+              <p className="text-[9px] font-mono text-phob-steel/30 mt-1 leading-relaxed">
                 Comma-separated HA service patterns that require user confirmation before execution.
                 Use <span className="text-muted-foreground/50">domain.*</span> to require approval for all actions in a domain,
                 or <span className="text-muted-foreground/50">all_writes</span> to gate every service call.
@@ -252,31 +252,31 @@ export function TaskBuilderDialog({ initial, onSave, onClose, saving }: Props) {
           )}
 
           {/* Model Overrides */}
-          <div className="border border-border/30 rounded-sm overflow-hidden">
+          <div className="border border-border/30  overflow-hidden">
             <button
               onClick={() => setOverridesOpen(v => !v)}
-              className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-accent/30 transition-colors"
+              className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-phob-amber/8/30 transition-colors"
             >
               {overridesOpen
-                ? <ChevronDown  className="w-3 h-3 text-muted-foreground/40 shrink-0" />
-                : <ChevronRight className="w-3 h-3 text-muted-foreground/40 shrink-0" />}
+                ? <ChevronDown  className="w-3 h-3 text-phob-steel/40 shrink-0" />
+                : <ChevronRight className="w-3 h-3 text-phob-steel/40 shrink-0" />}
               <span className="text-[10px] font-terminal uppercase tracking-[0.12em] text-muted-foreground/50">
                 Model Overrides
               </span>
               {(pinnedSayon || pinnedSeren || pinnedCartridge) && (
-                <span className="ml-auto text-[9px] font-mono text-phobos-green/50">active</span>
+                <span className="ml-auto text-[9px] font-mono text-phob-amber/50">active</span>
               )}
             </button>
 
             {overridesOpen && (
-              <div className="px-3 pb-3 pt-1 flex flex-col gap-3 border-t border-border/20 bg-black/20">
+              <div className="px-3 pb-3 pt-1 flex flex-col gap-3 border-t border-border/20 bg-phob-white/3">
                 <p className="text-[9px] font-mono text-muted-foreground/35 leading-relaxed mt-1">
                   Override the active model for this task only. Leave blank to use whatever is currently loaded.
                   Pin a vision-capable model here if this task analyzes camera images.
                 </p>
 
                 {/* SAYON model + cartridge */}
-                <div className="border border-border/20 rounded-sm p-2.5 space-y-2">
+                <div className="border border-border/20  p-2.5 space-y-2">
                   <span className="text-[10px] font-terminal uppercase tracking-widest text-sayon/60">SAYON</span>
                   <div>
                     <label className={LABEL}>Model</label>
@@ -308,7 +308,7 @@ export function TaskBuilderDialog({ initial, onSave, onClose, saving }: Props) {
                 </div>
 
                 {/* SEREN model + cartridge */}
-                <div className="border border-border/20 rounded-sm p-2.5 space-y-2">
+                <div className="border border-border/20  p-2.5 space-y-2">
                   <span className="text-[10px] font-terminal uppercase tracking-widest text-seren/60">SEREN</span>
                   <div>
                     <label className={LABEL}>Model</label>
@@ -345,13 +345,13 @@ export function TaskBuilderDialog({ initial, onSave, onClose, saving }: Props) {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border/50 bg-black/30 shrink-0">
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border/50 bg-phob-white/4 shrink-0">
           <button onClick={onClose}
-            className="px-3 py-1 text-[10px] font-terminal uppercase tracking-widest border border-border/40 text-muted-foreground/60 hover:text-muted-foreground rounded-sm transition-colors">
+            className="px-3 py-1 text-[10px] font-terminal uppercase tracking-widest border border-phob-amber/20 text-phob-steel/60/60 hover:text-muted-foreground  transition-colors">
             Cancel
           </button>
           <button onClick={handleSave} disabled={saving || !name.trim() || !cron.trim() || !prompt.trim() || !cronValid}
-            className="px-4 py-1 text-[10px] font-terminal uppercase tracking-widest border border-phobos-green/40 text-phobos-green/80 hover:bg-phobos-green/5 disabled:opacity-40 disabled:cursor-not-allowed rounded-sm transition-colors">
+            className="px-4 py-1 text-[10px] font-terminal uppercase tracking-widest border border-phob-green/40 text-phob-amber/80 hover:bg-phob-green/5 disabled:opacity-40 disabled:cursor-not-allowed  transition-colors">
             {saving ? 'Saving...' : 'Save Task'}
           </button>
         </div>

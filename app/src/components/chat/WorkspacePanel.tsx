@@ -21,16 +21,16 @@ const PAD = 6;            // px — top+bottom padding inside zone
 const ZONE_INNER_H = CELL_H * 2 + LABEL_H * 2 + GAP + PAD * 2; // ~146px
 
 const LANG_BADGE: Record<string, { label: string; bg: string; text: string }> = {
-  typescript:  { label: 'TS',   bg: 'bg-phobos-blue/20', text: 'text-phobos-blue' },
-  javascript:  { label: 'JS',   bg: 'bg-phobos-amber/20', text: 'text-phobos-amber' },
-  python:      { label: 'PY',   bg: 'bg-phobos-green/20', text: 'text-phobos-green' },
-  gdscript:    { label: 'GD',   bg: 'bg-sayon/20', text: 'text-sayon' },
-  rust:        { label: 'RS',   bg: 'bg-phobos-amber/20', text: 'text-phobos-amber' },
-  go:          { label: 'GO',   bg: 'bg-sayon/20', text: 'text-sayon' },
-  markdown:    { label: 'MD',   bg: 'bg-phobos-blue/20', text: 'text-phobos-blue' },
-  json:        { label: 'JSON', bg: 'bg-phobos-amber/20', text: 'text-phobos-amber' },
+  typescript:  { label: 'TS',   bg: 'bg-phob-teal/20', text: 'text-phob-teal' },
+  javascript:  { label: 'JS',   bg: 'bg-phob-amber/20', text: 'text-phob-amber' },
+  python:      { label: 'PY',   bg: 'bg-phob-green/20', text: 'text-phob-green' },
+  gdscript:    { label: 'GD',   bg: 'bg-phob-teal/20', text: 'text-phob-teal' },
+  rust:        { label: 'RS',   bg: 'bg-phob-orange/20', text: 'text-phob-orange' },
+  go:          { label: 'GO',   bg: 'bg-phob-teal/20', text: 'text-phob-teal' },
+  markdown:    { label: 'MD',   bg: 'bg-phob-yellow/20', text: 'text-phob-yellow' },
+  json:        { label: 'JSON', bg: 'bg-phob-amber/20', text: 'text-phob-amber' },
   shell:       { label: 'SH',   bg: 'bg-lime-500/20',    text: 'text-lime-400' },
-  csharp:      { label: 'C#',   bg: 'bg-seren/20', text: 'text-seren' },
+  csharp:      { label: 'C#',   bg: 'bg-phob-yellow/20', text: 'text-phob-yellow' },
   text:        { label: 'TXT',  bg: 'bg-muted',          text: 'text-muted-foreground' },
 };
 
@@ -341,8 +341,8 @@ export function WorkspacePanel() {
             <span
               className={`w-1.5 h-1.5 rounded-full transition-all duration-500 ${
                 syncing
-                  ? 'bg-phobos-green/80 shadow-[0_0_6px_2px_rgba(74,222,128,0.5)]'
-                  : 'bg-phobos-green/10'
+                  ? 'bg-phob-green/80 shadow-[0_0_6px_2px_rgba(0,255,65,0.4)]'
+                  : 'bg-phob-green/10'
               }`}
             />
           </button>
@@ -351,7 +351,7 @@ export function WorkspacePanel() {
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
               placeholder="filter…"
-              className="flex-1 bg-transparent text-[10px] font-mono text-foreground/60 placeholder:text-muted-foreground/20 focus:outline-none border-b border-border/20 focus:border-phobos-green/30 pb-0.5 mx-2 transition-all"
+              className="flex-1 bg-transparent text-[10px] font-mono text-foreground/60 placeholder:text-muted-foreground/20 focus:outline-none border-b border-border/20 focus:border-phob-orange/30 pb-0.5 mx-2 transition-all"
             />
           )}
           <div className="ml-auto flex items-center gap-1">
@@ -371,10 +371,10 @@ export function WorkspacePanel() {
           <div className="relative border-t border-border/50">
             {/* Unified drag overlay — appears over both zones simultaneously */}
             {panelDragOver && (
-              <div className="absolute inset-0 z-20 pointer-events-none border-2 border-phobos-green/40 bg-phobos-green/5 rounded-sm flex items-center justify-center gap-3">
-                <FolderOpen className="w-4 h-4 text-phobos-green/60" />
-                <span className="text-[10px] font-mono text-phobos-green/60 tracking-wider">DROP TO SORT</span>
-                <Image className="w-4 h-4 text-phobos-green/60" />
+              <div className="absolute inset-0 z-20 pointer-events-none border-2 border-phob-orange/40 bg-phob-orange/5 flex items-center justify-center gap-3">
+                <FolderOpen className="w-4 h-4 text-phob-orange/60" />
+                <span className="text-[10px] font-mono text-phob-orange/60 tracking-wider">DROP TO SORT</span>
+                <Image className="w-4 h-4 text-phob-orange/60" />
               </div>
             )}
             <div className="flex" style={{ height: ZONE_INNER_H }}>
@@ -501,8 +501,8 @@ function MediaCell({ file, threadId, isDeleting, onDelete, onDeleteConfirm, onDe
   return (
     <div className="group relative flex flex-col items-center" style={{ width: CELL_W }}>
       <div
-        className={`rounded border overflow-hidden flex items-center justify-center hover:border-phobos-green/30 transition-colors cursor-pointer ${
-          isVid ? 'border-phobos-amber/20 bg-phobos-amber/5'
+        className={`rounded border overflow-hidden flex items-center justify-center hover:border-phob-orange/25 transition-colors cursor-pointer ${
+          isVid ? 'border-phob-amber/20 bg-phob-amber/5'
           : isAud ? 'border-sayon/20 bg-sayon/5'
           : 'border-border/20 bg-muted/20'
         }`}
@@ -513,9 +513,9 @@ function MediaCell({ file, threadId, isDeleting, onDelete, onDeleteConfirm, onDe
         {isImg ? (
           <img src={thumbnailUrl(threadId, file.filename, file.createdAt, dir)} alt={file.filename} className="w-full h-full object-cover" loading="lazy" />
         ) : isVid ? (
-          <Film className="w-5 h-5 text-phobos-amber/50" />
+          <Film className="w-5 h-5 text-phob-amber/50" />
         ) : isAud ? (
-          <Music className="w-5 h-5 text-sayon/50" />
+          <Music className="w-5 h-5 text-phob-teal/50" />
         ) : (
           <FileIcon className="w-5 h-5 text-muted-foreground/40" />
         )}

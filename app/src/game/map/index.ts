@@ -19,6 +19,11 @@
 
 import { ROOMS_A1Z0,  REGIONS_A1Z0,  ZONE_A1Z0  } from './act1/A1Z0_CraterFlat';
 import { ROOMS_A1Z1,  REGIONS_A1Z1,  ZONE_A1Z1  } from './act1/A1Z1_ObsidianShelf';
+import { ROOMS_A1Z2,  REGIONS_A1Z2,  ZONE_A1Z2  } from './act1/A1Z2_DustBowl';
+import { ROOMS_A1Z3,  REGIONS_A1Z3,  ZONE_A1Z3  } from './act1/A1Z3_CalderaRing';
+import { ROOMS_A1Z4,  REGIONS_A1Z4,  ZONE_A1Z4  } from './act1/A1Z4_RiftValley';
+import { ROOMS_A1Z5,  REGIONS_A1Z5,  ZONE_A1Z5  } from './act1/A1Z5_FaultLine';
+import { ROOMS_A1Z6,  REGIONS_A1Z6,  ZONE_A1Z6  } from './act1/A1Z6_LavaShelf';
 
 // ── Act II ────────────────────────────────────────────────────────────────────
 // Zone 31 is the migrated barracks-block reference implementation.
@@ -32,17 +37,29 @@ import type { RoomDef, RegionDef, ZoneDef } from '../ExplorationZoneManager';
 export const ROOM_CATALOGUE: RoomDef[] = [
   ...ROOMS_A1Z0,
   ...ROOMS_A1Z1,
+  ...ROOMS_A1Z2,
+  ...ROOMS_A1Z3,
+  ...ROOMS_A1Z4,
+  ...ROOMS_A1Z5,
   ...ROOMS_A2Z31,
 ];
 
 export const REGION_REGISTRY: RegionDef[] = [
   ...REGIONS_A1Z0,
   ...REGIONS_A1Z1,
+  ...REGIONS_A1Z2,
+  ...REGIONS_A1Z3,
+  ...REGIONS_A1Z4,
+  ...REGIONS_A1Z5,
   ...REGIONS_A2Z31,
 ];
 
 export const ZONE_LIBRARY: ZoneDef[] = [
   ZONE_A1Z0,
   ZONE_A1Z1,
+  ZONE_A1Z2,
+  ZONE_A1Z3,
+  ZONE_A1Z4,
+  ZONE_A1Z5,
   ZONE_A2Z31,
 ];

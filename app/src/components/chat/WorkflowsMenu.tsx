@@ -4,6 +4,7 @@ import { useWorkflowStore, type WorkflowIndexEntry, type WorkflowSession } from 
 import { useAppStore } from '@/store/useAppStore';
 
 const ENGINE_URL = (import.meta.env.VITE_ENGINE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
+const sessionToken = () => sessionStorage.getItem('phobos_session') ?? '';
 
 function relTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -115,7 +116,7 @@ export function WorkflowsMenu({ threadId }: WorkflowsMenuProps) {
           //   URL is stable and the browser serves from cache without flicker.
           const isGenerating = !!generating[entry.workflowId];
           const cacheBust = isGenerating ? pollTs : (entry.thumbPath ? encodeURIComponent(entry.thumbPath) : 'none');
-          const thumbUrl = `/api/threads/${threadId}/workflows/${entry.workflowId}/thumbnail?r=${cacheBust}`;
+          const thumbUrl = `/api/threads/${threadId}/workflows/${entry.workflowId}/thumbnail?r=${cacheBust}&token=${sessionToken()}`;
           return (
             <div
               key={entry.workflowId}

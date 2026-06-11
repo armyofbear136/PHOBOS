@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Download } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { CLIENT_VERSION } from '@/version';
 import { useAppStore } from '@/store/useAppStore';
 
@@ -91,10 +92,30 @@ export function ConnectionSplash() {
   // First-run setup form
   const [setupUsername,    setSetupUsername]    = useState('');
   const [setupDisplayName, setSetupDisplayName] = useState('');
+  const [setupPassword,    setSetupPassword]    = useState('');
+  const [setupConfirmPw,   setSetupConfirmPw]   = useState('');
   const [setupError,       setSetupError]       = useState('');
   const [setupSubmitting,  setSetupSubmitting]  = useState(false);
 
-  const setBootPhase = useAppStore((s) => s.setBootPhase);
+  const setBootPhase  = useAppStore((s) => s.setBootPhase);
+  const queryClient   = useQueryClient();
+
+  // Login phase — shown after boot reaches ready on multi-user installs.
+  // null = not yet determined, false = needs login, true = logged in.
+  const [loginComplete,  setLoginComplete]  = useState<boolean | null>(null);
+  const [loginUsers,     setLoginUsers]     = useState<{ username: string; display_name: string }[]>([]);
+  const [loginSelected,  setLoginSelected]  = useState<string>('');
+  const [loginPassword,  setLoginPassword]  = useState('');
+  const [loginError,     setLoginError]     = useState<string | null>(null);
+  const [loginSubmitting,setLoginSubmitting] = useState(false);
+
+  // Password-setup sub-screen — shown when the selected user has no password yet.
+  // Replaces the single password field with a set-new-password + confirm pair.
+  const [needsPasswordSetup,  setNeedsPasswordSetup]  = useState(false);
+  const [setupNewPassword,    setSetupNewPassword]    = useState('');
+  const [setupNewConfirm,     setSetupNewConfirm]     = useState('');
+  const [setupNewError,       setSetupNewError]       = useState<string | null>(null);
+  const [setupNewSubmitting,  setSetupNewSubmitting]  = useState(false);
 
   const esRef    = useRef<EventSource | null>(null);
   const reloaded = useRef(false);
@@ -145,11 +166,45 @@ export function ConnectionSplash() {
         setBootPhase(state.phase);
 
         // If the very first message is already 'ready', the server finished
-        // booting before we connected — normal disconnect reason. Do NOT reload,
-        // just close the SSE and let the status poll drive re-connection.
+        // booting before we connected — post-reload path. Always check session
+        // status to decide whether to show the login screen. This fires on every
+        // page load/refresh so the app never auto-mounts without a valid session.
         if (state.phase === 'ready' && bootState === null) {
           es.close();
           esRef.current = null;
+
+          // Fetch session status and user list in parallel.
+          Promise.all([
+            fetch(`${ENGINE_URL}/api/session/status`).then(r => r.json()) as Promise<{
+              loggedIn: boolean; lastUser: string;
+            }>,
+            fetch(`${ENGINE_URL}/api/users/list`).then(r => r.json()) as Promise<{
+              users: { username: string; display_name: string }[];
+            }>,
+          ])
+            .then(([status, userList]) => {
+              const users = userList.users ?? [];
+              setLoginUsers(users);
+
+              if (status.loggedIn) {
+                // Valid session already in sessionStorage — go straight through.
+                setLoginComplete(true);
+                setBootPhase('ready');
+              } else {
+                // No valid session — show login screen.
+                // Pre-select lastUser from active-user.json if they're in the list,
+                // otherwise default to the first user.
+                const preSelect = users.find(u => u.username === status.lastUser)
+                  ?? users[0];
+                if (preSelect) setLoginSelected(preSelect.username);
+                setLoginComplete(false);
+              }
+            })
+            .catch(() => {
+              // Can't determine state — fail open and boot through.
+              setLoginComplete(true);
+              setBootPhase('ready');
+            });
           return;
         }
 
@@ -201,13 +256,25 @@ export function ConnectionSplash() {
       setSetupError('2–32 characters: lowercase letters, numbers, _ or -');
       return;
     }
+    if (setupPassword.length < 8) {
+      setSetupError('Password must be at least 8 characters.');
+      return;
+    }
+    if (setupPassword !== setupConfirmPw) {
+      setSetupError('Passwords do not match.');
+      return;
+    }
     setSetupError('');
     setSetupSubmitting(true);
     try {
       const res = await fetch(`${ENGINE_URL}/api/setup/init`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ username: u, displayName: setupDisplayName.trim() || u }),
+        body:    JSON.stringify({
+          username:    u,
+          displayName: setupDisplayName.trim() || u,
+          password:    setupPassword,
+        }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({})) as { error?: string };
@@ -220,6 +287,284 @@ export function ConnectionSplash() {
       setSetupSubmitting(false);
     }
   };
+
+  // ── Local login screen ─────────────────────────────────────────────────────
+  const handleLoginSubmit = async () => {
+    if (!loginSelected || !loginPassword) return;
+    setLoginSubmitting(true);
+    setLoginError(null);
+    try {
+      const res = await fetch(`${ENGINE_URL}/api/session/login`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ username: loginSelected, password: loginPassword }),
+      });
+      if (res.ok) {
+        const data = await res.json() as { sessionToken: string };
+        sessionStorage.setItem('phobos_session', data.sessionToken);
+        // Immediately re-poll /api/status with the new token so backendAlive
+        // flips to true before Index.tsx recalculates splashVisible. Without
+        // this, the 5 s interval fires first with a stale 401, backendAlive
+        // stays false, and the main UI never mounts.
+        void queryClient.invalidateQueries({ queryKey: ['status'] });
+        setLoginComplete(true);
+        setBootPhase('ready');
+      } else {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        if (data.error === 'no_password_set') {
+          // User exists but has no credential row yet (pre-upgrade or new
+          // secondary user). Switch to the set-password sub-screen.
+          setLoginPassword('');
+          setLoginError(null);
+          setNeedsPasswordSetup(true);
+        } else {
+          setLoginError('Incorrect password.');
+        }
+      }
+    } catch {
+      setLoginError('Could not reach server.');
+    } finally {
+      setLoginSubmitting(false);
+    }
+  };
+
+  // ── Password setup for existing users with no credential row ─────────────
+  // Called from the set-password sub-screen inside renderLoginScreen.
+  // POSTs to /api/admin/auth/setup, then immediately logs in on success.
+  const handlePasswordSetupSubmit = async () => {
+    if (setupNewPassword.length < 8) {
+      setSetupNewError('Password must be at least 8 characters.');
+      return;
+    }
+    if (setupNewPassword !== setupNewConfirm) {
+      setSetupNewError('Passwords do not match.');
+      return;
+    }
+    setSetupNewError(null);
+    setSetupNewSubmitting(true);
+    try {
+      const res = await fetch(`${ENGINE_URL}/api/admin/auth/setup`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          username: loginSelected,
+          password: setupNewPassword,
+          confirm:  setupNewConfirm,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        setSetupNewError(data.error ?? `Server error ${res.status}`);
+        return;
+      }
+      // Password set — now log in automatically with the new password.
+      const loginRes = await fetch(`${ENGINE_URL}/api/session/login`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ username: loginSelected, password: setupNewPassword }),
+      });
+      if (loginRes.ok) {
+        const data = await loginRes.json() as { sessionToken: string };
+        sessionStorage.setItem('phobos_session', data.sessionToken);
+        void queryClient.invalidateQueries({ queryKey: ['status'] });
+        setLoginComplete(true);
+        setBootPhase('ready');
+      } else {
+        // Password was set but login failed — fall back to normal login screen.
+        setNeedsPasswordSetup(false);
+        setSetupNewPassword('');
+        setSetupNewConfirm('');
+        setLoginError('Password set — please sign in.');
+      }
+    } catch {
+      setSetupNewError('Could not reach server.');
+    } finally {
+      setSetupNewSubmitting(false);
+    }
+  };
+
+  const renderLoginScreen = () => (
+    <div style={{
+      position: 'fixed', inset: 0,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: '#0a0a06',
+      zIndex: 9999,
+    }}>
+      <div style={{
+        width: '100%', maxWidth: 360,
+        background: 'rgba(232,66,10,0.04)',
+        border: '1px solid rgba(232,66,10,0.2)',
+        padding: '28px 28px 24px',
+        boxSizing: 'border-box',
+      }}>
+        <div style={{ marginBottom: 20 }}>
+          <span style={{ ...mono, fontSize: 10, color: 'rgba(232,66,10,0.7)', letterSpacing: '0.2em' }}>
+            // SELECT USER
+          </span>
+        </div>
+
+        {/* User cards */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 18 }}>
+          {loginUsers.map(u => (
+            <button
+              key={u.username}
+              onClick={() => {
+                setLoginSelected(u.username);
+                setLoginPassword('');
+                setLoginError(null);
+                setNeedsPasswordSetup(false);
+                setSetupNewPassword('');
+                setSetupNewConfirm('');
+                setSetupNewError(null);
+              }}
+              style={{
+                textAlign: 'left', padding: '9px 12px',
+                background: loginSelected === u.username ? 'rgba(232,66,10,0.12)' : 'rgba(0,0,0,0.3)',
+                border: `1px solid ${loginSelected === u.username ? 'rgba(232,66,10,0.5)' : 'rgba(232,66,10,0.15)'}`,
+                color: loginSelected === u.username ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.45)',
+                cursor: 'pointer', transition: 'all 150ms',
+              }}
+            >
+              <span style={{ ...mono, fontSize: 12 }}>{u.display_name || u.username}</span>
+              {u.display_name && u.display_name !== u.username && (
+                <span style={{ ...mono, fontSize: 10, color: 'rgba(232,66,10,0.5)', marginLeft: 8 }}>
+                  {u.username}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        {/* Password input — normal login OR forced set-password flow */}
+        {needsPasswordSetup ? (
+          <>
+            <div style={{ marginBottom: 8 }}>
+              <p style={{ ...mono, fontSize: 9, color: 'rgba(232,66,10,0.7)', letterSpacing: '0.15em', margin: '0 0 10px' }}>
+                // SET PASSWORD FOR {loginSelected.toUpperCase()}
+              </p>
+              <p style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, color: 'rgba(255,255,255,0.4)', lineHeight: 1.6, margin: '0 0 14px' }}>
+                No password has been set for this account. Set one to continue.
+              </p>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ ...mono, fontSize: 9, color: 'rgba(232,66,10,0.6)', letterSpacing: '0.18em', display: 'block', marginBottom: 6 }}>
+                NEW PASSWORD
+              </label>
+              <input
+                type="password"
+                value={setupNewPassword}
+                onChange={e => setSetupNewPassword(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handlePasswordSetupSubmit()}
+                placeholder="Min. 8 characters"
+                autoFocus
+                style={{
+                  width: '100%', boxSizing: 'border-box',
+                  background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(232,66,10,0.25)',
+                  color: 'rgba(255,255,255,0.85)', ...mono, fontSize: 13,
+                  padding: '10px 12px', outline: 'none', transition: 'border-color 150ms',
+                }}
+                onFocus={e => { e.currentTarget.style.borderColor = 'rgba(232,66,10,0.6)'; }}
+                onBlur={e  => { e.currentTarget.style.borderColor = 'rgba(232,66,10,0.25)'; }}
+              />
+            </div>
+
+            <div style={{ marginBottom: setupNewError ? 10 : 18 }}>
+              <label style={{ ...mono, fontSize: 9, color: 'rgba(232,66,10,0.6)', letterSpacing: '0.18em', display: 'block', marginBottom: 6 }}>
+                CONFIRM PASSWORD
+              </label>
+              <input
+                type="password"
+                value={setupNewConfirm}
+                onChange={e => setSetupNewConfirm(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handlePasswordSetupSubmit()}
+                placeholder="Repeat password"
+                style={{
+                  width: '100%', boxSizing: 'border-box',
+                  background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(232,66,10,0.25)',
+                  color: 'rgba(255,255,255,0.85)', ...mono, fontSize: 13,
+                  padding: '10px 12px', outline: 'none', transition: 'border-color 150ms',
+                }}
+                onFocus={e => { e.currentTarget.style.borderColor = 'rgba(232,66,10,0.6)'; }}
+                onBlur={e  => { e.currentTarget.style.borderColor = 'rgba(232,66,10,0.25)'; }}
+              />
+            </div>
+
+            {setupNewError && (
+              <p style={{ ...mono, fontSize: 10, color: 'rgba(255,100,60,0.85)', margin: '0 0 14px', letterSpacing: '0.05em' }}>
+                {setupNewError}
+              </p>
+            )}
+
+            <button
+              onClick={handlePasswordSetupSubmit}
+              disabled={setupNewSubmitting || !setupNewPassword || !setupNewConfirm}
+              style={{
+                width: '100%', padding: '11px 0',
+                background: setupNewSubmitting ? 'rgba(232,66,10,0.08)' : 'rgba(232,66,10,0.15)',
+                border: '1px solid rgba(232,66,10,0.4)',
+                color: setupNewSubmitting ? 'rgba(232,66,10,0.4)' : 'rgba(240,80,20,0.9)',
+                ...mono, fontSize: 11, letterSpacing: '0.2em',
+                cursor: setupNewSubmitting ? 'not-allowed' : 'pointer',
+              }}
+              onMouseEnter={e => { if (!setupNewSubmitting) e.currentTarget.style.background = 'rgba(232,66,10,0.25)'; }}
+              onMouseLeave={e => { if (!setupNewSubmitting) e.currentTarget.style.background = 'rgba(232,66,10,0.15)'; }}
+            >
+              {setupNewSubmitting ? 'SETTING PASSWORD...' : 'SET PASSWORD & SIGN IN'}
+            </button>
+          </>
+        ) : (
+          <>
+            <div style={{ marginBottom: loginError ? 10 : 18 }}>
+              <label style={{ ...mono, fontSize: 9, color: 'rgba(232,66,10,0.6)', letterSpacing: '0.18em', display: 'block', marginBottom: 6 }}>
+                PASSWORD
+              </label>
+              <input
+                type="password"
+                value={loginPassword}
+                onChange={e => setLoginPassword(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleLoginSubmit()}
+                placeholder="Enter password"
+                autoFocus
+                style={{
+                  width: '100%', boxSizing: 'border-box',
+                  background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(232,66,10,0.25)',
+                  color: 'rgba(255,255,255,0.85)', ...mono, fontSize: 13,
+                  padding: '10px 12px', outline: 'none',
+                  transition: 'border-color 150ms',
+                }}
+                onFocus={e  => { e.currentTarget.style.borderColor = 'rgba(232,66,10,0.6)'; }}
+                onBlur={e   => { e.currentTarget.style.borderColor = 'rgba(232,66,10,0.25)'; }}
+              />
+            </div>
+
+            {loginError && (
+              <p style={{ ...mono, fontSize: 10, color: 'rgba(255,100,60,0.85)', margin: '0 0 14px', letterSpacing: '0.05em' }}>
+                {loginError}
+              </p>
+            )}
+
+            <button
+              onClick={handleLoginSubmit}
+              disabled={loginSubmitting || !loginSelected || !loginPassword}
+              style={{
+                width: '100%', padding: '11px 0',
+                background: loginSubmitting ? 'rgba(232,66,10,0.08)' : 'rgba(232,66,10,0.15)',
+                border: '1px solid rgba(232,66,10,0.4)',
+                color: loginSubmitting ? 'rgba(232,66,10,0.4)' : 'rgba(240,80,20,0.9)',
+                ...mono, fontSize: 11, letterSpacing: '0.2em',
+                cursor: loginSubmitting ? 'not-allowed' : 'pointer',
+              }}
+              onMouseEnter={e => { if (!loginSubmitting) e.currentTarget.style.background = 'rgba(232,66,10,0.25)'; }}
+              onMouseLeave={e => { if (!loginSubmitting) e.currentTarget.style.background = 'rgba(232,66,10,0.15)'; }}
+            >
+              {loginSubmitting ? 'SIGNING IN...' : 'SIGN IN'}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
 
   const renderSetupForm = () => (
     <div style={{
@@ -265,7 +610,7 @@ export function ConnectionSplash() {
       </div>
 
       {/* Display name */}
-      <div style={{ marginBottom: 20 }}>
+      <div style={{ marginBottom: 14 }}>
         <label style={{ ...mono, fontSize: 9, color: 'rgba(232,66,10,0.6)', letterSpacing: '0.18em', display: 'block', marginBottom: 6 }}>
           DISPLAY NAME <span style={{ color: 'rgba(255,255,255,0.2)' }}>(optional)</span>
         </label>
@@ -288,6 +633,52 @@ export function ConnectionSplash() {
         />
       </div>
 
+      {/* Password */}
+      <div style={{ marginBottom: 14 }}>
+        <label style={{ ...mono, fontSize: 9, color: 'rgba(232,66,10,0.6)', letterSpacing: '0.18em', display: 'block', marginBottom: 6 }}>
+          PASSWORD
+        </label>
+        <input
+          type="password"
+          value={setupPassword}
+          onChange={(e) => setSetupPassword(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleSetupSubmit()}
+          placeholder="Min. 8 characters"
+          style={{
+            width: '100%', boxSizing: 'border-box',
+            background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(232,66,10,0.25)',
+            color: 'rgba(255,255,255,0.85)', ...mono, fontSize: 13,
+            padding: '10px 12px', outline: 'none',
+            transition: 'border-color 150ms',
+          }}
+          onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(232,66,10,0.6)'; }}
+          onBlur={(e)  => { e.currentTarget.style.borderColor = 'rgba(232,66,10,0.25)'; }}
+        />
+      </div>
+
+      {/* Confirm password */}
+      <div style={{ marginBottom: 20 }}>
+        <label style={{ ...mono, fontSize: 9, color: 'rgba(232,66,10,0.6)', letterSpacing: '0.18em', display: 'block', marginBottom: 6 }}>
+          CONFIRM PASSWORD
+        </label>
+        <input
+          type="password"
+          value={setupConfirmPw}
+          onChange={(e) => setSetupConfirmPw(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleSetupSubmit()}
+          placeholder="Repeat password"
+          style={{
+            width: '100%', boxSizing: 'border-box',
+            background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(232,66,10,0.25)',
+            color: 'rgba(255,255,255,0.85)', ...mono, fontSize: 13,
+            padding: '10px 12px', outline: 'none',
+            transition: 'border-color 150ms',
+          }}
+          onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(232,66,10,0.6)'; }}
+          onBlur={(e)  => { e.currentTarget.style.borderColor = 'rgba(232,66,10,0.25)'; }}
+        />
+      </div>
+
       {setupError && (
         <p style={{ ...mono, fontSize: 10, color: 'rgba(255,100,60,0.85)', margin: '0 0 14px', letterSpacing: '0.05em' }}>
           {setupError}
@@ -296,7 +687,7 @@ export function ConnectionSplash() {
 
       <button
         onClick={handleSetupSubmit}
-        disabled={setupSubmitting || !setupUsername.trim()}
+        disabled={setupSubmitting || !setupUsername.trim() || !setupPassword || !setupConfirmPw}
         style={{
           width: '100%', padding: '11px 0',
           background: setupSubmitting ? 'rgba(232,66,10,0.08)' : 'rgba(232,66,10,0.15)',
@@ -473,6 +864,11 @@ export function ConnectionSplash() {
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
+
+  // Login phase: server is ready but user selection is pending.
+  if (loginComplete === false) {
+    return renderLoginScreen();
+  }
 
   return (
     <div

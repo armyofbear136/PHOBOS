@@ -5,6 +5,7 @@ import { useAppStore } from '@/store/useAppStore';
 import { useImageCatalogue, usePhobosHardware } from '@/hooks/usePhobosLocal';
 
 const ENGINE_URL = (import.meta.env.VITE_ENGINE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
+const sessionToken = () => sessionStorage.getItem('phobos_session') ?? '';
 
 const PANEL_H = 280; // px — fixed height
 
@@ -355,7 +356,7 @@ function AddNodeMenu({ threadId, workflowId, onAdded, upstreamNode, activeModelI
       const needsDims = ['Img2imgRefine', 'FaceFix', 'HandFix', 'DepthControlNet', 'Upscale'].includes(type);
       if (needsDims && upstreamNode?.outputPath) {
         try {
-          const imgUrl = `${ENGINE_URL}/api/threads/${threadId}/workflows/${workflowId}/nodes/${upstreamNode.index}/output`;
+          const imgUrl = `/api/threads/${threadId}/workflows/${workflowId}/nodes/${upstreamNode.index}/output?token=${sessionToken()}`;
           const dims = await new Promise<{ width: number; height: number } | null>((resolve) => {
             const img = new Image();
             img.onload  = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
@@ -430,7 +431,7 @@ function PreviewPane({
   revision:    number;
 }) {
   const imgUrl = node?.outputPath
-    ? `${ENGINE_URL}/api/threads/${threadId}/workflows/${workflowId}/nodes/${node.index}/output?r=${revision}`
+    ? `/api/threads/${threadId}/workflows/${workflowId}/nodes/${node.index}/output?r=${revision}&token=${sessionToken()}`
     : null;
 
   const progressPct = progress && progress.totalSteps > 0
@@ -1024,7 +1025,7 @@ export function WorkflowPanel() {
       const needsDims = ['Img2imgRefine', 'FaceFix', 'HandFix', 'DepthControlNet', 'Upscale'].includes(activeNode.type);
       if (needsDims && upstreamNode?.outputPath) {
         try {
-          const imgUrl = `${ENGINE_URL}/api/threads/${session.threadId}/workflows/${session.workflowId}/nodes/${upstreamNode.index}/output`;
+          const imgUrl = `/api/threads/${session.threadId}/workflows/${session.workflowId}/nodes/${upstreamNode.index}/output?token=${sessionToken()}`;
           const dims = await new Promise<{ width: number; height: number } | null>((resolve) => {
             const img = new Image();
             img.onload  = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });

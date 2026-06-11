@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Cpu, PanelRight, ChevronDown, Download, Puzzle, CalendarClock, X as XIcon, Music2, Film, Crown, Tv, Key, BookMarked, Shield, DollarSign, Users, Wifi, WifiOff } from 'lucide-react';
+import { Cpu, PanelRight, ChevronDown, Download, Puzzle, CalendarClock, X as XIcon, Music2, Film, Crown, Tv, Key, BookMarked, Shield, DollarSign, Users, LogOut, Wifi, WifiOff } from 'lucide-react';
 import PolarisPlayer from '@/components/media/PolarisPlayer';
 import { MediaHubPanel } from '@/components/media/MediaHubPanel';
 import { lazy, Suspense } from 'react';
@@ -296,6 +296,17 @@ export function HeaderBar() {
   const setVaultOpen  = useAppStore((s) => s.setVaultOpen);
   const userMgmtOpen    = useAppStore((s) => s.userMgmtOpen);
   const setUserMgmtOpen = useAppStore((s) => s.setUserMgmtOpen);
+  const [userDropdownOpen, setUserDropdownOpen] = useState(false);
+  const userDropdownRef = useRef<HTMLDivElement>(null);
+
+  const handleLogout = async () => {
+    setUserDropdownOpen(false);
+    try {
+      await fetch(`${ENGINE_URL}/api/session/logout`, { method: 'POST' });
+    } catch { /* best-effort */ }
+    sessionStorage.removeItem('phobos_session');
+    window.location.reload();
+  };
   const [mediaHubOpen, setMediaHubOpen] = useState(false);
   const { pending, cancelPending } = useSchedulerPending();
   const activeThreadId = useAppStore((s) => s.activeThreadId);
@@ -305,17 +316,22 @@ export function HeaderBar() {
   const [relayConnected, setRelayConnected] = useState(false);
   const [relayToggling, setRelayToggling] = useState(false);
 
+  const backendAlive = useAppStore((s) => s.backendAlive);
+
+  async function fetchRelayStatus() {
+    try {
+      const r = await fetch(`${ENGINE_URL}/api/webrtc/status`);
+      if (!r.ok) return;
+      const data = await r.json() as { relayEnabled?: boolean; relayConnected?: boolean };
+      setRelayEnabled(data.relayEnabled ?? true);
+      setRelayConnected(data.relayConnected ?? false);
+    } catch {}
+  }
+
   useEffect(() => {
-    fetch(`${ENGINE_URL}/api/webrtc/status`)
-      .then(r => r.ok ? r.json() : null)
-      .then((data: { relayEnabled?: boolean; relayConnected?: boolean } | null) => {
-        if (data) {
-          setRelayEnabled(data.relayEnabled ?? true);
-          setRelayConnected(data.relayConnected ?? false);
-        }
-      })
-      .catch(() => {});
-  }, []);
+    if (!backendAlive) return;
+    void fetchRelayStatus();
+  }, [backendAlive]);
 
   async function toggleRelay() {
     if (relayToggling) return;
@@ -323,7 +339,23 @@ export function HeaderBar() {
     const next = !relayEnabled;
     try {
       const r = await fetch(`${ENGINE_URL}/api/webrtc/relay/${next ? 'enable' : 'disable'}`, { method: 'POST' });
-      if (r.ok) { setRelayEnabled(next); setRelayConnected(next); }
+      if (r.ok) {
+        setRelayEnabled(next);
+        if (next) {
+          // Registration is async — relay WebSocket opens then the 'registered'
+          // message arrives shortly after. Poll until connected or give up at 5s.
+          for (const delay of [500, 1000, 1500, 2000]) {
+            await new Promise<void>(res => setTimeout(res, delay));
+            await fetchRelayStatus();
+            const status = await fetch(`${ENGINE_URL}/api/webrtc/status`)
+              .then(res => res.ok ? res.json() as Promise<{ relayConnected?: boolean }> : null)
+              .catch(() => null);
+            if (status?.relayConnected) break;
+          }
+        } else {
+          await fetchRelayStatus();
+        }
+      }
     } catch {}
     setRelayToggling(false);
   }
@@ -342,7 +374,7 @@ export function HeaderBar() {
 
   return (
     <>
-      <header className="phobos-header phob-chrome-zone phob-scan-line h-11 flex items-center justify-between px-3 border-b-2 border-phob-orange/40 bg-[#080808] shrink-0 relative z-50 overflow-visible">
+      <header className="phobos-header phob-chrome-zone phob-scan-line h-11 flex items-center justify-between px-3 border-b-2 border-phob-orange/40 bg-[#080808] shrink-0 relative z-[1000] overflow-visible">
         <div className="flex items-center gap-2">
           {/* ── Relay toggle — leftmost control ── */}
           <button
@@ -435,13 +467,50 @@ export function HeaderBar() {
         >
           <Key className="w-3.5 h-3.5" />
         </button>
-        <button
-          onClick={() => setUserMgmtOpen(true)}
-          title="Users"
-          className="p-1.5 border border-phob-orange/20 text-phob-orange/50 hover:text-phob-orange hover:border-phob-orange/40 hover:bg-phob-orange/5 transition-all"
-        >
-          <Users className="w-3.5 h-3.5" />
-        </button>
+        <div className="relative" ref={userDropdownRef}>
+          <button
+            onClick={() => setUserDropdownOpen(v => !v)}
+            title="Users"
+            className="p-1.5 border border-phob-orange/20 text-phob-orange/50 hover:text-phob-orange hover:border-phob-orange/40 hover:bg-phob-orange/5 transition-all flex items-center gap-1"
+          >
+            <Users className="w-3.5 h-3.5" />
+            <ChevronDown className="w-2.5 h-2.5" />
+          </button>
+          {userDropdownOpen && (() => {
+            const rect = userDropdownRef.current?.getBoundingClientRect();
+            const top  = rect ? rect.bottom + 4 : 48;
+            const right = rect ? window.innerWidth - rect.right : 8;
+            return (
+              <>
+                <div
+                  className="fixed inset-0"
+                  style={{ zIndex: 9998 }}
+                  onClick={() => setUserDropdownOpen(false)}
+                />
+                <div
+                  className="fixed min-w-[140px] bg-[#0f0f0a] border border-phob-orange/25 shadow-[0_4px_16px_rgba(0,0,0,0.6)] py-1"
+                  style={{ zIndex: 9999, top, right }}
+                >
+                  <button
+                    onClick={() => { setUserDropdownOpen(false); setUserMgmtOpen(true); }}
+                    className="w-full text-left px-3 py-1.5 text-xs font-terminal tracking-wide text-phob-orange/70 hover:text-phob-orange hover:bg-phob-orange/8 transition-colors flex items-center gap-2"
+                  >
+                    <Users className="w-3 h-3" />
+                    Manage Users
+                  </button>
+                  <div className="my-1 border-t border-phob-orange/10" />
+                  <button
+                    onClick={handleLogout}
+                    className="w-full text-left px-3 py-1.5 text-xs font-terminal tracking-wide text-phob-steel/50 hover:text-phob-red/80 hover:bg-phob-red/5 transition-colors flex items-center gap-2"
+                  >
+                    <LogOut className="w-3 h-3" />
+                    Logout
+                  </button>
+                </div>
+              </>
+            );
+          })()}
+        </div>
         {/* Markets */}
         <button
           onClick={toggleFinancePanel}

@@ -272,7 +272,8 @@ function StatsPanel({ stats, persona }: { stats: CopilotStats; persona: CopilotP
 // ── Main component ────────────────────────────────────────────────────────────
 
 function CopilotPanelInner() {
-  const copilotMode = useAppStore((s) => s.copilotMode);
+  const copilotMode    = useAppStore((s) => s.copilotMode);
+  const backendAlive   = useAppStore((s) => s.backendAlive);
   const { connectionStatus, modelNames } = useAppStore();
   const activeThreadId = useAppStore((s) => s.activeThreadId);
 
@@ -314,6 +315,7 @@ function CopilotPanelInner() {
   // Holds the active silence-detection interval + AudioContext so they can be
   // torn down on unmount or persona switch without leaking.
   const silenceCleanupRef = useRef<{ interval: ReturnType<typeof setInterval>; ctx: AudioContext } | null>(null);
+  const historyRetryCount  = useRef(0);
 
   // One audio hook per persona — independent AudioContext + MediaRecorder state.
   const sayonAudio = useCopilotAudio();
@@ -356,12 +358,12 @@ function CopilotPanelInner() {
           const { sayon, seren } = await activeRes.json() as { sayon: CloneInfo | null; seren: CloneInfo | null };
           setActiveCloneInfo(sayon ?? seren ?? null);
         }
-        const listRes = await fetch(`${ENGINE_URL}/api/weclone/profiles`);
+        const listRes = await fetch(`${ENGINE_URL}/api/weclone/clones`);
         if (listRes.ok) {
-          const { profiles } = await listRes.json() as {
-            profiles: Array<{ id: string; display_name: string; cartridge_id: string | null; slot: string }>;
+          const { clones } = await listRes.json() as {
+            clones: Array<{ id: string; display_name: string; cartridge_id: string | null; slot: string }>;
           };
-          setCloneList(profiles.map(p => ({
+          setCloneList(clones.map(p => ({
             id: p.id, displayName: p.display_name,
             hasCartridge: !!p.cartridge_id, slot: (p.slot ?? 'sayon') as CopilotPersona,
           })));
@@ -372,21 +374,33 @@ function CopilotPanelInner() {
 
   // Load persisted message history on first open per tab
   useEffect(() => {
-    if (!isVisible) return;
+    if (!isVisible || !backendAlive) return;
+    const MAX_RETRIES = 5;
+
+    function scheduleRetry() {
+      if (historyRetryCount.current >= MAX_RETRIES) return;
+      historyRetryCount.current += 1;
+      // Stagger retries: 800ms, 1.6s, 2.4s, 3.2s, 4s
+      setTimeout(() => {
+        setHistoryLoaded(prev => ({ ...prev }));
+      }, historyRetryCount.current * 800);
+    }
+
     if (activeTab === 'clone') {
       if (!activeCloneInfo || historyLoaded.clone) return;
       (async () => {
         try {
           const res = await fetch(`${ENGINE_URL}/api/copilot/clone/${activeCloneInfo.cloneId}/messages`);
-          if (!res.ok) return;
+          if (!res.ok) { scheduleRetry(); return; }
           const { messages: persisted } = await res.json() as {
             messages: Array<{ id: string; role: string; content: string; created_at: string }>;
           };
+          historyRetryCount.current = 0;
           setCloneMessages(persisted
             .filter(m => m.role === 'user' || m.role === 'assistant')
             .map(m => ({ id: m.id, role: m.role as 'user' | 'assistant', content: m.content, timestamp: m.created_at })));
           setHistoryLoaded(prev => ({ ...prev, clone: true }));
-        } catch { /* engine not running */ }
+        } catch { scheduleRetry(); }
       })();
       return;
     }
@@ -394,19 +408,20 @@ function CopilotPanelInner() {
     (async () => {
       try {
         const res = await fetch(`${ENGINE_URL}/api/copilot/${activeTab}/messages`);
-        if (!res.ok) return;
+        if (!res.ok) { scheduleRetry(); return; }
         const { messages: persisted } = await res.json() as {
           messages: Array<{ id: string; role: string; content: string; created_at: string }>;
         };
+        historyRetryCount.current = 0;
         const mapped: Message[] = persisted
           .filter(m => m.role === 'user' || m.role === 'assistant')
           .map(m => ({ id: m.id, role: m.role as 'user' | 'assistant', content: m.content, timestamp: m.created_at }));
         if (activeTab === 'sayon') setSayonMessages(mapped);
         else setSerenMessages(mapped);
         setHistoryLoaded(prev => ({ ...prev, [activeTab]: true }));
-      } catch { /* engine not running */ }
+      } catch { scheduleRetry(); }
     })();
-  }, [isVisible, activeTab, historyLoaded, activeCloneInfo]);
+  }, [isVisible, activeTab, historyLoaded, activeCloneInfo, backendAlive]);
 
   // Fetch relationship stats — on open, on persona switch, after each message completes
   const fetchStats = useCallback(async (persona: CopilotPersona) => {
@@ -419,9 +434,9 @@ function CopilotPanelInner() {
   }, []);
 
   useEffect(() => {
-    if (!isVisible) return;
+    if (!isVisible || !backendAlive) return;
     if (activeTab !== 'clone') fetchStats(activeCopilot);
-  }, [isVisible, activeCopilot, activeTab, fetchStats]);
+  }, [isVisible, activeCopilot, activeTab, fetchStats, backendAlive]);
 
   // Tear down any active silence-detection interval + AudioContext on unmount.
   // Also fires when the panel is hidden — CopilotPanelInner returns null when

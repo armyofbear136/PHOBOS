@@ -12,6 +12,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   Users, X, Plus, Trash2, RefreshCw, Loader2, CheckCircle2,
   Lock, AlertTriangle, Copy, Key, QrCode, FolderOpen,
@@ -100,6 +101,7 @@ function fmtDate(iso: string | null): string {
 export function UserManagementPanel() {
   const setUserMgmtOpen = useAppStore(s => s.setUserMgmtOpen);
   const currentRole     = useAppStore(s => s.activeUserRole);
+  const queryClient     = useQueryClient();
 
   const isAdmin = currentRole === 'admin';
   const isFull  = currentRole === 'full';
@@ -165,6 +167,8 @@ export function UserManagementPanel() {
   const [newUsername,    setNewUsername]     = useState('');
   const [newDisplayName, setNewDisplayName] = useState('');
   const [newRole,        setNewRole]        = useState<UserRole>('full');
+  const [newPassword,    setNewPassword]    = useState('');
+  const [newConfirmPw,   setNewConfirmPw]   = useState('');
   const [addError,       setAddError]       = useState<string | null>(null);
   const [addSubmitting,  setAddSubmitting]  = useState(false);
 
@@ -220,7 +224,7 @@ export function UserManagementPanel() {
 
   // ── Auth callback ──────────────────────────────────────────────────────────
 
-  const handleAuth = useCallback((tok: string) => {
+  const handleAuth = useCallback((tok: string, _role: string) => {
     setToken(tok);
     // Re-fetch status to get fresh activeUser
     fetch(`${ENGINE_URL}/api/admin/status`)
@@ -232,14 +236,21 @@ export function UserManagementPanel() {
   // ── Add user ───────────────────────────────────────────────────────────────
 
   const handleAddUser = useCallback(async () => {
-    if (!token || !newUsername || !newDisplayName) return;
+    if (!token || !newUsername || !newDisplayName || !newPassword) return;
+    if (newPassword.length < 8) { setAddError('Password must be at least 8 characters.'); return; }
+    if (newPassword !== newConfirmPw) { setAddError('Passwords do not match.'); return; }
     setAddSubmitting(true);
     setAddError(null);
     try {
       const res = await fetch(`${ENGINE_URL}/api/admin/users`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body:    JSON.stringify({ username: newUsername, display_name: newDisplayName, role: newRole }),
+        body:    JSON.stringify({
+          username:     newUsername,
+          display_name: newDisplayName,
+          role:         newRole,
+          password:     newPassword,
+        }),
       });
       const data = await res.json() as { error?: string; user?: UserRecord };
       if (!res.ok) { setAddError(data.error ?? 'Failed to create user'); return; }
@@ -248,12 +259,14 @@ export function UserManagementPanel() {
       setNewUsername('');
       setNewDisplayName('');
       setNewRole('full');
+      setNewPassword('');
+      setNewConfirmPw('');
     } catch {
       setAddError('Could not reach server.');
     } finally {
       setAddSubmitting(false);
     }
-  }, [token, newUsername, newDisplayName, newRole]);
+  }, [token, newUsername, newDisplayName, newRole, newPassword, newConfirmPw]);
 
   // ── Update role ────────────────────────────────────────────────────────────
 
@@ -361,9 +374,28 @@ export function UserManagementPanel() {
           if (s.activeUser === username) {
             clearInterval(poll);
             setAdminStatus(s);
+
+            // Flush all React Query caches — threads, messages, status, config
+            // etc. were fetched for the previous user. Invalidating causes every
+            // mounted query to refetch against the new active user's DB.
+            queryClient.invalidateQueries();
+
+            // Reset user-scoped store slices so stale data never bleeds through
+            // while the refetch is in flight.
+            useAppStore.setState({
+              threads:        [],
+              activeThreadId: '',
+              messages:       {},
+              segments:       {},
+              workspaceIndex: {},
+              mediaFiles:     {},
+              taskProgress:   null,
+              liveActivity:   null,
+            });
+
             setSwitching(false);
             setSwitchTarget(null);
-            setToken(null); // force re-auth since session context changed
+            setUserMgmtOpen(false); // close panel — switch complete, no re-auth needed
           }
         } catch { /* keep polling */ }
       }, 500);
@@ -498,8 +530,10 @@ export function UserManagementPanel() {
   // Guests and read-only users bypass the admin password gate — they only
   // access the Codes tab which uses the tokenless POST /api/user/invite endpoint.
   if (!token && !isGuest) {
+    const activeUser = adminStatus?.activeUser ?? 'owner';
     return (
       <UserAuthGate
+        username={activeUser}
         passwordSet={adminStatus?.passwordSet ?? false}
         onAuth={handleAuth}
       />
@@ -662,10 +696,32 @@ export function UserManagementPanel() {
                     </select>
                   </div>
                   {addError && <p className="text-xs text-phob-red">{addError}</p>}
+                  <div className="flex gap-3">
+                    <div className="flex-1">
+                      <label className={labelCls}>Password</label>
+                      <input
+                        type="password"
+                        value={newPassword}
+                        onChange={e => setNewPassword(e.target.value)}
+                        placeholder="Min. 8 characters"
+                        className={inputCls}
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className={labelCls}>Confirm password</label>
+                      <input
+                        type="password"
+                        value={newConfirmPw}
+                        onChange={e => setNewConfirmPw(e.target.value)}
+                        placeholder="Repeat password"
+                        className={inputCls}
+                      />
+                    </div>
+                  </div>
                   <div className="flex gap-2">
                     <button
                       onClick={handleAddUser}
-                      disabled={addSubmitting || !newUsername || !newDisplayName}
+                      disabled={addSubmitting || !newUsername || !newDisplayName || !newPassword || !newConfirmPw}
                       className="px-4 py-1.5 rounded text-xs font-terminal tracking-wider
                                  bg-phob-teal/10 border border-phob-teal/30 text-phob-teal
                                  hover:bg-phob-teal/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all
@@ -738,7 +794,7 @@ export function UserManagementPanel() {
                           <td className="px-3 py-2.5 text-muted-foreground">{fmtDate(u.created_at)}</td>
                           <td className="px-3 py-2.5 text-muted-foreground">{fmtDate(u.last_active)}</td>
                           <td className="px-3 py-2.5">
-                            {isAdmin && u.username !== 'owner' && (
+                            {(isAdmin || (isFull && (u.role === 'guest' || u.role === 'read'))) && u.username !== 'owner' && (
                               <button
                                 onClick={() => handleDeleteClick(u.username)}
                                 className="p-1 rounded text-muted-foreground/50 hover:text-phob-red hover:bg-red-950/30 transition-all"

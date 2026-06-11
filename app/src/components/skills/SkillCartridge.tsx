@@ -51,6 +51,13 @@ export function SkillCartridge() {
     e.currentTarget.style.color      = entering ? 'hsl(130 65% 62%)' : 'hsl(130 55% 18%)';
   };
 
+  // Calculate fixed position from button rect to escape the header stacking context.
+  const getDropdownPos = () => {
+    const rect = ref.current?.getBoundingClientRect();
+    if (!rect) return { top: 48, left: 0 };
+    return { top: rect.bottom + 4, left: rect.left + rect.width / 2 };
+  };
+
   return (
     <>
       <div ref={ref} style={{ position: 'relative' }}>
@@ -69,31 +76,50 @@ export function SkillCartridge() {
           </div>
         </button>
 
-        {dropdownOpen && (
-          <div className="skill-cartridge-dropdown" style={dropdownStyle}>
-            {[
-              { icon: '◈', label: 'Instruction Tapes', action: () => setSkillsOpen(true) },
-              { icon: '◆', label: 'Cortex Cartridges', action: () => setAiOpen(true) },
-              { icon: '◉', label: 'Digital Clone',     action: () => setWecloneOpen(true) },
-              { icon: '◇', label: 'Art Plugins',       action: () => setArtOpen(true) },
-              { icon: '◆', label: 'Audio Patches',     action: () => setAiOpen(true) },
-              { icon: '◫', label: 'Archive Payloads',  action: () => setArchiveOpen(true) },
-              { icon: '⌂', label: 'Home Assistant',    action: () => setHaOpen(true) },
-            ].map(({ icon, label, action }) => (
-              <button
-                key={label}
-                className="skill-cartridge-dropdown-item"
-                style={itemStyle}
-                onMouseEnter={e => handleItemHover(e, true)}
-                onMouseLeave={e => handleItemHover(e, false)}
-                onClick={() => { setDropdownOpen(false); action(); }}
+        {dropdownOpen && (() => {
+          const { top, left } = getDropdownPos();
+          return (
+            <>
+              <div
+                style={{ position: 'fixed', inset: 0, zIndex: 9998 }}
+                onClick={() => setDropdownOpen(false)}
+              />
+              <div
+                className="skill-cartridge-dropdown"
+                style={{
+                  ...dropdownStyle,
+                  position: 'fixed',
+                  top,
+                  left,
+                  transform: 'translateX(-50%)',
+                  zIndex: 9999,
+                }}
               >
-                <span className="skill-cartridge-dropdown-icon" style={iconStyle}>{icon}</span>
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
+                {[
+                  { icon: '◈', label: 'Instruction Tapes', action: () => setSkillsOpen(true) },
+                  { icon: '◆', label: 'Cortex Cartridges', action: () => setAiOpen(true) },
+                  { icon: '◉', label: 'Digital Clone',     action: () => setWecloneOpen(true) },
+                  { icon: '◇', label: 'Art Plugins',       action: () => setArtOpen(true) },
+                  { icon: '◆', label: 'Audio Patches',     action: () => setAiOpen(true) },
+                  { icon: '◫', label: 'Archive Payloads',  action: () => setArchiveOpen(true) },
+                  { icon: '⌂', label: 'Home Assistant',    action: () => setHaOpen(true) },
+                ].map(({ icon, label, action }) => (
+                  <button
+                    key={label}
+                    className="skill-cartridge-dropdown-item"
+                    style={itemStyle}
+                    onMouseEnter={e => handleItemHover(e, true)}
+                    onMouseLeave={e => handleItemHover(e, false)}
+                    onClick={() => { setDropdownOpen(false); action(); }}
+                  >
+                    <span className="skill-cartridge-dropdown-icon" style={iconStyle}>{icon}</span>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </>
+          );
+        })()}
       </div>
 
       {skillsOpen   && <SkillsMenu      onClose={() => setSkillsOpen(false)} />}

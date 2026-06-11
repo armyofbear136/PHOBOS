@@ -14,8 +14,13 @@ import { X, Loader2, Boxes } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 
 const ENGINE_URL = (import.meta.env.VITE_ENGINE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
-const GODOT_URL  = '/tools/godot/godot.editor.html';
+const GODOT_PATH = '/tools/godot/godot.editor.html';
 const POLL_MS    = 3_000;
+
+function godotUrl(): string {
+  const token = sessionStorage.getItem('phobos_session');
+  return token ? `${GODOT_PATH}?token=${encodeURIComponent(token)}` : GODOT_PATH;
+}
 
 type ReadyState = 'waiting' | 'ready' | 'notInstalled';
 
@@ -60,7 +65,7 @@ export function GodotPanel() {
   const godotPanelOpen   = useAppStore((s) => s.godotPanelOpen);
   const toggleGodotPanel = useAppStore((s) => s.toggleGodotPanel);
 
-  const readyState = useRouteReady(`${ENGINE_URL}/api/tools/godot/status`, GODOT_URL);
+  const readyState = useRouteReady(`${ENGINE_URL}/api/tools/godot/status`, GODOT_PATH);
   const [everLoaded, setEverLoaded] = useState(false);
 
   useEffect(() => {
@@ -114,7 +119,7 @@ export function GodotPanel() {
         {showIframe && (
           <iframe
             key="godot-iframe"
-            src={GODOT_URL}
+            src={godotUrl()}
             title="Godot 4.6.2 Web Editor"
             className="absolute inset-0 w-full h-full border-0"
             sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-popups allow-modals"

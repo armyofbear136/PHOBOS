@@ -20,7 +20,12 @@ let es: EventSource | null = null;
 export function connectGameSSE(): void {
   if (es) return; // already connected
 
-  es = new EventSource(`${ENGINE_URL}/api/game/stream`);
+  const token = sessionStorage.getItem('phobos_session');
+  const url   = token
+    ? `${ENGINE_URL}/api/game/stream?token=${encodeURIComponent(token)}`
+    : `${ENGINE_URL}/api/game/stream`;
+
+  es = new EventSource(url);
 
   es.onopen = () => {
     gameStore.connected = true;

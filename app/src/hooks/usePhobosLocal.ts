@@ -3,6 +3,15 @@ import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-quer
 
 const ENGINE_URL = (import.meta.env.VITE_ENGINE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
 
+/** Append the session token as a query param so EventSource (which cannot set
+ *  custom headers) passes authentication through the session gate. */
+function sseUrl(url: string): string {
+  const token = sessionStorage.getItem('phobos_session');
+  if (!token) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(token)}`;
+}
+
 // ── Types — mirror the backend shapes ────────────────────────────────────────
 
 export interface GpuDevice {
@@ -158,7 +167,7 @@ export function usePhobosDownload() {
     setDownloadStage({ kind: 'downloading', sayon: null, seren: null, queueRemaining: remaining });
 
     const url = `${ENGINE_URL}/api/phobos/download?sayon=${encodeURIComponent(first)}&seren=${encodeURIComponent(second)}`;
-    const es = new EventSource(url);
+    const es = new EventSource(sseUrl(url));
     esRef.current = es;
 
     es.onmessage = (ev: MessageEvent) => {
@@ -410,7 +419,7 @@ export function useFluxDownload() {
     activeModelIdRef.current = modelId;
     setStage({ kind: 'downloading', current: null, modelId });
 
-    const es = new EventSource(`${ENGINE_URL}/api/phobos/image/download?modelId=${encodeURIComponent(modelId)}`);
+    const es = new EventSource(sseUrl(`${ENGINE_URL}/api/phobos/image/download?modelId=${encodeURIComponent(modelId)}`));
     esRef.current = es;
 
     es.onmessage = (e) => {
@@ -559,7 +568,7 @@ export function useImageConvert() {
     doneRef.current = false;
     setStage({ kind: 'converting', pct: 0, label: 'Starting conversion…', modelId });
 
-    const es = new EventSource(`${ENGINE_URL}/api/phobos/image/convert?modelId=${encodeURIComponent(modelId)}`);
+    const es = new EventSource(sseUrl(`${ENGINE_URL}/api/phobos/image/convert?modelId=${encodeURIComponent(modelId)}`));
     esRef.current = es;
 
     es.onmessage = (e) => {
@@ -651,7 +660,7 @@ export function useEsrganDownload() {
     doneRef.current = false;
     setStage({ kind: 'downloading', id, bytesReceived: 0, bytesTotal: 0 });
 
-    const es = new EventSource(`${ENGINE_URL}/api/phobos/upscale/download?id=${encodeURIComponent(id)}`);
+    const es = new EventSource(sseUrl(`${ENGINE_URL}/api/phobos/upscale/download?id=${encodeURIComponent(id)}`));
     esRef.current = es;
 
     es.onmessage = (e) => {
@@ -737,9 +746,9 @@ export function useAudioDownload() {
     activeModelIdRef.current = modelId;
     setStage({ kind: 'downloading', modelId, bytesReceived: 0, bytesTotal: 0, pct: 0 });
 
-    const es = new EventSource(
+    const es = new EventSource(sseUrl(
       `${ENGINE_URL}/api/phobos/audio-model/download?modelId=${encodeURIComponent(modelId)}`,
-    );
+    ));
     esRef.current = es;
 
     es.onmessage = (e: MessageEvent) => {
@@ -896,7 +905,7 @@ export function useAutoConfig() {
       const first  = plan.llmNeeded[0];
       const second = plan.llmNeeded.length > 1 ? plan.llmNeeded[1] : first;
       const url = `${ENGINE_URL}/api/phobos/download?sayon=${encodeURIComponent(first)}&seren=${encodeURIComponent(second)}`;
-      const es = new EventSource(url);
+      const es = new EventSource(sseUrl(url));
       esRef.current = es;
 
       es.onmessage = (ev: MessageEvent) => {
@@ -937,7 +946,7 @@ export function useAutoConfig() {
         setPhase({ kind: 'downloading-image', plan, modelId, progress: null });
         doneRef.current = false;
 
-        const es = new EventSource(`${ENGINE_URL}/api/phobos/image/download?modelId=${encodeURIComponent(modelId)}`);
+        const es = new EventSource(sseUrl(`${ENGINE_URL}/api/phobos/image/download?modelId=${encodeURIComponent(modelId)}`));
         esRef.current = es;
 
         es.onmessage = (ev: MessageEvent) => {
@@ -1591,10 +1600,10 @@ export function useUncensoredVariant(modelId: string | null) {
     if (!modelId) return;
     setStage({ kind: 'downloading', bytesReceived: 0, bytesTotal: 0, repoId: variant.repoId });
 
-    const es = new EventSource(
+    const es = new EventSource(sseUrl(
       `${ENGINE_URL}/api/phobos/models/${encodeURIComponent(modelId)}/download-variant-sse?` +
       `repoId=${encodeURIComponent(variant.repoId)}&fileName=${encodeURIComponent(variant.fileName)}`,
-    );
+    ));
     esRef.current = es;
 
     es.onmessage = (e) => {

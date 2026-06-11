@@ -86,7 +86,7 @@
     "duckdb-async": {
       "duckdb": "1.4.4"
     },
-    "node-gyp": "^10.3.1",
+    "node-gyp": "^11.0.0",
     "tree-sitter-javascript": {
       "tree-sitter": "$tree-sitter"
     },

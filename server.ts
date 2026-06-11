@@ -59,7 +59,7 @@ import { initVaultCrypto }      from './vault/VaultCrypto.js';
 import { VaultStore }           from './db/VaultStore.js';
 import { initVaultManager }     from './vault/VaultManager.js';
 import { registerVaultRoutes }  from './routes/vaultRoutes.js';
-import { registerUserManagementRoutes, setUserManagementContext } from './routes/userManagement.js';
+import { registerUserManagementRoutes, setUserManagementContext, validateLocalSession } from './routes/userManagement.js';
 import { registerSocialRoutes, setSocialContext, setSocialSignalingClient } from './routes/social.js';
 import { registerAudioRoutes } from './routes/audio.js';
 import { shutdownKokoroDaemon, shutdownAllVcDaemons, shutdownSupertonicDaemon, preWarmKokoro, preWarmVcDaemons, preWarmSupertonic } from './phobos/AudioServerManager.js';
@@ -153,7 +153,7 @@ async function buildServer() {
       }
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept-Version'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept-Version', 'x-local-session', 'x-webrtc-user', 'x-webrtc-role'],
     exposedHeaders: ['Content-Type'],
   });
 
@@ -169,41 +169,67 @@ async function buildServer() {
   });
 
   // Promote x-webrtc-user and x-webrtc-role headers to typed req fields.
-  // Falls back to 'owner' / 'owner' for any request without the headers
-  // (e.g. browser direct, health checks, startup init calls).
+  // WebRTC requests carry explicit user/role headers set by DataChannelHandler.
+  // Direct browser requests carry no headers — fall back to the current active
+  // user (from active-user.json) so that user switching takes effect immediately
+  // without a server restart. Role falls back to 'admin' because local browser
+  // requests are always made by the active local user, who is never guest/read.
   fastify.addHook('preHandler', (req, reply, done) => {
-    req.phobosUser = (req.headers['x-webrtc-user'] as string | undefined)?.trim() || 'owner';
-    req.phobosRole = (req.headers['x-webrtc-role'] as string | undefined)?.trim() || 'owner';
+    req.phobosUser = (req.headers['x-webrtc-user'] as string | undefined)?.trim() || getActiveUser();
+    req.phobosRole = (req.headers['x-webrtc-role'] as string | undefined)?.trim() || 'admin';
+
+    const isWebRTCRequest = !!req.headers['x-webrtc-user'];
+    const url = req.url.split('?')[0];
+
+    // ── Local browser session gate ─────────────────────────────────────────
+    // Non-WebRTC requests must carry a valid x-local-session token issued by
+    // POST /api/session/login. Sessions are in-memory and reset every restart.
+    // A few public routes are exempt: the session routes themselves, the SSE
+    // boot stream, health, and the setup/init route (needed before any user exists).
+    if (!isWebRTCRequest) {
+      const sessionExempt =
+        url === '/api/session/login'   ||
+        url === '/api/session/logout'  ||
+        url === '/api/session/status'  ||
+        url === '/api/setup/init'      ||
+        url === '/api/admin/auth/setup'  ||
+        url === '/api/users/list'      ||
+        url === '/api/boot/events'     ||
+        url === '/health'              ||
+        url.startsWith('/api/webrtc/signaling') ||
+        // LAN signaling: ping is unauthenticated, offer/signal/ice use deviceToken
+        url === '/api/webrtc/ping'     ||
+        url === '/api/webrtc/offer'    ||
+        url === '/api/webrtc/signal'   ||
+        url === '/api/webrtc/ice'      ||
+        // Static tool assets (Godot editor files, etc.) are served from disk and
+        // loaded by the browser as sub-resources — they cannot carry x-local-session
+        // or ?token= params. The session gate protects API data, not static files.
+        url.startsWith('/tools/');
+
+      if (!sessionExempt) {
+        const sessionToken = (req.headers['x-local-session'] as string | undefined)
+                          ?? (req.query as Record<string, string>)['token'];
+        if (!sessionToken || !validateLocalSession(sessionToken)) {
+          reply.status(401).send({ error: 'Not authenticated' });
+          return;
+        }
+      }
+    }
 
     // ── Role-based access control ──────────────────────────────────────────
-    // guest: chat + game only — all other routes return 403.
-    // read:  same as guest for writes; may read thread/message data.
-    // admin/full/owner: unrestricted.
+    // All roles have full feature access. The only restricted surface is the
+    // management API (/api/admin/*), which requires admin role or higher.
+    // read role additionally cannot mutate anything anywhere.
     const role = req.phobosRole;
+
     if (role === 'guest' || role === 'read') {
-      const url = req.url.split('?')[0];
-
-      const guestAllowedPrefixes = [
-        '/api/threads',
-        '/api/copilot',
-        '/api/status',
-        '/api/stats',
-        '/api/version',
-        '/api/config/models',
-        '/api/game',
-        '/health',
-        '/api/webrtc',
-        '/api/social',
-      ];
-
-      // read role additionally cannot POST/PATCH/DELETE to message endpoints.
-      const allowed = guestAllowedPrefixes.some(p => url === p || url.startsWith(p + '/'));
-      if (!allowed) {
+      // No role may access management routes.
+      if (url.startsWith('/api/admin/')) {
         reply.status(403).send({ error: 'Forbidden: insufficient role' });
         return;
       }
-
-      // read role: block all mutations.
+      // read role: block all mutations across all routes.
       if (role === 'read' && req.method !== 'GET' && req.method !== 'HEAD') {
         reply.status(403).send({ error: 'Forbidden: read-only role' });
         return;
@@ -274,15 +300,18 @@ async function buildServer() {
   // continueBootSequence calls setBootPhase('awaiting_setup') then returns;
   // when the form is submitted this route provisions the owner and resumes boot.
   fastify.post<{
-    Body: { username: string; displayName?: string };
+    Body: { username: string; displayName?: string; password?: string };
   }>('/api/setup/init', async (req, reply) => {
     if (bootSnapshot().phase !== 'awaiting_setup') {
       return reply.status(503).send({ error: 'Server is not in setup mode.' });
     }
 
-    const { username, displayName } = req.body ?? {};
+    const { username, displayName, password } = req.body ?? {};
     if (!username || typeof username !== 'string' || !/^[a-z0-9_\-]{2,32}$/.test(username)) {
       return reply.status(400).send({ error: 'Username must be 2–32 lowercase alphanumeric characters.' });
+    }
+    if (!password || typeof password !== 'string' || password.length < 8) {
+      return reply.status(400).send({ error: 'Password must be at least 8 characters.' });
     }
 
     // _setupContext is populated by continueBootSequence before entering the
@@ -294,7 +323,9 @@ async function buildServer() {
     }
 
     try {
-      const result = await provisionSystemUser(username, 'admin', ctx.userStore, displayName ?? username);
+      const result = await provisionSystemUser(
+        username, 'admin', ctx.userStore, displayName ?? username, password, ctx.db,
+      );
       writeActiveUser(username);
       console.log(`[Boot] Owner account '${username}' created. Resuming boot.`);
       if (result.errors.length > 0) {
@@ -548,6 +579,29 @@ async function continueBootSequence(
   const webrtcRelayUrl = process.env.WEBRTC_RELAY_URL ?? 'wss://autarch.net/relay';
   const instanceId     = await getInstanceId(db);
   console.log(`[Boot] Instance ID: ${instanceId}`);
+
+  // ── POST-E1 OWNER ROW SEED ─────────────────────────────────────────────────
+  // The E1 migration builds the split DB layout and defers the owner users-table
+  // row insert to here (Migration.ts Step 9 comment). If users/owner/ exists on
+  // disk but the users table is empty — i.e. this is the first boot after the
+  // E1 migration — seed the row so the hasUsers gate below passes and the user
+  // reaches the login screen rather than the first-run setup form.
+  // ON CONFLICT DO NOTHING makes this idempotent on every subsequent boot.
+  {
+    const ownerDir = path.join(PHOBOS_DATA_DIR, 'users', 'owner');
+    if (fsExistsSync(ownerDir)) {
+      await db.execWithParams(
+        `INSERT INTO users (username, display_name, role, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT (username) DO NOTHING`,
+        ['owner', 'Owner', 'admin', new Date().toISOString()],
+      );
+      // Ensure active-user.json points at owner so the login screen pre-selects
+      // the correct card and all DB paths resolve correctly on this boot.
+      writeActiveUser('owner');
+      console.log('[Boot] Post-E1 owner row seeded.');
+    }
+  }
 
   // ── FIRST-RUN GATE ─────────────────────────────────────────────────────────
   // If no users exist, pause boot and wait for the owner account to be created

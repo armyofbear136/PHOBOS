@@ -1,33 +1,35 @@
 /**
  * userManagement.ts — PHOBOS User Management API.
  *
- * All routes are under /api/admin/*. The management panel is password-protected
- * independently of the rest of the app. A bcrypt hash of the management
- * password is stored in security_config under 'owner_password_hash'. An empty
- * hash means the password has never been set (first-run state).
- *
- * Session tokens are random 32-byte hex strings held in a module-level Set with
- * a 30-minute TTL. They are never persisted — app restart requires re-auth.
- * The token is passed as Authorization: Bearer <token> on protected routes.
+ * All management routes are under /api/admin/* and require a session token.
+ * Auth is per-user: each user's bcrypt hash is stored in guest_credentials.
+ * Session tokens are random 32-byte hex strings held in a module-level Map
+ * (token → username) with a 30-minute TTL. Never persisted — restart clears all.
+ * Token passed as Authorization: Bearer <token> on protected routes.
  *
  * Route surface:
  *
- *   POST   /api/admin/auth              — verify password → token
- *   POST   /api/admin/auth/setup        — set initial password (only when none set)
- *   POST   /api/admin/auth/change       — change password (requires token)
+ *   POST   /api/admin/auth              — verify username+password → { token, role }
+ *   POST   /api/admin/auth/setup        — first-time or pre-upgrade password set
+ *   POST   /api/admin/auth/change       — change own password (requires token)
  *   GET    /api/admin/status            — { activeUser, userCount, passwordSet } [no token]
  *
  *   GET    /api/admin/users             — list all users [token]
- *   POST   /api/admin/users             — create user + full provision [token]
+ *   POST   /api/admin/users             — create user + full provision [token, admin/owner only]
  *   PATCH  /api/admin/users/:username   — update display_name or role [token]
- *   DELETE /api/admin/users/:username   — delete user (data dir preserved) [token]
+ *   DELETE /api/admin/users/:username   — delete user (role hierarchy enforced) [token]
  *   POST   /api/admin/users/:username/reprovision — retry failed service provision [token]
  *
- *   POST   /api/admin/switch-user       — write active-user.json + restart [token]
+ *   POST   /api/admin/switch-user       — write active-user.json + restart [token, admin/owner only]
  *
  *   GET    /api/admin/access-codes      — list codes for this admin's users [token]
  *   POST   /api/admin/access-codes      — generate a guest or self access code [token]
  *   DELETE /api/admin/access-codes/:code — revoke (mark consumed) [token]
+ *
+ *   GET    /api/users/list              — public: username + display_name list for login screen
+ *   POST   /api/session/login           — public: verify credentials, write active-user.json
+ *
+ *   POST   /api/user/invite             — generate a guest invite code [full/admin/owner via WebRTC]
  */
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
@@ -60,17 +62,43 @@ const VALID_ROLES = new Set<UserRole>(['full', 'guest', 'read']);
 
 // ── In-memory session store ────────────────────────────────────────────────────
 
-const _sessions = new Set<string>();
+const _sessions = new Map<string, string>();  // token → username
 
-function issueToken(): string {
+function issueToken(username: string): string {
   const token = crypto.randomBytes(32).toString('hex');
-  _sessions.add(token);
+  _sessions.set(token, username);
   setTimeout(() => _sessions.delete(token), SESSION_TTL_MS);
   return token;
 }
 
 function validateToken(token: string): boolean {
   return _sessions.has(token);
+}
+
+function tokenUsername(token: string): string | null {
+  return _sessions.get(token) ?? null;
+}
+
+// ── Local browser session store ────────────────────────────────────────────────
+// Separate from the admin token store. These tokens authenticate the local
+// browser UI — they are reset every server restart (in-memory only).
+// The frontend stores the token in sessionStorage and sends it as
+// x-local-session on every request. Cleared on logout or tab close.
+
+const _localSessions = new Set<string>();
+
+export function issueLocalSession(): string {
+  const token = crypto.randomBytes(32).toString('hex');
+  _localSessions.add(token);
+  return token;
+}
+
+export function validateLocalSession(token: string): boolean {
+  return _localSessions.has(token);
+}
+
+export function revokeLocalSession(token: string): void {
+  _localSessions.delete(token);
 }
 
 // ── Auth preHandler ────────────────────────────────────────────────────────────
@@ -139,58 +167,58 @@ export async function registerUserManagementRoutes(
   const securityStore = new SecurityStore(systemDb);
   const userStore     = new UserStore(systemDb);
 
-  // ── Helper: read and verify password hash ─────────────────────────────────
-
-  async function getPasswordHash(): Promise<string> {
-    return securityStore.getConfig('owner_password_hash');
-  }
-
-  async function setPasswordHash(plain: string): Promise<void> {
-    const hash = await bcrypt.hash(plain, SALT_ROUNDS);
-    await securityStore.setConfig('owner_password_hash', hash);
-  }
-
   // ── Public: status (no token required) ────────────────────────────────────
 
   fastify.get('/api/admin/status', async (_req, reply) => {
-    const hash        = await getPasswordHash();
     const activeUser  = getActiveUser();
     const userCount   = await userStore.count();
+    // passwordSet reflects whether the active user has a credential row.
+    const rows = await systemDb.query<{ username: string }>(
+      `SELECT username FROM guest_credentials WHERE username = ?`, [activeUser],
+    );
     return reply.send({
       activeUser,
       userCount,
-      passwordSet: hash.length > 0,
+      passwordSet: rows.length > 0,
     });
   });
 
-  // ── POST /api/admin/auth — verify password, issue token ───────────────────
+  // ── POST /api/admin/auth — verify per-user password, issue token ──────────
 
   fastify.post('/api/admin/auth', async (req, reply) => {
-    const { password } = req.body as { password?: string };
-    if (!password) return reply.status(400).send({ error: 'password required' });
+    const { username, password } = req.body as { username?: string; password?: string };
+    if (!username || !password) {
+      return reply.status(400).send({ error: 'username and password required' });
+    }
 
-    const hash = await getPasswordHash();
-    if (!hash) {
+    const user = await userStore.getByUsername(username);
+    if (!user || (user.role !== 'admin' && user.role !== 'full')) {
+      return reply.status(403).send({ error: 'Insufficient role' });
+    }
+
+    const rows = await systemDb.query<{ password_hash: string }>(
+      `SELECT password_hash FROM guest_credentials WHERE username = ?`, [username],
+    );
+    if (rows.length === 0) {
       return reply.status(403).send({ error: 'no_password_set' });
     }
 
-    const ok = await bcrypt.compare(password, hash);
+    const ok = await bcrypt.compare(password, rows[0].password_hash);
     if (!ok) return reply.status(401).send({ error: 'Invalid password' });
 
-    return reply.send({ token: issueToken() });
+    return reply.send({ token: issueToken(username), role: user.role });
   });
 
-  // ── POST /api/admin/auth/setup — set initial password (first-run only) ────
+  // ── POST /api/admin/auth/setup — first-time password set (pre-upgrade or new user) ──
+  // Used when a user has no guest_credentials row yet. Accepts username +
+  // password + confirm, writes the credential row, returns a token.
 
   fastify.post('/api/admin/auth/setup', async (req, reply) => {
-    const hash = await getPasswordHash();
-    if (hash.length > 0) {
-      return reply.status(409).send({ error: 'Password already set. Use /auth/change.' });
-    }
-
-    const { password, confirm } = req.body as { password?: string; confirm?: string };
-    if (!password || !confirm) {
-      return reply.status(400).send({ error: 'password and confirm required' });
+    const { username, password, confirm } = req.body as {
+      username?: string; password?: string; confirm?: string;
+    };
+    if (!username || !password || !confirm) {
+      return reply.status(400).send({ error: 'username, password, and confirm required' });
     }
     if (password !== confirm) {
       return reply.status(400).send({ error: 'Passwords do not match' });
@@ -199,13 +227,27 @@ export async function registerUserManagementRoutes(
       return reply.status(400).send({ error: 'Password must be at least 8 characters' });
     }
 
-    await setPasswordHash(password);
-    return reply.send({ token: issueToken() });
+    const user = await userStore.getByUsername(username);
+    if (!user || (user.role !== 'admin' && user.role !== 'full')) {
+      return reply.status(403).send({ error: 'Insufficient role' });
+    }
+
+    const hash = await bcrypt.hash(password, SALT_ROUNDS);
+    await systemDb.execWithParams(
+      `INSERT INTO guest_credentials (username, password_hash, created_at, updated_at)
+       VALUES (?, ?, now(), now())
+       ON CONFLICT (username) DO UPDATE SET password_hash = ?, updated_at = now()`,
+      [username, hash, hash],
+    );
+    return reply.send({ token: issueToken(username), role: user.role });
   });
 
-  // ── POST /api/admin/auth/change — change password [token required] ────────
+  // ── POST /api/admin/auth/change — change own password [token required] ────
 
   fastify.post('/api/admin/auth/change', { preHandler: requireToken }, async (req, reply) => {
+    const callerUsername = tokenUsername(req.headers['authorization']?.slice(7) ?? '');
+    if (!callerUsername) return reply.status(401).send({ error: 'Invalid session' });
+
     const { currentPassword, newPassword, confirm } = req.body as {
       currentPassword?: string;
       newPassword?:     string;
@@ -222,11 +264,19 @@ export async function registerUserManagementRoutes(
       return reply.status(400).send({ error: 'Password must be at least 8 characters' });
     }
 
-    const hash = await getPasswordHash();
-    const ok   = await bcrypt.compare(currentPassword, hash);
+    const rows = await systemDb.query<{ password_hash: string }>(
+      `SELECT password_hash FROM guest_credentials WHERE username = ?`, [callerUsername],
+    );
+    if (rows.length === 0) return reply.status(403).send({ error: 'no_password_set' });
+
+    const ok = await bcrypt.compare(currentPassword, rows[0].password_hash);
     if (!ok) return reply.status(401).send({ error: 'Current password incorrect' });
 
-    await setPasswordHash(newPassword);
+    const hash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    await systemDb.execWithParams(
+      `UPDATE guest_credentials SET password_hash = ?, updated_at = now() WHERE username = ?`,
+      [hash, callerUsername],
+    );
     return reply.send({ ok: true });
   });
 
@@ -240,14 +290,21 @@ export async function registerUserManagementRoutes(
   // ── POST /api/admin/users — create user [token required] ──────────────────
 
   fastify.post('/api/admin/users', { preHandler: requireToken }, async (req, reply) => {
-    const { username, display_name, role } = req.body as {
+    const callerUsername = tokenUsername(req.headers['authorization']?.slice(7) ?? '');
+    const caller = callerUsername ? await userStore.getByUsername(callerUsername) : null;
+    if (!caller || (caller.role !== 'admin')) {
+      return reply.status(403).send({ error: 'Only admins can add users' });
+    }
+
+    const { username, display_name, role, password } = req.body as {
       username?:     string;
       display_name?: string;
       role?:         string;
+      password?:     string;
     };
 
-    if (!username || !display_name || !role) {
-      return reply.status(400).send({ error: 'username, display_name, and role required' });
+    if (!username || !display_name || !role || !password) {
+      return reply.status(400).send({ error: 'username, display_name, role, and password required' });
     }
     if (!isValidUsername(username)) {
       return reply.status(400).send({
@@ -260,9 +317,14 @@ export async function registerUserManagementRoutes(
     if (display_name.trim().length === 0 || display_name.length > 64) {
       return reply.status(400).send({ error: 'display_name must be 1–64 characters' });
     }
+    if (password.length < 8) {
+      return reply.status(400).send({ error: 'Password must be at least 8 characters' });
+    }
 
     try {
-      const provResult = await provisionSystemUser(username, role as UserRole, userStore, display_name.trim());
+      const provResult = await provisionSystemUser(
+        username, role as UserRole, userStore, display_name.trim(), password, systemDb,
+      );
       const created = await userStore.getByUsername(username);
       return reply.status(201).send({
         user:       created,
@@ -345,11 +407,37 @@ export async function registerUserManagementRoutes(
       return reply.status(403).send({ error: 'The owner account cannot be deleted' });
     }
 
-    const existing = await userStore.getByUsername(username);
-    if (!existing) return reply.status(404).send({ error: `User '${username}' not found` });
+    const target = await userStore.getByUsername(username);
+    if (!target) return reply.status(404).send({ error: `User '${username}' not found` });
 
     if (username === getActiveUser()) {
       return reply.status(409).send({ error: 'Cannot delete the currently active user. Switch user first.' });
+    }
+
+    // Enforce role hierarchy.
+    const callerUsername = tokenUsername(req.headers['authorization']?.slice(7) ?? '');
+    const caller = callerUsername ? await userStore.getByUsername(callerUsername) : null;
+
+    if (caller?.role === 'admin') {
+      // Admins cannot delete other admin accounts.
+      if (target.role === 'admin') {
+        return reply.status(403).send({ error: 'Admins cannot delete other admin accounts' });
+      }
+    } else if (caller?.role === 'full') {
+      // Full users can only delete guests they personally provisioned.
+      if (target.role !== 'guest' && target.role !== 'read') {
+        return reply.status(403).send({ error: 'Full users can only delete guest accounts' });
+      }
+      const issued = await systemDb.query<{ issuing_username: string }>(
+        `SELECT issuing_username FROM access_codes
+         WHERE target_username = ? ORDER BY created_at DESC LIMIT 1`,
+        [username],
+      );
+      if (!issued[0] || issued[0].issuing_username !== callerUsername) {
+        return reply.status(403).send({ error: 'You can only delete guests you provisioned' });
+      }
+    } else {
+      return reply.status(403).send({ error: 'Forbidden' });
     }
 
     const { preserveAll = false } = (req.body ?? {}) as { preserveAll?: boolean };
@@ -366,6 +454,12 @@ export async function registerUserManagementRoutes(
 
   // ── POST /api/admin/switch-user — switch active user [token required] ─────
   fastify.post('/api/admin/switch-user', { preHandler: requireToken }, async (req, reply) => {
+    const callerUsername = tokenUsername(req.headers['authorization']?.slice(7) ?? '');
+    const caller = callerUsername ? await userStore.getByUsername(callerUsername) : null;
+    if (!caller || (caller.role !== 'admin')) {
+      return reply.status(403).send({ error: 'Only admins can switch the active user' });
+    }
+
     const { username } = req.body as { username?: string };
     if (!username) return reply.status(400).send({ error: 'username required' });
 
@@ -425,6 +519,68 @@ export async function registerUserManagementRoutes(
     }
 
     return reply.send(result);
+  });
+
+  // ── GET /api/users/list — public user list for local login screen ──────────
+  // Returns username + display_name only. No token required. Used by
+  // ConnectionSplash.tsx to render the login screen user cards.
+
+  fastify.get('/api/users/list', async (_req, reply) => {
+    const users = await systemDb.query<{ username: string; display_name: string }>(
+      `SELECT username, display_name FROM users ORDER BY username ASC`,
+    );
+    return reply.send({ users });
+  });
+
+  // ── POST /api/session/login — local login screen submission ───────────────
+  // Verifies username + password against guest_credentials, writes
+  // active-user.json, issues a local session token, and returns
+  // { ok, username, role, sessionToken }.
+
+  fastify.post('/api/session/login', async (req, reply) => {
+    const { username, password } = req.body as { username?: string; password?: string };
+    if (!username || !password) {
+      return reply.status(400).send({ error: 'username and password required' });
+    }
+
+    const user = await userStore.getByUsername(username);
+    if (!user) return reply.status(401).send({ error: 'Invalid credentials' });
+
+    const rows = await systemDb.query<{ password_hash: string }>(
+      `SELECT password_hash FROM guest_credentials WHERE username = ?`, [username],
+    );
+    if (rows.length === 0) {
+      return reply.status(403).send({ error: 'no_password_set' });
+    }
+
+    const ok = await bcrypt.compare(password, rows[0].password_hash);
+    if (!ok) return reply.status(401).send({ error: 'Invalid credentials' });
+
+    writeActiveUser(username);
+    await userStore.stampLastActive(username);
+    const sessionToken = issueLocalSession();
+    return reply.send({ ok: true, username, role: user.role, sessionToken });
+  });
+
+  // ── POST /api/session/logout — invalidate local session ───────────────────
+
+  fastify.post('/api/session/logout', async (req, reply) => {
+    const token = req.headers['x-local-session'] as string | undefined;
+    if (token) revokeLocalSession(token);
+    return reply.send({ ok: true });
+  });
+
+  // ── GET /api/session/status — check if browser session is active ──────────
+  // Returns { loggedIn, username, lastUser } where lastUser is the value from
+  // active-user.json — used to pre-select the user card on the login screen.
+
+  fastify.get('/api/session/status', async (req, reply) => {
+    const token    = req.headers['x-local-session'] as string | undefined;
+    const loggedIn = !!token && validateLocalSession(token);
+    return reply.send({
+      loggedIn,
+      lastUser: getActiveUser(),
+    });
   });
 
   // ── GET /api/admin/access-codes — list codes [token required] ─────────────────────────

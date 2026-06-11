@@ -155,7 +155,7 @@ const DB_PATH         = (() => {
   ];
   return candidates.find(p => existsSync(p)) ?? candidates[0];
 })();
-const CONV_DB_PATH    = path.join(SCRATCH_DIR, 'conversations.duckdb');
+const CONV_DB_PATH    = path.join(SCRATCH_DIR, 'users', 'owner', 'conversations.duckdb');
 const WORKSPACES_ROOT = path.join(SCRATCH_DIR, 'workspaces');
 
 // ── Model selection config ─────────────────────────────────────────────────────
@@ -658,6 +658,27 @@ async function dbQuerySafe<T = Record<string, unknown>>(
   }
 }
 
+// Polls a DB query until at least minRows rows appear or timeout elapses.
+// Needed for fire-and-forget writes (embed → writeTurn) that complete after
+// the SSE stream closes but before the test assertion runs.
+async function dbQueryWithRetry<T = Record<string, unknown>>(
+  dbPath: string,
+  sql: string,
+  params: unknown[],
+  minRows: number,
+  timeoutMs = 5000,
+  intervalMs = 300,
+): Promise<{ rows: T[]; locked: boolean; error?: string }> {
+  const deadline = Date.now() + timeoutMs;
+  let last: { rows: T[]; locked: boolean; error?: string } = { rows: [], locked: false };
+  while (Date.now() < deadline) {
+    last = await dbQuerySafe<T>(dbPath, sql, params);
+    if (last.rows.length >= minRows || last.locked) return last;
+    await new Promise(r => setTimeout(r, intervalMs));
+  }
+  return last;
+}
+
 // Helper: assert or warnAssert based on whether DB was locked
 function dbAssert(
   label: string,
@@ -927,21 +948,35 @@ async function checkPort(port: number): Promise<boolean> {
  * Max wait: 120s. Logs every 10s if still waiting.
  */
 async function waitForModelIdle(label = ''): Promise<void> {
+  let connectedAndIdle = false;
   for (let i = 0; i < 300; i++) {
     await new Promise(r => setTimeout(r, 1000));
     try {
       const res = await apiGet('/api/status', 3000).catch(() => ({ status: 0, json: null }));
       const j   = res.json as any;
       if (j?.coordinator === 'connected' && j?.engine === 'connected') {
-        // Both LLM servers are online — now also wait until neither is actively generating
-        const sayonIdle = !j?.sayonBusy;
-        const serenIdle = !j?.serenBusy;
+        const sayonIdle  = !j?.sayonBusy;
+        const serenIdle  = !j?.serenBusy;
         const queueEmpty = (j?.queueActiveTasks ?? 0) === 0;
-        if (sayonIdle && serenIdle && queueEmpty) return;
+        if (sayonIdle && serenIdle && queueEmpty) {
+          if (!connectedAndIdle) {
+            // First time we see idle — probe with a real inference call to confirm
+            // the server is fully ready (not just port-open but still loading after restart).
+            connectedAndIdle = true;
+            const probe = await apiGet('/api/status', 5000).catch(() => ({ status: 0, json: null }));
+            const pj = probe.json as any;
+            if (pj?.coordinator !== 'connected') { connectedAndIdle = false; continue; }
+            // Short grace period to let the model warm up after a restart
+            await new Promise(r => setTimeout(r, 1500));
+          }
+          return;
+        }
+        connectedAndIdle = false;
         if (i > 0 && i % 5 === 0) {
           console.log(`    ⏳ [${label}] waiting for inference to finish… sayon=${j?.sayonBusy ? 'busy' : 'idle'} seren=${j?.serenBusy ? 'busy' : 'idle'} queue=${j?.queueActiveTasks ?? 0} (${i}s)`);
         }
       } else {
+        connectedAndIdle = false;
         if (i > 0 && i % 10 === 0) {
           console.log(`    ⏳ [${label}] waiting for models… coordinator=${j?.coordinator} engine=${j?.engine} (${i}s)`);
         }
@@ -981,8 +1016,8 @@ async function testS01_intentRoutingDirect(): Promise<void> {
   const hasDistilled = msgs[1]?.distilled_content != null;
   warnAssert('distilled_content set (via API)',  hasDistilled, hasDistilled ? 'present' : 'not exposed in messages API — check DB directly after run');
 
-  const { rows: turns, locked: turnsLocked, error: turnsErr } = await dbQuerySafe(CONV_DB_PATH,
-    `SELECT id FROM conversation_turns WHERE thread_id = ?`, [tid]);
+  const { rows: turns, locked: turnsLocked, error: turnsErr } = await dbQueryWithRetry(CONV_DB_PATH,
+    `SELECT id FROM conversation_turns WHERE thread_id = ?`, [tid], 1);
   dbAssert('conversation turn indexed', turns.length === 1, turnsLocked, turnsLocked ? turnsErr : `found ${turns.length}`);
   endTest();
 }
@@ -1050,11 +1085,11 @@ async function testS05_conversationTurnIndexed(): Promise<void> {
   assert('complete', s.complete, `elapsed ${s.durationMs}ms`);
 
   try {
-    const { rows: turns, locked, error } = await dbQuerySafe<{
+    const { rows: turns, locked, error } = await dbQueryWithRetry<{
       thread_id: string; user_text: string; assistant_text: string;
     }>(CONV_DB_PATH,
       `SELECT thread_id, user_text, assistant_text FROM conversation_turns WHERE thread_id = ?`,
-      [tid]
+      [tid], 1
     );
     dbAssert('1 turn in conversations.duckdb', turns.length === 1,                  locked, locked ? error : `found ${turns.length}`);
     dbAssert('user_text matches input',        turns[0]?.user_text.includes('const'), locked, `got: ${turns[0]?.user_text?.slice(0, 60)}`);

@@ -157,6 +157,7 @@ export async function registerCopilotRoutes(fastify: FastifyInstance): Promise<v
 
   async function getUserStores(username: string): Promise<CopilotStores> {
     const db          = DatabaseManager.getUserDb(username);
+    await db.ensureReady();
     const threadStore = new ThreadStore(db);
     const messageStore = new MessageStore(db);
     const memoryStore  = new CopilotMemoryStore(db);

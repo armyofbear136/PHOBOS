@@ -56,7 +56,10 @@ export class SignalingClient {
   isRelayConnected(): boolean     { return this._ws?.readyState === WebSocket.OPEN && this._registered; }
 
   connect(): void {
-    if (this._destroyed) return;
+    // Clear destroyed flag so a re-enable after destroy() works correctly.
+    this._destroyed  = false;
+    this._registered = false;
+    this._backoffMs  = BACKOFF_INIT_MS;
     this._open();
   }
 

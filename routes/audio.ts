@@ -79,7 +79,7 @@ import fs        from 'fs';
 import fsp       from 'fs/promises';
 import path      from 'path';
 import os        from 'os';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 
 import { DatabaseManager } from '../db/DatabaseManager.js';
@@ -127,7 +127,8 @@ import {
 import { OscClient } from '../phobos/OscClient.js';
 import { aldaToMidi } from '../phobos/alda-parser/index.js';
 import { playSourceOnPhobosSynth, stopAldaSequence } from '../phobos/AldaPlayer.js';
-import { playPolarisFile, getActiveSession, clearActiveSession } from '../phobos/PolarisHostPlayer.js';
+import { playPolarisFile, getActiveSession, clearActiveSession, resolvePolarisLocalPath } from '../phobos/PolarisHostPlayer.js';
+import { resolveFFmpegPath } from '../services/JellyfinManager.js';
 import {
   generateKokoro,
   generateSupertonic,
@@ -2112,5 +2113,134 @@ export async function registerAudioRoutes(fastify: FastifyInstance): Promise<voi
       return reply.send({ ok: true });
     },
   );
+
+  // ── POST /api/audio/stream ───────────────────────────────────────────────
+  //
+  // Live-transcodes a Polaris virtual path to Opus and streams it as base64
+  // SSE chunks. Works over both HTTP (direct) and WebRTC (via SseEmitterRegistry).
+  //
+  // When called via WebRTC the x-webrtc-request-id header is present.
+  // In that case events are sent through SseEmitterRegistry.getSender() so
+  // DataChannelHandler can forward them as RemoteSSEFrame messages on the
+  // control channel. reply.raw is used for direct HTTP only.
+
+  const VALID_BITRATES = new Set([32, 64, 96, 128, 192, 256, 320]);
+  const STREAM_READ_BYTES = 4096;
+
+  fastify.post<{
+    Body: { virtualPath?: string; bitrate?: number; startSec?: number };
+  }>('/api/audio/stream', async (req, reply) => {
+    const { virtualPath, bitrate: bitrateRaw, startSec: startSecRaw } = req.body ?? {};
+
+    if (!virtualPath || typeof virtualPath !== 'string') {
+      return reply.status(400).send({ error: '"virtualPath" body param required' });
+    }
+
+    const bitrate = (() => {
+      const n = typeof bitrateRaw === 'number' ? bitrateRaw : parseInt(String(bitrateRaw ?? '320'), 10);
+      return VALID_BITRATES.has(n) ? n : 320;
+    })();
+
+    const startSec = (() => {
+      const n = typeof startSecRaw === 'number' ? startSecRaw : parseFloat(String(startSecRaw ?? '0'));
+      return Number.isFinite(n) && n >= 0 ? n : 0;
+    })();
+
+    const localPath = resolvePolarisLocalPath(virtualPath);
+    if (!localPath) {
+      return reply.status(404).send({ error: `Cannot resolve Polaris path: ${virtualPath}` });
+    }
+    if (!fs.existsSync(localPath)) {
+      return reply.status(404).send({ error: `File not found on disk: ${localPath}` });
+    }
+
+    const ffmpegBin = resolveFFmpegPath();
+    if (!fs.existsSync(ffmpegBin)) {
+      return reply.status(503).send({ error: 'ffmpeg not available' });
+    }
+
+    // Detect WebRTC vs direct HTTP — use SseEmitterRegistry when WebRTC
+    const webrtcId = (req.headers as Record<string, string>)['x-webrtc-request-id'];
+    const { getSender, signalDone } = await import('../webrtc/SseEmitterRegistry.js');
+    const webrtcSender = webrtcId ? getSender(webrtcId) : null;
+
+    // sendEvent routes to WebRTC emitter or reply.raw depending on transport
+    const sendEvent = webrtcSender
+      ? webrtcSender
+      : (data: Record<string, unknown>) => reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+
+    const endStream = webrtcSender
+      ? () => { if (webrtcId) signalDone(webrtcId); }
+      : () => reply.raw.end();
+
+    if (!webrtcSender) {
+      sseHeaders(req, reply);
+    }
+
+    const ffmpegArgs = [
+      '-ss',             String(startSec),
+      '-i',              localPath,
+      '-vn',
+      '-c:a',            'libopus',
+      '-b:a',            `${bitrate}k`,
+      '-frame_duration', '20',
+      '-application',    'audio',
+      '-f',              'webm',
+      'pipe:1',
+    ];
+
+    const proc = spawn(ffmpegBin, ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    let chunkIndex = 0;
+    let totalBytes = 0;
+    let errOutput  = '';
+    let finished   = false;
+
+    proc.stderr?.on('data', (d: Buffer) => { errOutput += d.toString(); });
+
+    proc.stdout?.on('readable', () => {
+      let chunk: Buffer | null;
+      // eslint-disable-next-line no-cond-assign
+      while ((chunk = proc.stdout?.read(STREAM_READ_BYTES) as Buffer | null) !== null) {
+        if (finished) break;
+        totalBytes += chunk.length;
+        let binary = '';
+        for (let i = 0; i < chunk.length; i++) binary += String.fromCharCode(chunk[i]!);
+        sendEvent({ type: 'chunk', event: 'chunk', data: { index: chunkIndex++, b64: btoa(binary) } });
+      }
+    });
+
+    proc.stdout?.on('end', () => {
+      if (finished) return;
+      finished = true;
+      const durationSec = totalBytes > 0 ? Math.round((totalBytes / (bitrate * 125)) * 10) / 10 : 0;
+      sendEvent({ type: 'done', event: 'done', data: { totalChunks: chunkIndex, durationSec } });
+      endStream();
+    });
+
+    proc.on('error', (err: Error) => {
+      if (finished) return;
+      finished = true;
+      sendEvent({ type: 'error', event: 'error', data: { message: err.message } });
+      endStream();
+    });
+
+    proc.on('close', (code: number | null) => {
+      if (finished) return;
+      finished = true;
+      if (code !== 0 && code !== null) {
+        const lines = errOutput.split('\n').filter(l => l.trim()).slice(-3);
+        sendEvent({ type: 'error', event: 'error', data: { message: lines.join(' | ') || `ffmpeg exited ${code}` } });
+      }
+      endStream();
+    });
+
+    req.raw.on('close', () => {
+      finished = true;
+      try { proc.kill('SIGTERM'); } catch { /* already exited */ }
+    });
+
+    return reply;
+  });
 
 }

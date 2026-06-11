@@ -854,7 +854,6 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
         // block below so no subsequent coordinatorCall can race with the summary.
         const _routeSharedBuf = (globalThis as Record<string, unknown>).__phobosSharedState as Int32Array | undefined;
         if (_routeSharedBuf) Atomics.store(_routeSharedBuf, S.SAYON_STATE, ProcessState.BUSY);
-        console.log('[messagesRoute] SAYON_STATE → BUSY (ANSWER_DIRECTLY)');
         trackingsendEvent({ type: 'status', content: 'Answering directly via coordinator…' });
         const directMsgId = await handleDirectResponse(
           threadId,
@@ -1204,10 +1203,7 @@ export async function messagesRoute(fastify: FastifyInstance): Promise<void> {
       // Reset SAYON_STATE to RUNNING — must happen after generateAndPersistSummary
       // so waitForModelIdle doesn't unblock before the summary coordinatorCall finishes.
       const _finalSharedBuf = (globalThis as Record<string, unknown>).__phobosSharedState as Int32Array | undefined;
-      if (_finalSharedBuf) {
-        Atomics.store(_finalSharedBuf, S.SAYON_STATE, ProcessState.RUNNING);
-        console.log('[messagesRoute] SAYON_STATE → RUNNING (finally)');
-      }
+      if (_finalSharedBuf) Atomics.store(_finalSharedBuf, S.SAYON_STATE, ProcessState.RUNNING);
       reply.raw.write('data: {"type":"done"}\n\n');
       reply.raw.end();
     }

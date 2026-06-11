@@ -170,10 +170,27 @@ export async function provisionSystemUser(
   role:         UserRole,
   userStore:    UserStore,
   display_name?: string,
+  password?:    string,
+  systemDb?:    DatabaseManager,
 ): Promise<ProvisionResult> {
   const result: ProvisionResult = { jellyfinOk: false, kavitaOk: false, errors: [] };
 
   await userStore.create({ username, display_name: display_name ?? username, role });
+
+  // Write per-user credential row for all non-guest roles (guests write their own
+  // row in DataChannelHandler after collecting the password over WebRTC).
+  // Guest role is excluded here because DataChannelHandler writes the row itself
+  // immediately after calling this function, to keep the password handling in one place.
+  if (password && systemDb && role !== 'guest') {
+    const bcrypt = await import('bcryptjs');
+    const hash   = await bcrypt.hash(password, 12);
+    await systemDb.execWithParams(
+      `INSERT INTO guest_credentials (username, password_hash, created_at, updated_at)
+       VALUES (?, ?, now(), now())
+       ON CONFLICT (username) DO UPDATE SET password_hash = ?, updated_at = now()`,
+      [username, hash, hash],
+    );
+  }
 
   const userDb = DatabaseManager.getUserDb(username);
   await userDb.initialize();

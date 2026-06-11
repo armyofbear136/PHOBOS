@@ -20,7 +20,11 @@
 import * as path from 'node:path';
 import * as fs   from 'node:fs';
 import * as os   from 'node:os';
+import * as crypto from 'node:crypto';
 import { fileURLToPath } from 'url';
+
+import { DatabaseManager, systemDbPath } from './db/DatabaseManager.js';
+import { ServiceStore }                   from './db/ServiceStore.js';
 
 import {
   JELLYFIN_PORT,
@@ -30,6 +34,7 @@ import {
   resolveBinaryPath,
   resolveFFmpegPath,
   resolveDataDir,
+  resolveConfigDir,
   defaultMediaPath,
   startJellyfin,
   stopJellyfin,
@@ -49,9 +54,10 @@ const MOVIES_PATH   = path.resolve(__dirname, 'test-outputs', 'videos', 'movies'
 const SKIP_START    = process.env.JELLYFIN_SKIP_START === '1';
 const KEEP_RUNNING  = process.env.JELLYFIN_KEEP_RUNNING === '1';
 // JELLYFIN_WIPE=1 deletes jellyfin.db before starting — destroys ALL user accounts and libraries.
-// Only use on a dedicated test instance. NEVER run against your production Jellyfin.
+// Only needed when the DB is out of sync with ServiceStore credentials (e.g. a prior test run
+// that used a hardcoded TEST_PASSWORD). Under normal operation the test reads the real password
+// from ServiceStore and works against the live DB without wiping anything.
 const WIPE_DB       = process.env.JELLYFIN_WIPE === '1';
-const TEST_PASSWORD = 'phobos-test-pw-jf-localonly';
 const TEST_USER     = `jf-test-${Date.now().toString(36)}`;
 const PHOBOS_DIR    = path.join(os.homedir(), '.phobos');
 
@@ -138,7 +144,12 @@ if (!SKIP_START) {
         const f = jellyfinDb + suffix;
         if (fs.existsSync(f)) fs.rmSync(f, { force: true });
       }
-      console.log('\n   ℹ️  Wiped jellyfin.db (JELLYFIN_WIPE=1).');
+      // Also wipe the config files that cause Jellyfin to take the
+      // "upgrade existing install" path instead of fresh initialization.
+      // network.xml is left intact — it controls the port binding.
+      fs.rmSync(path.join(resolveConfigDir(), 'system.xml'),   { force: true });
+      fs.rmSync(path.join(resolveConfigDir(), 'database.xml'), { force: true });
+      console.log('\n   ℹ️  Wiped jellyfin.db and config files (JELLYFIN_WIPE=1).');
     }
   } else {
     console.log('\n   ℹ️  Using existing jellyfin.db. Set JELLYFIN_WIPE=1 to start fresh (destroys all data).');
@@ -147,7 +158,17 @@ if (!SKIP_START) {
   console.log('\n[ 5/12 ] Starting Jellyfin (first boot: up to 5 min)...');
   const t0 = Date.now();
   try {
-    await startJellyfin({ libraryPath: MOVIES_PATH, hardwareAccel: '' }, TEST_PASSWORD);
+    // Read the stored admin password so the test works against an existing DB.
+    // If the system DB doesn't exist yet this generates a fresh random password.
+    const sysDb        = DatabaseManager.getInstance(systemDbPath());
+    await sysDb.ensureReady();
+    const serviceStore = new ServiceStore(sysDb);
+    await serviceStore.ensureTable();
+    const jfRecord     = await serviceStore.get('jellyfin');
+    const adminPassword = (jfRecord.settings.adminPassword as string)
+      || crypto.randomBytes(24).toString('base64url');
+
+    await startJellyfin({ libraryPath: MOVIES_PATH, hardwareAccel: '' }, adminPassword);
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     ok(`Jellyfin started (${elapsed}s)`, true);
   } catch (err) {
@@ -211,14 +232,36 @@ try {
 console.log(`\n[ 9/12 ] Library isolation check for ${TEST_USER}...`);
 if (testJellyfinUserId) {
   try {
-    const r    = await jellyfinApiRequest('GET', `/Users/${testJellyfinUserId}/Policy`);
-    ok('GET user policy → ok', r.ok);
-    const pol  = await r.json() as Record<string, unknown>;
-    ok('EnableAllFolders = false', pol.EnableAllFolders === false);
-    const enabled = pol.EnabledFolders as string[] | undefined;
-    ok('EnabledFolders is non-empty array', Array.isArray(enabled) && enabled.length > 0);
-    console.log(`   EnableAllFolders: ${pol.EnableAllFolders}`);
-    console.log(`   EnabledFolders:   [${(enabled ?? []).join(', ')}]`);
+    // Read policy from the full user object (GET /Users/{id}).
+    // POST /Users/{id}/Policy sets the policy; there is no separate GET for policy.
+    // Retry up to 6 times over ~15s to allow Jellyfin to commit the write.
+    let pol: Record<string, unknown> | null = null;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await sleep(2_500);
+      const r = await jellyfinApiRequest('GET', `/Users/${testJellyfinUserId}`);
+      ok('GET user → ok', r.ok);
+      if (!r.ok) break;
+      const text = await r.text();
+      if (text.trim().length > 0) {
+        try {
+          const user = JSON.parse(text) as Record<string, unknown>;
+          if (user.Policy && typeof user.Policy === 'object') {
+            pol = user.Policy as Record<string, unknown>;
+            break;
+          }
+        } catch { /* malformed json, retry */ }
+      }
+    }
+    if (pol) {
+      ok('EnableAllFolders = false', pol.EnableAllFolders === false);
+      const enabled = pol.EnabledFolders as string[] | undefined;
+      ok('EnabledFolders is non-empty array', Array.isArray(enabled) && enabled.length > 0);
+      console.log(`   EnableAllFolders: ${pol.EnableAllFolders}`);
+      console.log(`   EnabledFolders:   [${(enabled ?? []).join(', ')}]`);
+    } else {
+      ok('User policy check succeeded', false);
+      warn('User policy check failed', 'Policy field missing from user object after 6 attempts');
+    }
   } catch (err) {
     ok('User policy check succeeded', false);
     warn('User policy check failed', (err as Error).message);
@@ -265,12 +308,26 @@ try {
 console.log(`\n[ 12/12 ] Per-user deprovision (${TEST_USER})...`);
 if (testJellyfinUserId) {
   try {
+    // Remove the test library first (deprovisionUser only removes the user account,
+    // not the virtual folder — library lifecycle is managed separately).
+    await removeLibrary(`${TEST_USER}-media`);
+    await sleep(2_000); // brief settle for async virtual folder deletion
+
     await deprovisionUser(testJellyfinUserId);
     ok('deprovisionUser succeeded', true);
 
-    // Library should be removed.
-    const libsAfter = await listLibraries();
-    ok(`${TEST_USER}-media library removed`, !libsAfter.some(l => l.Name === `${TEST_USER}-media`));
+    // Verify the library is gone after explicit removal.
+    const deadline = Date.now() + 15_000;
+    let removed = false;
+    while (Date.now() < deadline) {
+      const libsAfter = await listLibraries();
+      if (!libsAfter.some(l => l.Name === `${TEST_USER}-media`)) {
+        removed = true;
+        break;
+      }
+      await sleep(1_000);
+    }
+    ok(`${TEST_USER}-media library removed`, removed);
   } catch (err) {
     ok('deprovisionUser succeeded', false);
     warn('deprovisionUser failed', (err as Error).message);

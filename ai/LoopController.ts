@@ -2,6 +2,7 @@ import type { FastifyReply } from 'fastify';
 import { AgentStateManager, type AgentStateEvent } from './AgentStateManager.js';
 import { engineClient, coordinatorClient, coordinatorCall, ENGINE_MODEL, COORDINATOR_MODEL, ENGINE_PROVIDER, COORDINATOR_PROVIDER, applyThinkingStrategy, getThinkingStrategy, getThinkingExtraBody, coordinatorStream } from './clients.js';
 import { getServerStatus, awaitServerReady } from '../phobos/LlamaServerManager.js';
+import { isMainThread } from 'node:worker_threads';
 import { ThinkingTokenRouter } from './ThinkingTokenRouter.js';
 import { DispatchComposer, type ComposeInput } from './DispatchComposer.js';
 import { ContextIngester } from './ContextIngester.js';
@@ -1973,7 +1974,7 @@ export class LoopController {
     let rawStream: AsyncGenerator<Record<string, unknown>> | null = null;
 
     // WeClone ready-guard: if seren is restarting after a model swap, wait.
-    { const _s = getServerStatus().seren.state; if (_s === 'starting' || _s === 'stopped') await awaitServerReady('seren'); }
+    if (isMainThread) { const _s = getServerStatus().seren.state; if (_s === 'starting' || _s === 'stopped') await awaitServerReady('seren'); }
 
     if (useRawFetch) {
       const baseURL = ((engineClient as unknown as { baseURL?: string }).baseURL ?? 'http://127.0.0.1:52627/v1').replace(/\/$/, '');

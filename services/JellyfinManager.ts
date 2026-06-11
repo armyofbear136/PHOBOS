@@ -1062,7 +1062,22 @@ export async function provisionUser(username: string): Promise<JellyfinProvision
       const folders = await foldersRes.json() as Array<{ Name: string; ItemId: string }>;
       const userFolder = folders.find(f => f.Name === `${username}-media`);
       if (userFolder) {
+        // Fetch the current user object to get the full policy — Jellyfin requires
+        // a complete policy object in POST, not a partial patch. Sending only a
+        // subset of fields causes the rest to be reset to defaults (e.g. EnableAllFolders → true).
+        let currentPolicy: Record<string, unknown> = {};
+        const userRes = await jellyfinApiRequest('GET', `/Users/${userId}`);
+        if (userRes.ok) {
+          const userText = await userRes.text();
+          if (userText.trim().length > 0) {
+            const userObj = JSON.parse(userText) as Record<string, unknown>;
+            if (userObj.Policy && typeof userObj.Policy === 'object') {
+              currentPolicy = userObj.Policy as Record<string, unknown>;
+            }
+          }
+        }
         await jellyfinApiRequest('POST', `/Users/${userId}/Policy`, {
+          ...currentPolicy,
           EnableAllFolders:         false,
           EnabledFolders:           [userFolder.ItemId],
           IsAdministrator:          false,

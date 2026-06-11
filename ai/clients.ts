@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { DatabaseManager } from '../db/DatabaseManager.js';
 import { ModelConfigStore, PROVIDERS, type RoleConfig } from '../db/ModelConfigStore.js';
 import { reconcilePhobosServers, getServerStatus, awaitServerReady } from '../phobos/LlamaServerManager.js';
+import { isMainThread } from 'node:worker_threads';
 import { getSpec } from '../phobos/PhobosLocalManager.js';
 import { PromptLogStore, type PromptStage } from '../db/PromptLogStore.js';
 import { ThinkingTokenRouter } from './ThinkingTokenRouter.js';
@@ -658,7 +659,12 @@ export async function coordinatorCall(opts: {
   mode?: 'think' | 'no_think' | 'none';
   stage?: PromptStage;
 }): Promise<string> {
-  { const _s = getServerStatus().sayon.state; if (_s === 'starting' || _s === 'stopped') await awaitServerReady('sayon'); }
+  // Guard only meaningful on main thread — worker thread has its own module
+  // instance with servers singleton stuck at initial 'stopped' state.
+  if (isMainThread) {
+    const _s = getServerStatus().sayon.state;
+    if (_s === 'starting' || _s === 'stopped') await awaitServerReady('sayon');
+  }
   const { mode = 'think' } = opts;
   const t0 = Date.now();
   const { messages: stratMsgs, systemPrompt: stratSystem } = applyThinkingStrategy(
@@ -768,7 +774,7 @@ export async function coordinatorStream(opts: {
   onThinkToken?: (token: string) => void;
   stage?: PromptStage;
 }): Promise<string> {
-  { const _s = getServerStatus().sayon.state; if (_s === 'starting' || _s === 'stopped') await awaitServerReady('sayon'); }
+  if (isMainThread) { const _s = getServerStatus().sayon.state; if (_s === 'starting' || _s === 'stopped') await awaitServerReady('sayon'); }
   const { mode = 'think', onThinkToken } = opts;
   const t0 = Date.now();
   const { messages: stratMsgs, systemPrompt: stratSystem } = applyThinkingStrategy(
@@ -869,7 +875,7 @@ export async function engineStream(opts: {
    */
   imageAttachments?: Array<{ filename: string; base64: string; mimeType: string }>;
 }): Promise<string> {
-  { const _s = getServerStatus().seren.state; if (_s === 'starting' || _s === 'stopped') await awaitServerReady('seren'); }
+  if (isMainThread) { const _s = getServerStatus().seren.state; if (_s === 'starting' || _s === 'stopped') await awaitServerReady('seren'); }
   const { mode = 'think', onThinkToken } = opts;  const t0 = Date.now();
 
   // Use module-level vars directly — we are in the same module so no CJS binding issue.

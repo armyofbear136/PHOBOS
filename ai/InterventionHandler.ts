@@ -1,5 +1,6 @@
 import { coordinatorClient, COORDINATOR_MODEL } from './clients.js';
 import { getServerStatus, awaitServerReady } from '../phobos/LlamaServerManager.js';
+import { isMainThread } from 'node:worker_threads';
 
 export interface InterventionResult {
   answer: string;
@@ -17,7 +18,7 @@ export class InterventionHandler {
 
     let answer = '';
     try {
-      { const _s = getServerStatus().sayon.state; if (_s === 'starting' || _s === 'stopped') await awaitServerReady('sayon'); }
+      if (isMainThread) { const _s = getServerStatus().sayon.state; if (_s === 'starting' || _s === 'stopped') await awaitServerReady('sayon'); }
       const stream = await coordinatorClient.chat.completions.create({
         model: COORDINATOR_MODEL,
         messages: [

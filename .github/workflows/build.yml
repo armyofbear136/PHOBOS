@@ -59,6 +59,11 @@ jobs:
         if: runner.os == 'macOS'
         run: pip3 install setuptools --break-system-packages
 
+      - name: Set MSVS version (Windows — windows-2025 runner has VS 2025, vswhere output overflows node-gyp's maxBuffer)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: echo "GYP_MSVS_VERSION=2022" >> $env:GITHUB_ENV
+
       - name: Install dependencies
         run: npm ci --foreground-scripts
 
